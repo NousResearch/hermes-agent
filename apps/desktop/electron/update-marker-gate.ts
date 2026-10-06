@@ -21,11 +21,17 @@
  * the next poll after a Retry, because only the script can see the lock being
  * released.
  *
- * No verdict has a ceiling (review R8 D3). `held` means no owner identity is
- * alive but some process still holds the checkout lock; it may be a leaked
- * long-lived one, and it may still be writing the install. `busy` / `error`
- * mean the helper could not establish ownership at all. None of them ever
- * opens the gate by itself: past a short grace the caller shows a blocked
+ * No positive answer has a ceiling (review R8 D3). `held` means no owner
+ * identity is alive but some process still holds the checkout lock; it may be
+ * a leaked long-lived one, and it may still be writing the install. `busy` /
+ * `error` mean the helper could not establish ownership at all. The one
+ * bounded case is a helper that has never answered for this body: after
+ * HELPER_ERROR_ATTEMPTS consecutive `error`s (bash / PowerShell blocked, a
+ * broken script) the gate proceeds as main did for a dead marker, minus the
+ * deletion — otherwise such a machine would park every boot after every
+ * crashed update. Once the helper has answered for a body, a later `error` is
+ * a transient failure of a working helper (R8 M5) and keeps waiting. Nothing
+ * else ever opens the gate by itself: past a short grace the caller shows a blocked
  * boot screen (what holds the install, Retry, Quit) whose only way through
  * while the hold lasts is an explicit, confirmed, logged "Start anyway"
  * (`allowStartOverHold`), scoped to the exact marker body the user saw. The
@@ -40,6 +46,13 @@ import { type CreateTimeProbe, inspectUpdateMarker, markerPath } from './update-
 import type { MarkerHelperVerdict } from './updater/marker-helper'
 
 export const HELD_REPROBE_MS = 5_000
+
+/**
+ * Consecutive `error` answers about a body the helper never answered for
+ * before the gate proceeds anyway (~10 s at HELD_REPROBE_MS): a helper that
+ * cannot run at all must not park boot behind every dead marker.
+ */
+export const HELPER_ERROR_ATTEMPTS = 3
 
 /** How long a blocking verdict must last in one wait before the boot shows the blocked screen. */
 export const HOLD_SCREEN_GRACE_MS = 5_000
@@ -98,6 +111,10 @@ function heldSince(key: string, at: number): number {
 // so a pool backend wait honours the same decision. A different body (a new
 // update, a new owner) blocks again.
 const startAnywayHolds = new Set<string>()
+
+// Bodies whose helper never answered within HELPER_ERROR_ATTEMPTS, process-wide
+// so a later wait (a pool backend) proceeds without re-running the retries.
+const unanswerableHolds = new Set<string>()
 
 // Bumped by an explicit Retry: every probe re-asks the helper on its next poll.
 let recheckGeneration = 0
@@ -194,6 +211,7 @@ export function requestHoldRecheck(): void {
 export function resetHoldStateForTests(): void {
   firstHeldAt.clear()
   startAnywayHolds.clear()
+  unanswerableHolds.clear()
   recheckGeneration = 0
 }
 
@@ -202,6 +220,10 @@ interface AskedEntry {
   at: number
   generation: number
   overrideLogged?: boolean
+  /** Consecutive `error` answers. */
+  errors?: number
+  /** The helper gave a real verdict (anything but `error`) for this body at least once. */
+  answered?: boolean
 }
 
 function statMarkerFile(hermesHome: string): fs.Stats | null {
@@ -244,7 +266,24 @@ async function refreshVerdict(
     )
   }
 
-  return { ...previous, verdict, at: now(), generation }
+  const errors = verdict.kind === 'error' ? (previous?.errors ?? 0) + 1 : 0
+
+  return { ...previous, verdict, at: now(), generation, errors, answered: previous?.answered || verdict.kind !== 'error' }
+}
+
+/** The helper never answered for this body and has used its retries: proceed as main did for a dead marker. */
+function helperUnanswerable(entry: AskedEntry, holdId: string, log: ((line: string) => void) | undefined): boolean {
+  if (entry.verdict.kind !== 'error' || entry.answered || (entry.errors ?? 0) < HELPER_ERROR_ATTEMPTS) {
+    return false
+  }
+
+  unanswerableHolds.add(holdId)
+  log?.(
+    `[updates] dead update marker (hold ${holdId}): the script helper failed ${entry.errors} times and never ` +
+      'answered; starting as for any dead marker. The marker is left in place.'
+  )
+
+  return true
 }
 
 function logOverrideOnce(entry: AskedEntry, state: HeldState, log: ((line: string) => void) | undefined): void {
@@ -287,6 +326,11 @@ export function liveMarkerProbe({
     }
 
     const holdId = markerHoldId(inspection.raw, statMarkerFile(hermesHome))
+
+    if (unanswerableHolds.has(holdId)) {
+      return false
+    }
+
     const previous = asked.get(holdId)
     let entry = previous!
 
@@ -297,7 +341,7 @@ export function liveMarkerProbe({
 
     const { verdict } = entry
 
-    if (!STILL_RUNNING.has(verdict.kind)) {
+    if (!STILL_RUNNING.has(verdict.kind) || helperUnanswerable(entry, holdId, log)) {
       return false
     }
 
@@ -308,7 +352,8 @@ export function liveMarkerProbe({
       holdId,
       since: heldSince(holdId, now()),
       checkedAt: entry.at,
-      blocking: verdict.kind !== 'live'
+      // An `error` still inside its retries is not a hold yet: no blocked screen.
+      blocking: verdict.kind !== 'live' && (verdict.kind !== 'error' || Boolean(entry.answered))
     }
 
     if (state.blocking && startAnywayHolds.has(holdId)) {

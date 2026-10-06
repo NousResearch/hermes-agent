@@ -14,8 +14,10 @@ import { afterEach, describe, test } from 'vitest'
 import { markerPath } from './update-marker'
 import {
   allowStartOverHold,
+  HELD_REPROBE_MS,
   type HeldState,
   heldWaitMessage,
+  HELPER_ERROR_ATTEMPTS,
   HOLD_SCREEN_GRACE_MS,
   holdTicker,
   liveMarkerProbe,
@@ -185,6 +187,50 @@ describe.skipIf(process.platform === 'win32')('gate over a dead marker (R6)', ()
     fs.writeFileSync(path.join(home, 'helper-verdict'), 'reclaimed')
     clock += 5_000
     assert.equal(await probe(), false)
+  })
+
+  // Review K132345 (helper failure on a dead marker blocks boot): a helper that
+  // can never run (bash / PowerShell blocked) must not park every boot after a
+  // crashed update; main proceeded over a dead marker.
+  test('a helper that never answers for a dead marker is retried, then the gate proceeds for every wait', async () => {
+    const { root, home } = fakeHelperCheckout()
+    const body = `${await deadPid()}\n${minutesAgo(1)}\nct:1.000\n`
+    fs.writeFileSync(markerPath(home), body)
+    fs.writeFileSync(path.join(home, 'helper-exit'), '1')
+    let clock = Date.now()
+    const states: HeldState[] = []
+    const probe = gate(root, home, () => clock, { onHeld: s => states.push(s) })
+
+    for (let attempt = 1; attempt < HELPER_ERROR_ATTEMPTS; attempt++) {
+      assert.equal(await probe(), true, `error ${attempt}: still retrying`)
+      clock += HELD_REPROBE_MS
+    }
+
+    assert.ok(states.every(s => s.verdict === 'error' && !s.blocking), 'retries are not a hold: no blocked screen')
+    assert.equal(await probe(), false, 'retries used up: proceed as for any dead marker')
+    assert.equal(helperCalls(home).length, HELPER_ERROR_ATTEMPTS)
+    assert.equal(await gate(root, home, () => clock)(), false, 'a later wait (pool backend) proceeds at once')
+    assert.equal(helperCalls(home).length, HELPER_ERROR_ATTEMPTS, 'without re-running the retries')
+    assert.equal(fs.readFileSync(markerPath(home), 'utf8'), body, 'the marker is left in place')
+  })
+
+  test('once the helper has answered for a body, its later errors keep the gate parked (R8 M5)', async () => {
+    const { root, home } = fakeHelperCheckout()
+    fs.writeFileSync(markerPath(home), `${await deadPid()}\n${minutesAgo(1)}\nct:1.000\n`)
+    fs.writeFileSync(path.join(home, 'helper-verdict'), 'held')
+    let clock = Date.now()
+    const states: HeldState[] = []
+    const probe = gate(root, home, () => clock, { onHeld: s => states.push(s) })
+
+    assert.equal(await probe(), true)
+    fs.writeFileSync(path.join(home, 'helper-exit'), '1')
+
+    for (let attempt = 0; attempt < 2 * HELPER_ERROR_ATTEMPTS; attempt++) {
+      clock += HELD_REPROBE_MS
+      assert.equal(await probe(), true, 'a working helper that fails for a moment never opens the gate')
+    }
+
+    assert.deepEqual([states.at(-1)!.verdict, states.at(-1)!.blocking], ['error', true])
   })
 
   test('sidecar contention over an old marker is indeterminate, not an expired held checkout', async () => {

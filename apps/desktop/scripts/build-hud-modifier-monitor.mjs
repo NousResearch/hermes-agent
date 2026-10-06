@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, renameSync, rmdirSync, rmSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { retryHeld } from '../../../scripts/build/frontend-common.mjs'
 import { macosSysroot, xcrunClangArgv } from './macos-sysroot.mjs'
 
 const script = fileURLToPath(import.meta.url)
@@ -90,7 +91,8 @@ export function buildHudModifierMonitor({
       )
     }
     chmodSync(staging, 0o755)
-    renameSync(staging, output)
+    // A scanner opens the exe the compiler just wrote; wait it out like publication does.
+    retryHeld(() => renameSync(staging, output))
     console.log(`built ${output}`)
     return output
   } catch (error) {

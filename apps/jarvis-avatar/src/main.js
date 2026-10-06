@@ -105,42 +105,22 @@ function start(imgs) {
   }
   const em = pixels(imEmissao), inf = pixels(imInfo);
 
-  // silhueta de cada linha (bordas do alfa do corpo, saindo do eixo): o giro 3D usa a largura
-  // real da cabeça em cada altura. Suavizada na vertical (sem degraus) e quantizada a 1/32 px: o corpo lê a
-  // mesma tabela numa textura (16 bits por borda) e as partículas num atributo, com valores idênticos.
+  // silhueta da cabeça 3D por linha (bordas esquerda e direita, px): o perfil desenhado do manequim (HEAD3D.PROFILE)
+  // centrado no eixo. Quantizada a 1/32 px: o corpo lê a mesma tabela numa textura (16 bits por borda) e as
+  // partículas num atributo, com valores idênticos.
   const sil = new Float32Array(IMG.h * 2);
   {
-    const al = pixels(imCorpoA), AX = IMG.axisX, MAXR = 260, GAP = 6;
-    const edge = (y, dir) => {
-      if (al[(y * IMG.w + AX) * 4] < 128) return AX + 0.5;
-      let last = AX + 0.5, run = 0;
-      for (let d = 0; d <= MAXR; d++) {
-        if (al[(y * IMG.w + AX + dir * d) * 4] >= 128) { last = AX + 0.5 + dir * d; run = 0; }   // centro do último pixel opaco
-        else if (++run > GAP) break;
+    const P = HEAD3D.PROFILE, last = P.length - 1;
+    for (let y = 0; y < IMG.h; y++) {
+      let w = 0;
+      if (y >= P[0][0]) {
+        let k = 0;
+        while (k < last - 1 && y >= P[k + 1][0]) k++;
+        const p0 = P[Math.max(0, k - 1)][1], p1 = P[k][1], p2 = P[k + 1][1], p3 = P[Math.min(last, k + 2)][1];
+        const t = clamp((y - P[k][0]) / (P[k + 1][0] - P[k][0]), 0, 1), t2 = t * t, t3 = t2 * t;
+        w = Math.max(0, 0.5 * (2 * p1 + (p2 - p0) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (3 * p1 - p0 - 3 * p2 + p3) * t3));
       }
-      return last;
-    };
-    for (let y = 0; y < IMG.h; y++) { sil[y * 2] = edge(y, -1); sil[y * 2 + 1] = edge(y, 1); }
-    // nas linhas das orelhas a silhueta é a do crânio (curva suave entre as linhas acima e abaixo): a orelha fica
-    // FORA dela e anda colada à borda, e a luz de borda do crânio, por dentro da orelha, não estica com o rosto.
-    const [e0, e1] = IMG.ears, n = e1 - e0;
-    for (let j = 0; j < 2; j++) {
-      const v0 = sil[e0 * 2 + j], v1 = sil[e1 * 2 + j];
-      const d0 = (v0 - sil[(e0 - 10) * 2 + j]) / 10 * n, d1 = (sil[(e1 + 10) * 2 + j] - v1) / 10 * n;   // inclinações (Hermite)
-      for (let y = e0 + 1; y < e1; y++) {
-        const t = (y - e0) / n, t2 = t * t, t3 = t2 * t;
-        sil[y * 2 + j] = (2 * t3 - 3 * t2 + 1) * v0 + (t3 - 2 * t2 + t) * d0 + (-2 * t3 + 3 * t2) * v1 + (t3 - t2) * d1;
-      }
-    }
-    for (let pass = 0; pass < 2; pass++) {
-      const src = sil.slice(), R = 5;
-      for (let y = 0; y < IMG.h; y++) {
-        for (let j = 0; j < 2; j++) {
-          let acc = 0, n = 0;
-          for (let k = Math.max(0, y - R); k <= Math.min(IMG.h - 1, y + R); k++) { acc += src[k * 2 + j]; n++; }
-          sil[y * 2 + j] = Math.round((acc / n) * 32) / 32;
-        }
-      }
+      sil[y * 2] = Math.round((IMG.axisX + 0.5 - w) * 32) / 32; sil[y * 2 + 1] = Math.round((IMG.axisX + 0.5 + w) * 32) / 32;
     }
   }
   const silBytes = new Uint8Array(IMG.h * 4);
@@ -153,86 +133,92 @@ function start(imgs) {
   let total = 0;
   for (let i = 2; i < inf.length; i += 4) if (inf[i] > 0) total++;
   if (!total) throw new Error('as camadas de partículas vieram vazias');
-  const cap = CFG.maxParticles || (MOBILE ? 50000 : 400000);   // a lateral/nuca soma quase outro tanto
+  const cap = CFG.maxParticles || (MOBILE ? 90000 : 400000);
   const keep = Math.min(1, cap / total);                 // celular: amostra e compensa o brilho (uGain)
-  const silA = new Float32Array(total * 2);
-  const homeA = new Float32Array(total * 2), colA = new Uint8Array(total * 4), infoA = new Uint8Array(total * 4);
-  let N = 0;
+  // A cabeça e o pescoço são 3D: uma nuvem de partículas na superfície de um manequim moldado pela silhueta da foto
+  // (cada linha é uma fatia elíptica, sliceOf no shader). A foto continua valendo pro que não gira: ombros, peito e
+  // aura. Entre o pescoço e os ombros as duas se trocam aos poucos (headZone, igual no shader do corpo).
+  const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
+  const headZone = (y) => 1 - smooth(NECK_Y - 80, NECK_Y - 10, y);
+  const sliceAt = (y) => {
+    const m = 0.5 * (sil[y * 2] + sil[y * 2 + 1]), w = Math.max(0.5 * (sil[y * 2 + 1] - sil[y * 2]), 0.001);
+    return { m, w, d: HEAD3D.K * w };
+  };
+  const pts = [];          // x, y, cor r g b, relevo, borda, aura, phi
+  // 1) foto: tudo fora da cabeça (a aura em volta dela inclusive)
   for (let y = 0, px = 0; y < IMG.h; y++) {
+    const S = sliceAt(y), hz = headZone(y + 0.5);
     for (let x = 0; x < IMG.w; x++, px += 4) {
       const t = inf[px + 2];
-      if (!t) continue;
-      if (rnd() > keep) continue;
-      homeA[N * 2] = x + 0.5; homeA[N * 2 + 1] = y + 0.5;
-      silA[N * 2] = sil[y * 2]; silA[N * 2 + 1] = sil[y * 2 + 1];
-      colA[N * 4] = em[px]; colA[N * 4 + 1] = em[px + 1]; colA[N * 4 + 2] = em[px + 2];
-      infoA[N * 4] = inf[px]; infoA[N * 4 + 1] = inf[px + 1]; infoA[N * 4 + 2] = t > 200 ? 255 : 0; infoA[N * 4 + 3] = (rnd() * 255) | 0;
-      N++;
+      if (!t || rnd() > keep) continue;
+      const aura = t > 200;
+      if (!aura && hz > 0 && Math.abs(x + 0.5 - S.m) < S.w + 45 && rnd() < hz) continue;   // cabeça: vira 3D
+      pts.push(x + 0.5, y + 0.5, em[px], em[px + 1], em[px + 2], inf[px], inf[px + 1], aura ? 255 : 0, 9);
     }
   }
-  const gain = 1 / keep;
-
-  // lateral e nuca: a foto só mostra a frente. Partículas extras na superfície das fatias do crânio (o mesmo modelo
-  // de sliceOf no shader). A textura é a do miolo do rosto na MESMA linha, ladrilhada em volta da cabeça: cada
-  // partícula do miolo vira cópias a cada 1,2*wi px de arco, então lateral e nuca têm o mesmo desenho e a mesma
-  // densidade da frente. Ficam apagadas com giro 0 (a soma continua sendo a foto) e aparecem quando aquele lado vira.
-  const extra = [];
+  // 2) superfície do manequim: amostragem uniforme por área (arco da fatia x inclinação entre linhas)
   {
-    const rowStart = new Int32Array(IMG.h + 1).fill(-1);
-    for (let i = N - 1; i >= 0; i--) rowStart[Math.floor(homeA[i * 2 + 1])] = i;
-    rowStart[IMG.h] = N;
-    for (let y = IMG.h - 1; y >= 0; y--) if (rowStart[y] < 0) rowStart[y] = rowStart[y + 1];
-    const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
-    const PHI0 = HEAD3D.EXTRA_FROM, STEPS = 96, BAND = 0.6;
-    for (let y = Math.max(0, IMG.headTop - 10); y < NECK_Y; y++) {
-      if (1 - smooth(IMG.chinY, NECK_Y, y + 0.5) < 0.05) continue;
-      const m = 0.5 * (sil[y * 2] + sil[y * 2 + 1]), w = Math.max(0.5 * (sil[y * 2 + 1] - sil[y * 2]), 0.001);
-      const wi = w - Math.min(HEAD3D.RIM, 0.35 * w), d = HEAD3D.K * wi, tile = 2 * BAND * wi;
-      if (wi < 8) continue;
-      // comprimento de arco acumulado de PHI0 até a nuca (pi), pra converter "px de arco" em ângulo
-      const phis = new Float32Array(STEPS + 1), arcs = new Float32Array(STEPS + 1);
-      for (let k = 0; k <= STEPS; k++) {
-        phis[k] = PHI0 + (Math.PI - PHI0) * k / STEPS;
-        if (k) { const f = 0.5 * (phis[k] + phis[k - 1]); arcs[k] = arcs[k - 1] + Math.hypot(wi * Math.cos(f), d * Math.sin(f)) * (phis[k] - phis[k - 1]); }
+    const dens = HEAD3D.DENS * keep, STEPS = 128;
+    const [mx, my] = IMG.mouth;
+    for (let y = Math.max(0, IMG.headTop - 4); y < NECK_Y - 10; y++) {
+      const hz = headZone(y + 0.5);
+      const S = sliceAt(y), Sn = sliceAt(Math.min(IMG.h - 1, y + 1));
+      if (S.w < 2 || hz <= 0) continue;
+      const tilt = Math.hypot(1, Sn.w - S.w);
+      const ds = (f) => Math.hypot(S.w * Math.cos(f), S.d * Math.sin(f));
+      let per = 0;
+      for (let k = 0; k < STEPS; k++) per += ds(-Math.PI + 2 * Math.PI * (k + 0.5) / STEPS);
+      per *= 2 * Math.PI / STEPS;
+      const want = per * tilt * dens * hz;
+      const n = Math.floor(want) + (rnd() < want % 1 ? 1 : 0);
+      const dsMax = Math.max(S.w, S.d);
+      for (let j = 0; j < n; j++) {
+        let f;
+        do f = -Math.PI + 2 * Math.PI * rnd(); while (rnd() * dsMax > ds(f));    // uniforme em comprimento de arco
+        const x = S.m + S.w * Math.sin(f), yy = y + rnd();
+        // azul do holograma, com variação de brilho e algumas faíscas; dourado na boca, só na frente
+        // malha de holograma: meridianos a cada 22,5° e paralelos a cada 30 px, finos. Giram com a cabeça e deixam o
+        // volume legível (numa nuvem uniforme só a silhueta mostra o giro)
+        const mer = Math.abs(Math.sin(f * 8)) * S.w / 8, lat = Math.abs(((yy - IMG.headTop) % 30) - 15) - 13.5;
+        const line = Math.max(Math.exp(-mer * mer / 2), lat > 0 ? Math.exp(-((1.5 - lat) ** 2) / 0.6) : 0);
+        const l = (0.55 + 0.45 * Math.pow(rnd(), 1.5)) * (1 + 2.2 * line), spark = rnd() < 0.025 ? 1 : 0;
+        let r = Math.min(255, 40 * l + 160 * spark), g = Math.min(255, 125 * l + 110 * spark), bl = 255 * Math.min(1, l + 0.2);
+        const gold = Math.cos(f) > 0 ? Math.exp(-((x - mx) ** 2) / (85 * 85) - ((yy - my) ** 2) / (60 * 60)) : 0;
+        r = r + (255 - r) * gold; g = g + (175 - g) * gold; bl = bl + (55 - bl) * gold;
+        pts.push(x, yy, r, g, bl, 255 * Math.max(0, Math.cos(f)), 0, 0, f);
       }
-      const L = arcs[STEPS];
-      const phiAt = (sArc) => {
-        let k = 1;
-        while (k < STEPS && arcs[k] < sArc) k++;
-        return phis[k - 1] + (phis[k] - phis[k - 1]) * (sArc - arcs[k - 1]) / (arcs[k] - arcs[k - 1]);
-      };
-      for (let i = rowStart[y]; i < rowStart[y + 1]; i++) {
-        const dx = homeA[i * 2] - m;
-        if (Math.abs(dx) >= BAND * wi || infoA[i * 4 + 2] || infoA[i * 4 + 1] >= 90) continue;
-        const o = dx + BAND * wi;
-        for (const side of [-1, 1]) {
-          const o2 = side < 0 ? tile - o : o;          // espelhado do lado esquerdo: os dois lados se encontram na nuca
-          for (let sArc = o2; sArc < L; sArc += tile) {
-            const f = side * phiAt(sArc);
-            extra.push(y, f, i, m + wi * Math.sin(f));
-          }
+    }
+  }
+  // 3) orelhas: placas ovais presas na lateral do crânio (HEAD3D.EAR), estendidas pra trás no shader. A borda da
+  // orelha é mais clara (é ela que desenha a orelha de frente).
+  {
+    const E = HEAD3D.EAR, dens = HEAD3D.DENS * keep * 1.6;
+    for (let y = Math.ceil(E.cy - E.ry); y < E.cy + E.ry; y++) {
+      const v = (y + 0.5 - E.cy) / E.ry, U = E.out * Math.sqrt(Math.max(0, 1 - v * v));
+      const S = sliceAt(y);
+      for (const sg of [-1, 1]) {
+        const want = U * 2.2 * dens;                   // a placa tem ~2,2x a largura vista de frente (vai pra trás)
+        for (let j = 0, n = Math.floor(want) + (rnd() < want % 1 ? 1 : 0); j < n; j++) {
+          const u = U * Math.sqrt(rnd()), edge = Math.exp(-((U - u) ** 2) / 8);
+          const l = 0.45 + 0.35 * rnd() + 0.9 * edge;
+          pts.push(S.m + sg * (S.w + u), y + rnd(), Math.min(255, 45 * l), Math.min(255, 135 * l), 255, 120, 0, 0, 10 + u);
         }
       }
     }
   }
-  const NX = extra.length / 4, NT = N + NX;
-  const grow = (A, k) => { const out = new A.constructor(NT * k); out.set(A.subarray(0, N * k)); return out; };
-  const homeT = grow(homeA, 2), silT = grow(silA, 2), colT = grow(colA, 4), infoT = grow(infoA, 4);
-  const phiT = new Float32Array(NT).fill(9);
-  for (let j = 0, i = N; j < NX; j++, i++) {
-    const [y, f, src, x] = extra.slice(j * 4, j * 4 + 4);
-    homeT[i * 2] = x; homeT[i * 2 + 1] = y + rnd();                   // altura sorteada na linha: sem listras
+  const K9 = 9;
+  let N = pts.length / K9;
+  const homeT = new Float32Array(N * 2), silT = new Float32Array(N * 2), colT = new Uint8Array(N * 4), infoT = new Uint8Array(N * 4);
+  const phiT = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    const o = i * K9, y = Math.min(IMG.h - 1, Math.floor(pts[o + 1]));
+    homeT[i * 2] = pts[o]; homeT[i * 2 + 1] = pts[o + 1];
     silT[i * 2] = sil[y * 2]; silT[i * 2 + 1] = sil[y * 2 + 1];
-    const r = colA[src * 4], g = colA[src * 4 + 1], b = colA[src * 4 + 2];
-    if (r > b * 0.8) {                                   // brilho dourado da boca: só na frente; na lateral vira azul
-      const l = 0.3 * r + 0.5 * g + 0.2 * b;
-      colT[i * 4] = Math.min(255, l * 0.35); colT[i * 4 + 1] = Math.min(255, l * 0.75); colT[i * 4 + 2] = Math.min(255, l * 1.3);
-    } else { colT[i * 4] = r; colT[i * 4 + 1] = g; colT[i * 4 + 2] = b; }
-    infoT[i * 4] = infoA[src * 4]; infoT[i * 4 + 3] = (rnd() * 255) | 0;
-    phiT[i] = f;
+    colT[i * 4] = pts[o + 2]; colT[i * 4 + 1] = pts[o + 3]; colT[i * 4 + 2] = pts[o + 4];
+    infoT[i * 4] = pts[o + 5]; infoT[i * 4 + 1] = pts[o + 6]; infoT[i * 4 + 2] = pts[o + 7]; infoT[i * 4 + 3] = (rnd() * 255) | 0;
+    phiT[i] = pts[o + 8];
   }
-  const shapeK = N / NT;                                 // nas outras formas todas aparecem: brilho total igual ao de antes
-  N = NT;
+  const gain = 1 / keep;
   const SHAPES = buildShapes(N, homeT);
 
   /* ---------- buffers ---------- */
@@ -420,7 +406,6 @@ function start(imgs) {
       gl.uniform1f(u.uThink, ST.think);
       gl.uniform1f(u.uListen, ST.listen);
       gl.uniform1f(u.uGain, gain);
-      gl.uniform1f(u.uShapeK, shapeK);
       gl.uniform1f(u.uHeadness, ST.head);
       gl.uniform1f(u.uAxisX, IMG.axisX);
       gl.uniform1f(u.uHeadCY, IMG.headCY);

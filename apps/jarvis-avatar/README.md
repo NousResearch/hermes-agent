@@ -5,11 +5,11 @@ Avatar do Jarvis em WebGL: a imagem de referência é separada em camadas (fundo
 ondas, voz e estados (ouvindo / pensando / falando) deslocam partículas e corpo pela mesma
 função na GPU, então tudo se move junto.
 
-A cabeça é 3D: cada linha da foto é uma fatia elíptica de um crânio com a largura da silhueta
-real, girando em torno do pescoço (até ~72°). A frente vem da foto; lateral e nuca são ~200 mil
-partículas extras com a textura do miolo do rosto ladrilhada em volta, que só aparecem quando
-aquele lado vira para a câmera. A luz de borda segue a silhueta nova e as orelhas são placas
-que abrem ou somem atrás do crânio. Giro 0 continua idêntico à foto.
+A cabeça é 3D: um manequim de partículas moldado pela silhueta da foto (perfil desenhado em
+`HEAD3D.PROFILE`, cada linha uma fatia elíptica) que gira em torno do pescoço até ~72°. A luz vem
+da superfície: borda brilhante onde ela fica rasante, malha sutil de meridianos e paralelos que gira
+junto, verso fraco como holograma, orelhas em placas e o brilho dourado da boca preso no rosto. A
+foto continua valendo pro que não gira: fundo, ombros e aura.
 
 ## Rodar
 
@@ -37,11 +37,11 @@ python3 build.py                 # gera dist/jarvis.html (~5,4 MB, tudo embutido
 | `index.html` | marcação da interface (status, dock, controles) |
 | `src/styles.css` | visual + `@font-face` da Sora |
 | `src/config.js` | `CFG` (ajustes), geometria da foto (`IMG`), lista de camadas, parâmetros de URL |
-| `src/shaders.js` | GLSL: campo do mouse/ondas, pose, cabeça 3D (fatias), fundo, corpo e partículas |
+| `src/shaders.js` | GLSL: campo do mouse/ondas, pose, cabeça 3D (fatias, luz), fundo, corpo e partículas |
 | `src/audio.js` | microfone, `<audio>` externo, voz do navegador → volume + 8 bandas |
 | `src/pose.js` | balanço, olhadas, seguir o mouse, reação aos estados (molas amortecidas) |
 | `src/shapes.js` | formas: cabeça, esfera, galáxia, texto |
-| `src/main.js` | WebGL, partículas (foto + lateral/nuca), render, entrada, API pública, loop |
+| `src/main.js` | WebGL, partículas (foto + manequim 3D + orelhas), render, entrada, API pública, loop |
 | `assets/img/` | camadas da foto (1672×941): `fundo`, `mascaras`, `corpo-rgb`, `corpo-alfa`, `emissao`, `info` |
 | `assets/fonts/` | Sora 300/600/700 (SIL Open Font License 1.1) |
 | `build.py` | empacota tudo em `dist/jarvis.html` (só biblioteca padrão) |

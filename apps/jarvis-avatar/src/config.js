@@ -10,11 +10,18 @@ export const CFG = {
 };
 
 // geometria medida na imagem de referência (pixels da imagem 1672×941)
-export const IMG = { w: 1672, h: 941, horizon: 587, axisX: 832, headTop: 122, chinY: 632, headCY: 377, mouth: [831, 552],
-                      ears: [354, 492] };   // linhas onde as orelhas saem do crânio
-// crânio 3D (shaders.js sliceOf + lateral/nuca em main.js): profundidade/largura e faixa da luz de borda (px)
-// EXTRA_FROM: menor ângulo (rad) em que nascem partículas da lateral; STRETCH: onde a foto estica demais e a lateral assume
-export const HEAD3D = { K: 1.15, RIM: 38, EXTRA_FROM: 0.7, STRETCH: [1.3, 2.6] };
+export const IMG = { w: 1672, h: 941, horizon: 587, axisX: 832, headTop: 122, chinY: 632, headCY: 377, mouth: [831, 552] };
+// cabeça 3D (shaders.js sliceOf + nuvem de partículas em main.js): profundidade/largura de cada fatia do manequim
+// e densidade das partículas na superfície (por px²)
+export const HEAD3D = {
+  K: 1.15, DENS: 0.22,
+  // perfil do manequim: [y, meia-largura] em px da imagem, medidos no alfa do corpo (sem as orelhas) e alisados.
+  // Entre os pontos, Catmull-Rom: o contorno sai liso, sem os calombos de uma borda medida linha a linha.
+  PROFILE: [[118, 0], [125, 38], [140, 84], [155, 111], [170, 130], [185, 145], [200, 159], [215, 169], [230, 177],
+    [245, 184], [260, 190], [290, 197], [320, 200], [350, 200], [380, 199], [410, 197], [440, 193], [470, 186],
+    [500, 178], [530, 163], [560, 147], [590, 135], [620, 130], [660, 131], [700, 136], [740, 142], [800, 150]],
+  EAR: { cy: 415, ry: 54, out: 26 },   // orelha: centro e meia-altura (y) e quanto sai do crânio (px)
+};
 export const HEAD_RX = 182, HEAD_RY = (IMG.chinY - IMG.headTop) / 2;   // semi-eixos do crânio
 export const NECK_Y = IMG.chinY + 110;                                  // base do pescoço: pivô da cabeça
 

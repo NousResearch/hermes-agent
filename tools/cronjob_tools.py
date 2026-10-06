@@ -479,8 +479,8 @@ def _reap_stale_executions(job_name: str) -> None:
         # the exiting process before writing a terminal status (issue #86721). Safe and cheap: provably-dead
         # owners (PID gone, or PID reused by a different process per its start time) are reaped, as is a
         # live owner whose claim is older than the derived stale bound (the process itself is not killed).
-        from cron.executions import recover_interrupted_executions
-        _reclaimed = recover_interrupted_executions()
+        from cron.executions import _MANUAL_REAP_REASON, recover_interrupted_executions
+        _reclaimed = recover_interrupted_executions(reason=_MANUAL_REAP_REASON)
         if _reclaimed:
             logger.warning(
                 "Reclaimed %d stale cron execution(s) from dead owner(s) before dispatching job '%s'",

@@ -171,9 +171,10 @@ class CronScheduler(ABC):
 
     def recover_interrupted(self) -> int:
         """Run profile-local attempt recovery for every provider lifecycle."""
-        from cron.executions import recover_interrupted_executions
+        from cron.executions import _OWNER_GONE_REASON, recover_interrupted_executions
 
-        return recover_interrupted_executions()
+        # Every caller of this wrapper is a ticker-startup recovery: the restart text is true here.
+        return recover_interrupted_executions(reason=_OWNER_GONE_REASON)
 
     @property
     def supports_force_fire(self) -> bool:

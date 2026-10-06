@@ -160,6 +160,13 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_SESSION_KEY",
     "HERMES_GATEWAY_SESSION",
     "HERMES_CRON_SESSION",
+    # The operator's cron-worker interpreter pin. Set in the gateway (and in any
+    # shell launched under it), it changes what the worker-interpreter resolver
+    # probes — and a leaked pin pointing into the REAL hermes home makes the
+    # resolver's existence probe trip the home-I/O guard in every test that
+    # reaches _launch_external_cron_worker. Tests that exercise the override do
+    # so explicitly via monkeypatch.setenv.
+    "HERMES_CRON_PYTHON",
     "_HERMES_GATEWAY",
     "HERMES_PLATFORM",
     "HERMES_MODEL",

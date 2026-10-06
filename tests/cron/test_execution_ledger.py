@@ -59,7 +59,7 @@ def test_fresh_external_handoff_is_not_recovered_before_worker_adopts(
     monkeypatch.setattr(executions, "_PROCESS_ID", "replacement-gateway")
     monkeypatch.setattr(executions, "_owner_is_live", lambda _pid, _started: False)
 
-    assert executions.recover_interrupted_executions() == 0
+    assert executions.recover_interrupted_executions(reason="test") == 0
     assert executions.get_execution(record["id"])["status"] == "claimed"
     adopted = executions.adopt_claimed_execution(record["id"])
     assert adopted["status"] == "running"
@@ -81,7 +81,7 @@ def test_stale_external_handoff_is_recovered_unknown(monkeypatch, tmp_path):
         + 1,
     )
 
-    assert executions.recover_interrupted_executions() == 1
+    assert executions.recover_interrupted_executions(reason="test") == 1
     recovered = executions.get_execution(record["id"])
     assert recovered["status"] == "unknown"
     assert recovered["handoff_pending"] == 0
@@ -110,7 +110,7 @@ def test_recovery_does_not_overwrite_concurrent_worker_adoption(monkeypatch, tmp
 
     monkeypatch.setattr(executions, "_owner_is_live", adopt_while_liveness_is_checked)
 
-    assert executions.recover_interrupted_executions() == 0
+    assert executions.recover_interrupted_executions(reason="test") == 0
     current = executions.get_execution(record["id"])
     assert current is not None
     assert current["status"] == "running"
@@ -242,7 +242,7 @@ def test_recovery_does_not_mark_live_process_execution_unknown(monkeypatch, tmp_
     record = executions.create_execution("still-live", source="builtin")
     executions.mark_execution_running(record["id"])
 
-    assert executions.recover_interrupted_executions() == 0
+    assert executions.recover_interrupted_executions(reason="test") == 0
     assert executions.latest_execution("still-live")["status"] == "running"
 
 
@@ -274,8 +274,8 @@ def test_restart_marks_interrupted_execution_unknown_without_requeue(tmp_path):
         [
             sys.executable,
             "-c",
-            "import json; from cron.executions import recover_interrupted_executions, list_executions; "
-            "print(recover_interrupted_executions()); "
+            "import json; from cron.executions import _OWNER_GONE_REASON, recover_interrupted_executions, list_executions; "
+            "print(recover_interrupted_executions(reason=_OWNER_GONE_REASON)); "
             "print(json.dumps(list_executions(job_id='restart-job'))) ",
         ],
         cwd=repo,
@@ -370,7 +370,7 @@ def test_provider_start_recovers_interrupted_records_before_tick(monkeypatch):
     stop.set()
     monkeypatch.setattr(
         "cron.executions.recover_interrupted_executions",
-        lambda: events.append("recover") or 0,
+        lambda **_kwargs: events.append("recover") or 0,
         raising=False,
     )
     monkeypatch.setattr("cron.jobs.record_ticker_heartbeat", lambda **_kwargs: events.append("heartbeat"))
@@ -388,7 +388,7 @@ def test_external_provider_start_recovers_interrupted_records(monkeypatch):
     events = []
     monkeypatch.setattr(
         "cron.executions.recover_interrupted_executions",
-        lambda: events.append("recover") or 0,
+        lambda **_kwargs: events.append("recover") or 0,
     )
     monkeypatch.setattr(provider, "reconcile", lambda: events.append("reconcile"))
 
@@ -453,7 +453,7 @@ def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
     executions.finish_execution(record["id"], success=True)
     executions.list_executions(job_id="leak-check")
     executions.latest_executions(["leak-check"])
-    executions.recover_interrupted_executions()
+    executions.recover_interrupted_executions(reason="test")
 
     assert opened
     assert sorted(opened) == sorted(closed)

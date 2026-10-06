@@ -71,7 +71,7 @@ def test_genuine_external_worker_crash_is_recovered_unknown(
     assert crashed.returncode == 9
 
     monkeypatch.setattr(execution_ledger, "_PROCESS_ID", "replacement-scheduler")
-    assert execution_ledger.recover_interrupted_executions() == 1
+    assert execution_ledger.recover_interrupted_executions(reason="test") == 1
     recovered = execution_ledger.latest_execution("job-crash")
     assert recovered["status"] == "unknown"
 
@@ -538,8 +538,124 @@ def test_external_worker_crash_recovers_uncertain_attempt(monkeypatch):
 
     with pytest.raises(scheduler._ExternalWorkerPostHandoffError, match="status 9"):
         scheduler._wait_for_external_cron_worker(process, execution_id="exec-1")
-    recover.assert_called_once_with()
+    # The fallback sweep must carry the cause THIS waiter observed, never the blanket
+    # restart wording it cannot substantiate. The waiter's re-read row said
+    # ``running``, so the truthful phase is post-adoption.
+    from cron.scheduler_worker_failure import external_worker_exited_reason
+
+    recover.assert_called_once_with(reason=external_worker_exited_reason(9, adopted=True))
     assert get.call_count == 2
+
+
+def _fake_terminalizer(captured: list):
+    def fake_terminalize(execution_id, *, reason):
+        captured.append(reason)
+        return True
+
+    return fake_terminalize
+
+
+def test_pre_adoption_death_does_not_claim_adoption(monkeypatch):
+    """A worker found still ``claimed`` died BEFORE the adoption gate; stamping
+    'after adopting' would assert a phase it never reached (the 17:00 corpse: it
+    died at import cron, and adoption runs inside the payload path)."""
+    import cron.scheduler as scheduler
+
+    monkeypatch.setattr(
+        scheduler, "get_execution",
+        lambda _execution_id: {"id": "exec-1", "status": "claimed"},
+    )
+    captured: list = []
+    monkeypatch.setattr(scheduler, "terminalize_dead_owner", _fake_terminalizer(captured))
+    process = Mock()
+    process.poll.return_value = 9
+    process.wait.return_value = 9
+
+    with pytest.raises(scheduler._ExternalWorkerPostHandoffError, match="status 9"):
+        scheduler._wait_for_external_cron_worker(process, execution_id="exec-1")
+    assert captured, "the waiter must have terminalized with its observed cause"
+    assert "before adopting" in captured[0], captured[0]
+    assert "after adopting" not in captured[0], captured[0]
+    assert "whether side effects ran" not in captured[0], captured[0]
+
+
+def test_adopted_death_keeps_the_post_adoption_wording(monkeypatch):
+    """A worker whose row re-reads ``running`` DID win the claimed→running gate:
+    the original post-adoption wording stays."""
+    import cron.scheduler as scheduler
+
+    monkeypatch.setattr(
+        scheduler, "get_execution",
+        lambda _execution_id: {"id": "exec-1", "status": "running"},
+    )
+    captured: list = []
+    monkeypatch.setattr(scheduler, "terminalize_dead_owner", _fake_terminalizer(captured))
+    process = Mock()
+    process.poll.return_value = 9
+    process.wait.return_value = 9
+
+    with pytest.raises(scheduler._ExternalWorkerPostHandoffError, match="status 9"):
+        scheduler._wait_for_external_cron_worker(process, execution_id="exec-1")
+    assert "after adopting" in captured[0], captured[0]
+    assert "whether side effects ran" in captured[0], captured[0]
+
+
+def test_unobservable_phase_asserts_no_phase(monkeypatch):
+    """When a concurrent sweep terminalized the row before this waiter's re-read,
+    the phase cannot be observed: the wording must claim neither before nor after
+    adopting."""
+    import cron.scheduler as scheduler
+
+    statuses = iter(
+        [
+            {"id": "exec-1", "status": "unknown"},
+            {"id": "exec-1", "status": "unknown"},
+        ]
+    )
+    monkeypatch.setattr(scheduler, "get_execution", lambda _execution_id: next(statuses))
+    captured: list = []
+    monkeypatch.setattr(scheduler, "terminalize_dead_owner", _fake_terminalizer(captured))
+    process = Mock()
+    process.poll.return_value = 9
+    process.wait.return_value = 9
+
+    with pytest.raises(scheduler._ExternalWorkerPostHandoffError, match="status 9"):
+        scheduler._wait_for_external_cron_worker(process, execution_id="exec-1")
+    assert "adopting" not in captured[0], captured[0]
+
+
+def test_dead_worker_stderr_tail_reaches_the_ledger_reason(monkeypatch, tmp_path):
+    """The stderr tail must be stamped into the ledger row, not only composed into
+    the raised log message: an import-time death's evidence used to live for the
+    duration of one log line while the ledger kept just the exit code."""
+    import cron.scheduler as scheduler
+
+    stderr_path = tmp_path / "worker-stderr.txt"
+    stderr_path.write_text(
+        "Traceback (most recent call last):\n"
+        '  File "<frozen runpy>", line 198, in _run_module_as_main\n'
+        "ModuleNotFoundError: No module named 'ruamel'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        scheduler, "get_execution",
+        lambda _execution_id: {"id": "exec-1", "status": "running"},
+    )
+    captured: list = []
+    monkeypatch.setattr(scheduler, "terminalize_dead_owner", _fake_terminalizer(captured))
+    process = Mock()
+    process.poll.return_value = 9
+    process.wait.return_value = 9
+
+    with pytest.raises(scheduler._ExternalWorkerPostHandoffError) as caught:
+        scheduler._wait_for_external_cron_worker(
+            process, execution_id="exec-1", stderr_path=stderr_path
+        )
+    assert captured, "the waiter must have terminalized with its observed cause"
+    assert "ModuleNotFoundError" in captured[0], captured[0]
+    assert "No module named 'ruamel'" in captured[0], captured[0]
+    # The log message keeps carrying the tail, as before.
+    assert "ModuleNotFoundError" in str(caught.value)
 
 
 

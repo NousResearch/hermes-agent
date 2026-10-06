@@ -120,7 +120,7 @@ class TestTickReapsDeadOwnerClaims:
         calls = []
         monkeypatch.setattr(
             "cron.executions.recover_interrupted_executions",
-            lambda: calls.append(1) or 0,
+            lambda **_kwargs: calls.append(1) or 0,
         )
 
         _run_tick()
@@ -137,7 +137,7 @@ class TestTickReapsDeadOwnerClaims:
         assert len(calls) == 2, "an expired throttle window must reap again"
 
     def test_reap_failure_does_not_break_the_tick(self, monkeypatch):
-        def _boom():
+        def _boom(**_kwargs):
             raise RuntimeError("ledger unavailable")
 
         monkeypatch.setattr(
@@ -215,7 +215,7 @@ def test_reap_throttle_is_profile_scoped(monkeypatch, tmp_path):
 
     calls = []
     monkeypatch.setattr(
-        executions_mod, "recover_interrupted_executions", lambda: calls.append(1) or 0
+        executions_mod, "recover_interrupted_executions", lambda **_kwargs: calls.append(1) or 0
     )
     home_a = tmp_path / "profile-a"
     home_b = tmp_path / "profile-b"

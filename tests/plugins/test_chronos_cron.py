@@ -125,7 +125,7 @@ def test_identity_rejection_hands_fires_to_the_builtin_ticker(temp_home, chronos
     ]
     monkeypatch.setattr("cron.jobs.load_jobs", lambda: jobs)
     monkeypatch.setattr("cron.jobs.get_job", lambda jid: next(j for j in jobs if j["id"] == jid))
-    monkeypatch.setattr("cron.executions.recover_interrupted_executions", lambda: 0)
+    monkeypatch.setattr("cron.executions.recover_interrupted_executions", lambda **_kwargs: 0)
     ticker_started = threading.Event()
     monkeypatch.setattr(
         "cron.scheduler_provider.InProcessCronScheduler.start",

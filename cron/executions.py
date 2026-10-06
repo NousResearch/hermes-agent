@@ -312,6 +312,14 @@ _OWNER_GONE_REASON = (
     "Scheduler restarted after this execution's owner exited before a durable "
     "terminal state; whether side effects ran is unknown."
 )
+_PERIODIC_REAP_REASON = (
+    "Owner process died before reaching a durable terminal state; reclaimed by the periodic "
+    "dead-owner sweep, not a scheduler restart. Whether side effects ran is unknown."
+)
+_MANUAL_REAP_REASON = (
+    "Owner process died before reaching a durable terminal state; reclaimed ahead of a manual "
+    "run, not a scheduler restart. Whether side effects ran is unknown."
+)
 _OWNER_WEDGED_REASON = (
     "Owner process is still alive but the claim outlived the derived stale bound; "
     "treated as wedged (#115692). The process was not terminated; whether side effects "
@@ -319,10 +327,17 @@ _OWNER_WEDGED_REASON = (
 )
 
 
-def recover_interrupted_executions() -> int:
+def recover_interrupted_executions(*, reason: str) -> int:
     """Mark abandoned attempts unknown without scheduling retries: rows whose owner is provably
     dead, plus rows whose live owner holds a claim older than the derived stale bound (the
-    process is not killed)."""
+    process is not killed).
+
+    ``reason`` is the cause the CALLER observed, written to every row this sweep terminalizes.
+    It is required and has no default: the sweep itself knows only that the owner is gone, so a
+    default would let a caller silently inherit a cause it never saw (``_OWNER_GONE_REASON``
+    asserts a scheduler restart). A caller that observed nothing specific passes
+    ``_OWNER_GONE_REASON`` explicitly; rows judged live-but-wedged are overridden per row with
+    ``_OWNER_WEDGED_REASON``."""
     now = _hermes_now().isoformat()
     changed = 0
     recovered: List[Dict[str, Any]] = []
@@ -340,7 +355,7 @@ def recover_interrupted_executions() -> int:
         for row in rows:
             if row["process_id"] == _PROCESS_ID:
                 continue
-            reason = _OWNER_GONE_REASON
+            row_reason = reason
             if _owner_is_live(int(row["pid"]), row["process_started_at"]):
                 # A live owner is normally a legitimately running job. A worker permanently
                 # deadlocked (e.g. futex_wait behind a route/proxy flip, #115692) also passes
@@ -355,7 +370,7 @@ def recover_interrupted_executions() -> int:
                     stale_after_resolved = True
                 if stale_after is None or _claim_age_seconds(row["claimed_at"]) <= stale_after:
                     continue
-                reason = _OWNER_WEDGED_REASON
+                row_reason = _OWNER_WEDGED_REASON
             handoff_started_at = row["handoff_started_at"]
             if (
                 row["handoff_pending"]
@@ -371,7 +386,7 @@ def recover_interrupted_executions() -> int:
                    WHERE id=? AND status=? AND process_id=? AND pid=?
                      AND handoff_pending=?
                      AND handoff_started_at IS ?""",
-                (now, reason, row["id"], row["status"], row["process_id"], row["pid"],
+                (now, row_reason, row["id"], row["status"], row["process_id"], row["pid"],
                  row["handoff_pending"], row["handoff_started_at"]),
             )
             changed += cur.rowcount

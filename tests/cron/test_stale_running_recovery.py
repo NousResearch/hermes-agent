@@ -53,14 +53,14 @@ def test_live_owner_stale_claim_gets_recovered(monkeypatch):
     assert bound == pytest.approx(7200.0)  # max(3×600, 3600 script default, 7200 floor)
 
     eid = _seed_running("job-stale", age_seconds=bound + 60)
-    assert recover_interrupted_executions() == 1
+    assert recover_interrupted_executions(reason="test") == 1
     assert _status(eid) == "unknown"
 
     # A larger inactivity timeout widens the bound: the same age is no longer stale.
     monkeypatch.setenv("HERMES_CRON_TIMEOUT", "3600")
     assert executions_mod._live_owner_stale_after_seconds() == pytest.approx(10800.0)
     eid2 = _seed_running("job-long", age_seconds=bound + 60)
-    assert recover_interrupted_executions() == 0
+    assert recover_interrupted_executions(reason="test") == 0
     assert _status(eid2) == "running"
 
 
@@ -73,7 +73,7 @@ def test_live_owner_recent_claim_not_recovered(monkeypatch, timeout):
     recent = _seed_running("job-recent", age_seconds=60, pid=88888)
     ancient = _seed_running("job-ancient", age_seconds=30 * 24 * 3600, pid=77777)
 
-    recovered = recover_interrupted_executions()
+    recovered = recover_interrupted_executions(reason="test")
 
     assert _status(recent) == "running"
     if timeout == "600":

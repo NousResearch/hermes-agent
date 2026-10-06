@@ -52,7 +52,7 @@ def test_drift_within_tolerance_keeps_execution_running(monkeypatch, drift, expe
     execution_id = _seed_external_running(monkeypatch, claimed_start_time=claimed)
     monkeypatch.setattr(executions_mod, "_process_start_time", lambda pid: claimed + drift)
 
-    recovered = executions_mod.recover_interrupted_executions()
+    recovered = executions_mod.recover_interrupted_executions(reason="test")
 
     if expect_live:
         assert recovered == 0
@@ -67,5 +67,5 @@ def test_unreadable_start_time_fail_safe(monkeypatch):
     execution_id = _seed_external_running(monkeypatch, claimed_start_time=178864182760)
     monkeypatch.setattr(executions_mod, "_process_start_time", lambda pid: None)
 
-    assert executions_mod.recover_interrupted_executions() == 0
+    assert executions_mod.recover_interrupted_executions(reason="test") == 0
     assert _status(execution_id) == "running"

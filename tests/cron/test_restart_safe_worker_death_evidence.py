@@ -29,7 +29,7 @@ def test_adopted_worker_failure_is_visible(tmp_path, monkeypatch, manual, death)
         terminalize = scheduler.terminalize_dead_owner
 
         def sweep_first(*args, **kwargs):
-            executions.recover_interrupted_executions()
+            executions.recover_interrupted_executions(reason="test")
             return terminalize(*args, **kwargs)
 
         monkeypatch.setattr(scheduler, "terminalize_dead_owner", sweep_first)
@@ -43,7 +43,7 @@ def test_adopted_worker_failure_is_visible(tmp_path, monkeypatch, manual, death)
                 # Force the ordering: timeout, child death, concurrent recovery,
                 # then the waiter's ledger read. The child and stores are real.
                 real_wait(timeout=30)
-                assert executions.recover_interrupted_executions() == 1
+                assert executions.recover_interrupted_executions(reason="test") == 1
                 monkeypatch.setattr(process, "wait", real_wait)
                 raise subprocess.TimeoutExpired(process.args, timeout)
 

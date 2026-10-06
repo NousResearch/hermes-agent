@@ -85,6 +85,23 @@ export interface DesktopTerminalPalette {
   brightWhite?: string
 }
 
+/**
+ * An alternate same-mode palette in a theme family — a Kanagawa flavor, e.g.
+ * Wave / Dragon. Each replaces the family palette for its own `mode`; the other
+ * mode keeps the family default, so the light/dark toggle still works.
+ */
+export interface DesktopThemeVariant {
+  /** Stable id within the family — the persisted selection key. */
+  name: string
+  /** Picker label (e.g. "Wave"). */
+  label: string
+  /** Only variants of the rendered mode apply. */
+  mode: 'light' | 'dark'
+  colors: DesktopThemeColors
+  /** Integrated-terminal ANSI palette this variant ships, when it has one. */
+  terminal?: DesktopTerminalPalette
+}
+
 export interface DesktopTheme {
   name: string
   label: string
@@ -98,6 +115,11 @@ export interface DesktopTheme {
   terminal?: DesktopTerminalPalette
   /** Dark-variant terminal ANSI palette. Falls back to `terminal`. */
   darkTerminal?: DesktopTerminalPalette
+  /**
+   * Same-mode flavors (Kanagawa's Wave/Dragon/Lotus). Unset for a plain
+   * light+dark pair, which the mode toggle already covers.
+   */
+  variants?: DesktopThemeVariant[]
   /** Raw CSS injected as a scoped <style> tag on theme apply.
    *  Persists across updates because it lives in ~/.hermes/skins/,
    *  not inside app.asar. */

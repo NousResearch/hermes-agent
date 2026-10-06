@@ -133,11 +133,12 @@ function ResumeLastSessionSetting() {
   )
 }
 
-function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) {
+function ThemePreview({ name, mode, variant }: { name: string; mode: 'light' | 'dark'; variant?: string | null }) {
   // Preview in the *current* mode: the dark palette in Dark, and the light
   // palette in Light — synthesizing one for dark-only themes — so every card
-  // tracks the Light/Dark toggle, exactly like the app itself does.
-  const c = getBaseColors(name, mode)
+  // tracks the Light/Dark toggle, exactly like the app itself does. The active
+  // card also previews its chosen flavor.
+  const c = getBaseColors(name, mode, variant ?? null)
 
   return (
     <div
@@ -412,7 +413,19 @@ interface AppearanceSettingsProps {
 
 export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const { t, isSavingLocale } = useI18n()
-  const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
+
+  const {
+    themeName,
+    mode,
+    resolvedMode,
+    availableThemes,
+    themeVariants,
+    themeVariant,
+    setTheme,
+    setThemeVariant,
+    setMode
+  } = useTheme()
+
   const toolViewMode = useStore($toolViewMode)
   const toolViewShadowed = useStore($modeShadowed('toolViewMode'))
   const hideCodeDiffs = useStore($hideCodeDiffs)
@@ -619,7 +632,11 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                                 }}
                                 type="button"
                               >
-                                <ThemePreview mode={resolvedMode} name={theme.name} />
+                                <ThemePreview
+                                  mode={resolvedMode}
+                                  name={theme.name}
+                                  variant={active ? themeVariant : null}
+                                />
                                 <div className="mt-3 px-1">
                                   <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium">
                                     {theme.label}
@@ -629,6 +646,22 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                                   </div>
                                 </div>
                               </button>
+                              {active && themeVariants.length > 1 && (
+                                <div className="mt-2 flex min-w-0 items-center gap-2 px-1">
+                                  <span className="shrink-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                                    {a.themeVariant}
+                                  </span>
+                                  <SegmentedControl
+                                    className="min-w-0 max-w-full"
+                                    onChange={id => {
+                                      triggerHaptic('selection')
+                                      setThemeVariant(id)
+                                    }}
+                                    options={themeVariants.map(({ name, label }) => ({ id: name, label }))}
+                                    value={themeVariant ?? themeVariants[0].name}
+                                  />
+                                </div>
+                              )}
                               {removable && (
                                 <button
                                   aria-label={a.removeTheme}

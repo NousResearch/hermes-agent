@@ -357,6 +357,7 @@ export const zhHantSettings = {
       technicalDesc: '包含原始工具參數、結果與底層細節。',
       themeTitle: '主題',
       themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
+      themeVariant: '變體',
       themeSearchPlaceholder: '搜尋本機主題或 VS Code Marketplace…',
       themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`,
       installTitle: '從 VS Code 安裝',

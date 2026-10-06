@@ -4,6 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $backendThemes, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 import { skinPref, ThemeProvider, useTheme } from './context'
 import { everforestTheme } from './presets'
+import type { DesktopTheme } from './types'
+import { installUserTheme, removeUserTheme } from './user-themes'
+import { persistThemeVariant, storedThemeVariant } from './variants'
 
 // The live-authoring loop: Hermes writes/edits one skin file and every surface
 // repaints. An in-place edit keeps the NAME — only the palette moves.
@@ -346,5 +349,77 @@ describe('ThemeProvider customCSS injection', () => {
     )
 
     expect(customStyleEl()?.textContent).toBe('.chat-input { font-size: 18px; }')
+  })
+})
+
+describe('ThemeProvider ← theme variants', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+    cleanup()
+  })
+
+  afterEach(() => {
+    cleanup()
+    removeUserTheme('vsc-kanagawa-flavors')
+    window.localStorage.clear()
+  })
+
+  let ctx: ReturnType<typeof useTheme>
+
+  function Probe() {
+    ctx = useTheme()
+
+    return null
+  }
+
+  const colorsFor = (background: string) => ({ ...everforestTheme.colors, background })
+
+  const kanagawa = (): DesktopTheme => ({
+    name: 'vsc-kanagawa-flavors',
+    label: 'Kanagawa Flavors',
+    description: 'VS Code · metaphor.kanagawa-vscode-color-theme',
+    colors: colorsFor('#1f1f28'),
+    darkColors: colorsFor('#1f1f28'),
+    variants: [
+      { name: 'wave', label: 'Wave', mode: 'dark', colors: colorsFor('#1f1f28') },
+      { name: 'dragon', label: 'Dragon', mode: 'dark', colors: colorsFor('#181616') }
+    ]
+  })
+
+  const renderProbe = () =>
+    render(
+      <ThemeProvider>
+        <Probe />
+      </ThemeProvider>
+    )
+
+  it('paints the picked flavor and persists it for the profile', () => {
+    installUserTheme(kanagawa())
+    renderProbe()
+
+    act(() => ctx.setTheme('vsc-kanagawa-flavors'))
+
+    expect(ctx.themeVariants.map(variant => variant.name)).toEqual(['wave', 'dragon'])
+    // Defaults to the family's first flavor.
+    expect(ctx.themeVariant).toBe('wave')
+    expect(cssVar('--theme-background-seed')).toBe('#1f1f28')
+
+    act(() => ctx.setThemeVariant('dragon'))
+
+    expect(ctx.themeVariant).toBe('dragon')
+    expect(cssVar('--theme-background-seed')).toBe('#181616')
+    expect(storedThemeVariant('default', 'vsc-kanagawa-flavors')).toBe('dragon')
+  })
+
+  it('adopts the stored flavor on the next paint', () => {
+    installUserTheme(kanagawa())
+    persistThemeVariant('default', 'vsc-kanagawa-flavors', 'dragon')
+    renderProbe()
+
+    act(() => ctx.setTheme('vsc-kanagawa-flavors'))
+
+    expect(ctx.themeVariant).toBe('dragon')
+    expect(cssVar('--theme-background-seed')).toBe('#181616')
   })
 })

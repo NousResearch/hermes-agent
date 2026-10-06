@@ -18,6 +18,25 @@ def temp_home(tmp_path, monkeypatch):
     yield tmp_path
 
 
+def _future(**kw):
+    """A timestamp safely in the future.
+
+    These tests used to hardcode 2026-06-18 fire times. Arming now (correctly)
+    refuses a fire_at in the past, so a frozen date would make them fail purely
+    with the passage of time. The property under test is "a FUTURE fire is
+    armed", so derive it rather than freezing it.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    kw = kw or {"hours": 6}
+    return (datetime.now(timezone.utc) + timedelta(**kw)).isoformat()
+
+
+FUTURE_A = _future(hours=6)
+FUTURE_B = _future(hours=7)
+FUTURE_C = _future(hours=8)
+
+
 @pytest.fixture
 def chronos(monkeypatch):
     """A ChronosCronScheduler with a fake NAS client capturing calls."""
@@ -65,19 +84,19 @@ def test_is_available_false_without_config(temp_home, monkeypatch):
 
 def test_arm_one_shot_sends_provision(chronos):
     prov, fake = chronos
-    prov._arm_one_shot({"id": "j1", "next_run_at": "2026-06-18T12:00:00+00:00"})
+    prov._arm_one_shot({"id": "j1", "next_run_at": FUTURE_A})
 
     assert len(fake.provisions) == 1
     p = fake.provisions[0]
     assert p["job_id"] == "j1"
-    assert p["fire_at"] == "2026-06-18T12:00:00+00:00"
-    assert p["dedup_key"] == "j1:2026-06-18T12:00:00+00:00"
+    assert p["fire_at"] == FUTURE_A
+    assert p["dedup_key"] == "j1:" + FUTURE_A
     assert p["agent_callback_url"] == "https://agent.example/"
 
 
 def test_register_job_arms_only_the_created_job(chronos):
     prov, fake = chronos
-    job = {"id": "created", "next_run_at": "2026-06-18T12:00:00+00:00"}
+    job = {"id": "created", "next_run_at": FUTURE_A}
 
     prov.register_job(job)
 
@@ -94,7 +113,7 @@ def test_register_job_propagates_provision_failure(chronos):
 
     with pytest.raises(RuntimeError, match="provision rejected"):
         prov.register_job(
-            {"id": "created", "next_run_at": "2026-06-18T12:00:00+00:00"}
+            {"id": "created", "next_run_at": FUTURE_A}
         )
 
 
@@ -120,8 +139,8 @@ def test_identity_rejection_hands_fires_to_the_builtin_ticker(temp_home, chronos
 
     fake.provision = rejected
     jobs = [
-        {"id": "a", "enabled": True, "next_run_at": "2026-06-18T12:00:00+00:00", "state": "scheduled"},
-        {"id": "b", "enabled": True, "next_run_at": "2026-06-18T12:05:00+00:00", "state": "scheduled"},
+        {"id": "a", "enabled": True, "next_run_at": FUTURE_A, "state": "scheduled"},
+        {"id": "b", "enabled": True, "next_run_at": FUTURE_B, "state": "scheduled"},
     ]
     monkeypatch.setattr("cron.jobs.load_jobs", lambda: jobs)
     monkeypatch.setattr("cron.jobs.get_job", lambda jid: next(j for j in jobs if j["id"] == jid))
@@ -140,7 +159,7 @@ def test_identity_rejection_hands_fires_to_the_builtin_ticker(temp_home, chronos
     assert len(identity_msgs) == 1 and "built-in cron ticker" in identity_msgs[0]
 
     # Job creation and re-arms no longer reach NAS (and no longer fail the create).
-    prov.register_job({"id": "c", "next_run_at": "2026-06-18T12:10:00+00:00"})
+    prov.register_job({"id": "c", "next_run_at": FUTURE_C})
     prov.on_jobs_changed()
     assert calls == ["a"]
 
@@ -157,7 +176,7 @@ def test_transient_provision_failure_does_not_degrade(temp_home, chronos, monkey
         raise NasCronClientError("POST /api/agent-cron/provision returned 502: upstream", status=502)
 
     fake.provision = flaky
-    jobs = [{"id": "a", "enabled": True, "next_run_at": "2026-06-18T12:00:00+00:00", "state": "scheduled"}]
+    jobs = [{"id": "a", "enabled": True, "next_run_at": FUTURE_A, "state": "scheduled"}]
     monkeypatch.setattr("cron.jobs.load_jobs", lambda: jobs)
     monkeypatch.setattr("cron.jobs.get_job", lambda jid: jobs[0])
 
@@ -169,8 +188,8 @@ def test_transient_provision_failure_does_not_degrade(temp_home, chronos, monkey
 def test_reconcile_arms_all_enabled(temp_home, chronos, monkeypatch):
     prov, fake = chronos
     jobs = [
-        {"id": "a", "enabled": True, "next_run_at": "2026-06-18T12:00:00+00:00", "state": "scheduled"},
-        {"id": "b", "enabled": True, "next_run_at": "2026-06-18T12:05:00+00:00", "state": "scheduled"},
+        {"id": "a", "enabled": True, "next_run_at": FUTURE_A, "state": "scheduled"},
+        {"id": "b", "enabled": True, "next_run_at": FUTURE_B, "state": "scheduled"},
     ]
     monkeypatch.setattr("cron.jobs.load_jobs", lambda: jobs)
     monkeypatch.setattr("cron.jobs.get_job", lambda jid: next(j for j in jobs if j["id"] == jid))
@@ -178,6 +197,31 @@ def test_reconcile_arms_all_enabled(temp_home, chronos, monkeypatch):
     prov.reconcile()
     assert {p["job_id"] for p in fake.provisions} == {"a", "b"}
     assert fake.cancels == []
+
+
+def test_reconcile_advances_a_missed_recurring_job_before_arming(temp_home, chronos):
+    """Skipping a stale fire must not permanently unschedule the recurring job."""
+    from datetime import datetime, timedelta, timezone
+
+    from cron.jobs import create_job, get_job, load_jobs, save_jobs
+
+    prov, fake = chronos
+    job = create_job(prompt="Recurring check", schedule="every 8h")
+    jobs = load_jobs()
+    jobs[0]["next_run_at"] = (
+        datetime.now(timezone.utc) - timedelta(hours=3)
+    ).isoformat()
+    save_jobs(jobs)
+
+    before = datetime.now(timezone.utc)
+    prov.reconcile()
+
+    assert len(fake.provisions) == 1
+    fire_at = fake.provisions[0]["fire_at"]
+    assert datetime.fromisoformat(fire_at) > before
+    stored = get_job(job["id"])
+    assert stored is not None
+    assert stored["next_run_at"] == fire_at
 
 
 # -- fire_due re-arm ----------------------------------------------------------
@@ -195,11 +239,11 @@ def test_fire_due_rearms_next_oneshot(chronos, monkeypatch):
         lambda self, job, **kw: True,
     )
     monkeypatch.setattr("cron.jobs.get_job",
-                        lambda jid: {"id": jid, "enabled": True, "next_run_at": "2026-06-18T12:05:00+00:00"})
+                        lambda jid: {"id": jid, "enabled": True, "next_run_at": FUTURE_B})
 
     assert prov.fire_due("j1") is True
     assert [p["job_id"] for p in fake.provisions] == ["j1"]
-    assert fake.provisions[0]["fire_at"] == "2026-06-18T12:05:00+00:00"
+    assert fake.provisions[0]["fire_at"] == FUTURE_B
 
 
 def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch, tmp_path):
@@ -212,7 +256,7 @@ def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch, tmp_pat
     persisted = {
         "id": "j1",
         "enabled": True,
-        "next_run_at": "2026-06-18T12:05:00+00:00",
+        "next_run_at": FUTURE_B,
     }
 
     monkeypatch.setattr("cron.jobs.claim_job_for_fire", lambda jid, **kw: claimed)
@@ -297,3 +341,69 @@ def test_fire_claimed_no_rearm_when_job_gone(chronos, monkeypatch):
 
     assert prov.fire_claimed({"id": "j1"}) is True
     assert fake.provisions == []
+# -- past fire_at must never be armed (re-fire-on-restart guard) --------------
+
+
+def test_arm_one_shot_refuses_a_fire_at_in_the_past(chronos):
+    """A next_run_at already in the PAST must not be armed.
+
+    ROOT CAUSE (2026-08-11): reconcile() runs on gateway boot and arms every
+    enabled job at its stored next_run_at, with no check that the time is still
+    in the future. A job whose next_run_at had already passed got armed with a
+    past fire_at, and the external scheduler fired it IMMEDIATELY -- so a
+    scheduled job re-ran minutes after a restart. Observed live: a `0 */8` job
+    delivered 7 messages in ~17h, 3 of them re-fires whose own "in the last
+    0.1h/0.4h" delta proved they followed a real run.
+
+    A past one-shot is a MISSED fire, not a due one. The next legitimate fire is
+    already represented by the schedule; arming the stale one only duplicates it.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    prov, fake = chronos
+    past = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    prov._arm_one_shot({"id": "stale", "next_run_at": past})
+
+    assert fake.provisions == [], (
+        "armed a one-shot whose fire_at is in the past -- the external scheduler "
+        "fires those immediately, which is the re-fire-on-restart bug"
+    )
+    assert "stale" not in prov._armed
+
+
+def test_arm_one_shot_still_arms_a_future_fire_at(chronos):
+    """The guard must not break normal arming."""
+    from datetime import datetime, timedelta, timezone
+
+    prov, fake = chronos
+    future = (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat()
+    prov._arm_one_shot({"id": "ok", "next_run_at": future})
+
+    assert [p["job_id"] for p in fake.provisions] == ["ok"]
+    assert prov._armed["ok"] == future
+
+
+def test_arm_one_shot_arms_a_fire_at_inside_the_grace_window(chronos):
+    """A fire_at a few seconds in the past is CLOCK SKEW, not a missed fire.
+
+    Arming must stay tolerant there, or a job whose fire_at passed while the
+    provision request was in flight would be silently dropped.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    prov, fake = chronos
+    just_now = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    prov._arm_one_shot({"id": "skew", "next_run_at": just_now})
+
+    assert [p["job_id"] for p in fake.provisions] == ["skew"]
+
+
+def test_arm_one_shot_tolerates_an_unparseable_fire_at(chronos):
+    """A malformed timestamp must ARM (fail-open), never crash reconcile.
+
+    Dropping it would silently unschedule the job; reconcile is the only thing
+    that re-arms, so a raised exception there stops every later job in the loop.
+    """
+    prov, fake = chronos
+    prov._arm_one_shot({"id": "weird", "next_run_at": "not-a-timestamp"})
+    assert [p["job_id"] for p in fake.provisions] == ["weird"]

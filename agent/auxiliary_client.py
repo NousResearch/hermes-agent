@@ -7145,18 +7145,40 @@ def _create_with_progress_once(
         return chunks
     from agent.auxiliary_stream_watchdog import chat_stream_windows
     return _aggregate_chat_stream(
-        chunks, model=model, total_ceiling=total_ceiling, no_progress=chat_stream_windows(client, kwargs, task))
+        chunks, model=model, total_ceiling=total_ceiling, no_progress=chat_stream_windows(client, kwargs, task),
+        output_bound_chars=_summary_runaway_output_bound_chars(task))
+
+
+def _summary_runaway_output_bound_chars(task: Optional[str]) -> Optional[int]:
+    """Generous output bound (chars) for the compression summary stream; None for other tasks.
+
+    The summary call deliberately carries NO max_tokens wire cap — Anthropic/NIM forwards it and a
+    hard cap truncates summaries (thinking models burn it on reasoning); see the rule comment at
+    context_compressor.py's _SUMMARY_INPUT_MAX_CHARS. A repetition-looped summary therefore streams
+    until the compression ceiling. Bound the STREAM instead (never the wire request): several times
+    _SUMMARY_TOKENS_CEILING tokens at ~4 chars/token. Exceeding it raises TimeoutError phrased
+    "timed out" so _is_timeout_error matches and the attempt routes through the existing
+    failed-attempt fallback + cooldown machinery (which then retries per the re-entry rules).
+    """
+    if task != "compression":
+        return None
+    from agent.context_compressor import _SUMMARY_TOKENS_CEILING
+
+    return 4 * _SUMMARY_TOKENS_CEILING * 4
 
 
 def _aggregate_chat_stream(
     chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None,
     no_progress: Optional[tuple[float, Optional[float]]] = None,
+    output_bound_chars: Optional[int] = None,
 ) -> Any:
     """Consume a chunk stream into a complete response; TimeoutError (phrased "timed out" so
-    ``_is_timeout_error`` matches) past *total_ceiling* or the *no_progress* windows (#100501)."""
+    ``_is_timeout_error`` matches) past *total_ceiling*, the *no_progress* windows (#100501) or
+    *output_bound_chars*."""
     from agent.auxiliary_stream_watchdog import _close_chunk_stream, consume_chat_stream
     acc = _ChatStreamAccumulator(
-        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline)
+        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline,
+        output_bound_chars=output_bound_chars)
     try:
         consume_chat_stream(chunks, acc, no_progress)
     finally:
@@ -7172,7 +7194,8 @@ class _ChatStreamAccumulator:
     """Shared per-chunk accumulation so sync and async aggregation cannot drift."""
 
     def __init__(self, model: str = "", total_ceiling: Optional[float] = None,
-                 host_deadline: float | Callable[[], float | None] | None = None):
+                 host_deadline: float | Callable[[], float | None] | None = None,
+                 output_bound_chars: Optional[int] = None):
         self._started = time.monotonic()
         # llama-server prompt reading doesn't count toward the ceiling (``local_prompt_progress``).
         self._prompt_reading = PromptReadingClock(self._started)
@@ -7183,6 +7206,12 @@ class _ChatStreamAccumulator:
         # host deadline, and the host deadline is absolute, so it is unaffected by however long dispatch and
         # TTFT took before this accumulator was constructed. See #99692.
         self._host_deadline = host_deadline
+        # Runaway-output bound (chars) for the compression summary stream ONLY: the summary call
+        # carries no max_tokens wire cap by design, so a repetition loop would otherwise stream
+        # until the compression ceiling. Phrased "timed out" so _is_timeout_error classifies it as
+        # a failed attempt (fallback + cooldown machinery, then retry per the re-entry rules).
+        self._output_bound_chars = output_bound_chars
+        self._content_chars = 0
         self.content_parts: list[str] = []
         self.reasoning_parts: list[str] = []
         self.reasoning_details: list[Any] = []
@@ -7275,6 +7304,7 @@ class _ChatStreamAccumulator:
         piece = flatten_message_text(getattr(delta, "content", None), sep="")
         if piece:
             self.content_parts.append(piece)
+            self._content_chars += len(piece)
             made_progress = True
         reasoning_piece = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
         if reasoning_piece is None and isinstance(getattr(delta, "model_extra", None), dict):
@@ -7282,12 +7312,21 @@ class _ChatStreamAccumulator:
         reasoning_piece = flatten_message_text(reasoning_piece, sep="")
         if reasoning_piece:
             self.reasoning_parts.append(reasoning_piece)
+            self._content_chars += len(reasoning_piece)
             made_progress = True
         # Evaluate both unconditionally: they accumulate state, not just progress.
         made_progress |= self._feed_reasoning_details(delta)
         made_progress |= self._feed_tool_calls(delta)
         if made_progress:
             _notify_aux_progress()
+        if (self._output_bound_chars is not None and self._content_chars
+                > self._output_bound_chars):
+            raise TimeoutError(
+                "Auxiliary streamed call timed out on runaway output: the stream produced "
+                f"{self._content_chars:,} chars, past the {self._output_bound_chars:,}-char "
+                "runaway bound (the model is repeating itself; the summary call carries no "
+                "max_tokens wire cap by design, so the STREAM is bounded instead)"
+            )
         return made_progress
 
     def finish(self) -> Any:
@@ -7308,11 +7347,13 @@ class _ChatStreamAccumulator:
 
 
 async def _aggregate_chat_stream_async(
-    chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None
+    chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None,
+    output_bound_chars: Optional[int] = None,
 ) -> Any:
     """Async mirror of :func:`_aggregate_chat_stream` (AsyncOpenAI streams need ``async for``)."""
     acc = _ChatStreamAccumulator(
-        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline)
+        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline,
+        output_bound_chars=output_bound_chars)
     try:
         async for chunk in chunks:
             acc.feed(chunk)
@@ -7331,7 +7372,9 @@ async def _acreate_with_stream(client: Any, kwargs: dict[str, Any], task: Option
     chunks = await client.chat.completions.create(**stream_kwargs)
     if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True
         return chunks
-    return await _aggregate_chat_stream_async(chunks, model=model, total_ceiling=total_ceiling)
+    return await _aggregate_chat_stream_async(
+        chunks, model=model, total_ceiling=total_ceiling,
+        output_bound_chars=_summary_runaway_output_bound_chars(task))
 
 
 def _async_client_streams_internally(client: Any) -> bool:
@@ -7371,7 +7414,9 @@ async def _acreate_with_progress(
     if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True
         _notify_aux_provider_response()
         return chunks
-    return await _aggregate_chat_stream_async(chunks, model=model, total_ceiling=total_ceiling)
+    return await _aggregate_chat_stream_async(
+        chunks, model=model, total_ceiling=total_ceiling,
+        output_bound_chars=_summary_runaway_output_bound_chars(task))
 
 
 # Shared request head + recovery ladder for call_llm / async_call_llm: the entry points differ

@@ -923,6 +923,24 @@ def request_exceeds_model_window(agent: Any, request_tokens: Any) -> Optional[bo
     return request_tokens > window
 
 
+def wire_request_cannot_fit(agent: Any, messages: Any, tools: Any = None) -> Optional[bool]:
+    """True when the ASSEMBLED wire payload (wire-aware estimate incl. tool schemas and wire
+    overhead) plus the output reservation exceeds the model window — the provider would 400
+    non-retryably ("prompt leaves no room to answer"). ``None`` when the window is unknown.
+    Unlike the threshold estimate (which under-counts the wire and let a doomed request through),
+    this measures the payload as it will actually be sent, so cooldown/retry decisions and the
+    deterministic fallback stop under-counting."""
+    window = getattr(getattr(agent, "context_compressor", None), "context_length", None)
+    if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
+        return None
+    from agent.chat_completion_helpers import estimate_request_context_tokens
+    from agent.context_compressor import ContextCompressor
+
+    budget = ContextCompressor._effective_input_window(window, getattr(agent, "max_tokens", None))
+    payload = {"messages": messages, "tools": tools} if tools else messages
+    return estimate_request_context_tokens(payload) > budget
+
+
 def _retry_compression_on_fallback_chain(
     *, worker: Callable[[CompressionCommitFence], tuple[list, str]], messages: list,
     system_prompt_fallback: Any, idle_timeout_seconds: float, total_ceiling_seconds: float,

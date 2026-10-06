@@ -16,6 +16,7 @@ import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
+import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { displayPath, pathLeaf } from '@/lib/display-path'
 import { statusBarGatewayHealth } from '@/lib/gateway-health-pill'
 import {
@@ -83,6 +84,7 @@ const EMPTY_USAGE: UsageStats = { calls: 0, input: 0, output: 0, total: 0 }
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
+  changeSessionCwd: (cwd: string, sessionId?: string) => Promise<void>
   chatOpen: boolean
   commandCenterOpen: boolean
   extraLeftItems: readonly StatusbarItem[]
@@ -99,6 +101,7 @@ interface StatusbarItemsOptions {
 
 export function useStatusbarItems({
   agentsOpen,
+  changeSessionCwd,
   chatOpen,
   commandCenterOpen,
   extraLeftItems,
@@ -115,6 +118,7 @@ export function useStatusbarItems({
   const copy = t.shell.statusbar
   const freeTierCopy = t.freeTier
   const fileMenu = t.fileMenu
+  const changeCwdLabel = t.rightSidebar.changeCwdTitle
   const primaryActiveSessionId = useStore($activeSessionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   // What the button paints and flips is whether the terminal is ON SCREEN —
@@ -286,6 +290,27 @@ export function useStatusbarItems({
   // the tree changes; null (no named project) falls back to the cwd leaf below.
   const projectTree = useStore($projectTree)
   const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
+
+  // Re-home the FOCUSED chat's workspace: the recovery path for a chat that
+  // started in the wrong folder, Bot Chats included (they never reach the
+  // sidebar's move-to-project). The picker is remote-aware, so a remote
+  // gateway browses its own filesystem. A cold tile has no runtime to re-home,
+  // and a tile on another gateway would be browsed on the wrong machine.
+  const workspaceTargetId = primaryFocused ? undefined : focusedRuntimeId || null
+  const offerChangeWorkspace = workspaceTargetId !== null && !focusedRowConnectionId
+
+  const changeWorkspace = useCallback(async () => {
+    const [dir] = await selectDesktopPaths({
+      defaultPath: currentCwd,
+      directories: true,
+      multiple: false,
+      title: changeCwdLabel
+    })
+
+    if (dir) {
+      await changeSessionCwd(dir, workspaceTargetId ?? undefined)
+    }
+  }, [changeSessionCwd, currentCwd, changeCwdLabel, workspaceTargetId])
 
   const sessionStartedAt = resolveSessionTimerSince({
     focusedStoredSessionId,
@@ -570,6 +595,14 @@ export function useStatusbarItems({
         menuItems: currentCwd
           ? [
               {
+                disabled: busy,
+                hidden: !offerChangeWorkspace,
+                id: 'change-workspace-path',
+                label: changeCwdLabel,
+                onSelect: () => void changeWorkspace(),
+                title: displayPath(currentCwd)
+              },
+              {
                 id: 'copy-workspace-path',
                 label: fileMenu.copyPath,
                 onSelect: () => void copyFilePath(currentCwd),
@@ -647,6 +680,9 @@ export function useStatusbarItems({
     [
       agentsOpen,
       botsShowing,
+      busy,
+      changeCwdLabel,
+      changeWorkspace,
       commandCenterOpen,
       copy,
       currentCwd,
@@ -655,6 +691,7 @@ export function useStatusbarItems({
       fileMenu.copyPath,
       fileMenu.revealFileManager,
       fileMenu.revealInSidebar,
+      offerChangeWorkspace,
       offerLocalReveal,
       freeTier?.available,
       freeTier?.model,

@@ -92,6 +92,7 @@ export const StatusbarSurface = memo(function StatusbarSurface({
 
   const { leftStatusbarItems, statusbarItems } = useStatusbarItems({
     agentsOpen,
+    changeSessionCwd: actions.changeSessionCwd,
     chatOpen,
     commandCenterOpen,
     extraLeftItems,

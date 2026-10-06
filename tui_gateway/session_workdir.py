@@ -47,17 +47,9 @@ def _completion_cwd(params: dict | None = None) -> str:
     # env var; the dashboard's in-memory gateway does NOT inherit the PTY child's bridged TERMINAL_CWD, so a configured
     # terminal.cwd is read directly.
     named_ssh = profile_home is not None and _cwd_is_remote(profile_home)
-    # A NAMED profile with no configured workspace (placeholder/unset terminal.cwd) never inherits
-    # the LAUNCH profile's cwd (#87584): the Desktop stamps the app-global workspace into every
-    # pooled backend's TERMINAL_CWD, and _launch_configured_cwd()/that env var hold the launch
-    # profile's value — a session for another profile would land in the wrong workspace. Its own
-    # home is the same default its standalone gateway would use (placeholder → $HOME).
-    named_local_default = (
-        str(profile_home) if profile_home is not None and not named_ssh and not client_cwd and not session_cwd else None
-    )
-    raw = str(client_cwd or session_cwd or _profile_workspace_cwd(profile_home)
+    raw = str(client_cwd or session_cwd or _profile_default_cwd(profile_home)
               # A named ssh profile never inherits the LAUNCH profile's host cwd: its remote default is ~.
-              or ("~" if named_ssh else "") or named_local_default or _launch_configured_cwd()
+              or ("~" if named_ssh else "") or _launch_configured_cwd()
               or os.environ.get("TERMINAL_CWD") or _sandbox_workspace_cwd(None) or os.getcwd())
     # An ssh cwd lives on the remote host: host expansion/isdir cannot vouch for it, and ``~`` names the REMOTE
     # user's home, never this host's. The launch profile keeps main's host fast path for everything else.
@@ -165,6 +157,17 @@ def _profile_workspace_cwd(profile_home) -> str | None:
             or (_sandbox_workspace_cwd(profile_home) if profile_home else None))
 
 
+def _profile_default_cwd(profile_home) -> str | None:
+    """Where a session for ``profile_home`` lands when nothing else is known: its configured workspace, else a NAMED
+    local profile's own home. Never the LAUNCH profile's ``terminal.cwd``/``TERMINAL_CWD`` (#87584): those name
+    another profile's workspace (``/opt/data`` in the Docker image). Its home is what its standalone gateway uses."""
+    if workspace := _profile_workspace_cwd(profile_home):
+        return workspace
+    if profile_home is not None and _bound_terminal_backend(profile_home) == "local":
+        return str(profile_home)
+    return None
+
+
 def _workspace_cwd(profile_home, raw: str) -> str:
     """A picked workspace for a session bound to ``profile_home``: an ssh dir raw, else an existing host dir.
     Raises ValueError when a host dir does not exist."""
@@ -258,11 +261,34 @@ def _is_hermes_owned_cwd(cwd: str, profile_home) -> bool:
     return any(path == root or root in path.parents for root in roots) or _is_install_tree(path)
 
 
+def _is_other_profiles_cwd(cwd: str, profile_home) -> bool:
+    """Whether a NAMED local profile's stored cwd is a directory that belongs to another profile or to Hermes itself:
+    the root (``/opt/data``), its subprocess home (``/opt/data/home``), a sibling profile's tree, or the install tree.
+    Those are launch-profile workspaces that leaked into this profile's row before #87584, never a folder chosen for
+    it. Other folders under the root stay: a user may keep a workspace there."""
+    if profile_home is None or _cwd_is_remote(profile_home) or not os.path.isabs(cwd):
+        return False
+    from agent.runtime_cwd import _is_install_tree
+    from hermes_constants import get_default_hermes_root
+
+    try:
+        path, own = Path(cwd).resolve(), Path(profile_home).expanduser().resolve()
+        root = get_default_hermes_root(home=own).resolve()
+    except (OSError, RuntimeError):
+        return False
+    if path == own or own in path.parents:
+        return False
+    return path in (root, root / "home") or (root / "profiles") in path.parents or _is_install_tree(path)
+
+
 def _resumable_stored_cwd(cwd, profile_home) -> str:
     """A session row's stored cwd as a resume may adopt it: empty when an ssh session's row holds a path in Hermes's
-    own host tree (a host launch directory, never a remote workspace)."""
+    own host tree (a host launch directory, never a remote workspace), or a named profile's row holds another
+    profile's (the resume then lands in :func:`_profile_default_cwd` and re-persists it)."""
     cwd = str(cwd or "")
     if cwd and _cwd_is_remote(profile_home) and _is_hermes_owned_cwd(cwd, profile_home):
+        return ""
+    if cwd and _is_other_profiles_cwd(cwd, profile_home):
         return ""
     return cwd
 

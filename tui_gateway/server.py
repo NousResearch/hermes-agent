@@ -2743,10 +2743,11 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
                         _persist_session_cwd_and_schedule_git_meta(_sessions[sid], row["cwd"], db=db)
                     except Exception:
                         logger.debug("failed to enrich resumed session git metadata", exc_info=True)
-            elif not (row and row.get("cwd")) and hasattr(db, "update_session_cwd") and not _is_remote_launch_cwd(
-                _sessions.get(sid)
-            ):
-                # A stored cwd that was set aside (Hermes's own host tree) stays as stored: only an empty row is filled.
+            elif (not (row and row.get("cwd")) or _is_other_profiles_cwd(row["cwd"], profile_home)) and hasattr(
+                db, "update_session_cwd"
+            ) and not _is_remote_launch_cwd(_sessions.get(sid)):
+                # A stored cwd that was set aside (Hermes's own host tree) stays as stored: only an empty row is filled,
+                # or a named profile's row holding another profile's dir (#87584), repaired to this session's own.
                 try:
                     _persist_session_cwd_and_schedule_git_meta(_sessions[sid], _sessions[sid]["cwd"], db=db)
                 except Exception:

@@ -14,7 +14,6 @@ export interface NativeProcess {
   parentPid: number
   executable: string
   command: string
-  ownership?: 'child' | 'host-ledger'
   sourceRoot?: string
   // The app binds its backend to a tree by environment, not only by argv: the
   // installation root leads PYTHONPATH and VIRTUAL_ENV names the venv. Only the
@@ -22,6 +21,11 @@ export interface NativeProcess {
   pythonPath?: string
   virtualEnv?: string
   cwd?: string
+}
+
+/** The identified listener, with how it was tied to this app (ancestry or this home's ledger). */
+export interface BackendProcess extends NativeProcess {
+  ownership: 'child' | 'host-ledger'
 }
 
 /** What the caller already knows about the app that owns this listener. */
@@ -178,7 +182,7 @@ function processStartTime(pid: number): number | null {
 }
 
 /** Identify the actual listener, not a healthy helper or a command recorded before spawn. */
-export function localBackendProcess(port: number, electronPid: number, hermesHome?: string): NativeProcess {
+export function localBackendProcess(port: number, electronPid: number, hermesHome?: string): BackendProcess {
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     throw new Error('Invalid backend port')
   }
@@ -235,8 +239,7 @@ export function localBackendProcess(port: number, electronPid: number, hermesHom
     throw new Error(`Expected one Desktop-owned or registered host backend listener on port ${port}; found ${matches.length}`)
   }
 
-  const backend = matches[0]
-  backend.ownership = children.includes(backend) ? 'child' : 'host-ledger'
+  const backend: BackendProcess = { ...matches[0], ownership: children.includes(matches[0]) ? 'child' : 'host-ledger' }
 
   if (process.platform === 'linux') {
     backend.executable = fs.readlinkSync(`/proc/${backend.pid}/exe`)
@@ -265,16 +268,16 @@ export function localBackendProcess(port: number, electronPid: number, hermesHom
 // host backend is not tied to this app by ancestry, so the app's report says nothing
 // about it; it must carry its own argv/env/cwd evidence. Requiring the process
 // evidence to be absent keeps this from loosening a platform that can read one.
-function appVouchesForBackend(backend: NativeProcess, evidence: OriginEvidence,
+function appVouchesForBackend(backend: BackendProcess, evidence: OriginEvidence,
   sameTree: (value?: string) => boolean): boolean {
   const processEvidenceUnreadable = backend.cwd === undefined
     && backend.pythonPath === undefined && backend.virtualEnv === undefined
 
-  return processEvidenceUnreadable && backend.ownership !== 'host-ledger'
+  return processEvidenceUnreadable && backend.ownership === 'child'
     && evidence.appReportedRoot !== undefined && sameTree(evidence.appReportedRoot)
 }
 
-export function assertBackendOrigin(backend: NativeProcess, root: string, origin: 'source' | 'bundled',
+export function assertBackendOrigin(backend: BackendProcess, root: string, origin: 'source' | 'bundled',
   evidence: OriginEvidence = {}): void {
   if (origin === 'bundled') {
     if (path.basename(root) !== 'agent-payload' || !within(root, backend.executable)) {

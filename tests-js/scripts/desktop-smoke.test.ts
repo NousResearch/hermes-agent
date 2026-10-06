@@ -230,7 +230,7 @@ test('a backend bound to the tree by environment needs no root in argv', (): voi
     const interpreter = path.join(home, 'python3.11')
     fs.symlinkSync(resolvedPython, interpreter)
 
-    const base = { pid: process.pid, parentPid: 1, executable: interpreter, cwd: home,
+    const base = { pid: process.pid, parentPid: 1, executable: interpreter, cwd: home, ownership: 'child' as const,
       command: `"${resolvedPython}" "-m" "hermes_cli.main" serve --host 127.0.0.1 --port 0` }
 
     // Control: with no environment evidence this is still a different tree.
@@ -268,6 +268,7 @@ test('a platform that cannot read the backend environment proves ownership by th
       parentPid: 1,
       executable: path.join(home, 'python.exe'),
       command: `"${path.join(home, 'python.exe')}" "-m" "hermes_cli.main" serve --host 127.0.0.1 --port 0`,
+      ownership: 'child' as const,
     }
 
     // Control row: with nothing readable and no report from the app, this is still a
@@ -295,6 +296,11 @@ test('a platform that cannot read the backend environment proves ownership by th
     expect((): void => {
       assertBackendOrigin({ ...backend, ownership: 'child' }, root, 'source', { appReportedRoot: root })
     }).not.toThrow()
+    // Ancestry is the waiver's premise, so it must be stated, not inferred from an
+    // absent field: a backend whose ownership was never established gets no waiver.
+    expect((): void => {
+      assertBackendOrigin({ ...backend, ownership: undefined } as unknown as typeof backend, root, 'source', { appReportedRoot: root })
+    }).toThrow('source tree')
   } finally { fs.rmSync(home, { recursive: true, force: true }) }
 })
 
@@ -307,7 +313,8 @@ test('OLD update-window source provenance carries its verified app identity to t
     fs.mkdirSync(root, { recursive: true })
     fs.mkdirSync(other, { recursive: true })
 
-    const backend = { pid: 2, parentPid: 1, executable: path.join(home, 'python.exe'),
+    // As `localBackendProcess` reports a listener that descends from the app.
+    const backend = { pid: 2, parentPid: 1, executable: path.join(home, 'python.exe'), ownership: 'child',
       command: `"${path.join(home, 'python.exe')}" -m hermes_cli.main dashboard --port 0` }
 
     expect((): void => {
@@ -384,7 +391,7 @@ test('a module launch proves its tree without leaning on the app-owned cwd', ():
     const python = path.join(root, 'venv', 'bin', 'python')
 
     const launched = (executable: string, command: string): Parameters<typeof assertBackendOrigin>[0] =>
-      ({ pid: 1, parentPid: 1, executable, command, cwd: path.join(os.tmpdir(), 'app-owned-cwd') })
+      ({ pid: 1, parentPid: 1, executable, command, cwd: path.join(os.tmpdir(), 'app-owned-cwd'), ownership: 'child' })
 
     const venv = launched(python, `"${python}" "-m" "hermes_cli.main" "serve" --host 127.0.0.1 --port 0`)
     // The app owns the backend's cwd; the installation's own venv interpreter is the evidence.

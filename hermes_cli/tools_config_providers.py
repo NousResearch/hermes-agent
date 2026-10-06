@@ -718,6 +718,11 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
 
     if provider.get("web_backend"):
         web_cfg = _select_into(config, "web", "backend", provider["web_backend"], managed_feature)
+        if managed_feature:
+            # A whole-toolset managed pick governs both capabilities: per-capability pins resolve FIRST,
+            # so a leftover one would keep outranking the "nous" selection just written.
+            web_cfg.pop("search_backend", None)
+            web_cfg.pop("extract_backend", None)
         tier = provider.get("web_tier")
         tiers = web_cfg.setdefault("provider_tier", {}) if tier else web_cfg.get("provider_tier")
         if isinstance(tiers, dict):

@@ -99,6 +99,19 @@ function providerStatus(provider: ToolProvider, envState: Record<string, boolean
   return providerConfigured(provider, envState) ? 'ready' : 'needs_keys'
 }
 
+/**
+ * Whether a web provider row serves a capability right now. The managed
+ * "Nous Subscription" row and the BYOK Firecrawl rows resolve to the same
+ * backend name, so the server's `*_via_nous` flag decides which one is lit.
+ */
+function capabilityServedBy(provider: ToolProvider, backend: null | string | undefined, viaNous?: boolean): boolean {
+  if (provider.managed_nous_feature) {
+    return Boolean(viaNous)
+  }
+
+  return Boolean(provider.web_backend && backend === provider.web_backend && !viaNous)
+}
+
 interface EnvVarFieldProps {
   envVar: ToolEnvVar
   isSet: boolean
@@ -725,19 +738,24 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
     setSelecting(provider.name)
 
     try {
-      await selectToolsetProvider(toolset, provider.name, capability, profile)
-      // Mirror the backend write locally so the Search:/Extract: badges track
-      // the new per-capability backend without a refetch.
-      setCfg(current =>
-        current
-          ? {
-              ...current,
-              ...(capability === 'search'
-                ? { active_search_backend: provider.web_backend ?? provider.name }
-                : { active_extract_backend: provider.web_backend ?? provider.name })
-            }
-          : current
-      )
+      const result = await selectToolsetProvider(toolset, provider.name, capability, profile)
+
+      if (result.needs_nous_auth) {
+        notify({
+          kind: 'warning',
+          title: copy.nousAuthNeededTitle,
+          message: copy.nousAuthNeededMessage(provider.name),
+          action: { label: copy.nousAuthSignIn, onClick: () => void signInToNousPortal() }
+        })
+        await refresh()
+
+        return
+      }
+
+      // Refetch rather than mirror: whether the capability now rides the Nous
+      // Tool Gateway or the user's own key is resolved server-side (the
+      // managed and BYOK Firecrawl rows share one web_backend).
+      await refresh()
       notify({
         kind: 'success',
         title: copy.selectedTitle,
@@ -781,8 +799,16 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
         // (web.search_backend / web.extract_backend) — show which backend
         // each capability resolves to right now.
         <div className="flex flex-wrap items-center gap-2 px-1">
-          <Pill>{copy.webSearchActive(cfg.active_search_backend || copy.webCapabilityUnset)}</Pill>
-          <Pill>{copy.webExtractActive(cfg.active_extract_backend || copy.webCapabilityUnset)}</Pill>
+          <Pill>
+            {copy.webSearchActive(
+              cfg.search_via_nous ? copy.webViaNous : cfg.active_search_backend || copy.webCapabilityUnset
+            )}
+          </Pill>
+          <Pill>
+            {copy.webExtractActive(
+              cfg.extract_via_nous ? copy.webViaNous : cfg.active_extract_backend || copy.webCapabilityUnset
+            )}
+          </Pill>
         </div>
       )}
       {providers.map(provider => {
@@ -790,8 +816,8 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
         const isBackendActive = provider.is_active || cfg?.active_provider === provider.name
         const status = providerStatus(provider, envState)
         const webCaps = toolset === 'web' ? (provider.capabilities ?? []) : []
-        const isSearchBackend = Boolean(provider.web_backend && cfg.active_search_backend === provider.web_backend)
-        const isExtractBackend = Boolean(provider.web_backend && cfg.active_extract_backend === provider.web_backend)
+        const isSearchBackend = capabilityServedBy(provider, cfg.active_search_backend, cfg.search_via_nous)
+        const isExtractBackend = capabilityServedBy(provider, cfg.active_extract_backend, cfg.extract_via_nous)
 
         return (
           <div className="overflow-hidden rounded-xl bg-background/60" key={provider.name}>
@@ -883,7 +909,9 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
                   </div>
                 )}
                 {provider.requires_nous_auth && (
-                  <p className="text-[0.72rem] text-muted-foreground">{copy.nousIncluded}</p>
+                  <p className="text-[0.72rem] text-muted-foreground">
+                    {status === 'needs_auth' ? copy.nousIncluded : copy.nousManagedHint}
+                  </p>
                 )}
                 {provider.env_vars.length === 0 ? (
                   <p className="text-[0.72rem] text-muted-foreground">{copy.noApiKeyRequired}</p>

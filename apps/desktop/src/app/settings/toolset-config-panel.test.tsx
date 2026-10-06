@@ -1,11 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { MemoryRouter } from 'react-router'
 import type * as ReactRouterDom from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ToolsetConfig } from '@/types/hermes'
+import type { ToolsetConfig, WebCapability } from '@/types/hermes'
 
 // Collect the component graph before the behavioral test deadline starts.
 import { ToolsetConfigPanel } from './toolset-config-panel'
@@ -910,7 +910,10 @@ describe('ToolsetConfigPanel', () => {
     }
 
     it('hides "Use for Extract" on a search-only provider and wires capability selection', async () => {
-      getToolsetConfig.mockResolvedValue(webConfig())
+      // The panel refetches after a capability pick: second load is the server's truth.
+      getToolsetConfig
+        .mockResolvedValueOnce(webConfig())
+        .mockResolvedValue(webConfig({ active_search_backend: 'firecrawl' }))
       selectToolsetProvider.mockResolvedValue({ ok: true, name: 'web', provider: 'SearXNG', capability: 'search' })
 
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
@@ -926,8 +929,46 @@ describe('ToolsetConfigPanel', () => {
       fireEvent.click(useForSearch)
 
       await waitFor(() => expect(selectToolsetProvider).toHaveBeenCalledWith('web', 'Firecrawl', 'search'))
-      // Badge tracks the local write without a refetch.
       await waitFor(() => expect(screen.getByText('Search: firecrawl')).toBeTruthy())
+    })
+
+    it('lights the Nous row for a gateway-served capability and the BYOK row for the own-key one', async () => {
+      const nous = {
+        name: 'Nous Subscription',
+        badge: 'subscription',
+        tag: 'Managed web search and extract billed to your subscription',
+        env_vars: [],
+        post_setup: null,
+        requires_nous_auth: true,
+        managed_nous_feature: 'web',
+        is_active: false,
+        status: 'ready' as const,
+        web_backend: 'firecrawl',
+        capabilities: ['search', 'extract'] as WebCapability[]
+      }
+
+      // Search through the gateway, extract on the user's own Firecrawl key:
+      // both rows share web_backend 'firecrawl', only the *_via_nous flags tell them apart.
+      getToolsetConfig.mockResolvedValue(
+        webConfig({
+          active_search_backend: 'perplexity',
+          active_extract_backend: 'firecrawl',
+          search_via_nous: true,
+          extract_via_nous: false,
+          providers: [...webConfig().providers, nous]
+        })
+      )
+
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
+
+      expect(await screen.findByText('Search: Nous subscription')).toBeTruthy()
+      expect(screen.getByText('Extract: firecrawl')).toBeTruthy()
+      const nousRow = screen.getByRole('button', { name: /Nous Subscription/ })
+      const byokRow = screen.getByRole('button', { name: /^Firecrawl/ })
+      expect(within(nousRow).getByText('Search backend')).toBeTruthy()
+      expect(within(nousRow).queryByText('Extract backend')).toBeNull()
+      expect(within(byokRow).getByText('Extract backend')).toBeTruthy()
+      expect(within(byokRow).queryByText('Search backend')).toBeNull()
     })
   })
 })

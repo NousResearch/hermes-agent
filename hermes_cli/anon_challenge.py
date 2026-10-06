@@ -39,7 +39,7 @@ import platform
 import sys
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, Optional, TypeVar
 from urllib.parse import urlparse
 
@@ -60,6 +60,9 @@ _POLL_MIN_SECONDS, _POLL_MAX_SECONDS = 1.0, 5.0
 # ``expires_in`` is network input that ends up in timers on two runtimes: keep it finite and sane.
 _EXPIRES_MIN_SECONDS, _EXPIRES_MAX_SECONDS, _EXPIRES_DEFAULT_SECONDS = 30.0, 900.0, 600.0
 _MESSAGE_MAX_CHARS = 300
+# After one attempt ran out of patience, the callers queued behind it fail fast for this long
+# instead of each parking for another full wait (boot fires a burst of token reads).
+_GAVE_UP_COOLDOWN_SECONDS = 30.0
 
 CHALLENGE_COPY = "Nous needs to run a quick check before starting your free session."
 
@@ -192,12 +195,23 @@ def challenge_error(payload: Dict[str, Any], *, portal_base_url: str, anon_token
                                  auth_state=auth_state)
 
 
-# --- Pending challenge: what a status read shows --------------------------------------------------------
+# --- Per-profile state: what a status read shows, and who is working it ---------------------------------
 
-_pending_lock = threading.Lock()
-_pending: Dict[str, Dict[str, Any]] = {}
-# One challenge worked at a time PER PROFILE: a sibling profile's wait must not queue behind it.
-_work_locks: Dict[str, threading.Lock] = {}
+
+@dataclass
+class _ProfileChallenge:
+    """One profile's challenge state, behind ``_state_lock``. ``work_lock`` serialises waits PER
+    PROFILE (a sibling profile's wait must not queue behind it)."""
+    work_lock: threading.Lock = field(default_factory=threading.Lock)
+    pending: Optional[BrowserChallenge] = None
+    deadline: float = 0.0
+    outcome: Optional[str] = None      # how the host's window ended, for ``pending``'s attempt
+    gave_up_until: float = 0.0
+
+
+_state_lock = threading.Lock()
+_profiles: Dict[str, _ProfileChallenge] = {}
+_opened_urls: set[str] = set()      # challenge URLs whose browser tab was opened (one per ticket)
 
 # Set by :func:`background_caller`: this caller has nobody waiting on it.
 _background: contextvars.ContextVar[bool] = contextvars.ContextVar("anon_challenge_background", default=False)
@@ -214,83 +228,90 @@ def background_caller():
         _background.reset(token)
 
 
-def _work_lock() -> threading.Lock:
-    with _pending_lock:
-        return _work_locks.setdefault(_profile_key(), threading.Lock())
+def _profile() -> _ProfileChallenge:
+    """This profile's record. Callers hold ``_state_lock`` for anything but ``work_lock``."""
+    with _state_lock:
+        return _profiles.setdefault(_mint_memo_key(), _ProfileChallenge())
 
 
-def _profile_key() -> str:
-    return _mint_memo_key()
+def _live(record: _ProfileChallenge) -> Optional[BrowserChallenge]:
+    if record.pending and record.deadline <= time.monotonic():
+        record.pending, record.outcome = None, None
+    return record.pending
 
 
 def pending_challenge() -> Optional[Dict[str, Any]]:
     """The challenge this profile is waiting on, for ``free_tier.status`` (a client that connected
     after the event fired still learns it has a window to open). None once cleared or expired, or
     once the host said how its window ended (a window the user closed must not come back)."""
-    with _pending_lock:
-        entry = _pending.get(_profile_key())
-        if entry and entry["deadline"] <= time.monotonic():
-            _pending.pop(_profile_key(), None)
-            entry = None
-        if not entry or entry["outcome"] not in (None, "timeout", "error"):
+    record = _profile()
+    with _state_lock:
+        challenge = _live(record)
+        if challenge is None or record.outcome not in (None, "timeout", "error"):
             return None
-        return {**entry["payload"], "expires_in": math.ceil(entry["deadline"] - time.monotonic())}
+        return {**challenge.as_payload(), "expires_in": math.ceil(record.deadline - time.monotonic())}
 
 
 def _clear_pending() -> None:
-    with _pending_lock:
-        _pending.pop(_profile_key(), None)
+    record = _profile()
+    with _state_lock:
+        record.pending, record.outcome = None, None
 
 
-def _set_pending(challenge: BrowserChallenge, *, new_attempt: bool = False) -> BrowserChallenge:
-    """Record *challenge* as the profile's pending one. A replay of the same ticket keeps the
-    original deadline and (unless *new_attempt*) its host outcome; the attempt number is what
-    lets a fresh foreground attempt reopen a window the user closed."""
-    with _pending_lock:
-        key = _profile_key()
-        previous = _pending.get(key)
-        if previous and previous["payload"]["url"] != challenge.url:
-            previous = None
-        attempt = previous["payload"]["attempt"] + new_attempt if previous else 0
+def _record(challenge: BrowserChallenge, *, new_attempt: bool) -> BrowserChallenge:
+    """Record *challenge* as the profile's pending one. A replay of the same ticket (a background
+    read, a second 428) keeps the original deadline, attempt and host outcome; ``new_attempt`` (a
+    foreground caller about to wait) bumps the attempt, which lets it reopen a window the user closed."""
+    record = _profile()
+    with _state_lock:
+        previous = _live(record)
         deadline = time.monotonic() + challenge.expires_in
-        if previous:
-            deadline = min(deadline, previous["deadline"])
-        challenge = replace(challenge, attempt=attempt)
-        _pending[key] = {"payload": challenge.as_payload(), "deadline": deadline,
-                         "outcome": previous["outcome"] if previous and not new_attempt else None}
-        return challenge
-
-
-def _matching_entry(url: str, attempt: int) -> Optional[Dict[str, Any]]:
-    entry = _pending.get(_profile_key())
-    if entry and entry["payload"]["url"] == url and entry["payload"]["attempt"] == attempt:
-        return entry
-    return None
+        if previous is None or previous.url != challenge.url:
+            record.pending, record.deadline, record.outcome = replace(challenge, attempt=0), deadline, None
+        else:
+            attempt = previous.attempt + 1 if new_attempt else previous.attempt
+            record.pending, record.deadline = replace(challenge, attempt=attempt), min(deadline, record.deadline)
+            if new_attempt:
+                record.outcome = None
+        return record.pending
 
 
 def record_host_outcome(url: str, attempt: int, outcome: str) -> bool:
     """A presentation hint: wakes a waiter to re-mint, never grants clearance locally. A late
     reply belongs to the attempt that opened the window, not to a newer retry."""
-    with _pending_lock:
-        entry = _matching_entry(url, attempt)
-        if not entry or entry["deadline"] <= time.monotonic():
+    record = _profile()
+    with _state_lock:
+        challenge = _live(record)
+        if challenge is None or (challenge.url, challenge.attempt) != (url, attempt):
             return False
-        entry["outcome"] = outcome
+        record.outcome = outcome
         return True
 
 
 def _host_outcome(challenge: BrowserChallenge) -> Optional[str]:
-    with _pending_lock:
-        entry = _matching_entry(challenge.url, challenge.attempt)
-        return entry["outcome"] if entry else None
+    record = _profile()
+    with _state_lock:
+        pending = record.pending
+        matches = pending is not None and (pending.url, pending.attempt) == (challenge.url, challenge.attempt)
+        return record.outcome if matches else None
+
+
+def _give_up() -> None:
+    record = _profile()
+    with _state_lock:
+        record.gave_up_until = time.monotonic() + _GAVE_UP_COOLDOWN_SECONDS
+
+
+def _gave_up_recently() -> bool:
+    record = _profile()
+    with _state_lock:
+        return time.monotonic() < record.gave_up_until
 
 
 def reset_for_tests() -> None:
-    with _pending_lock:
-        _pending.clear()
-        _work_locks.clear()
-    _gave_up_until.clear()
-    _opened_urls.clear()
+    with _state_lock:
+        _profiles.clear()
+        _opened_urls.clear()
 
 
 # --- Presenting ---------------------------------------------------------------------------------------
@@ -309,9 +330,6 @@ def _announce(challenge: BrowserChallenge) -> bool:
     except Exception as exc:
         logger.debug("%s not broadcast: %s", CHALLENGE_EVENT, exc)
         return False
-
-
-_opened_urls: set = set()     # challenge URLs whose browser tab was opened
 
 
 def _present_in_terminal(challenge: BrowserChallenge) -> None:
@@ -336,7 +354,7 @@ def _present_in_terminal(challenge: BrowserChallenge) -> None:
 
 
 def present(challenge: BrowserChallenge) -> None:
-    """Get the URL in front of something that can load it. Seam for tests (``_presenter``).
+    """Get the URL in front of something that can load it.
 
     The desktop backend hands every challenge to its hidden window. The stdio TUI gateway (whose
     stderr the TUI keeps as a log, never shows) hands its client a required one a foreground caller
@@ -349,10 +367,6 @@ def present(challenge: BrowserChallenge) -> None:
     if server is not None and server._stdio_is_rpc_channel and _announce(challenge):
         return
     _present_in_terminal(challenge)
-
-
-_presenter: Callable[[BrowserChallenge], None] = present
-_sleep = time.sleep     # seam for tests
 
 
 # --- Working a challenge ----------------------------------------------------------------------------
@@ -380,14 +394,7 @@ def _poll_status(client: httpx.Client, portal_base_url: str, anon_token: str) ->
 
 
 _WAITING = ("pending", "needs_interaction")
-# After one attempt ran out of patience, the callers queued behind it fail fast for this long
-# instead of each parking for another full wait (boot fires a burst of token reads).
-_GAVE_UP_COOLDOWN_SECONDS = 30.0
-_gave_up_until: Dict[str, float] = {}
-
-
-def _give_up(key: str) -> None:
-    _gave_up_until[key] = time.monotonic() + _GAVE_UP_COOLDOWN_SECONDS
+_sleep = time.sleep     # seam for tests (same idiom as ``free_tier_bootstrap._sleep``)
 
 
 def wait_for_challenge(exc: AnonChallengeRequired) -> bool:
@@ -398,8 +405,7 @@ def wait_for_challenge(exc: AnonChallengeRequired) -> bool:
     already settled on its first status read and returns without presenting anything."""
     from hermes_cli.auth import _resolve_verify
     from hermes_cli.auth_nous import _nous_http_client
-    key = _profile_key()
-    if time.monotonic() < _gave_up_until.get(key, 0.0):
+    if _gave_up_recently():
         return False
     challenge = exc.challenge
     deadline = time.monotonic() + min(CHALLENGE_WAIT_SECONDS, challenge.expires_in)
@@ -410,8 +416,8 @@ def wait_for_challenge(exc: AnonChallengeRequired) -> bool:
     with _nous_http_client(10.0, verify) as client:
         if _poll_status(client, exc.portal_base_url, exc.anon_token) not in _WAITING:
             return True
-        challenge = exc.challenge = _set_pending(challenge, new_attempt=True)
-        _presenter(challenge)
+        challenge = exc.challenge = _record(challenge, new_attempt=True)
+        present(challenge)
         while time.monotonic() < deadline:
             if _host_outcome(challenge) is not None:
                 return True
@@ -423,7 +429,7 @@ def wait_for_challenge(exc: AnonChallengeRequired) -> bool:
                 told_interactive = True
                 if client_surface() != "desktop":
                     print("  Finish the quick check in your browser to continue.", file=sys.stderr)
-    _give_up(key)
+    _give_up()
     return False
 
 
@@ -452,9 +458,9 @@ def run_with_challenge(exchange: Callable[[], T]) -> T:
     # A messaging gateway has nobody at its console to clear a check, and its token reads can run
     # on the event loop: it never waits either.
     if _background.get() or client_surface() == "gateway":
-        _presenter(_set_pending(first.challenge))
+        present(_record(first.challenge, new_attempt=False))
         raise _still_pending(first)
-    with _work_lock():
+    with _profile().work_lock:
         wait_for_challenge(first)
     # Even a timed-out status poll can lag a committed clearance. Mint is
     # authoritative and gets one final attempt before we report a pending check.
@@ -463,8 +469,8 @@ def run_with_challenge(exchange: Callable[[], T]) -> T:
     except AnonChallengeRequired as again:
         # Whatever ended the wait (status, a host hint, patience), a second 428 starts the fail-fast
         # cooldown; the attempt after it opens a fresh window (``new_attempt``).
-        again.challenge = _set_pending(again.challenge)
-        _give_up(_profile_key())
+        again.challenge = _record(again.challenge, new_attempt=False)
+        _give_up()
         raise _still_pending(again)
     except AuthError as error:
         if not error.retryable:
@@ -480,4 +486,4 @@ def note_optional_challenges(payload: Dict[str, Any], portal_base_url: str) -> N
     if challenge is None:
         _clear_pending()
     elif not challenge.required and client_surface() == "desktop":
-        _announce(_set_pending(challenge))
+        _announce(_record(challenge, new_attempt=False))

@@ -22,7 +22,7 @@ def nas(monkeypatch, tmp_path):
 @pytest.fixture
 def presented(monkeypatch):
     seen: list[anon_challenge.BrowserChallenge] = []
-    monkeypatch.setattr(anon_challenge, "_presenter", seen.append)
+    monkeypatch.setattr(anon_challenge, "present", seen.append)
     return seen
 
 
@@ -69,7 +69,7 @@ class TestRequiredChallenge:
 
         def failed(challenge):
             assert anon_challenge.record_host_outcome(challenge.url, challenge.attempt, "error")
-        monkeypatch.setattr(anon_challenge, "_presenter", failed)
+        monkeypatch.setattr(anon_challenge, "present", failed)
         with pytest.raises(anon_auth.AuthError, match="couldn't finish"):
             _resolve()
         assert [p for _, p in nas.calls].count("/api/anonymous/token") == 2
@@ -157,14 +157,14 @@ class TestRequiredChallenge:
         def present(_challenge):
             with _nous_shared_store_lock(timeout_seconds=0.5):
                 pass
-        monkeypatch.setattr(anon_challenge, "_presenter", present)
+        monkeypatch.setattr(anon_challenge, "present", present)
         assert _resolve()["api_key"]
 
     def test_status_shows_the_pending_challenge_while_it_is_worked(self, nas, monkeypatch):
         nas.challenge_required = True
         nas.challenge_statuses = ["pending"]
         seen = []
-        monkeypatch.setattr(anon_challenge, "_presenter", lambda _c: seen.append(anon_challenge.pending_challenge()))
+        monkeypatch.setattr(anon_challenge, "present", lambda _c: seen.append(anon_challenge.pending_challenge()))
         _resolve()
         assert seen == [{"type": "browser", "url": nas.challenge_url, "required": True,
                          "expires_in": 600, "message": "A quick check first.", "attempt": 0}]
@@ -381,11 +381,11 @@ class TestOptionalChallenge:
         clock = [100.0]
         monkeypatch.setattr(anon_challenge.time, "monotonic", lambda: clock[0])
         challenge = anon_challenge.BrowserChallenge(nas.challenge_url, False, 60, 2, "check")
-        anon_challenge._set_pending(challenge)
+        anon_challenge._record(challenge, new_attempt=False)
         clock[0] += 20
-        anon_challenge._set_pending(challenge)
+        anon_challenge._record(challenge, new_attempt=False)
         assert anon_challenge.pending_challenge()["expires_in"] == 40
-        retry = anon_challenge._set_pending(challenge, new_attempt=True)
+        retry = anon_challenge._record(challenge, new_attempt=True)
         assert not anon_challenge.record_host_outcome(challenge.url, 0, "done")
         assert anon_challenge.pending_challenge()["attempt"] == retry.attempt
         clock[0] += 41

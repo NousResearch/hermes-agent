@@ -85,7 +85,7 @@ def test_status_carries_the_pending_browser_challenge_and_drops_it_once_cleared(
 
     challenge = anon_challenge.BrowserChallenge(
         "https://portal.example.test/challenge?code=t", True, 600, 2, "A quick check first.")
-    anon_challenge._set_pending(challenge)
+    anon_challenge._record(challenge, new_attempt=False)
     try:
         assert _call("free_tier.status")["challenge"] == challenge.as_payload()
     finally:
@@ -98,10 +98,10 @@ def test_window_outcomes_are_scoped_and_do_not_grant_auth(guest, tmp_path):
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     a = anon_challenge.BrowserChallenge("https://portal.example.test/challenge?code=a", True, 600, 2, "check")
     b = anon_challenge.BrowserChallenge("https://portal.example.test/challenge?code=b", False, 600, 2, "check")
-    anon_challenge._set_pending(a)
+    anon_challenge._record(a, new_attempt=False)
     scope = set_hermes_home_override(tmp_path / "secondary")
     try:
-        anon_challenge._set_pending(b)
+        anon_challenge._record(b, new_attempt=False)
         assert not anon_challenge.record_host_outcome(a.url, 0, "done")
         assert anon_challenge.pending_challenge()["url"] == b.url
     finally:

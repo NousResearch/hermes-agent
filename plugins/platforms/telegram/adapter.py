@@ -6351,43 +6351,9 @@ class TelegramAdapter(BasePlatformAdapter):
         return bot_id is None or sender_id is None or sender_id != bot_id
 
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
-        """Apply Telegram group trigger rules: DMs unrestricted; group messages pass ``allowed_chats`` (hard gate; only
-        the ``guest_mode`` @mention bypass crosses it) and then any of free_response chat/topic, ``require_mention``
-        off, reply to the bot, @mention (incl. ``/cmd@botname``), or a wake-word match."""
-        # Learn the live handle BEFORE any mention gate routes on it, then drop our own echoed messages.
-        # Filter out the bot's own messages (returned by getUpdates in some environments like
-        # groups/supergroups where the bot can see its own messages). Without this, outbound messages are
-        # counted as incoming unread in the Hermes inbox (#52363). Otherwise a BotFather rename leaves the
-        # stale handle in place and the exclusive-mention gate reads a message addressed to us as one
-        # addressed to some other bot.
-        self._observe_bot_identity_from_message(message)
-        if self._is_own_message(message):
-            return False
-        if not self._is_group_chat(message):
-            return True
-        thread_id = self._effective_message_thread_id(message)
-        if self._topic_gates_pass(thread_id, warn_non_numeric=True) is False:
-            return False
-        chat_id_str = self._chat_id_str(message)
-        if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
-            return False
-        # Resolve once; _message_mentions_bot is not re-called below in guest mode.
-        guest_mention = self._is_guest_mention(message)
-        # allowed_chats whitelist: outside chats pass only via the guest-mode explicit mention.
-        allowed = self._telegram_allowed_chats()
-        if allowed and chat_id_str not in allowed:
-            return guest_mention
-        if guest_mention or chat_id_str in self._telegram_free_response_chats() or self._telegram_is_free_response_topic(message):
-            return True
-        # Bot-to-bot loop breaker: another bot must explicitly @mention us; its quote-reply or
-        # plain chatter does not count (two bots answering each other's replies never stop otherwise).
-        if self._bot_sender_suppressed(message):
-            return False
-        if not self._telegram_require_mention() or self._is_reply_to_bot(message):
-            return True
-        if not self._telegram_guest_mode() and self._message_mentions_bot(message):
-            return True
-        return self._message_matches_mention_patterns(message)
+        """Apply Telegram group admission before dispatch or observation."""
+        from plugins.platforms.telegram.telegram_context import should_process_message
+        return should_process_message(self, message)
 
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups (topics don't inherit AllGroupChats scope;

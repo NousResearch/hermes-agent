@@ -280,6 +280,33 @@ def union_with_portal_paid_recommendations(
         force_refresh=force_refresh, synthesize_free_pricing=False)
 
 
+def union_with_nous_on_sale_models(curated_ids: list[str], pricing: dict[str, dict[str, Any]]) -> list[str]:
+    """Curated list plus every paid Nous model the gateway is discounting right now, deepest
+    discount first. A sale lives only in ``/v1/models`` ``pricing.original``, so without this the
+    picker badges discounts on curated rows but never shows a discounted model the curated list and
+    Portal recommendations omit. Free rows stay with ``freeRecommendedModels``; rows the gateway
+    marks tool-less (``"tools": False``) are skipped because Hermes is tool-calling-first, and
+    image/video generation rows are skipped because they are not chat models."""
+    from math import isfinite
+
+    from hermes_cli.models_pricing import _price_float, compute_sale_discount
+
+    seen = set(curated_ids)
+    on_sale: list[tuple[int, str]] = []
+    for mid, entry in (pricing or {}).items():
+        if mid in seen or not isinstance(entry, dict) or entry.get("tools") is False or entry.get("generation"):
+            continue
+        sale = compute_sale_discount(entry.get("prompt", ""), entry.get("completion", ""), entry.get("original"))
+        # Badge percentages are rounded: a nearly-free paid row can display 100% off.
+        paid = any(
+            (rate := _price_float(entry.get(key), positive=True)) is not None and isfinite(rate)
+            for key in ("prompt", "completion")
+        )
+        if sale is not None and isinstance(entry.get("original"), dict) and paid:
+            on_sale.append((-sale[0], mid))
+    return list(curated_ids) + [mid for _, mid in sorted(on_sale)]
+
+
 # Free-tier detection cache, per profile — short so an account upgrade shows within minutes.
 _FREE_TIER_CACHE_TTL: int = 180  # seconds
 _free_tier_cache: dict[str, tuple[bool, float]] = {}  # profile key -> (result, timestamp)
@@ -454,11 +481,63 @@ def get_preferred_silent_default_model(provider: str = "openrouter") -> str:
     return PREFERRED_SILENT_DEFAULT_MODEL
 
 
+def _is_anthropic_frontier_tier(model_id: Optional[str]) -> bool:
+    """Return True for Anthropic frontier-tier models (Opus + Fable).
+
+    Both tiers are the priciest Anthropic offerings and are unsafe defaults
+    for a freshly-authenticated provider picker or any other silent fallback:
+    paid users landing on a frontier tier have no opportunity to opt out
+    before the choice pins their main model and inherits into every cron job
+    that doesn't override ``model.provider``.
+
+    Anchored on the ``claude-`` family prefix, then the ``opus-`` / ``fable-``
+    tier token (after vendor-strip and lowercase normalization), so the
+    predicate survives future Anthropic releases (``claude-opus-5-0``,
+    ``claude-fable-6``, etc.) and rejects community / distill models whose
+    slug merely *contains* the substring ``opus`` (e.g. ``qwopus3.6-27b-coder``).
+    Sonnet and Haiku are deliberately NOT classified as frontier here — they
+    remain reasonable auto-default candidates.
+    """
+    raw = _strip_vendor_prefix(str(model_id or ""))
+    base = raw.split(":")[0].lower()
+    if not base.startswith("claude-"):
+        return False
+    return ("opus-" in base) or ("fable-" in base)
+
+
 def pick_silent_default_model(model_ids: list[str], provider: str = "openrouter") -> str:
-    """Catalog-labeled default when ``model_ids`` carries it, else the first entry, else "". Used by
-    every surface that must choose a model without an interactive picker."""
+    """Pick a cost-safe silent default from an available-models list.
+
+    Shared policy for every surface that must choose a model on the user's
+    behalf without an interactive confirmation (GUI onboarding
+    recommended-default, empty-model runtime fallback, provider-set-but-
+    model-missing resolution):
+
+    1. If the catalog-labeled preferred default (see
+       :func:`get_preferred_silent_default_model`) is present in
+       ``model_ids``, return it.
+    2. Else, return the first entry that is NOT an Anthropic frontier tier
+       (Opus / Fable — see :func:`_is_anthropic_frontier_tier`). Catalog
+       ordering is preserved, so a freshly-released cheaper model still
+       wins over a leftover Sonnet.
+    3. Else (every entry is a frontier tier), return ``model_ids[0]`` so the
+       picker is never empty — defensive last resort only.
+    4. Else (empty list), return ``\"\"``.
+
+    This hardened fallback closes the hole where a Portal-augmented list
+    that didn't carry the catalog label fell through to ``model_ids[0]``
+    (currently ``anthropic/claude-fable-5``) and billed the most expensive
+    Anthropic flagship for traffic the user never opted into.
+    """
+    if not model_ids:
+        return ""
     preferred = get_preferred_silent_default_model(provider)
-    return preferred if preferred in model_ids else (model_ids[0] if model_ids else "")
+    if preferred in model_ids:
+        return preferred
+    non_frontier = [mid for mid in model_ids if not _is_anthropic_frontier_tier(mid)]
+    if non_frontier:
+        return non_frontier[0]
+    return model_ids[0]
 
 
 def recommended_nous_default_model() -> dict[str, Any]:

@@ -496,6 +496,31 @@ export const koOverrides = {
       signInToRemoteGateway: '원격 게이트웨이에 로그인',
       signInWithProvider: provider => `${provider}(으)로 로그인`,
       identityProvider: '사용 중인 ID 공급자'
+    },
+    updateHold: {
+      title: '이전 업데이트가 아직 Hermes를 붙잡고 있습니다',
+      titleUnverified: 'Hermes가 마지막 업데이트 완료를 확인할 수 없습니다',
+      description:
+        '업데이트가 아직 바꾸고 있을지 모르는 파일을 불러오지 않도록 Hermes가 시작을 미루고 있습니다. 대기가 끝나면 자동으로 시작합니다.',
+      heldByProcess: pid =>
+        `업데이트(프로세스 ${pid})는 종료됐지만, 그 업데이트가 시작한 프로세스가 아직 Hermes 설치를 붙잡고 있습니다.`,
+      heldUnknown: '업데이트는 종료됐지만, 그 업데이트가 시작한 프로세스가 아직 Hermes 설치를 붙잡고 있습니다.',
+      unverified:
+        '업데이트 도우미가 지금 Hermes 설치를 누가 쓰고 있는지 확인하지 못했습니다. Hermes가 계속 확인합니다.',
+      since: time => `${time}부터 대기 중`,
+      lastChecked: time => `마지막 확인 ${time}`,
+      recoveryHint:
+        '보통 몇 분 안에 풀립니다. 풀리지 않으면 Hermes를 종료하고 남아 있는 git 또는 hermes 프로세스를 끝낸 뒤(또는 컴퓨터를 재시작한 뒤) Hermes를 다시 여세요.',
+      checkAgain: '다시 확인',
+      quit: 'Hermes 종료',
+      openLogs: '로그 열기',
+      startAnyway: '그래도 시작…',
+      confirmTitle: '업데이트가 아직 붙잡고 있는데 Hermes를 시작할까요?',
+      confirmBody:
+        '남아 있는 업데이트 프로세스가 아직 Hermes 파일을 바꾸고 있을 수 있습니다. 지금 시작하면 반쯤 업데이트된 설치를 불러올 수 있고, 업데이트를 다시 실행하기 전까지 제대로 동작하지 않을 수 있습니다. Hermes는 이 선택을 로그에 기록하고 업데이트 표시는 그대로 둡니다.',
+      confirmKeepWaiting: '계속 기다리기',
+      confirmStart: '그래도 시작',
+      startAnywayRefused: 'Hermes가 시작하기 전에 설치를 붙잡고 있는 대상이 바뀌었습니다. 확인한 뒤 다시 시도하세요.'
     }
   },
 
@@ -4575,7 +4600,9 @@ export const koOverrides = {
       restarting: '업데이트를 적용하기 위해 백엔드를 재시작하는 중…',
       notAvailable: '이 백엔드에는 업데이트가 없습니다.',
       failed: '백엔드 업데이트에 실패했습니다.',
-      noReturn: '백엔드가 다시 올라오지 않았습니다. 업데이트가 끝나지 않았을 수 있으니 백엔드 호스트를 확인하세요.'
+      noReturn: '백엔드가 다시 올라오지 않았습니다. 업데이트가 끝나지 않았을 수 있으니 백엔드 호스트를 확인하세요.',
+      owed: steps =>
+        `백엔드는 업데이트됐지만 아직 남은 작업이 있습니다: ${steps}. 마무리하려면 \`hermes update\`를 다시 실행하세요.`
     }
   },
 

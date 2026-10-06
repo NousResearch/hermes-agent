@@ -76,6 +76,67 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     runner._clear_session_env(tokens)
 
 
+def test_gateway_rebinds_session_id_on_cached_followup(monkeypatch):
+    """A cached agent is not constructed again to publish its session id."""
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.DISCORD, chat_id="123", chat_type="thread",
+        thread_id="123", user_id="456", message_id="1001",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+    context.session_id = "current-discord-session"
+    monkeypatch.setenv("HERMES_SESSION_ID", "unrelated-process-session")
+
+    first = runner._set_session_env(context)
+    # Fresh agent construction publishes its id in its executor context. A
+    # follow-up reuses that agent, so no constructor will repair an empty id.
+    _VAR_MAP["HERMES_SESSION_ID"].set(context.session_id)
+    runner._clear_session_env(first)
+    source.message_id = "1002"
+    second = runner._set_session_env(context)
+    try:
+        assert _VAR_MAP["HERMES_SESSION_ID"].get() == context.session_id
+        assert _VAR_MAP["HERMES_SESSION_MESSAGE_ID"].get() == "1002"
+        assert os.environ["HERMES_SESSION_ID"] == "unrelated-process-session"
+    finally:
+        runner._clear_session_env(second)
+    assert _VAR_MAP["HERMES_SESSION_ID"].get() == ""
+
+
+@pytest.mark.asyncio
+async def test_gateway_session_ids_are_task_local_across_threads(monkeypatch):
+    """Ingress identity follows each turn through the executor, not os.environ."""
+    runner = object.__new__(GatewayRunner)
+    monkeypatch.setenv("HERMES_SESSION_ID", "unrelated-process-session")
+    ready = asyncio.Event()
+    arrived = 0
+
+    async def turn(sid, message_id):
+        nonlocal arrived
+        source = SessionSource(
+            platform=Platform.DISCORD, chat_id="123", chat_type="thread",
+            thread_id="123", user_id="456", message_id=message_id,
+        )
+        context = SessionContext(source=source, connected_platforms=[], home_channels={})
+        context.session_id = sid
+        tokens = runner._set_session_env(context)
+        try:
+            arrived += 1
+            if arrived == 2:
+                ready.set()
+            await asyncio.wait_for(ready.wait(), timeout=5)
+            observed = await asyncio.to_thread(
+                lambda: (_VAR_MAP["HERMES_SESSION_ID"].get(),
+                         _VAR_MAP["HERMES_SESSION_MESSAGE_ID"].get())
+            )
+            assert observed == (sid, message_id)
+        finally:
+            runner._clear_session_env(tokens)
+
+    await asyncio.gather(turn("session-a", "1001"), turn("session-b", "1002"))
+    assert os.environ["HERMES_SESSION_ID"] == "unrelated-process-session"
+
+
 def test_clear_session_env_restores_previous_state(monkeypatch):
     """_clear_session_env should restore contextvars to their pre-handler values."""
     runner = object.__new__(GatewayRunner)

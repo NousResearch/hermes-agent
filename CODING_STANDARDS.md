@@ -1,6 +1,6 @@
 # Coding standards
 
-Read this file after the root [`AGENTS.md`](AGENTS.md) for any source, test, dependency, refactor, or review change. The closest area guide adds local contracts. This file owns general implementation policy; it does not replace an area guide, `SECURITY.md`, a script, configuration, or the filesystem.
+The root [`AGENTS.md`](AGENTS.md) routes tasks here. The closest area guide adds local contracts. This file owns general implementation policy; it does not replace an area guide, `SECURITY.md`, a script, configuration, or the filesystem.
 
 ## Decide scope before coding
 
@@ -10,12 +10,12 @@ Choose the first rung that solves the problem correctly, in this order:
 
 1. Extend existing code.
 2. Add a CLI command plus a skill when shell commands and existing tools express the capability.
-3. Add a service-gated tool when structured input and output are required. Its `check_fn` answers process-wide reachability or opt-in, never a per-session surface. Session-varying capability belongs in a named toolset resolved from the session.
+3. Add a service-gated tool when structured input and output are required. Its `check_fn` answers reachability or opt-in in the owning profile, never per-session client capability. Session-varying capability belongs in a named toolset resolved from the session. See [`tools/AGENTS.md`](tools/AGENTS.md) for profile-scoped probes and caching.
 4. Add a plugin for third-party, niche, or user-specific capability.
 5. Add an MCP server in the catalog when the capability is a tool but is not fundamental to the core.
 6. Add a core tool only when it is fundamental, broadly useful, and unreachable through terminal plus file or MCP.
 
-The core tool schema is sent on every model call. Extend an existing seam before adding a module, manager, hook, or core tool. When three or more changes integrate the same category, design an ABC and orchestrator, then make providers use that surface.
+The core tool schema is sent on every model call. Extend an existing seam before adding a module, manager, hook, or core tool. When three or more PRs integrate the same category, design an ABC and orchestrator, wrap the existing implementation as the first provider, and make the competing providers use that interface.
 
 ### Premise check
 
@@ -29,20 +29,20 @@ Prefer real bug fixes with the whole class and sibling paths covered; new adapte
 
 - Keep comments for the WHY, trade-offs, or API quirks. The code supplies the WHAT.
 - Do not add wrappers or `try/except: pass` around code that cannot fail. Do not add flags no caller sets or wire dead code without E2E proof.
-- Reject hooks and extension points with no concrete consumer.
-- Do not add new `HERMES_*` environment variables for non-secret configuration. Put credentials in `.env`; put behavioral settings in `config.yaml`.
-- Do not add a core tool when terminal plus file or a skill already solves the task. Fix a remote file-visibility mount instead of adding a tool.
+- Reject hooks and extension points with no concrete consumer. A concrete consumer may ship separately.
+- Do not add new `HERMES_*` environment variables for non-secret configuration. Put credentials in `.env`; put behavioral settings in `config.yaml`. An internal environment bridge is allowed when the mechanism needs one.
+- Do not add a core tool when terminal plus file or a skill already solves the task.
 - Do not add `offset` or `limit` pagination to instructional tools. The model must read skills, prompts, and playbooks in full.
 - Read the original intent before restricting behavior. A fix that destroys the feature it secures is not a fix.
-- Gate outbound telemetry, attribution, and third-party identifiers behind a user-facing opt-in with a config gate, setup prompt, and tool toggle.
-- Reject change-detector tests, prompt-cache-breaking changes, dead code wired without E2E proof, and plugins that modify core files. Widen a generic plugin surface when a plugin needs a missing capability.
-- Ship observability backends, vendor SaaS connectors, analytics dashboards, paid-service integrations, and other third-party products as standalone plugins, not under the core `plugins/` tree.
+- Gate outbound analytics, usage attribution, and third-party identifiers behind a generic user-facing opt-in: a config gate, setup prompt, and `hermes tools` toggle.
+- Reject change-detector tests, prompt-cache-breaking changes, and plugins that modify core files. Widen a generic plugin surface when a plugin needs a missing capability.
+- Keep third-party products out of the core tree, including observability backends, vendor SaaS connectors, analytics dashboards, and paid-service integrations. Ship them as standalone plugin repos installed through user/project plugin directories or pip entry points.
 
 ## Keep seams explicit
 
 ### Facades and siblings
 
-A former god file is a facade containing public entry points and names imported by other packages, plus topical siblings that own behavior. Put new behavior in a sibling, never in a facade. Find code by topic with `grep -rn "def name" <dir>/<stem>_*.py`, not by reading the facade as an inventory. Siblings may import the facade inside functions to preserve the seam, but they must not create a module-level cycle.
+A former god file is a facade containing public entry points and names imported by other packages, plus topical siblings that own behavior. Put new behavior in a sibling, never in a facade. Find code by topic in `<stem>_*.py` siblings rather than reading the facade as an inventory. Siblings may import the facade inside functions to preserve the seam, but they must not create a module-level cycle.
 
 Patch the binding production reads. If a sibling imports a name from the facade inside a function, the facade is the patch seam; patching the defining module can pass without changing production behavior.
 
@@ -64,17 +64,17 @@ Run `python scripts/check` for the blocking lint checks CI runs. `python scripts
 
 ### Dependencies and host facts
 
-Every dependency has an upper bound, normally `>=floor,<next_major`; git URLs and GitHub Actions use a full commit SHA. After editing `pyproject.toml`, run `hermes pm lock` and commit `pyproject.toml` with `uv.lock`. Never mutate a Hermes environment with raw `pip` or `uv`; use PM-owned setup and repair flows. The full policy is [`pm/AGENTS.md`](pm/AGENTS.md).
+[`pm/AGENTS.md#dependency-pinning-policy`](pm/AGENTS.md#dependency-pinning-policy) owns dependency bounds, pre-1.0 windows, exact CI requirements, git/Actions pins, lock updates, and PM-owned environment changes. Read it before changing any dependency or environment.
 
-Machine facts and executable lookup go through [`hermes_platform`](hermes_platform/AGENTS.md). Do not add a separate `shutil.which`, known-path table, or environment-variable hardware probe outside that owner.
+Machine facts and executable lookup go through [`hermes_platform`](hermes_platform/AGENTS.md). Its guide owns resolver placement and reasoned allowlist exceptions. Windows command-launch requirements live in [`CONTRIBUTING.md#cross-platform-compatibility`](CONTRIBUTING.md#cross-platform-compatibility).
 
 ## Tests and verification
 
-Always run `scripts/run_tests.sh`, never bare `pytest`. It supplies CI-like credential clearing, UTC and locale settings, per-test `HERMES_HOME` isolation, and per-file subprocess isolation. Prepare the separate test interpreter through the PM workflow and follow [`tests/AGENTS.md`](tests/AGENTS.md) for placement and options.
+For Python tests, run `scripts/run_tests.sh`, never bare `pytest`. It supplies CI-like credential clearing, UTC and locale settings, per-test `HERMES_HOME` isolation, and per-file subprocess isolation. Prepare the separate test interpreter through the PM workflow and follow [`tests/AGENTS.md`](tests/AGENTS.md) for placement and options.
 
-Test behavior contracts and relationships, not current enumerations, source text, or snapshots. Do not add change-detector tests. Do not read `.py`, `.ts`, `.tsx`, `.js`, or configuration source text in a test. Extract behavior into a callable unit or exercise the real path. For resolution chains, profile routing, configuration, security boundaries, remote backends, and file or network I/O, use real imports and a temporary home. When profile scope changes, exercise at least two homes in both directions.
+Test behavior contracts and relationships, not current enumerations, source text, or snapshots. Do not add change-detector tests. Do not read implementation source text such as `.py`, `.ts`, `.tsx`, or `.js` in a test. Extract behavior into a callable unit or exercise the real path. For resolution chains, profile routing, configuration, security boundaries, remote backends, and file or network I/O, use real imports and a temporary home. When profile scope changes, exercise at least two homes in both directions.
 
-Run host-specific behavior on that host with one `@pytest.mark.platforms(...)` marker. Never fake `sys.platform`, stack host markers, or use a bare `skipif` for host selection. Tests never write to the user's Hermes home. Keep JavaScript assertions in the owning vitest suite when CI classifies the change as JS-only. The branch guide owns the detailed `wine2e` workflow and test placement rules.
+Run host-specific behavior on that host with one `@pytest.mark.platforms(...)` marker. Never fake `sys.platform`, stack host markers, or use a bare `skipif` for host selection. Tests never write to the user's Hermes home. Keep JavaScript assertions in the owning vitest suite, including mixed Python/JavaScript changes. Run the relevant JavaScript workspace checks for JavaScript changes. The branch guide owns the detailed `wine2e` workflow and test placement rules.
 
 ## TypeScript
 
@@ -86,4 +86,4 @@ Rebase onto `main` before merging. A squash from a stale branch can silently rev
 
 ## Long form
 
-Use [`website/docs/developer-guide/contributing.md`](website/docs/developer-guide/contributing.md) for contribution examples and [`website/docs/developer-guide/`](website/docs/developer-guide/) for subsystem rationale. If a branch guide and this file both mention a rule, the branch guide supplies the local details and this file remains the general policy. Do not create a second copy to resolve a conflict; fix the authoritative source and its links.
+Use [`website/docs/developer-guide/contributing.md`](website/docs/developer-guide/contributing.md) for contribution examples and the [architecture map](website/docs/developer-guide/architecture.md) for subsystem rationale and links. If a branch guide and this file both mention a rule, the branch guide supplies the local details and this file remains the general policy. Do not create a second copy to resolve a conflict; fix the authoritative source and its links.

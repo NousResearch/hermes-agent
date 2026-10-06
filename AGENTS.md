@@ -1,16 +1,15 @@
 # Hermes Agent repository instructions
 
-This file is the always-loaded router and safety contract. It carries rules that must hold for every path. Before changing code or tests, read [`CODING_STANDARDS.md`](CODING_STANDARDS.md), then read the route guide for the path before editing it. Nested `AGENTS.md` files add area-specific rules. The filesystem, scripts, and configuration are canonical, so this file does not inventory source files. Keep this file below the `python scripts/check` limit of 12,000 characters and keep each root-to-area instruction chain below 30,000 characters.
+This file is the always-loaded router and safety contract. It carries rules that must hold for every path. Nested `AGENTS.md` files add area-specific rules. The filesystem, scripts, and configuration are canonical, so this file does not inventory source files. Keep this file below the `python scripts/check` limit of 12,000 characters and keep each root-to-area instruction chain below 30,000 characters.
 
 ## Load by task
 
-- **Any source, test, refactor, dependency, or review change:** read [`CODING_STANDARDS.md`](CODING_STANDARDS.md).
-- **Any path listed in the routing table:** read the listed guide before editing. Read the guide even when the runtime has not discovered it yet.
+- **Editing or reviewing files, including documentation and instructions; dependency or environment work; contributions, issues, PRs, and salvage:** read [`CODING_STANDARDS.md`](CODING_STANDARDS.md).
 - **A new gateway platform:** read [`gateway/platforms/ADDING_A_PLATFORM.md`](gateway/platforms/ADDING_A_PLATFORM.md) as the procedure, plus [`gateway/AGENTS.md`](gateway/AGENTS.md).
 - **A security boundary, vulnerability, or threat report:** read [`SECURITY.md`](SECURITY.md). Its scope and reporting channel control.
 - **A dependency or Hermes environment:** read [`pm/AGENTS.md`](pm/AGENTS.md) and the [package-management developer workflow](website/docs/reference/package-management.md#developer-workflow).
 - **A contribution, issue, PR, review, or salvage:** read the [developer contribution guide](website/docs/developer-guide/contributing.md) and the contributor workflow in [`skills/autonomous-ai-agents/hermes-agent/SKILL.md`](skills/autonomous-ai-agents/hermes-agent/SKILL.md).
-- **Architectural background:** use the relevant page in [`website/docs/developer-guide/`](website/docs/developer-guide/). Do not copy its explanation into this router.
+- **Architectural background:** start with the [architecture map](website/docs/developer-guide/architecture.md), then follow its subsystem links.
 
 ## Universal invariants
 
@@ -24,7 +23,7 @@ The core is a narrow waist and capability belongs at the edges. Every model tool
 
 ### Profile and execution scope
 
-One process can serve several profiles. Bind the owning profile scope before any path that runs outside a turn, including boot probes, eviction, tickers, deferred callbacks, RPC methods, thread hops, and child processes. `os.environ`, module globals, and import-time values describe the launch profile. An unbound read can silently leak the default profile. Context variables do not cross a process boundary, so resolve the target profile before spawning a child and use the served-profile environment builder. Start scoped background threads with the context-aware helper, never a bare thread. A scoped secret miss fails closed; it never falls back to `os.environ`. The detailed binding seams are in [`gateway/AGENTS.md`](gateway/AGENTS.md) and [`tools/AGENTS.md`](tools/AGENTS.md).
+One process can serve several profiles. Bind the owning profile scope for code outside a turn, including boot probes, eviction, tickers, deferred callbacks, RPC methods, thread hops, and child processes. `os.environ`, module globals, and import-time values describe the launch profile; an unbound read can leak the default profile. Read [`gateway/AGENTS.md`](gateway/AGENTS.md) for binding points and execution-scope contracts.
 
 Use `get_hermes_home()` for code paths and `display_hermes_home()` for user-facing text. Never hardcode `~/.hermes`; `_get_profiles_root()` is intentionally HOME-anchored. Tests use disposable homes and never write to the user's Hermes home.
 
@@ -38,7 +37,7 @@ Never infer process identity from an argv substring. Use `gateway.status.looks_l
 
 ## Routing table
 
-Read the guide in the second column when working in the first column. The third column states the branch that the guide owns. General implementation policy stays in [`CODING_STANDARDS.md`](CODING_STANDARDS.md); these guides own their local invariants.
+Before editing a path in the first column, read its guide in the second column, even if the runtime has not discovered it. The third column states the branch that the guide owns. General implementation policy stays in [`CODING_STANDARDS.md`](CODING_STANDARDS.md); these guides own their local invariants.
 
 | Working area | Read before editing | Guide owns |
 |---|---|---|
@@ -48,7 +47,7 @@ Read the guide in the second column when working in the first column. The third 
 | New adapter under `gateway/platforms/` | [`gateway/platforms/ADDING_A_PLATFORM.md`](gateway/platforms/ADDING_A_PLATFORM.md) | adapter procedure |
 | `tools/`, `toolsets.py`, `model_tools.py` | [`tools/AGENTS.md`](tools/AGENTS.md) | tool registry, toolsets, delegation, session-scoped capability |
 | `plugins/`, `hermes_cli/plugins*.py` | [`plugins/AGENTS.md`](plugins/AGENTS.md) | plugin kinds, compatibility, isolation, in-tree policy |
-| `plugin-catalog/` | [`plugin-catalog/README.md`](plugin-catalog/README.md) | catalog admission rules |
+| `plugin-catalog/` | [`plugin-catalog/README.md`](plugin-catalog/README.md) | catalog admission rules; keep the developer-guide mirror identical |
 | `tui_gateway/`, `ui-tui/` | [`tui_gateway/AGENTS.md`](tui_gateway/AGENTS.md) | process model, JSON-RPC transport, slash flow |
 | `web/`, `hermes_cli/web_routers/` | [`web/AGENTS.md`](web/AGENTS.md) | dashboard and embedded TUI contract |
 | `apps/desktop/` | [`apps/desktop/AGENTS.md`](apps/desktop/AGENTS.md), [`apps/desktop/src/AGENTS.md`](apps/desktop/src/AGENTS.md) | desktop backend, renderer, slash palette, Bot Mode |

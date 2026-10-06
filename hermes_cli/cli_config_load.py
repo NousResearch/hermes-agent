@@ -119,6 +119,25 @@ _AUXILIARY_TASK_ENV = {
 _CWD_PLACEHOLDERS = (".", "auto", "cwd")
 
 
+def _mirror_sessions_to_env(sessions_config):
+    """Project the ``sessions.*`` knobs ``hermes_state`` reads onto their env carriers.
+
+    config.yaml stays canonical (``DEFAULT_CONFIG`` owns the keys); the env slot is only the
+    cross-process carrier CLI/cron children inherit — ``gateway/run.py`` bridges the same keys
+    for its own children.
+    """
+    if "cjk_fts" in sessions_config:
+        os.environ["HERMES_CJK_FTS"] = str(sessions_config["cjk_fts"])
+    if "search_slow_ms" in sessions_config:
+        os.environ["HERMES_SEARCH_SLOW_MS"] = str(sessions_config["search_slow_ms"])
+    if "write_patience_s" in sessions_config:
+        patience = str(sessions_config["write_patience_s"])
+        os.environ["HERMES_WRITE_PATIENCE_S"] = patience  # health: allow HX002 -- sessions.write_patience_s is a config.yaml knob (DEFAULT_CONFIG + docs); the env name is only the cross-process carrier hermes_state reads, exactly like HERMES_CJK_FTS above
+    if "transcript_write_patience_s" in sessions_config:
+        transcript_patience = str(sessions_config["transcript_write_patience_s"])
+        os.environ["HERMES_TRANSCRIPT_WRITE_PATIENCE_S"] = transcript_patience  # health: allow HX002 -- same as above: sessions.transcript_write_patience_s is config-authoritative, the env slot is only the carrier
+
+
 def _mirror_config_to_env(defaults, _file_has_terminal_config):
     """Project config.yaml values into the env vars the tool modules read (terminal/browser/auxiliary/security/sessions). Env always wins when already set."""
     from cli import _AUXILIARY_TASK_ENV, _CWD_PLACEHOLDERS, _TERMINAL_ENV_MAPPINGS
@@ -174,10 +193,7 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
     # Session-search index knobs (hermes_state reads the env carriers).
     sessions_config = defaults.get("sessions", {})
     if isinstance(sessions_config, dict):
-        if "cjk_fts" in sessions_config:
-            os.environ["HERMES_CJK_FTS"] = str(sessions_config["cjk_fts"])
-        if "search_slow_ms" in sessions_config:
-            os.environ["HERMES_SEARCH_SLOW_MS"] = str(sessions_config["search_slow_ms"])
+        _mirror_sessions_to_env(sessions_config)
 
 
 def _cli_config_defaults():

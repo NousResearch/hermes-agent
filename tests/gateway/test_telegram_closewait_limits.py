@@ -160,6 +160,22 @@ def test_all_ptb_clients_share_the_platform_ssl_context(monkeypatch):
         assert transport._transport_kwargs.get("verify") is shared
         asyncio.run(transport.aclose())
 
+    # The DoH discovery client verifies with the same context.
+    from plugins.platforms.telegram import telegram_network as tg_net
+    seen = {}
+
+    def _record_client(**kwargs):
+        seen.update(kwargs)
+        raise _StopConnect
+
+    monkeypatch.setattr(tg_net, "platform_ssl_context", lambda: shared)
+    monkeypatch.setattr(tg_net.httpx, "AsyncClient", _record_client)
+    try:
+        asyncio.run(tg_net.discover_fallback_ips())
+    except _StopConnect:
+        pass
+    assert seen.get("verify") is shared
+
     # An SSL_CERT_FILE bundle is honoured (as httpx verify=True did) and still cached once.
     import certifi
     from agent import ssl_verify

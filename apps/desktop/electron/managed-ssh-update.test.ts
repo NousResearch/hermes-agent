@@ -512,18 +512,22 @@ test.runIf(process.platform !== 'win32')(
   async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-owed-'))
 
-    const run = async (followups: unknown[]) => {
+    const run = async (
+      followups: unknown[],
+      { exitCode = 0, outcome = 'success', restoreFails = false, userAction = null as unknown } = {}
+    ) => {
       const receipts = path.join(home, 'logs', 'update_receipts')
       await mkdir(receipts, { recursive: true })
-      await writeFile(path.join(home, `.update_exit_code.${CORRELATION}`), '0')
+      await writeFile(path.join(home, `.update_exit_code.${CORRELATION}`), String(exitCode))
       await writeFile(
         path.join(receipts, 'update_x.json'),
         JSON.stringify({
           correlation_id: CORRELATION,
-          outcome: 'success',
+          outcome,
           started_at: '2026-08-23T00:00:00Z',
           finished_at: '2026-08-23T00:01:00Z',
-          followups
+          followups,
+          user_action: userAction
         })
       )
 
@@ -543,7 +547,11 @@ test.runIf(process.platform !== 'win32')(
         updateRemote: async () => ({ exitCode: observed.exitCode!, receipt: observed.receipt! }),
         awaitRestoreClearance: async () => {},
         closeTransports: async () => {},
-        restoreScope: async () => {},
+        restoreScope: async () => {
+          if (restoreFails) {
+            throw new Error('restore refused')
+          }
+        },
         releaseGate: () => {}
       })
     }
@@ -564,6 +572,34 @@ test.runIf(process.platform !== 'win32')(
       assert.equal(clean.ok, true)
       assert.equal(clean.owed, undefined)
       assert.equal(clean.message, 'Remote Hermes updated and every managed SSH profile is ready.')
+
+      // The debt survives a failed restoration: update and restore verdicts stay independent.
+      const unrestored = await run([{ step: 'dependencies', reason: 'sync failed' }], { restoreFails: true })
+
+      assert.equal(unrestored.updateOk, true)
+      assert.equal(unrestored.restoreOk, false)
+      assert.deepEqual(unrestored.owed, [{ step: 'dependencies', reason: 'sync failed' }])
+      assert.match(
+        managedSshUpdateAllRow({ id: 'home' }, unrestored).detail || '',
+        /still owed: dependencies \(sync failed\)/
+      )
+
+      // record_user_action turns a success into partial/exit 1: its exact manual instruction is shown,
+      // and the rerun advice is never offered for a parked stash.
+      const instruction = 'Run `git stash apply stash@{0}` in /opt/hermes to restore your local changes.'
+      const partial = await run([], {
+        exitCode: 1,
+        outcome: 'partial',
+        userAction: { step: 'local_changes', reason: instruction }
+      })
+
+      assert.equal(partial.updateOk, false)
+      assert.equal(partial.restoreOk, true)
+      assert.deepEqual(partial.owed, [{ step: 'local_changes', reason: instruction }])
+      const detail = managedSshUpdateAllRow({ id: 'home' }, partial).detail || ''
+      assert.ok(detail.includes(instruction), detail)
+      assert.match(detail, /local_changes/)
+      assert.doesNotMatch(detail, /Re-run `hermes update`/)
     } finally {
       await rm(home, { force: true, recursive: true })
     }

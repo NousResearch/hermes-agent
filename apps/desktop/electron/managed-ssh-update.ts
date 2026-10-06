@@ -506,33 +506,42 @@ function withReceiptDebt(receipt: any): ManagedUpdateReceiptSummary {
 }
 
 // C3: a committed update is a success even when post-commit steps are owed;
-// name each one and its remedy instead of claiming everything is ready.
+// name each one and its remedy instead of claiming everything is ready. The
+// debt rides on every terminal receipt, so it is composed with the update and
+// restoration verdicts, never only on success: a committed run whose profile
+// restore failed, and a partial run that parked local changes, still owe it.
 function managedUpdateMessage(
   outcome: ManagedUpdateOutcome,
   restoreOk: boolean,
   receipt: ManagedUpdateReceiptSummary | undefined
 ): { owed?: ManagedUpdateOwedStep[]; message: string } {
-  if (outcome !== 'updated') {
-    return {
-      message: restoreOk
-        ? 'The remote update failed, but every managed SSH profile was restored.'
-        : 'The remote update transaction could not restore every managed SSH profile.'
-    }
-  }
-
   const followups = receipt?.followups ?? []
   const userAction = receipt?.userAction
   const owed = [...followups, ...(userAction ? [userAction] : [])]
 
+  const status =
+    outcome === 'updated'
+      ? 'Remote Hermes updated'
+      : restoreOk
+        ? 'The remote update failed, but every managed SSH profile was restored.'
+        : 'The remote update transaction could not restore every managed SSH profile.'
+
   if (!owed.length) {
-    return { message: 'Remote Hermes updated and every managed SSH profile is ready.' }
+    return { message: outcome === 'updated' ? `${status} and every managed SSH profile is ready.` : status }
   }
 
   const message =
-    'Remote Hermes updated, but these steps are still owed: ' +
-    owed.map(step => (step.reason ? `${step.step} (${step.reason})` : step.step)).join('; ') +
+    (outcome === 'updated' ? `${status}, but these steps are still owed: ` : `${status} These steps are still owed: `) +
+    [
+      ...followups.map(step => (step.reason ? `${step.step} (${step.reason})` : step.step)),
+      ...(userAction ? [userAction.step] : [])
+    ].join('; ') +
     '.' +
-    (followups.length ? ' Re-run `hermes update` on the remote to finish them.' : '') +
+    // Only follow-ups are finished by a rerun; a user action (e.g. a parked
+    // stash) is the producer's exact manual instruction, shown verbatim.
+    (followups.length
+      ? ` Re-run \`hermes update\` on the remote to finish ${followups.map(step => step.step).join(', ')}.`
+      : '') +
     (userAction?.reason ? ` ${userAction.reason}` : '')
 
   return { owed, message }

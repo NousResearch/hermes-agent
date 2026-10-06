@@ -1,17 +1,17 @@
 name: pinned-folders
 repo: https://github.com/jacobhausler/hermes-pinned-folders
-sha: 7ab24e181b0e742c05c52d944224671f8746be47
+sha: 8677fe27ac41fd484c91030d34e83bb76f3690cb
 subdir: ""
 description: "A Pinned tab in the Desktop sidebar that files your pinned chats into nested folders: drag to order and nest, folder colors, right-click menus (including Unpin), unread/working badges on collapsed folders, a filter box, open-folder-as-tabs, and layout export/import via the clipboard. Layout stays local to the app; pins belong to the backend. SDK-only build (desktop/plugin.js); no network."
 maintainer: jacobhausler
 tier: community
 category: desktop
 docs_url: https://github.com/jacobhausler/hermes-pinned-folders#readme
-version: "0.1.2"
-image: "https://raw.githubusercontent.com/jacobhausler/hermes-pinned-folders/7ab24e181b0e742c05c52d944224671f8746be47/docs/catalog-banner.png"
+version: "0.1.3"
+image: "https://raw.githubusercontent.com/jacobhausler/hermes-pinned-folders/8677fe27ac41fd484c91030d34e83bb76f3690cb/docs/catalog-banner.png"
 screenshots:
-  - "https://raw.githubusercontent.com/jacobhausler/hermes-pinned-folders/7ab24e181b0e742c05c52d944224671f8746be47/docs/catalog-context-menu.png"
-  - "https://raw.githubusercontent.com/jacobhausler/hermes-pinned-folders/7ab24e181b0e742c05c52d944224671f8746be47/docs/catalog-filter.png"
+  - "https://raw.githubusercontent.com/jacobhausler/hermes-pinned-folders/8677fe27ac41fd484c91030d34e83bb76f3690cb/docs/catalog-context-menu.png"
+  - "https://raw.githubusercontent.com/jacobhausler/hermes-pinned-folders/8677fe27ac41fd484c91030d34e83bb76f3690cb/docs/catalog-filter.png"
 readme: true
 platforms: []
 capabilities:

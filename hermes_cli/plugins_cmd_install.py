@@ -562,8 +562,15 @@ def cmd_install(
     should_enable = False if no_deps else enable
     if no_deps:
         console.print("[dim]--no-deps: skipping dependency consent; the plugin stays disabled.[/dim]")
+    # A memory provider activates through memory.provider alone; the loader never reads plugins.enabled.
+    # Decide from the installed tree's code (not a text match): catalog category "memory" also holds hooks,
+    # context engines and skills, and a hook's docstring may name MemoryProvider.
+    from plugins.memory import _defines_memory_provider
+    is_memory_provider = _defines_memory_provider(target)
     if should_enable is None and not already_active:
-        should_enable = _pc()._is_tty() and _pc()._ask_yes(f"  Enable '{installed_name}' now? [y/N]: ")
+        should_enable = _pc()._is_tty() and _pc()._ask_yes(
+            f"  Use '{installed_name}' as the memory provider now? [y/N]: " if is_memory_provider
+            else f"  Enable '{installed_name}' now? [y/N]: ")
     deps_ok, deps_reason = (True, None)
     if should_enable and not already_active:
         deps_ok, deps_reason = _install_plugin_python_deps(installed_manifest, target, console,
@@ -588,8 +595,12 @@ def cmd_install(
         )
         should_enable = False
 
-    if already_active:
+    # already_active is PM's selection (plugins.enabled): it settles dependency consent, not memory.provider.
+    # An explicit --enable still selects the provider, repairing installs that listed it in plugins.enabled.
+    if already_active and not (is_memory_provider and enable):
         console.print("[dim]Replacement installed; plugin selection was not changed.[/dim]")
+    elif is_memory_provider:
+        _select_memory_provider(target.name, console, select=should_enable)
     elif should_enable:
         from hermes_cli.plugins_admission import AdmissionRefused
 
@@ -613,22 +624,66 @@ def cmd_install(
     declared_caps = _pc()._declared_capabilities_from_manifest(installed_manifest, installed_name)
     if declared_caps:
         _pc()._run_capability_consent(console, installed_name, declared_caps, context="install")
-    if enable:
+    if enable and not is_memory_provider:
         # Loads it into the running gateway now (handlers live) or says what needs a restart (#87770).
         from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
         console.print(f"[dim]{activation_hint(activate_plugin_now(installed_name, in_process=False))}[/dim]")
     console.print()
 
 
+def _select_memory_provider(name: str, console, *, select: bool) -> None:
+    """Make *name* the live memory provider (deps prepared through PM first, as ``hermes memory setup``
+    does), or say how to; ``plugins enable`` cannot activate one (#119909)."""
+    if not select:
+        console.print(
+            f"[dim]Memory provider installed but not active. Run `hermes memory setup` "
+            f"(or set memory.provider: {name}) to use it.[/dim]")
+        return
+    from hermes_cli.memory_setup import prepare_memory_provider_dependencies
+    from plugins.memory import find_provider_dir
+    if find_provider_dir(name) is None:  # never save a provider name the loader cannot resolve
+        console.print(f"[red]✗[/red] {name} does not resolve as a memory provider; memory.provider is unchanged.")
+        return
+    try:
+        prepare_memory_provider_dependencies(name)
+    except Exception as exc:  # resolver conflict, network, PM refusal: report, leave the selection alone
+        logger.debug("memory provider %s dependency preparation failed", name, exc_info=True)
+        console.print(f"[red]✗[/red] Could not prepare {name}'s dependencies: {exc}")
+        console.print("[dim]memory.provider is unchanged; run `hermes memory setup` after resolving it.[/dim]")
+        return
+    # The loader refuses a provider parked in plugins.disabled; lift that through the same admission transaction.
+    from hermes_cli.plugins_admission import AdmissionRefused
+    expected_config = _pc()._plugin_selection_version()
+    disabled, aliases = _pc()._get_disabled_set(), _pc()._plugin_aliases(name)
+    if disabled & aliases:
+        try:
+            _pc()._admit_and_save_plugin_sets(_pc()._get_enabled_set(), disabled - aliases,
+                                              console=console, action=f"Re-enable '{name}'",
+                                              expected_config=expected_config)
+        except AdmissionRefused:
+            console.print("[dim]memory.provider is unchanged.[/dim]")
+            return
+    previous = _pc()._get_current_memory_provider()
+    _pc()._save_memory_provider(name)
+    console.print(
+        f"[green]✓[/green] [bold]{name}[/bold] set as memory.provider"
+        f"{f' (replacing {previous})' if previous and previous != name else ''}. "
+        f"Run `hermes memory setup {name}` to configure it; new sessions use it.")
+
+
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
-    ref: Optional[str] = None, assume_deps_consent: bool = False,
+    ref: Optional[str] = None, assume_deps_consent: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
     pinned SHA (identifier may be empty); *ref* pins a custom source to one full commit SHA (same
     contract as ``--ref``); every path enforces the kill list (no GUI bypass). *assume_deps_consent*
-    is consent the caller already holds for the catalog entry's Python deps (the memory-provider
-    migration under ``security.allow_lazy_installs``), so no terminal is needed to answer the gate."""
+    is consent the caller holds for the Python deps, so no terminal is needed to answer the gate.
+    None (a user's Install click) is the consent the fresh-install enable already acts on: a plugin
+    the config already selects (``memory.provider``) would otherwise be refused every time, while
+    the same plugin unselected installs and enables. A forced replacement still needs explicit consent."""
+    if assume_deps_consent is None:
+        assume_deps_consent = enable and not force
     from hermes_cli import plugins_cmd_catalog as catalog
     warnings: list[str] = []
     entry = None
@@ -653,7 +708,8 @@ def dashboard_install_plugin(
         if entry is not None:
             return catalog.install_catalog_entry(entry, force=force, allow_removed=False,
                                                  assume_deps_consent=assume_deps_consent)
-        return _pc()._install_plugin_core(identifier, force=force, ref=(ref or "").strip() or None)
+        return _pc()._install_plugin_core(identifier, force=force, ref=(ref or "").strip() or None,
+                                          assume_deps_consent=assume_deps_consent)
 
     try:
         target, installed_manifest, installed_name = recorded_install(

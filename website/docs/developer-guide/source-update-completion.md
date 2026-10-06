@@ -35,13 +35,64 @@ fleet restart, Windows resume, dashboard deduplication and verification.
 The existing per-kind restart and abort-recovery algorithms remain; transient
 supervisor/process failures are real even without mixed-generation imports. Only
 the purge/reload workaround and independent retry/ZIP tail compositions disappear.
-Gateway exit status is written before a restart can terminate the updater's cgroup,
-and is demoted on later failure. Verification publishes the final receipt.
+Gateway exit status is written before a restart can terminate the updater's cgroup.
+Verification publishes the final receipt.
+
+## After the commit point nothing fails the update
+
+Once the tree has moved, `hermes update` exits 0 unless the code itself was rolled back.
+Every completion step is independent: a failed launcher publish, product build (each of
+TUI/web/desktop is attempted even when another failed), config migration,
+bytecode sweep, gateway restart/verification, Windows resume or retired-channel adoption
+prints a `⚠` line and is appended to the receipt's `followups` as `{step, reason}` while the
+receipt's `outcome` stays `"success"`. The step's own obligation stays armed:
+`source-completion-pending` for the tail (launchers, build, maintenance, config migration),
+the host fleet-restart obligation for gateways (the CLI startup warning keeps naming it; an
+owed restart records the pre-update gateways on the obligation, so a gateway that died at boot
+stays owed until it serves the checkout instead of being settled by the gateway-less discharge),
+the unstamped bytecode fingerprint for the sweep. The next launch or `hermes update` —
+including the "Already up to date" path, which runs the same completion — retries it. A host
+stamped "restarted" for this commit whose fleet is still off the checkout restarts again
+instead of dead-ending. Exit 2 (refused / concurrent) and exit 1 (nothing committed, or
+rolled back) keep their meaning.
+
+Profile sync is best-effort: `_sync_profiles_after_update` prints a per-profile error and
+carries on, so that error is not owed. Only a sync that escapes the step (for example with
+`SystemExit`) becomes a `profile_sync` follow-up and keeps `source-completion-pending` armed.
+
+A Windows gateway resume is attempted once after the commit point: by the completion child, or
+by the parent when dependencies are owed. Its failure is the `windows_resume` follow-up. The
+command's own exit path and its atexit net do not run it again, and a resume they still owe
+(the child never answered) is reported the same way instead of raising. The historical takeover
+completion (`update_finish`) also records the failure as a follow-up and keeps its exit status.
+
+The receipt is durable while the run is open: `begin_update_receipt` writes it as
+`outcome: "running"` to the run's own archive file and `latest.json`, and each stage
+boundary refreshes it, so a killed update leaves its own record. The next update marks a
+`running` record whose processes are gone `interrupted` (naming its last stage) and reports
+it. Receipts and the `update.log` tee resolve to the root home
+(`hermes_constants.get_default_hermes_root()`), never a sticky profile's; so do their readers
+(`hermes logs update`, the debug bundle, the dashboard's update status, pm's sync receipts).
+
+The completion bootstrap's dependency preparation (`ensure_tools_for_sync`, `pm.sync_venv`) also
+runs after the tree moved: its failure is a `dependencies` follow-up ("dependencies not installed
+yet — the next launch retries"), exit 0, with the tail obligation armed; a prepared child that
+dies without a result is a `completion` follow-up. A Ctrl-C after the commit point closes the run
+as `interrupted` (exit 130, never `failed`) and says the new code is in place with its remaining
+steps owed.
+
+Two more post-commit channels follow the same rule. The gateway `/update` marker
+(`.update_exit_code`) keeps the committed result when a gateway restart fails (systemd unit,
+abort recovery or Windows service resume): the restart debt is the `gateway_restart` follow-up,
+the host obligation and the `⚠` lines in the forwarded output, never a "failed" notice. A receipt
+store that refuses the terminal write prints `⚠ Update receipt not written` and the completion
+child answers its parent with the correlated terminal record it finalized in memory, so the exit
+status stays 0; only a user action (local changes left in the stash) still exits 1.
 
 ## Parent lifecycle and failures
 
 The parent waits and propagates the child's exact nonzero result (a signal is
-mapped to shell-style 128+signal). A child cannot succeed by merely exiting zero:
+mapped to shell-style 128+signal); post-commit step failures never produce one. A child cannot succeed by merely exiting zero:
 a terminal response with the matching receipt identity is required. The response
 returns the mutated Windows token so the parent's registered emergency resume does
 not repeat completed work. Normal parent completion performs no maintenance.

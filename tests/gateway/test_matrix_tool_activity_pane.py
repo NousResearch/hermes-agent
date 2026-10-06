@@ -87,7 +87,7 @@ async def test_matrix_send_and_edit_carry_html():
     adapter._client = MagicMock()
     adapter._encryption = False
     adapter.format_message = lambda c: c
-    adapter.truncate_message = lambda c, n: [c]
+    adapter.truncate_message = lambda c, n, len_fn=None: [c]
     adapter._build_text_message_content = lambda c: {"msgtype": "m.text", "body": c}
     adapter._apply_relation_metadata = lambda *a, **k: None
 

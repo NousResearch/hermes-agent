@@ -12,7 +12,7 @@ export const deOverrides = {
       'Geteilte Metriken enthalten nur begrenzte Zähler. Niemals Prompts, Dateien, Pfade oder Fehlertexte. Die Erfassung bleibt lokal. Das Senden an Nous ist eine separate Zustimmung.',
     whatIsCollected: 'Was erfasst wird',
     collectedIntro: 'Nur begrenzte Zähler:',
-    collectedActivity: 'Aktivität, Session-Länge, Ergebnisse und Fehlerklassen',
+    collectedActivity: 'Aktivität, Session-Länge, Ergebnisse und Fehlerklassen, einschließlich eines Grunds aus einer festen Liste, wenn ein Speicherschreibvorgang oder eine Kontextkomprimierung abgelehnt wird, fehlschlägt oder übersprungen wird',
     collectedModels: 'Modellrouten und Token-Summen',
     collectedNames: 'Namen integrierter Tools, Befehle und Katalogeinträge',
     collectedMilestones: 'Gruppierte Einrichtungszahlen',

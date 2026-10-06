@@ -127,10 +127,25 @@ _COMPRESSION_OUTCOMES = {
 }
 
 
-def compression_fields(*, trigger: Any, outcome: Any, tokens_before: Any, context_length: Any) -> dict[str, str]:
+def compression_failure_class(outcome: str, failure_class: Any) -> str:
+    """The attempt log's class for a skipped/failed attempt, collapsed onto the closed set:
+    ``exception:<Type>`` / ``rollback:<Type>`` keep only the prefix (the type name may be a plugin's)."""
+    if outcome == "success":
+        return "none"
+    value = _norm(failure_class).split(":", 1)[0]
+    if not value:
+        return "unknown"
+    return value if value in contract.COMPRESSION_FAILURE_CLASSES - {"none", "unknown"} else "other"
+
+
+def compression_fields(
+    *, trigger: Any, outcome: Any, tokens_before: Any, context_length: Any, failure_class: Any = None,
+) -> dict[str, str]:
+    outcome_value = _COMPRESSION_OUTCOMES.get(_norm(outcome), "failed")
     return {
         "context_fill_bucket": context_fill_bucket(tokens_before, context_length),
-        "outcome": _COMPRESSION_OUTCOMES.get(_norm(outcome), "failed"),
+        "failure_class": compression_failure_class(outcome_value, failure_class),
+        "outcome": outcome_value,
         "trigger": _COMPRESSION_TRIGGERS.get(_norm(trigger), "other"),
     }
 

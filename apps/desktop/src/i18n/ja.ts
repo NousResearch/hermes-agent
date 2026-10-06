@@ -19,7 +19,7 @@ export const ja = defineLocale({
       '共有メトリクスは上限付きのカウンターだけです。プロンプト、ファイル、パス、エラーテキストは含みません。収集はローカルで行われ、Nous への送信は別途オプトインです。',
     whatIsCollected: '収集される内容',
     collectedIntro: '上限付きのカウンターのみ：',
-    collectedActivity: 'アクティビティ、セッションの長さ、結果、エラーの分類',
+    collectedActivity: 'アクティビティ、セッションの長さ、結果、エラーの分類（メモリへの書き込みやコンテキスト圧縮が拒否・失敗・スキップされたときの、固定リストから選ばれた理由を含む）',
     collectedModels: 'モデルのルートとトークン合計',
     collectedNames: '組み込みツール、コマンド、カタログの名前',
     collectedMilestones: '区分けされたセットアップの件数',

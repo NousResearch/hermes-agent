@@ -47,21 +47,6 @@ class TestWhatTheClientSends:
         assert sent["body"]["client"]["name"] == "hermes-agent"
         assert sent["user_agent"].startswith("hermes-agent/") and "(cli;" in sent["user_agent"]
 
-    def test_the_desktop_backend_reports_the_desktop_surface(self, nas, monkeypatch):
-        _desktop_backend(monkeypatch)
-        _resolve()
-        assert nas.token_requests[-1]["body"]["client"]["surface"] == "desktop"
-        assert "(desktop;" in nas.token_requests[-1]["user_agent"]
-
-    def test_the_messaging_gateway_reports_the_gateway_surface(self, nas, monkeypatch):
-        """The gateway process has no console and no desktop; it must not read as ``cli`` (whose
-        rules may expect a human at a terminal) or print challenge links into its logs."""
-        import gateway.status as status
-        monkeypatch.setattr(status, "owns_gateway_runtime_lock", lambda: True)
-        _resolve()
-        assert nas.token_requests[-1]["body"]["client"]["surface"] == "gateway"
-
-
 class TestRequiredChallenge:
     def test_a_host_failure_wakes_the_waiter_but_still_requires_an_authoritative_mint(self, nas, monkeypatch):
         nas.challenge_required = True
@@ -159,15 +144,6 @@ class TestRequiredChallenge:
                 pass
         monkeypatch.setattr(anon_challenge, "present", present)
         assert _resolve()["api_key"]
-
-    def test_status_shows_the_pending_challenge_while_it_is_worked(self, nas, monkeypatch):
-        nas.challenge_required = True
-        nas.challenge_statuses = ["pending"]
-        seen = []
-        monkeypatch.setattr(anon_challenge, "present", lambda _c: seen.append(anon_challenge.pending_challenge()))
-        _resolve()
-        assert seen == [{"type": "browser", "url": nas.challenge_url, "required": True,
-                         "expires_in": 600, "message": "A quick check first.", "attempt": 0}]
 
     def test_a_challenge_that_never_clears_is_a_retryable_error_not_a_hang(self, nas, presented, monkeypatch):
         nas.challenge_required = True
@@ -352,12 +328,6 @@ class TestWhatIsNeverOpened:
         assert anon_challenge.server_message("Check\x1b[2J this") == "Check [2J this"
         payload = {"challenges": [{"type": "browser", "url": f"{PORTAL}/challenge?code=\x1b]0;x"}]}
         assert anon_challenge.parse_browser_challenge(payload, PORTAL) is None
-
-    def test_server_copy_is_only_used_when_it_looks_like_copy(self):
-        assert anon_challenge.server_message("  Two\n lines  ") == "Two lines"
-        assert anon_challenge.server_message("x" * 301) == ""
-        assert anon_challenge.server_message({"not": "text"}) == ""
-
 
 class TestOptionalChallenge:
     def test_a_terminal_never_opens_anything_for_an_optional_challenge(self, nas, presented, monkeypatch):

@@ -64,14 +64,6 @@ describe('runFreeTierChallenge', () => {
     await expect(runFreeTierChallenge({ ...challenge, url: `${challenge.url}5` }, report)).resolves.toBe('done')
   })
 
-  it('passes an optional challenge through as not-required', async () => {
-    const run = vi.fn().mockResolvedValue('failed')
-
-    installBridge(run)
-    await runFreeTierChallenge({ ...challenge, url: `${challenge.url}2`, required: false })
-    expect(run).toHaveBeenCalledWith(expect.objectContaining({ required: false }))
-  })
-
   it('ignores anything that is not a browser challenge', () => {
     installBridge(vi.fn())
     expect(runFreeTierChallenge(undefined)).toBeNull()

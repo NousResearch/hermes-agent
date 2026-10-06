@@ -387,3 +387,20 @@ def test_fs_write_text_never_decodes_percent_path(client, tmp_path):
     assert response.status_code == 200
     assert sibling.read_text() == "existing"
     assert (tmp_path / "report%20v2.md").read_text() == "new"
+
+
+def test_fs_backend_files_via_local_skips_ssh_adapter(monkeypatch):
+    monkeypatch.setattr(file_routes, "_profile_scope", lambda _profile: nullcontext())
+    monkeypatch.setattr(
+        file_routes,
+        "load_config",
+        lambda: {"terminal": {"backend": "ssh", "ssh_host": "box", "ssh_user": "dev", "files_via": "local"}},
+    )
+    monkeypatch.setattr(file_routes, "load_env", lambda: {})
+
+    def fail_factory(*_args, **_kwargs):
+        raise AssertionError("SSH adapter must not be built when files_via is local")
+
+    monkeypatch.setattr(ssh_workspace_fs, "get_ssh_workspace_fs", fail_factory)
+
+    assert file_routes._fs_backend("remote-dev") is None

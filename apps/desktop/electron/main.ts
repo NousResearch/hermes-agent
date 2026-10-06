@@ -591,7 +591,7 @@ import {
   windowOpacityOptions
 } from './translucency'
 import { updateGateReason, waitForUpdateClearance } from './update-gate'
-import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
+import { hasLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { updateConnectionsBeforeLocal } from './update-order'
 import {
   resolveUpdaterMechanism,
@@ -2990,7 +2990,7 @@ const UPDATE_HANDOFF_DWELL_MS = 2500
 // `finally` clears updateInFlight immediately after the hand-off is accepted.
 function updateGateDeps() {
   return {
-    hasLiveMarker: () => Boolean(readLiveUpdateMarker(HERMES_HOME)),
+    hasLiveMarker: () => hasLiveUpdateMarker(HERMES_HOME),
     isUpdateInFlight: () => updateInFlight,
     isHandoffActive: () => isQuittingForHandoff,
     // The latest receipt is cross-process truth: a `hermes update` that failed

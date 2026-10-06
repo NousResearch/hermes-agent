@@ -14,12 +14,15 @@
 
 import fs from 'fs'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import os from 'os'
 import path from 'path'
 
 import { test } from 'vitest'
 
 import {
+  hasLiveUpdateMarker,
+  isMacUpdateProcess,
   isPidAlive,
   markerPath,
   posixProcessState,
@@ -48,6 +51,119 @@ const DEAD: typeof process.kill = () => {
   throw err
 }
 
+test('macOS update-process check accepts only update hand-off commands', () => {
+  const inspect = (_command: string, _args: string[], _options: object) =>
+    JSON.stringify(['/bin/bash', '/Users/me/Hermes Agent/scripts/desktop-update/posix.sh', '--daemonized'])
+
+  const unrelated = (_command: string, _args: string[], _options: object) =>
+    JSON.stringify(['/Applications/Notes.app/Contents/MacOS/Notes'])
+
+  assert.equal(isMacUpdateProcess(4242, inspect), true)
+  assert.equal(isMacUpdateProcess(4242, unrelated), false)
+  assert.equal(
+    isMacUpdateProcess(4242, () => {
+      throw new Error('ps unavailable')
+    }),
+    true,
+    'inspection failures must preserve the update gate'
+  )
+})
+
+test.skipIf(process.platform !== 'darwin')('update identity uses entrypoint and subcommand boundaries, never arbitrary arguments', () => {
+  for (const argv of [
+    ['/usr/bin/python3', '-m', 'hermes_cli.main', 'update'],
+    ['/opt/Tools With Spaces/bin/python3.14', '/opt/Tools With Spaces/bin/hermes', '--profile', 'work', 'update'],
+    ['/opt/Tools With Spaces/bin/hermes', 'update']
+  ]) {
+    assert.equal(isMacUpdateProcess(4242, inspectArgv(argv)), true)
+  }
+
+  for (const argv of [
+    ['/usr/bin/printf', 'hermes update'],
+    ['/bin/bash', '/tmp/ordinary.sh', '/Users/me/scripts/desktop-update/posix.sh'],
+    ['/usr/bin/python3', '-c', 'print("hermes update")'],
+    ['/usr/bin/python3', '/tmp/ordinary.py', '-m', 'hermes_cli.main', 'update'],
+    ['/usr/bin/hermes', 'chat', 'hermes_cli.main', 'update']
+  ]) {
+    assert.equal(isMacUpdateProcess(4242, inspectArgv(argv)), false)
+  }
+
+  assert.equal(isMacUpdateProcess(4242, () => 'unparseable arguments'), true)
+  assert.equal(isMacUpdateProcess(4242, () => JSON.stringify([])), true)
+})
+
+function inspectArgv(argv: string[]) {
+  return (command: string, args: string[], options: object) =>
+    args.length === 5 ? JSON.stringify(argv) : execFileSync(command, args, options)
+}
+
+test.skipIf(process.platform !== 'darwin')('formal inline launchers retain their real CLI update owner', () => {
+  const root = path.resolve(import.meta.dirname, '../../..')
+
+  const fixture = `import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hermes_cli._launchers import runtime_command, _launcher_script
+root = Path(sys.argv[1])
+print(json.dumps([runtime_command(root, python="/usr/bin/python3"),
+    ["/usr/bin/python3", "-I", "-c", _launcher_script("hermes", root, None)]]))`
+
+  const factoryPython = process.env.HERMES_PYTHON || path.join(root, '.venv', 'bin', 'python')
+
+  const launchers: string[][] = JSON.parse(
+    execFileSync(factoryPython, ['-I', '-c', fixture, root], { encoding: 'utf8' })
+  )
+
+  for (const launcher of launchers) {
+    for (const args of [['update'], ['--profile', 'work', 'update'], ['-p', 'work', 'update'], ['--profile=work', 'update']]) {
+      const home = tmpHome('formal-inline-owner')
+      const now = 1_000_000_000_000
+      writeMarker(home, 4242, Math.floor(now / 1000) - 5)
+      const inspect = inspectArgv([...launcher, ...args])
+
+      const live = readLiveUpdateMarker(home, {
+        kill: ALIVE,
+        now: () => now,
+        processState: () => 'S',
+        isExpectedUpdateProcess: pid => isMacUpdateProcess(pid, inspect)
+      })
+
+      assert.equal(live?.pid, 4242, 'formal managed launcher must not lose its update claim')
+      assert.ok(fs.existsSync(markerPath(home)))
+    }
+
+    assert.equal(
+      isMacUpdateProcess(4242, inspectArgv([...launcher, '--profile', 'work', 'chat'])),
+      true,
+      'unproved inline identity remains unknown even when argv suggests a non-update command'
+    )
+  }
+})
+
+test.skipIf(process.platform !== 'darwin')('inline source inspection rejects only a proven harmless literal print', () => {
+  assert.equal(isMacUpdateProcess(4242, inspectArgv(['/usr/bin/python3', '-c', 'print("hermes update")'])), false)
+
+  for (const argv of [
+    ['/usr/bin/python3', '-I', '-c', 'arbitrary_launcher()', 'update'],
+    ['/usr/bin/python3', '-X', 'utf8', '-c', 'arbitrary_launcher()', 'update'],
+    ['/usr/bin/python3', '-Iu', '-c', 'arbitrary_launcher()', 'update'],
+    ['/usr/bin/python3', '-I', '-c', 'arbitrary_launcher()', '--profile', 'work', 'chat'],
+    ['/usr/bin/python3', '-c', 'print("hermes update"); acquire_update_lock()'],
+    ['/usr/bin/python3', '-c', 'print(*make_args())'],
+    ['/usr/bin/python3', '-c', 'print("hermes update", file=open("/tmp/output", "w"))']
+  ]) {
+    assert.equal(isMacUpdateProcess(4242, inspectArgv(argv)), true, 'unproved inline identity remains unknown')
+  }
+})
+
+test('the host boot gate handles a real non-updater process', () => {
+  const home = tmpHome('host-boot-gate')
+  writeMarker(home, process.pid, Math.floor(Date.now() / 1000))
+
+  assert.equal(hasLiveUpdateMarker(home), process.platform !== 'darwin')
+  assert.equal(fs.existsSync(markerPath(home)), process.platform !== 'darwin')
+})
+
 test('absent marker => no live update', () => {
   const home = tmpHome('absent')
   assert.equal(readLiveUpdateMarker(home, { kill: ALIVE }), null)
@@ -62,6 +178,75 @@ test('live pid within age ceiling => live update reported', () => {
   assert.equal(res.pid, 4242)
   assert.ok(res.ageMs >= 0 && res.ageMs < 10_000)
   assert.ok(fs.existsSync(markerPath(home)), 'a live marker is NOT deleted')
+})
+
+test('a live macOS pid outside the update hand-off is stale and is pruned', () => {
+  const home = tmpHome('unrelated-live-macos-pid')
+  const now = 1_000_000_000_000
+  writeMarker(home, 4242, Math.floor(now / 1000) - 5)
+
+  assert.equal(
+    readLiveUpdateMarker(home, {
+      kill: ALIVE,
+      now: () => now,
+      isExpectedUpdateProcess: () => false
+    }),
+    null,
+    'PID reuse must not keep the Desktop update gate closed'
+  )
+  assert.ok(fs.existsSync(markerPath(home)) === false, 'an unrelated live pid marker self-heals')
+})
+
+test('an expected macOS hand-off pid remains a live update', () => {
+  const home = tmpHome('expected-live-macos-handoff')
+  const now = 1_000_000_000_000
+  writeMarker(home, 4242, Math.floor(now / 1000) - 5)
+
+  const res = readLiveUpdateMarker(home, {
+    kill: ALIVE,
+    now: () => now,
+    isExpectedUpdateProcess: pid => pid === 4242
+  })
+
+  assert.equal(res?.pid, 4242)
+  assert.ok(fs.existsSync(markerPath(home)), 'a live hand-off marker is retained')
+})
+
+test('an expected hand-off that is a zombie is stale and is pruned', () => {
+  const home = tmpHome('expected-zombie-handoff')
+  const now = 1_000_000_000_000
+  writeMarker(home, 4242, Math.floor(now / 1000) - 5)
+
+  assert.equal(
+    readLiveUpdateMarker(home, {
+      kill: ALIVE,
+      now: () => now,
+      isExpectedUpdateProcess: () => {
+        assert.fail('a zombie owner must be cleared without inspecting identity')
+      },
+      processState: () => 'Z'
+    }),
+    null
+  )
+  assert.ok(!fs.existsSync(markerPath(home)), 'identity must not revive an exited owner')
+})
+
+test('identity inspection errors retain a live owner with unknown process state', () => {
+  const home = tmpHome('inspection-failed-live-owner')
+  const now = 1_000_000_000_000
+  writeMarker(home, 4242, Math.floor(now / 1000) - 5)
+
+  const res = readLiveUpdateMarker(home, {
+    kill: ALIVE,
+    now: () => now,
+    isExpectedUpdateProcess: () => {
+      throw new Error('ps unavailable')
+    },
+    processState: () => null
+  })
+
+  assert.equal(res?.pid, 4242)
+  assert.ok(fs.existsSync(markerPath(home)), 'inspection failure must preserve the update gate')
 })
 
 test('dead pid => no live update and marker is pruned', () => {

@@ -37,6 +37,7 @@ from agent.compaction_display import project_compaction_message_for_display  # n
 from agent.skill_commands import describe_skill_invocation  # noqa: F401
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: F401
 from tui_gateway import git_probe
+from tui_gateway.prompt_intents import PromptIntentClaim, PromptIntentLedger
 from tui_gateway._env import env_float, env_int
 from tui_gateway.turn_marker import clear_turn_marker, marker_writer_state, read_turn_marker, record_turn_start  # noqa: F401
 from tui_gateway.contracts import registry as _contracts
@@ -2261,15 +2262,10 @@ def _current_profile_name() -> str:
     return "default"
 
 
-# Monotonic GUI<->backend contract version: the desktop refuses a backend reporting less (or none) with a
-# one-click "update to align" prompt. The desktop also warns in the reverse direction: a backend reporting
-# MORE than the GUI's required value means the GUI build predates this backend (e.g. a long-running app
-# across a backend update) and should be updated. Bump whenever the desktop's backend contract changes.
-# v2 file.attach; v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
-# v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key;
-# v7 blocking prompts are JSON-RPC server->client requests (`srq-<n>` frames, `open_requests` replay) — a v6
-# backend still emits `<kind>.request` notifications the renderer no longer listens for.
-DESKTOP_BACKEND_CONTRACT = 8
+# Monotonic GUI/backend contract; either direction of version skew offers an update.
+# v2 file.attach; v3 approvals.mode; v4 explicit normal tier; v5 large WS frames; v6 plugin keys;
+# v7 blocking server->client requests; v9 prompt.submit destination binding and retry idempotency.
+DESKTOP_BACKEND_CONTRACT = 9
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -3653,6 +3649,7 @@ from . import (  # noqa: E402
     compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
     session_lifecycle as _session_lifecycle, session_reaper as _session_reaper,
     session_transports as _session_transports,
+    session_prompt_intents as _session_prompt_intents,
     methods_browser_control as _methods_browser_control, methods_bot_relay as _methods_bot_relay,
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
@@ -3667,6 +3664,7 @@ from . import (  # noqa: E402
     methods_shared_metrics as _methods_shared_metrics)
 
 for _m in (
+    _session_prompt_intents,
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,

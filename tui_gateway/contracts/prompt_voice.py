@@ -30,6 +30,9 @@ class PromptSubmitParams(SessionParams):
     ``truncate_before_message_id``, or the legacy ``truncate_before_user_ordinal``)."""
 
     text: JsonValue = ""
+    client_request_id: str | None = None  # one logical send, retained through runtime replacement/retries
+    expected_stored_session_id: str | None = None
+    expected_session_key: str | None = None  # older durable-destination spelling
     display_kind: str | None = None  # only "hidden" is honoured; anything else renders as a user row
     interrupted: bool | None = None  # client-side barge-in: the turn's model message carries the note
     queued: bool | None = None  # client queue drain — the busy path must hold it, never redirect/steer
@@ -56,6 +59,7 @@ class PromptSubmitStatus(WireEnum):
     queued = "queued"
     steered = "steered"
     redirected = "redirected"
+    complete = "complete"
 
 
 class PromptSubmitResult(Result):
@@ -65,6 +69,9 @@ class PromptSubmitResult(Result):
 
     status: PromptSubmitStatus | None = None
     voice_stopped: bool | None = None
+    duplicate: bool | None = None
+    messages: list[dict[str, JsonValue]] | None = None  # completed retry snapshot
+
     # The row written for THIS accepted input, captured before the worker can consume it.
     # Absent on queued/steered/redirected inputs and whenever persistence is not yet proven.
     user_row_id: int | None = None

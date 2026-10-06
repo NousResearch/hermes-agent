@@ -6024,6 +6024,9 @@ describe('usePromptActions stale-closure session routing', () => {
 
     expect(updated).toContain(RUNTIME_SESSION_B)
     expect(updated).not.toContain(RUNTIME_SESSION_ID)
+    expect(gatewayCalls(requestGateway).find(([m]) => m === 'prompt.submit')?.[1]).toMatchObject({
+      confirm_deep_truncate: true
+    })
 
     for (const [, params] of gatewayCalls(requestGateway)) {
       if (params && 'session_id' in params) {

@@ -417,8 +417,9 @@ def _oauth_identity(entry: Dict[str, Any]) -> Optional[str]:
 def _oauth_freshness(entry: Dict[str, Any]) -> float:
     """Best-effort 'how recently was this pair issued' score (epoch seconds).
 
-    A rotation always issues a later-expiring access token, so ``expires_at`` ordering identifies
-    the live copy; ``last_refresh`` and the JWT ``exp`` claim are fallbacks.
+    Scores on the latest of ``expires_at_ms``/``expires_at``/``last_refresh``, else the JWT ``exp``.
+    An expiry is not a mint time (two pairs minted minutes apart can carry inverted expiries), so
+    compare through ``_freshness_order``, which prefers ``last_refresh`` when both sides have it.
     """
     from agent.credential_pool import _parse_absolute_timestamp
     stamps = [entry.get(k) for k in ("expires_at_ms", "expires_at", "last_refresh")]
@@ -427,6 +428,21 @@ def _oauth_freshness(entry: Dict[str, Any]) -> float:
         exp = _decode_jwt_claims(entry.get("access_token")).get("exp")
         best = _parse_absolute_timestamp(exp) or 0.0
     return best
+
+
+def _freshness_order(a: Dict[str, Any], b: Dict[str, Any]) -> int:
+    """1 if *a* holds the later-issued pair, -1 if *b* does, 0 if tied.
+
+    When BOTH sides carry ``last_refresh`` (a mint time) that decides: the access token's expiry
+    is not a mint time, and ``_oauth_freshness`` takes the max over its stamps, so expiry would
+    otherwise always win over the mint stamp. Otherwise fall back to ``_oauth_freshness``.
+    """
+    from agent.credential_pool import _parse_absolute_timestamp
+    a_at = _parse_absolute_timestamp(a.get("last_refresh"))
+    b_at = _parse_absolute_timestamp(b.get("last_refresh"))
+    if a_at is None or b_at is None:
+        a_at, b_at = _oauth_freshness(a), _oauth_freshness(b)
+    return (a_at > b_at) - (a_at < b_at)
 
 
 def _find_root_counterpart(
@@ -478,7 +494,8 @@ def _singleton_as_row(path: Path) -> Optional[Dict[str, Any]]:
     return {
         "access_token": data.get("accessToken"),
         "refresh_token": data.get("refreshToken"),
-        "expires_at_ms": data.get("expiresAt")}
+        "expires_at_ms": data.get("expiresAt"),
+        "last_refresh": data.get("lastRefresh")}
 
 
 def heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str, Any]]:
@@ -537,7 +554,7 @@ def _heal_forked_provider_block(
         for key in ("access_token", "refresh_token")
     ):
         return None
-    adopted = _oauth_freshness(p_flat) > _oauth_freshness(r_flat)
+    adopted = _freshness_order(p_flat, r_flat) > 0
     if adopted:
         r_providers[provider_id] = dict(p_block)
     del p_providers[provider_id]
@@ -564,7 +581,7 @@ def _pool_rows(store: Dict[str, Any], provider_id: str) -> Tuple[Any, List[Any]]
 def _adopt_if_fresher(
     target: Dict[str, Any], candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """*target* carrying *candidate*'s pair when the candidate rotated later, else None."""
-    fresher = _oauth_freshness(candidate) > _oauth_freshness(target)
+    fresher = _freshness_order(candidate, target) > 0
     return _adopt_oauth_material(target, candidate) if fresher else None
 
 
@@ -681,11 +698,10 @@ class _HealPass:
         if pkce_idx is None:
             return
         pkce_row = self.r_rows[pkce_idx]
-        row_fresh = _oauth_freshness(pkce_row)
-        single_fresh = _oauth_freshness(self.root_singleton_row)
-        if row_fresh > single_fresh:
+        order = _freshness_order(pkce_row, self.root_singleton_row)
+        if order > 0:
             self.root_singleton_row = _adopt_oauth_material(self.root_singleton_row, pkce_row)
-        elif single_fresh > row_fresh:
+        elif order < 0:
             self.r_rows[pkce_idx] = _adopt_oauth_material(pkce_row, self.root_singleton_row)
             self.root_changed = True
 

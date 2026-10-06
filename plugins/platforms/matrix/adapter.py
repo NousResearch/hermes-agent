@@ -1884,6 +1884,24 @@ class MatrixAdapter(BasePlatformAdapter):
         if rooms_join or initial:
             self._joined_rooms.update(rooms_join.keys())
             self._invalidate_room_identities()
+        # Prune rooms the bot has left or been kicked/banned from. This path only
+        # ever ADDED joined rooms, so `_joined_rooms` went stale between reconnects:
+        # a kicked/left room stayed "joined", and the short-circuits in
+        # `_join_room_by_id`, `_schedule_invite_join`, and
+        # `_schedule_pending_invite_joins` (all keyed on `room_id in _joined_rooms`)
+        # then silently dropped a later re-invite. A full reconnect rebuilds the
+        # set from scratch, but incremental syncs did not — so recovery needed a
+        # disconnect. Drop `rooms.leave` entries each sync.
+        # A room can appear in both `join` and `leave` in one sync when membership
+        # churned join->leave->join since `since`; the bot is currently joined, so
+        # subtract the current-join set and let it win. `_joined_rooms` is shared by
+        # reference with the crypto store and seeds the DM cache, so pruning a live
+        # room here would drop it from both until the next reconnect.
+        rooms_leave = sync_data.get("rooms", {}).get("leave", {})
+        stale = rooms_leave.keys() - rooms_join.keys()
+        if stale:
+            self._joined_rooms.difference_update(stale)
+            self._invalidate_room_identities()
         self._warn_encrypted_drops(rooms_join, client)
         nb = sync_data.get("next_batch")  # incremental syncs resume from here
         if nb:

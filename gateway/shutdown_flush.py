@@ -262,7 +262,9 @@ def _order_flush_files(paths) -> list[Path]:
                 # seq is per process (_TRANSCRIPT_SPOOL_SEQ) and ts has one-second resolution, so
                 # files two processes spool in the same second can interleave; within one process
                 # the order is exact.
-                _sort_number(payload.get("seq")),
+                # Slot heads have no seq; overflow tails start at zero. Interpret legacy
+                # heads as -1 too, so files already on disk recover before their tail.
+                _sort_number(payload.get("seq", -1)),
                 path.name,
             ),
             path,

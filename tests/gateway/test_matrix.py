@@ -569,12 +569,20 @@ class TestMatrixRenderingPayloads:
     ])
     @pytest.mark.parametrize("thread_id", [None, "$root"])
     async def test_split_reply_modes(self, mode, fallback_chunks, thread_id, tmp_path):
-        import yaml
+        from gateway.config import PlatformConfig
         from plugins.platforms.matrix.adapter import MatrixAdapter
 
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text(f"reply_to_mode: {mode}\n")
-        config = PlatformConfig.from_dict(yaml.safe_load(config_path.read_text()))
+        # PyYAML is not a project dependency. These are the values a YAML 1.1
+        # load of the parametrized source text produces, including unquoted off.
+        parsed = {
+            '"off"': "off",
+            "off": False,
+            "first": "first",
+            "all": "all",
+            '" ALL "': " ALL ",
+            "invalid": "invalid",
+        }[mode]
+        config = PlatformConfig.from_dict({"reply_to_mode": parsed})
         adapter = MatrixAdapter(config)
         adapter._client = self.adapter._client
         text = "line\n" * (adapter.max_message_length // len("line\n") + 200)

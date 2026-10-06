@@ -655,7 +655,14 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
     # _OWN_TAB_PREAMBLE). Private per-name browsers skip this — nothing to collide with.
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)  # always pop: never exported to the CLI
-    if session and not private_browser:
+    ownership = None
+    if _read_browser_cfg().get("tab_cleanup_enabled") is True:
+        from tools.browser_tab_capture import prepare_exec, unresolved_owner
+        try:
+            ownership, code = prepare_exec(env, code, get_hermes_home(), unresolved_owner(task_id))
+        except Exception as exc:
+            return tool_error(f"Browser tab ownership admission failed ({type(exc).__name__})")
+    elif session and not private_browser:
         code = _OWN_TAB_PREAMBLE + code
 
     workspace = _workspace_dir(task_id)
@@ -675,8 +682,15 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         with _driven_daemons_lock:
             _driven_daemons.add(env.get("BU_NAME", "default"))
         try:
-            return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
+            proc = _run_cli_killing_process_group(cmd, code, env, timeout)
+            if ownership:
+                # Python errors after synchronous replies are drained too. finish()
+                # never releases an existing quarantine or outstanding request.
+                ownership.registry.finish(ownership.token)
+            return {"proc": proc}
         except subprocess.TimeoutExpired:
+            if ownership:
+                ownership.registry.quarantine(ownership.token)
             return {"error_result": tool_error(
                 f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
                 f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
@@ -685,11 +699,17 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         except OSError as e:
             return {"error_result": tool_error(f"Failed to launch browser-use CLI: {e}")}
 
-    if bot_desktop_browser:
-        from tools.browser_tool_session import run_fenced
-        dispatched = run_fenced({"features": {"local": True}}, dispatch)
-    else:
-        dispatched = dispatch()
+    try:
+        if bot_desktop_browser:
+            from tools.browser_tool_session import run_fenced
+            dispatched = run_fenced({"features": {"local": True}}, dispatch)
+        else:
+            dispatched = dispatch()
+    finally:
+        if ownership:
+            # Includes denied fences, launch errors and unexpected interruptions.
+            # No-op for already drained calls; unknown execution stays fenced.
+            ownership.registry.quarantine(ownership.token)
     if "proc" not in dispatched:
         if "error_result" in dispatched:
             return dispatched["error_result"]

@@ -14,6 +14,8 @@ from __future__ import annotations
 import threading
 import types
 
+import pytest
+
 from tui_gateway import server
 
 
@@ -222,6 +224,8 @@ def test_submit_during_manual_compress_is_queued_and_reply_persists(monkeypatch)
     assert second["error"]["code"] == 4009
     # tools.configure rebuilds the agent (history_version bump): refused before it reads the action
     assert server._methods["tools.configure"]("r4", {"session_id": "sid"})["error"]["code"] == 4009
+    with pytest.raises(server.CompressionBusy):  # the /compress + slash-mirror core: a typed busy, not a failure
+        server._compress_live_with_feedback("sid", session, agent, "", snapshot_kwargs=True)
     # "/compress --aggressive" never touches history: answered without claiming (or draining) the busy session
     assert server._compress_live_with_feedback("sid", session, agent, "--aggressive", snapshot_kwargs=True) == \
         ccm.AGGRESSIVE_UNSUPPORTED

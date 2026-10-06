@@ -147,7 +147,7 @@ def test_all_ptb_clients_share_the_platform_ssl_context(monkeypatch):
     platform-trust context — a fresh verify=True context per client reloads CAs on the
     event loop on every reconnect (#133339)."""
     shared = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    monkeypatch.setattr("agent.ssl_verify.platform_ssl_context", lambda: shared, raising=False)
+    monkeypatch.setattr(tg_adapter, "platform_ssl_context", lambda: shared, raising=False)
     for proxy_url in ("http://127.0.0.1:9/", None):
         instances = _drive_connect(monkeypatch, proxy_url=proxy_url)
         assert len(instances) >= 2

@@ -18,6 +18,7 @@ from hermes_cli import setup_platforms
 logger = logging.getLogger(__name__)
 
 from agent.deadline import run_bounded_async
+from agent.ssl_verify import platform_ssl_context
 from gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal,
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
@@ -2986,17 +2987,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             "TELEGRAM_PROXY", target_hosts=["api.telegram.org", *fallback_ips],
             configured=self.config.extra.get("proxy_url"))
 
-        from agent.ssl_verify import platform_ssl_context
-        ssl_context = platform_ssl_context()
-
         def _pair(general_httpx: dict, updates_httpx: dict, **extra) -> tuple:
-            return (HTTPXRequest(**request_kwargs, **extra, httpx_kwargs={"verify": ssl_context, **general_httpx}),
-                    HTTPXRequest(**request_kwargs, **extra, httpx_kwargs={"verify": ssl_context, **updates_httpx}))
+            return (HTTPXRequest(**request_kwargs, **extra, httpx_kwargs={"verify": platform_ssl_context(), **general_httpx}),
+                    HTTPXRequest(**request_kwargs, **extra, httpx_kwargs={"verify": platform_ssl_context(), **updates_httpx}))
 
         if fallback_ips and not proxy_url and not disable_fallback:
             logger.info("[%s] Telegram fallback IPs active: %s", self.name, ", ".join(fallback_ips))
-            # Separate request/update pools reduce contention during polling reconnect + bootstrap calls.
-            _transport_kwargs: dict = {"socket_options": tcp_keepalive_socket_options(), "verify": ssl_context}
+            _transport_kwargs: dict = {"socket_options": tcp_keepalive_socket_options(), "verify": platform_ssl_context()}
             # Keep request/update pools separate to reduce contention during polling reconnect + bot API
             # bootstrap/delete_webhook calls. httpx ignores the client-level `limits` kwarg when a custom
             # `transport` is supplied (#58790). Unlike the proxy/direct branches (which inject limits at the

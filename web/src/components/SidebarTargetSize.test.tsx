@@ -59,8 +59,11 @@ function hasClass(el: Element, token: string): boolean {
 
 describe("sidebar control target sizes (WCAG 2.5.8, issue #70983)", () => {
   beforeEach(() => {
-    window.sessionStorage.clear();
-    window.localStorage.clear();
+    // Node 25 ships its own `localStorage` global that vitest's jsdom
+    // environment does not always shadow; guard so CI's runtime can't
+    // turn a layout-class test into a storage TypeError.
+    window.sessionStorage?.clear?.();
+    window.localStorage?.clear?.();
     Object.defineProperty(window, "__HERMES_AUTH_REQUIRED__", {
       configurable: true,
       value: true,

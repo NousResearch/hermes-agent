@@ -192,7 +192,8 @@ def _make_fake_mautrix():
 
     def encrypt_attachment(data):
         encrypted_file = MagicMock()
-        encrypted_file.serialize.return_value = {
+        encrypted_file.serialize.side_effect = lambda: {
+            "url": str(encrypted_file.url),
             "key": {"k": "testkey"}, "iv": "testiv",
             "hashes": {"sha256": "testhash"}, "v": "v2",
         }
@@ -250,6 +251,19 @@ def _make_fake_mautrix():
         "mautrix.util": mautrix_util,
         "mautrix.util.async_db": mautrix_util_async_db,
     }
+
+
+@pytest.mark.parametrize(
+    "url", ["mxc://example.org/first", "mxc://other.example/second"]
+)
+def test_fake_encrypted_file_serializes_assigned_url(url):
+    modules = _make_fake_mautrix()
+    encrypt_attachment = modules["mautrix.crypto.attachments"].encrypt_attachment
+    _, encrypted_file = encrypt_attachment(b"secret")
+    before = encrypted_file.serialize()
+    encrypted_file.url = url
+
+    assert encrypted_file.serialize() == {**before, "url": url}
 
 
 # ---------------------------------------------------------------------------

@@ -2456,11 +2456,13 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         msg_id, room_id = event.message_id, event.source.chat_id
-        if not self._reactions_enabled or not msg_id or not room_id or outcome == ProcessingOutcome.CANCELLED:
+        if not self._reactions_enabled or not msg_id or not room_id:
             return
         eyes_event_id = self._pending_reactions.pop((room_id, msg_id), None)
         if eyes_event_id:
             self._schedule_reaction_redaction(room_id, eyes_event_id, "processing complete")
+        if outcome == ProcessingOutcome.CANCELLED:
+            return
         await self._send_reaction(room_id, msg_id, "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c")
 
     async def _on_reaction(self, event: Any) -> None:

@@ -19,7 +19,7 @@ from gateway.status import (
 from hermes_cli import gateway as gateway_mod
 from hermes_cli.gateway import GATEWAY_RESTART_WATCHER_TIMEOUT_S
 from hermes_cli.update_cmd_windows import (
-    _hermes_holder_subcommand, _pending_relaunch_pids, _relaunch_verify_timeout_s,
+    _GatewayRelaunchUnverified, _hermes_holder_subcommand, _relaunch_verify_timeout_s,
 )
 
 
@@ -50,26 +50,22 @@ def test_spawned_restart_watcher_is_not_identified_as_a_gateway(monkeypatch):
     assert _hermes_holder_subcommand(cmdline) is None
 
 
-@pytest.mark.parametrize(
-    "profiles, unmapped, alive, expected",
-    [
-        ({}, [], set(), []),
-        ({"default": 14980}, [], set(), []),
-        ({"default": 14980}, [], {14980}, [14980]),
-        # An unmapped entry without captured argv was never handed to a watcher.
-        ({}, [{"pid": 4242, "argv": None}], {4242}, []),
-        ({"default": 14980}, [{"pid": 4242, "argv": ["python"]}], {14980, 4242}, [4242, 14980]),
-    ],
-)
-def test_pending_relaunch_pids(profiles, unmapped, alive, expected):
-    assert _pending_relaunch_pids(profiles, unmapped, alive.__contains__) == expected
+def test_verify_budget_always_covers_the_watchers_own_wait():
+    """#123971: the verify poll must budget the watcher's full deadline even when the
+    updater's own PID snapshot reads the old gateway as dead.
 
-
-def test_verify_budget_covers_the_watchers_own_wait_when_the_old_pid_is_still_alive():
+    The respawn is performed by a separate detached watcher child on its own clock; the
+    updater cannot observe its progress, so the pid-liveness snapshot must not shrink the
+    budget (field data: poll expired ~30s before the respawn with the old PID read dead).
+    """
     profiles = {"default": 14980}
-    settled = _relaunch_verify_timeout_s(profiles, [], lambda _pid: False)
-    pending = _relaunch_verify_timeout_s(profiles, [], lambda _pid: True)
-    # A watcher only respawns once its PID is gone: verifying for less than its own deadline
-    # reports "no stable gateway process appeared" before the relaunch could have happened.
-    assert pending > GATEWAY_RESTART_WATCHER_TIMEOUT_S
-    assert settled < pending
+    # Whether the old pid reads dead or alive, the budget is the same watcher-aware window.
+    assert _relaunch_verify_timeout_s(profiles, [], lambda _pid: False) > (
+        GATEWAY_RESTART_WATCHER_TIMEOUT_S
+    )
+    assert _relaunch_verify_timeout_s(profiles, [], lambda _pid: True) > (
+        GATEWAY_RESTART_WATCHER_TIMEOUT_S
+    )
+    # No relaunch pending at all: the budget stays the watcher-aware window, because a
+    # watcher relaunch is exactly the only thing this poll is called to verify.
+    assert _relaunch_verify_timeout_s({}, []) > GATEWAY_RESTART_WATCHER_TIMEOUT_S

@@ -225,7 +225,8 @@ def _applied(result: Dict[str, Any]) -> Tuple[str, str]:
 
 def _memory_tool(action, target, content, old_text, new_text, operations, store) -> Tuple[str, str]:
     """``(outcome, result_json)``: ``rejected`` when refused or held before touching the store."""
-    if content is None and new_text is not None:
+    # An omitted optional string can arrive as "" (#90468): let the new_text alias fill it.
+    if not content and new_text:
         content = new_text
     # Strict providers send JSON null for optional fields; treat as omitted.
     target = "memory" if target is None else target

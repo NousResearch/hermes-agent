@@ -26,6 +26,11 @@ export const enModelMenu: Translations['shell']['modelMenu'] = {
     `This model hit its own limit and resets at ${time}. Other models here still work.`,
   usageLeft: (percent: number, time: null | string) =>
     time ? `${percent}% left · resets ${time}` : `${percent}% left`,
+  poolAccounts: (count: number) => `${count} ${count === 1 ? 'account' : 'accounts'}`,
+  poolLimited: (limited: number, total: number) => `${limited}/${total} accounts limited`,
+  poolAccount: (number: number) => `Account ${number}`,
+  poolUnknown: 'Usage unavailable',
+  poolUnavailable: 'Sign in again',
   usageTip: (provider: string) => `${provider} is close to its usage limit.`,
   usageWindow: (label: string, percent: number, time: null | string) =>
     time ? `${label}: ${percent}% left, resets ${time}` : `${label}: ${percent}% left`

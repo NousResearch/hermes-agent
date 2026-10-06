@@ -358,11 +358,14 @@ def test_manifest_origin_checks_with_real_https(https_origin):
     assert server.requests == []
 
 
-def test_stable_context_derives_payload_tag_from_attempt_authority(monkeypatch):
+def test_stable_context_requires_the_payload_tag(monkeypatch):
     claim = {"claim_tag": "rc.2-v1.2.3", "tag": "v1.2.3", "commit": "a" * 40}
     monkeypatch.setattr("scripts.releases.stable.check_claim", lambda env, run=None: claim)
-    payload, commit, _ = stable_context({"RELEASE_TAG": claim["claim_tag"]})
+    payload, commit, _ = stable_context({"RELEASE_TAG": claim["tag"]})
     assert (payload, commit) == (claim["tag"], claim["commit"])
+    # No main caller passes the attempt ref; the strict payload-tag gate stays.
+    with pytest.raises(ValueError, match="differs"):
+        stable_context({"RELEASE_TAG": claim["claim_tag"]})
     with pytest.raises(ValueError, match="differs"):
         stable_context({"RELEASE_TAG": "v9.9.9"})
 

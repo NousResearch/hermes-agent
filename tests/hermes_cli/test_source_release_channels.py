@@ -142,19 +142,45 @@ def test_truncated_source_release_response_is_unavailable_on_public_path(monkeyp
     assert resolve_source_release("stable") == (None, None)
 
 
-@pytest.mark.parametrize("rev_list_returncode,rev_list_stdout,terminal_sequence,pattern", [
-    (0, "d" * 40 + "\n", 2, "downgrade"),
-    (128, "", 1, "cannot verify"),
-    (128, "", 2, "cannot verify"),
-])
-def test_retirement_downgrade_refuses_when_ancestry_is_unavailable(monkeypatch, tmp_path,
-                                                                    rev_list_returncode, rev_list_stdout,
-                                                                    terminal_sequence, pattern):
-    from hermes_cli.source_releases import _refuse_retirement_downgrade
+def test_retirement_refuses_newer_source_version_and_stamp_commit(tmp_path):
+    from hermes_cli.source_releases import _retirement_commit_proof
+
+    request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+    # The version floor: an installed version newer than the qualified build refuses.
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="newer source version"):
+        _retirement_commit_proof(request, terminal, None, tmp_path, True)
+
+    # With the version floor satisfied, the stamp decides: a commit outside
+    # the qualified build and the destination head is newer source.
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.0.0"\n', encoding="utf-8")
+    terminal["head"]["commit"] = "b" * 40
+    stamp = tmp_path / "install-stamp.json"
+    stamp.write_text(json.dumps({"commit": "c" * 40}), encoding="utf-8")
+    with pytest.raises(ValueError, match="newer source commit"):
+        _retirement_commit_proof(request, terminal, None, tmp_path, True)
+    # Equal to the destination head is admitted.
+    stamp.write_text(json.dumps({"commit": "b" * 40}), encoding="utf-8")
+    assert _retirement_commit_proof(request, terminal, None, tmp_path, True)
+
+
+def test_retirement_no_git_without_stamp_stays_permissive(tmp_path):
+    from hermes_cli.source_releases import _retirement_commit_proof
+
+    request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+    # Main's posture: no version file, no stamp -> nothing contradicts an
+    # older-or-equal install; refuse to strand the ZIP/desktop retirement.
+    assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is False
+
+
+def test_retirement_downgrade_refuses_when_ancestry_is_unavailable(monkeypatch, tmp_path):
+    from hermes_cli.source_releases import _retirement_commit_proof
 
     class Result:
-        returncode = rev_list_returncode
-        stdout = rev_list_stdout
+        returncode = 0
+        stdout = "d" * 40 + "\n"
 
     def run(argv, **_kwargs):
         assert argv[1:3] == ["rev-list", "--ancestry-path"]
@@ -162,33 +188,13 @@ def test_retirement_downgrade_refuses_when_ancestry_is_unavailable(monkeypatch, 
 
     monkeypatch.setattr("subprocess.run", run)
     request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
-    terminal = {"name": "stable", "head": {"sequence": terminal_sequence}}
-    with pytest.raises(ValueError, match=pattern):
-        _refuse_retirement_downgrade(request, terminal, ["git"], tmp_path)
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+    with pytest.raises(ValueError, match="downgrade"):
+        _retirement_commit_proof(request, terminal, ["git"], tmp_path, True)
 
 
-@pytest.mark.parametrize("terminal_sequence", [1, 2])
-def test_retirement_downgrade_allows_verified_empty_ancestry(monkeypatch, tmp_path, terminal_sequence):
-    from hermes_cli.source_releases import _refuse_retirement_downgrade
-
-    class Result:
-        returncode = 0
-        stdout = ""
-
-    def run(argv, **_kwargs):
-        if argv[1:3] == ["rev-list", "--ancestry-path"]:
-            return Result()
-        assert argv[1:3] == ["merge-base", "--is-ancestor"]
-        return Result()
-
-    monkeypatch.setattr("subprocess.run", run)
-    request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
-    terminal = {"name": "stable", "head": {"sequence": terminal_sequence}}
-    _refuse_retirement_downgrade(request, terminal, ["git"], tmp_path)
-
-
-def test_retirement_downgrade_rejects_divergent_history(tmp_path):
-    from hermes_cli.source_releases import _refuse_retirement_downgrade
+def test_retirement_rejects_divergent_history(tmp_path):
+    from hermes_cli.source_releases import _retirement_commit_proof
 
     root = tmp_path / "repo"
     root.mkdir()
@@ -209,16 +215,167 @@ def test_retirement_downgrade_rejects_divergent_history(tmp_path):
     request = {"commit": destination, "sourceVersion": "1.0.0", "sequence": 1}
     terminal = {"name": "stable", "head": {"sequence": 2}}
     with pytest.raises(ValueError, match="equal to or an ancestor"):
-        _refuse_retirement_downgrade(request, terminal, ["git"], root)
+        _retirement_commit_proof(request, terminal, ["git"], root, True)
+
+
+def test_retirement_rejects_divergent_history_after_target_fetch(tmp_path, monkeypatch):
+    """The C/D equal-sequence shallow hole: the apply fetch must not admit divergence."""
+    from hermes_cli import source_releases
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-b", "main")
+    git(root, "config", "user.name", "Release Fixture")
+    git(root, "config", "user.email", "fixture@example.invalid")
+    (root / "content.txt").write_text("base", encoding="utf-8")
+    git(root, "add", ".")
+    git(root, "commit", "-m", "base")
+    base = git(root, "rev-parse", "HEAD")
+    (root / "content.txt").write_text("target", encoding="utf-8")
+    git(root, "commit", "-am", "target")
+    target = git(root, "rev-parse", "HEAD")
+    git(root, "checkout", "-b", "side", base)
+    (root / "content.txt").write_text("installed", encoding="utf-8")
+    git(root, "commit", "-am", "installed")
+    installed = git(root, "rev-parse", "HEAD")
+    origin = tmp_path / "origin.git"
+    git(root, "remote", "add", "origin", str(origin))
+    git(tmp_path, "clone", "--bare", str(root), str(origin))
+    # Depth-1 style install at the sibling: the target is invisible locally.
+    fresh = tmp_path / "fresh"
+    git(tmp_path, "clone", "--depth=1", origin.as_uri(), str(fresh))
+    git(fresh, "checkout", "--detach", installed)
+    assert subprocess.run(["git", "cat-file", "-e", target + "^{commit}"], cwd=fresh,
+                          capture_output=True).returncode != 0
+    request = {"commit": target, "sourceVersion": "1.0.0", "sequence": 1,
+               "repository": "NousResearch/hermes-agent"}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+    # resolve_source_target patches _resolve_channel per test; guard reads the
+    # current destination manifest through the real reader, so stub it.
+    resolution = SimpleNamespace(manifest=None)
+    monkeypatch.setattr(source_releases, "_resolve_channel", lambda name, repository: resolution)
+    with pytest.raises(ValueError, match="equal to or an ancestor"):
+        source_releases._git_retirement_proof(request, terminal, ["git"], fresh, True)
+
+
+def test_retirement_target_fetch_unshallows_older_install(tmp_path, monkeypatch):
+    """A depth-1 install OLDER than the qualified target follows the retirement."""
+    from hermes_cli import source_releases
+
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    git(origin, "init", "--bare", "-b", "main")
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git(seed, "clone", str(origin), str(seed))
+    git(seed, "config", "user.name", "Release Fixture")
+    git(seed, "config", "user.email", "fixture@example.invalid")
+    labels = ("installed", "target")
+    commits = []
+    for label in labels:
+        (seed / "content.txt").write_text(label, encoding="utf-8")
+        git(seed, "add", "content.txt")
+        git(seed, "commit", "-m", label)
+        commits.append(git(seed, "rev-parse", "HEAD"))
+    git(seed, "push", "origin", "HEAD:refs/heads/main")
+    git(seed, "push", "origin", commits[0] + ":refs/heads/old")
+    fresh = tmp_path / "fresh"
+    # A depth-1 clone pinned at the OLDER commit (the installer shape).
+    git(tmp_path, "clone", "--depth=1", "--branch", "old", origin.as_uri(), str(fresh))
+    git(fresh, "checkout", "--detach")
+    assert subprocess.run(["git", "cat-file", "-e", commits[1] + "^{commit}"], cwd=fresh,
+                          capture_output=True).returncode != 0
+    request = {"commit": commits[1], "sourceVersion": "1.0.0", "sequence": 1,
+               "repository": "NousResearch/hermes-agent"}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+    # The guard reads the current destination manifest; stub it so the test
+    # never touches the live channel host.
+    monkeypatch.setattr(source_releases, "_resolve_channel",
+                        lambda name, repository: SimpleNamespace(manifest=None))
+    assert source_releases._git_retirement_proof(request, terminal, ["git"], fresh, True) is True
+
+
+def test_retirement_admits_install_sitting_on_the_qualified_target(tmp_path):
+    """Equal-and-equal: an install already on the qualified build proves safe without a fetch."""
+    from hermes_cli import source_releases
+
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    git(origin, "init", "--bare", "-b", "main")
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git(seed, "clone", str(origin), str(seed))
+    git(seed, "config", "user.name", "Release Fixture")
+    git(seed, "config", "user.email", "fixture@example.invalid")
+    (seed / "content.txt").write_text("target", encoding="utf-8")
+    git(seed, "add", "content.txt")
+    git(seed, "commit", "-m", "target")
+    target = git(seed, "rev-parse", "HEAD")
+    git(seed, "push", "origin", "HEAD:refs/heads/main")
+    fresh = tmp_path / "fresh"
+    git(tmp_path, "clone", "--depth=1", origin.as_uri(), str(fresh))
+    git(fresh, "checkout", "--detach")
+    assert git(fresh, "rev-parse", "HEAD") == target
+    request = {"commit": target, "sourceVersion": "1.0.0", "sequence": 1,
+               "repository": "NousResearch/hermes-agent"}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+    assert source_releases._git_retirement_proof(request, terminal, ["git"], fresh, True) is True
+
+
+def test_retirement_passive_check_never_fetches(tmp_path, monkeypatch):
+    """A passive resolution answers without fetching or subprocess git calls."""
+    from hermes_cli import source_releases
+
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    git(origin, "init", "--bare", "-b", "main")
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git(seed, "clone", str(origin), str(seed))
+    git(seed, "config", "user.name", "Release Fixture")
+    git(seed, "config", "user.email", "fixture@example.invalid")
+    labels = ("installed", "target")
+    commits = []
+    for label in labels:
+        (seed / "content.txt").write_text(label, encoding="utf-8")
+        git(seed, "add", "content.txt")
+        git(seed, "commit", "-m", label)
+        commits.append(git(seed, "rev-parse", "HEAD"))
+    git(seed, "push", "origin", "HEAD:refs/heads/main")
+    git(seed, "push", "origin", commits[0] + ":refs/heads/old")
+    checkout = tmp_path / "checkout"
+    # A depth-1 clone pinned at the OLDER commit (the installer shape).
+    git(tmp_path, "clone", "--depth=1", "--branch", "old", origin.as_uri(), str(checkout))
+    git(checkout, "checkout", "--detach")
+    assert subprocess.run(["git", "cat-file", "-e", commits[1] + "^{commit}"], cwd=checkout,
+                          capture_output=True).returncode != 0
+
+    seen = []
+    def no_fetch(argv, *args, **kwargs):
+        seen.append(argv)
+        if "fetch" in argv[:2]:
+            pytest.fail(f"the passive path must not fetch: {argv}")
+        return subprocess.CompletedProcess(args=argv, returncode=1, stdout="", stderr="")
+    monkeypatch.setattr(source_releases.subprocess, "run", no_fetch)
+    request = {"commit": commits[1], "sourceVersion": "1.0.1", "sequence": 2,
+               "repository": "NousResearch/hermes-agent"}
+    terminal = {"name": "stable", "head": {"sequence": 2}}
+    # The target is invisible locally: permissive with the ancestry flagged unverified.
+    assert source_releases._retirement_commit_proof(request, terminal, ["git"], checkout, False) is False
+    # The strict (apply) path would have fetched this same shape:
+    assert any("rev-list" in argv for argv in seen)
 
 
 def test_retirement_downgrade_fails_closed_without_git(tmp_path):
-    from hermes_cli.source_releases import _refuse_retirement_downgrade
+    from hermes_cli.source_releases import _retirement_commit_proof
 
     request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
     terminal = {"name": "stable", "head": {"sequence": 1}}
-    with pytest.raises(ValueError, match="without Git"):
-        _refuse_retirement_downgrade(request, terminal, None, tmp_path)
+    # No Git, but the stamp names a commit outside the admitted identities.
+    (tmp_path / "install-stamp.json").write_text(
+        json.dumps({"commit": "c" * 40}), encoding="utf-8")
+    with pytest.raises(ValueError, match="newer source commit"):
+        _retirement_commit_proof(request, terminal, None, tmp_path, True)
 
 
 @pytest.mark.parametrize("channel", ["stable", "canary"])

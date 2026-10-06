@@ -274,7 +274,8 @@ def _resolve_channel(result: dict, channel: str, co: _Checkout):
     """
     try:
         source_target = resolve_source_target(channel, [co.git] if not co.embedded else None, co.root,
-                                              repository=co.repository or OFFICIAL_REPOSITORY)
+                                              repository=co.repository or OFFICIAL_REPOSITORY,
+                                              strict=False)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         result.update(error="release-unavailable", message=f"Could not resolve the {channel} source channel: {exc}")
         return None
@@ -286,6 +287,11 @@ def _resolve_channel(result: dict, channel: str, co: _Checkout):
                       sourceVersion=source_target.version, buildId=source_target.build_id)
         if source_target.retired:
             result["retirement"] = {"destination": source_target.channel, "sourceOnly": True}
+        if not source_target.ancestry_verified:
+            # The passive check never fetches, so a retirement whose ancestry
+            # Git cannot see locally stays permissive; say so instead of
+            # failing the check for installs older than the qualified build.
+            result["ancestryUnverified"] = True
     return source_target
 
 

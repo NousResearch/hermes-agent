@@ -16,6 +16,7 @@ import {
   $projectsRpcAvailable,
   $projectTree,
   addProjectFolder,
+  addProjectFolders,
   applyRenamedSessionTitle,
   createProject,
   deleteProject,
@@ -23,6 +24,7 @@ import {
   fetchProjectSessions,
   openProjectCreate,
   pickProjectFolder,
+  pickProjectFolders,
   projectIdForCwd,
   projectNameForCwd,
   refreshProjects,
@@ -441,6 +443,57 @@ describe('pickProjectFolder', () => {
     selectDesktopPaths.mockResolvedValue([])
 
     await expect(pickProjectFolder()).resolves.toBeNull()
+  })
+})
+
+describe('pickProjectFolders / addProjectFolders (#68741)', () => {
+  const project: ProjectInfo = {
+    archived: false,
+    board_slug: null,
+    color: null,
+    created_at: 0,
+    description: null,
+    folders: [{ added_at: 0, is_primary: true, label: null, path: '/srv/ws' }],
+    icon: null,
+    id: 'p_1',
+    name: 'Warsongs',
+    primary_path: '/srv/ws',
+    slug: 'warsongs'
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $activeGatewayProfile.set('default')
+    setShowAllProfiles(false)
+    $projects.set([project])
+    $activeProjectId.set(null)
+  })
+
+  it('enables multi-select in the picker so one pick can carry several folders', async () => {
+    desktopDefaultCwd.mockResolvedValue(null)
+    selectDesktopPaths.mockResolvedValue(['/work/alpha', '/work/beta'])
+
+    await expect(pickProjectFolders()).resolves.toEqual(['/work/alpha', '/work/beta'])
+    expect(selectDesktopPaths).toHaveBeenCalledWith({
+      defaultPath: undefined,
+      directories: true,
+      multiple: true
+    })
+  })
+
+  it('adds every picked folder, skipping ones the project already has and repeats in the pick', async () => {
+    const request = vi.fn().mockResolvedValue({})
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await expect(
+      addProjectFolders('p_1', ['/work/alpha', '/work/beta', '/work/alpha', '/srv/ws', '  '])
+    ).resolves.toBeUndefined()
+
+    const addFolderCalls = request.mock.calls.filter(([method]) => method === 'projects.add_folder')
+    expect(addFolderCalls).toEqual([
+      ['projects.add_folder', expect.objectContaining({ id: 'p_1', path: '/work/alpha' })],
+      ['projects.add_folder', expect.objectContaining({ id: 'p_1', path: '/work/beta' })]
+    ])
   })
 })
 

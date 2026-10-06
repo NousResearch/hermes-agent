@@ -174,6 +174,17 @@ class TestTempHomeServiceDefinitionGuard:
         unit = f'[Service]\nEnvironment="HERMES_HOME={tmp_path}/hermes-home"\n'
         assert gateway_cli._temp_home_in_service_definition(unit) is not None
 
+    def test_refuses_to_persist_from_an_unrecorded_staged_workspace(self, monkeypatch, tmp_path, capsys):
+        """A worker running the generation's staged copy (venv/bin/hermes on the gateway's PATH) must
+        not publish a launcher under that copy: it has no committed environment and crash-loops (#130116)."""
+        workspace = tmp_path / "installs" / "k" / "environments" / "g" / "workspace"
+        (workspace / "hermes_cli").mkdir(parents=True)
+        (tmp_path / "installs" / "k" / "inputs").mkdir()
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", workspace)
+
+        assert gateway_cli._refuse_temp_home_service_write('[Service]\nEnvironment="HERMES_HOME=/home/u/.hermes"\n', "systemd unit")
+        assert "staged dependency workspace" in capsys.readouterr().out
+
 
 class TestRequireServiceInstalled:
     def test_exits_with_install_hint_when_unit_missing(self, tmp_path, monkeypatch, capsys):

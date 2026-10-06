@@ -147,6 +147,42 @@ def record_activation_inputs(stamps: Path, mtimes: dict[str, int], project_root:
         os.utime(stamp, ns=(mtime, mtime))
 
 
+def is_staged_workspace(project_root: Path) -> bool:
+    """Is *project_root* a dependency generation's staged workspace
+    (``installs/<key>/environments/<gen>/workspace``) rather than an install?"""
+    root = Path(project_root).resolve()
+    if root.name != "workspace" or root.parent.parent.name != "environments":
+        return False
+    state_dir = root.parent.parent.parent
+    return (state_dir / "facts.json").is_file() or (state_dir / "inputs").is_dir()
+
+
+def install_root_for_tree(project_root: Path) -> Path:
+    """The install a code tree belongs to: *project_root* itself, or the recorded install when it
+    is a generation's staged workspace. Unrecorded or mismatched records leave *project_root* as is;
+    :func:`is_staged_workspace` lets persisting callers refuse that residue.
+
+    A generation's ``venv/bin/hermes`` is an editable console script importing that staged copy,
+    and the gateway puts ``venv/bin`` first on its workers' PATH, so ``hermes gateway restart``
+    from a cron job or tool subprocess runs with the workspace as its tree. Anything it persists
+    (systemd unit, launchd plist, Task Scheduler command) must name the install's own launcher:
+    a launcher under the workspace has no committed environment and crash-loops under
+    ``Restart=always`` until a human restarts from a normal shell.
+    """
+    root = Path(project_root).resolve()
+    if not is_staged_workspace(root):
+        return root
+    state_dir = root.parent.parent.parent
+    recorded = state_dir / "inputs" / ".project-root"
+    try:
+        install = Path(recorded.read_text(encoding="utf-8").strip())
+    except OSError:
+        return root
+    if install_key(install) != state_dir.name or not (install / "hermes_cli").is_dir():
+        return root
+    return install
+
+
 def payload_venv(project_root: Path) -> Path | None:
     """The environment a sealed payload ships beside its tree, or ``None``."""
     root = Path(project_root).resolve()

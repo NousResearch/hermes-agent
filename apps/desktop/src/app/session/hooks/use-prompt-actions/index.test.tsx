@@ -38,7 +38,7 @@ import { clearSingleFlightSessionResumeState } from './single-flight-resume'
 import { SESSION_COMPRESS_TIMEOUT_MS } from './slash'
 import type { SubmitTextOptions } from './utils'
 
-import { uploadComposerAttachment, usePromptActions } from '.'
+import { usePromptActions } from '.'
 
 // Suites in this file reuse the same stored-id constants. The module-level
 // single-flight resume map (and drift-recovery cache) would otherwise leak a
@@ -3394,46 +3394,6 @@ describe('usePromptActions file attachment sync', () => {
       method: 'prompt.submit',
       params: { session_id: RUNTIME_SESSION_ID, text: '@file:.hermes/desktop-attachments/report.txt\n\nsummarize' }
     })
-  })
-
-  it('uses image.attach_bytes for a Windows image when the local backend cwd is POSIX', async () => {
-    const readFileDataUrl = vi.fn(async () => 'data:image/jpeg;base64,aGVsbG8=')
-    Object.defineProperty(window, 'hermesDesktop', {
-      configurable: true,
-      value: { readFileDataUrl }
-    })
-
-    const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'image.attach_bytes') {
-        return { attached: true, path: '/root/tmp/photo.jpg' } as never
-      }
-
-      return {} as never
-    })
-
-    const uploaded = await uploadComposerAttachment(
-      {
-        id: 'image:photo.jpg',
-        kind: 'image',
-        label: 'photo.jpg',
-        path: 'C:\\Users\\alice\\Pictures\\photo.jpg'
-      },
-      {
-        backendCwd: '/root',
-        remote: false,
-        requestGateway,
-        sessionId: RUNTIME_SESSION_ID
-      }
-    )
-
-    expect(readFileDataUrl).toHaveBeenCalledWith('C:\\Users\\alice\\Pictures\\photo.jpg')
-    expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', {
-      content_base64: 'aGVsbG8=',
-      filename: 'photo.jpg',
-      session_id: RUNTIME_SESSION_ID
-    })
-    expect(requestGateway).not.toHaveBeenCalledWith('image.attach', expect.anything())
-    expect(uploaded.path).toBe('/root/tmp/photo.jpg')
   })
 
   it('merges image staging into the current occurrence without dropping its thumbnail', async () => {

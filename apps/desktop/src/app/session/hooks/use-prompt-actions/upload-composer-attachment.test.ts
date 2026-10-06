@@ -98,3 +98,49 @@ describe('uploadComposerAttachment image cache contract', () => {
     expect(uploaded.path).toBe('/gw/images/shot.png')
   })
 })
+
+describe('uploadComposerAttachment local cross-platform staging', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('uses image.attach_bytes for a Windows image when the local backend cwd is POSIX', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/jpeg;base64,aGVsbG8=')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach_bytes') {
+        return { attached: true, path: '/root/tmp/photo.jpg' } as never
+      }
+
+      return {} as never
+    })
+
+    const uploaded = await uploadComposerAttachment(
+      {
+        id: 'image:photo.jpg',
+        kind: 'image',
+        label: 'photo.jpg',
+        path: 'C:\\Users\\alice\\Pictures\\photo.jpg'
+      },
+      {
+        backendCwd: '/root',
+        remote: false,
+        requestGateway,
+        sessionId: RUNTIME_SESSION_ID
+      }
+    )
+
+    expect(readFileDataUrl).toHaveBeenCalledWith('C:\\Users\\alice\\Pictures\\photo.jpg')
+    expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', {
+      content_base64: 'aGVsbG8=',
+      filename: 'photo.jpg',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith('image.attach', expect.anything())
+    expect(uploaded.path).toBe('/root/tmp/photo.jpg')
+  })
+})

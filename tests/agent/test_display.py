@@ -7,6 +7,7 @@ import agent.display as display_module
 from agent.display import (
     build_tool_preview,
     capture_local_edit_snapshot,
+    count_diff_line_stats,
     extract_edit_diff,
     get_cute_tool_message,
     prepare_tool_preview,
@@ -251,6 +252,24 @@ class TestEditDiffPreview:
         assert any("a/file2.py" in line for line in rendered)
         assert not any("a/file7.py" in line for line in rendered)
         assert "additional file" in rendered[-1]
+
+
+    def test_count_diff_line_stats_ignores_headers(self):
+        stats = count_diff_line_stats("--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n-old\n+new\n context\n+another\n")
+
+        assert stats == {"added": 2, "removed": 1}
+
+
+    def test_count_diff_line_stats_counts_full_diff_not_capped_preview(self):
+        body = "".join(f"+added line {i}\n" for i in range(200))
+        diff = f"--- a/big.html\n+++ b/big.html\n@@ -1,10 +1,210 @@\n{body}"
+
+        assert count_diff_line_stats(diff) == {"added": 200, "removed": 0}
+
+        rendered = _summarize_rendered_diff_sections(diff)
+        capped = count_diff_line_stats("\n".join(rendered))
+
+        assert capped["added"] < 200
 
 
 class TestBuildToolLabel:

@@ -65,7 +65,7 @@ import {
   clampForDisplay,
   cleanVisibleText,
   CONNECTION_CARD_KEY,
-  countDiffLineStats,
+  diffLineStatsFromResult,
   inlineDiffFromResult,
   isCardTool,
   isFileEditTool,
@@ -522,7 +522,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   const copyAction = useMemo(() => toolCopyPayload(stablePart, view), [stablePart, view])
 
   const diffStats = useMemo(
-    () => (isFileEdit && view.inlineDiff ? countDiffLineStats(view.inlineDiff) : null),
+    () => (isFileEdit && view.inlineDiff ? diffLineStatsFromResult(toolResultRecord(stablePart)) : null),
     [isFileEdit, view.inlineDiff]
   )
 

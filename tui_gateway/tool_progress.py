@@ -312,10 +312,18 @@ def _prepare_tool_result_metadata(sid: str, tool_call_id: str, name: str, args: 
     snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None) if session is not None else None
     metadata = {}
     with contextlib.suppress(Exception):
-        from agent.display import render_edit_diff_with_delta
+        from agent.display import count_diff_line_stats, extract_edit_diff, render_edit_diff_with_delta
         rendered: list[str] = []
         if render_edit_diff_with_delta(name, result, function_args=args, snapshot=snapshot, print_fn=rendered.append):
             metadata["inline_diff"] = "\n".join(rendered)
+            # The preview above is budget-capped for display; count the FULL
+            # diff so file rows show real +/- instead of the cap remainder.
+            full_diff = extract_edit_diff(name, result, function_args=args, snapshot=snapshot)
+            if full_diff:
+                stats = count_diff_line_stats(full_diff)
+                if stats["added"] or stats["removed"]:
+                    metadata["lines_added"] = stats["added"]
+                    metadata["lines_removed"] = stats["removed"]
     if session is not None:
         session.setdefault("tool_result_metadata", {})[tool_call_id] = metadata
     return {"tool_result_metadata": metadata} if metadata else {}

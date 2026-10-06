@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
+import { frMaintenance } from './fr_maintenance'
 import { frModelMenu } from './fr_model_menu'
 import { frNotices } from './fr_notices'
 import { frSharedMetrics } from './fr_shared_metrics'
@@ -3082,51 +3083,7 @@ export const frOverrides = {
     logFile: 'Fichier journal',
     logLevel: 'Niveau',
     logSearchPlaceholder: 'Rechercher dans les journaux…',
-    maintenance: {
-      runOps: 'Diagnostiques',
-      doctor: 'Exécuter le diagnostic',
-      doctorDesc: "Vérifier l'installation, la configuration et les fournisseurs",
-      securityAudit: 'Audit de sécurité',
-      securityAuditDesc: 'Analyser la configuration et les skills à la recherche de paramètres risqués',
-      backup: 'Créer une sauvegarde',
-      backupDesc: 'Archiver en zip la configuration, les mémoires, les skills et les sessions',
-      debugShare: 'Partage de débogage',
-      debugShareDesc:
-        'Téléverser un rapport expurgé + journaux, obtenir des liens partageables (auto-suppression après 6h)',
-      debugShareRunning: 'Téléversement du rapport de débogage...',
-      debugShareLinks: 'Liens de partage',
-      debugShareFailed: 'Échec du partage de débogage',
-      copyLink: 'Copier le lien',
-      linkCopied: 'Lien copié',
-      curator: 'Curateur de skills',
-      curatorDesc: 'Revue en arrière-plan qui archive les skills agent obsolètes',
-      curatorPaused: 'En pause',
-      curatorActive: 'Actif',
-      curatorDisabled: 'Désactivé',
-      curatorLastRun: when => `Dernière exécution ${when}`,
-      curatorNeverRan: 'Jamais exécuté',
-      pause: 'Mettre en pause',
-      resume: 'Reprendre',
-      runNow: 'Exécuter maintenant',
-      memoryData: 'Données de mémoire',
-      memoryDataDesc: 'Fichiers de mémoire intégrés injectés dans chaque session',
-      memoryProvider: name => `Fournisseur actif : ${name}`,
-      builtinMemory: 'intégré',
-      memoryFile: "Mémoire de l'agent (MEMORY.md)",
-      userFile: 'Profil utilisateur (USER.md)',
-      bytes: size => size,
-      empty: 'vide',
-      resetMemory: 'Réinitialiser la mémoire',
-      resetUser: 'Réinitialiser le profil',
-      resetAll: 'Réinitialiser les deux',
-      resetConfirm: target => `Supprimer ${target} ? Cela ne peut pas être annulé.`,
-      resetDone: files => `Supprimé ${files}.`,
-      resetFailed: 'Échec de la réinitialisation de la mémoire',
-      actionStarted: name => `${name} démarré — suivi du journal...`,
-      actionFailed: name => `${name} a échoué au démarrage`,
-      running: 'En cours...',
-      viewLog: "Journal d'action"
-    }
+    maintenance: frMaintenance,
   },
   messaging: {
     search: 'Rechercher dans la messagerie...',

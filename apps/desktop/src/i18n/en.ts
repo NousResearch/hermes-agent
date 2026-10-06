@@ -2,6 +2,7 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import { enAuxTasks } from './en_aux_tasks'
 import { enBoot } from './en_boot'
+import { enMaintenance } from './en_maintenance'
 import { enModelMenu } from './en_model_menu'
 import { enNotices } from './en_notices'
 import { enSharedMetrics } from './en_shared_metrics'
@@ -2724,50 +2725,7 @@ export const en: Translations = {
     logFile: 'Log file',
     logLevel: 'Level',
     logSearchPlaceholder: 'Search log lines...',
-    maintenance: {
-      runOps: 'Diagnostics',
-      doctor: 'Run doctor',
-      doctorDesc: 'Health-check the install, config, and providers',
-      securityAudit: 'Security audit',
-      securityAuditDesc: 'Scan config and skills for risky settings',
-      backup: 'Create backup',
-      backupDesc: 'Zip config, memories, skills, and sessions',
-      debugShare: 'Debug share',
-      debugShareDesc: 'Upload a redacted report + logs, get shareable links (auto-deletes in 6h)',
-      debugShareRunning: 'Uploading debug report...',
-      debugShareLinks: 'Share links',
-      debugShareFailed: 'Debug share failed',
-      copyLink: 'Copy link',
-      linkCopied: 'Link copied',
-      curator: 'Skill curator',
-      curatorDesc: 'Background review that archives stale agent-created skills',
-      curatorPaused: 'Paused',
-      curatorActive: 'Active',
-      curatorDisabled: 'Disabled',
-      curatorLastRun: when => `Last run ${when}`,
-      curatorNeverRan: 'Never ran',
-      pause: 'Pause',
-      resume: 'Resume',
-      runNow: 'Run now',
-      memoryData: 'Memory data',
-      memoryDataDesc: 'Built-in memory files injected into every session',
-      memoryProvider: name => `Active provider: ${name}`,
-      builtinMemory: 'built-in',
-      memoryFile: 'Agent memory (MEMORY.md)',
-      userFile: 'User profile (USER.md)',
-      bytes: size => size,
-      empty: 'empty',
-      resetMemory: 'Reset memory',
-      resetUser: 'Reset profile',
-      resetAll: 'Reset both',
-      resetConfirm: target => `Delete ${target}? This cannot be undone.`,
-      resetDone: files => `Deleted ${files}.`,
-      resetFailed: 'Memory reset failed',
-      actionStarted: name => `${name} started — tailing log...`,
-      actionFailed: name => `${name} failed to start`,
-      running: 'Running...',
-      viewLog: 'Action log'
-    }
+    maintenance: enMaintenance,
   },
 
   messaging: {

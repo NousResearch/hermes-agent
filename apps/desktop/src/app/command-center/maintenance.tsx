@@ -291,7 +291,7 @@ export function MaintenancePanel() {
                 </Badge>
               </div>
               <div className="mt-0.5 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                {mm.curatorDesc}
+                {curator.prune_builtins ? mm.curatorDescWithBuiltins : mm.curatorDesc}
                 {' · '}
                 {curator.last_run_at ? mm.curatorLastRun(curator.last_run_at) : mm.curatorNeverRan}
               </div>

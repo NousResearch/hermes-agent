@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
+import { deMaintenance } from './de_maintenance'
 import { deModelMenu } from './de_model_menu'
 import { deNotices } from './de_notices'
 import { deSharedMetrics } from './de_shared_metrics'
@@ -3069,51 +3070,7 @@ export const deOverrides = {
     logFile: 'Logdatei',
     logLevel: 'Stufe',
     logSearchPlaceholder: 'Logs durchsuchen…',
-    maintenance: {
-      runOps: 'Diagnose',
-      doctor: 'Doctor ausführen',
-      doctorDesc: 'Installation, Konfiguration und Provider auf Fehler prüfen',
-      securityAudit: 'Sicherheitsaudit',
-      securityAuditDesc: 'Konfiguration und Skills auf riskante Einstellungen scannen',
-      backup: 'Backup erstellen',
-      backupDesc: 'Konfiguration, Memories, Skills und Sessions als ZIP packen',
-      debugShare: 'Debug-Freigabe',
-      debugShareDesc:
-        'Einen geschwärzten Bericht + Logs hochladen, teilbare Links erhalten (wird nach 6h automatisch gelöscht)',
-      debugShareRunning: 'Debug-Bericht wird hochgeladen...',
-      debugShareLinks: 'Freigabelinks',
-      debugShareFailed: 'Debug-Freigabe fehlgeschlagen',
-      copyLink: 'Link kopieren',
-      linkCopied: 'Link kopiert',
-      curator: 'Skill-Curator',
-      curatorDesc: 'Hintergrundprüfung, die veraltete, von Agenten erstellte Skills archiviert',
-      curatorPaused: 'Pausiert',
-      curatorActive: 'Aktiv',
-      curatorDisabled: 'Deaktiviert',
-      curatorLastRun: when => `Zuletzt ausgeführt ${when}`,
-      curatorNeverRan: 'Nie ausgeführt',
-      pause: 'Pausieren',
-      resume: 'Fortsetzen',
-      runNow: 'Jetzt ausführen',
-      memoryData: 'Memory-Daten',
-      memoryDataDesc: 'Eingebaute Memory-Dateien, die in jede Session eingefügt werden',
-      memoryProvider: name => `Aktiver Provider: ${name}`,
-      builtinMemory: 'eingebaut',
-      memoryFile: 'Agent-Memory (MEMORY.md)',
-      userFile: 'Benutzerprofil (USER.md)',
-      bytes: size => size,
-      empty: 'leer',
-      resetMemory: 'Memory zurücksetzen',
-      resetUser: 'Profil zurücksetzen',
-      resetAll: 'Beide zurücksetzen',
-      resetConfirm: target => `${target} löschen? Das kann nicht rückgängig gemacht werden.`,
-      resetDone: files => `${files} gelöscht.`,
-      resetFailed: 'Memory-Zurücksetzen fehlgeschlagen',
-      actionStarted: name => `${name} gestartet — Log wird verfolgt...`,
-      actionFailed: name => `${name} konnte nicht gestartet werden`,
-      running: 'Läuft...',
-      viewLog: 'Aktionslog'
-    }
+    maintenance: deMaintenance,
   },
   messaging: {
     search: 'Messaging durchsuchen...',

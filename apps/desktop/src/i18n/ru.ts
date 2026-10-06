@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
+import { ruMaintenance } from './ru_maintenance'
 import { ruModelMenu } from './ru_model_menu'
 import { ruNotices } from './ru_notices'
 import { ruPluginSettings } from './ru_plugins'
@@ -1916,50 +1917,7 @@ export const ru = defineLocale({
     logFile: 'Файл журнала',
     logLevel: 'Уровень',
     logSearchPlaceholder: 'Поиск по строкам журнала...',
-    maintenance: {
-      runOps: 'Диагностика',
-      doctor: 'Запустить doctor',
-      doctorDesc: 'Проверка здоровья установки, конфигурации и провайдеров',
-      securityAudit: 'Аудит безопасности',
-      securityAuditDesc: 'Сканирование конфигурации и навыков на предмет рискованных настроек',
-      backup: 'Создать резервную копию',
-      backupDesc: 'Сжатие конфигурации, памяти, навыков и сеансов в zip',
-      debugShare: 'Поделиться отладкой',
-      debugShareDesc: 'Загрузка анонимизированного отчёта + журналов, получение ссылок (автоудаление через 6 ч)',
-      debugShareRunning: 'Загрузка отладочного отчёта...',
-      debugShareLinks: 'Ссылки для шаринга',
-      debugShareFailed: 'Ошибка шаринга отладки',
-      copyLink: 'Скопировать ссылку',
-      linkCopied: 'Ссылка скопирована',
-      curator: 'Курир навыков',
-      curatorDesc: 'Фоновый обзор, архивирующий устаревшие навыки, созданные агентом',
-      curatorPaused: 'Приостановлен',
-      curatorActive: 'Активен',
-      curatorDisabled: 'Отключён',
-      curatorLastRun: when => `Последний запуск ${when}`,
-      curatorNeverRan: 'Никогда не запускался',
-      pause: 'Приостановить',
-      resume: 'Продолжить',
-      runNow: 'Запустить сейчас',
-      memoryData: 'Данные памяти',
-      memoryDataDesc: 'Встроенные файлы памяти, внедряемые в каждый сеанс',
-      memoryProvider: name => `Активный провайдер: ${name}`,
-      builtinMemory: 'встроенный',
-      memoryFile: 'Память агента (MEMORY.md)',
-      userFile: 'Профиль пользователя (USER.md)',
-      bytes: size => size,
-      empty: 'пусто',
-      resetMemory: 'Сбросить память',
-      resetUser: 'Сбросить профиль',
-      resetAll: 'Сбросить оба',
-      resetConfirm: target => `Удалить ${target}? Это действие необратимо.`,
-      resetDone: files => `Удалено: ${files}.`,
-      resetFailed: 'Не удалось сбросить память',
-      actionStarted: name => `${name} запущен — следим за журналом...`,
-      actionFailed: name => `Не удалось запустить ${name}`,
-      running: 'Выполняется...',
-      viewLog: 'Журнал действия'
-    }
+    maintenance: ruMaintenance,
   },
   messaging: {
     search: 'Поиск в сообщениях...',

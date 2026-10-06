@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
+import { esMaintenance } from './es_maintenance'
 import { esModelMenu } from './es_model_menu'
 import { esNotices } from './es_notices'
 import { esSharedMetrics } from './es_shared_metrics'
@@ -3066,51 +3067,7 @@ export const esOverrides = {
     logFile: 'Archivo de registro',
     logLevel: 'Nivel',
     logSearchPlaceholder: 'Buscar en los registros…',
-    maintenance: {
-      runOps: 'Diagnóstico',
-      doctor: 'Ejecutar diagnóstico',
-      doctorDesc: 'Comprobar el estado de la instalación, la configuración y los proveedores',
-      securityAudit: 'Auditoría de seguridad',
-      securityAuditDesc: 'Analizar la configuración y las skills en busca de ajustes riesgosos',
-      backup: 'Crear copia de seguridad',
-      backupDesc: 'Comprimir la configuración, memorias, skills y sesiones en un archivo ZIP',
-      debugShare: 'Compartir datos de depuración',
-      debugShareDesc:
-        'Sube un informe y registros con datos sensibles ocultos y obtén enlaces para compartir (se eliminan automáticamente en 6 h)',
-      debugShareRunning: 'Subiendo informe de depuración…',
-      debugShareLinks: 'Enlaces para compartir',
-      debugShareFailed: 'No se pudieron compartir los datos de depuración',
-      copyLink: 'Copiar enlace',
-      linkCopied: 'Enlace copiado',
-      curator: 'Curador de skills',
-      curatorDesc: 'Revisión en segundo plano que archiva skills creados por agentes que ya no se usan',
-      curatorPaused: 'En pausa',
-      curatorActive: 'Activo',
-      curatorDisabled: 'Desactivado',
-      curatorLastRun: when => `Última ejecución: ${when}`,
-      curatorNeverRan: 'Aún no se ha ejecutado',
-      pause: 'Pausar',
-      resume: 'Reanudar',
-      runNow: 'Ejecutar ahora',
-      memoryData: 'Datos de memoria',
-      memoryDataDesc: 'Archivos de memoria integrados que se incluyen en cada sesión',
-      memoryProvider: name => `Proveedor activo: ${name}`,
-      builtinMemory: 'integrada',
-      memoryFile: 'Memoria del agente (MEMORY.md)',
-      userFile: 'Perfil de usuario (USER.md)',
-      bytes: size => size,
-      empty: 'vacío',
-      resetMemory: 'Restablecer memoria',
-      resetUser: 'Restablecer perfil',
-      resetAll: 'Restablecer ambos',
-      resetConfirm: target => `¿Eliminar ${target}? Esta acción no se puede deshacer.`,
-      resetDone: files => `Eliminado: ${files}.`,
-      resetFailed: 'No se pudo restablecer la memoria',
-      actionStarted: name => `${name} se inició; siguiendo el registro…`,
-      actionFailed: name => `No se pudo iniciar ${name}`,
-      running: 'En ejecución…',
-      viewLog: 'Registro de acciones'
-    }
+    maintenance: esMaintenance,
   },
   messaging: {
     search: 'Buscar mensajería...',

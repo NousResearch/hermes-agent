@@ -10,6 +10,7 @@ import type { TipId } from '@/lib/tips/catalog'
 
 import type { AuxTaskCopyMap } from './types_aux_tasks'
 import type { BootTranslations } from './types_boot'
+import type { MaintenanceTranslations } from './types_maintenance'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { NoticeTranslations } from './types_notices'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
@@ -2326,50 +2327,7 @@ export interface Translations extends NoticeTranslations {
     logFile: string
     logLevel: string
     logSearchPlaceholder: string
-    maintenance: {
-      runOps: string
-      doctor: string
-      doctorDesc: string
-      securityAudit: string
-      securityAuditDesc: string
-      backup: string
-      backupDesc: string
-      debugShare: string
-      debugShareDesc: string
-      debugShareRunning: string
-      debugShareLinks: string
-      debugShareFailed: string
-      copyLink: string
-      linkCopied: string
-      curator: string
-      curatorDesc: string
-      curatorPaused: string
-      curatorActive: string
-      curatorDisabled: string
-      curatorLastRun: (when: string) => string
-      curatorNeverRan: string
-      pause: string
-      resume: string
-      runNow: string
-      memoryData: string
-      memoryDataDesc: string
-      memoryProvider: (name: string) => string
-      builtinMemory: string
-      memoryFile: string
-      userFile: string
-      bytes: (size: string) => string
-      empty: string
-      resetMemory: string
-      resetUser: string
-      resetAll: string
-      resetConfirm: (target: string) => string
-      resetDone: (files: string) => string
-      resetFailed: string
-      actionStarted: (name: string) => string
-      actionFailed: (name: string) => string
-      running: string
-      viewLog: string
-    }
+    maintenance: MaintenanceTranslations
   }
 
   messaging: {

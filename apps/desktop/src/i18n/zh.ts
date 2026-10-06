@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
+import { zhMaintenance } from './zh_maintenance'
 import { zhModelMenu } from './zh_model_menu'
 import { zhNotices } from './zh_notices'
 import { zhSharedMetrics } from './zh_shared_metrics'
@@ -2602,50 +2603,7 @@ export const zh = defineLocale({
     logFile: '日志文件',
     logLevel: '级别',
     logSearchPlaceholder: '搜索日志行…',
-    maintenance: {
-      runOps: '诊断',
-      doctor: '运行体检',
-      doctorDesc: '检查安装、配置与提供方的健康状态',
-      securityAudit: '安全审计',
-      securityAuditDesc: '扫描配置与技能中的风险设置',
-      backup: '创建备份',
-      backupDesc: '打包配置、记忆、技能与会话',
-      debugShare: '调试分享',
-      debugShareDesc: '上传脱敏报告与日志，获取可分享链接（6 小时后自动删除）',
-      debugShareRunning: '正在上传调试报告…',
-      debugShareLinks: '分享链接',
-      debugShareFailed: '调试分享失败',
-      copyLink: '复制链接',
-      linkCopied: '链接已复制',
-      curator: '技能维护器',
-      curatorDesc: '后台审查并归档过期的智能体自建技能',
-      curatorPaused: '已暂停',
-      curatorActive: '运行中',
-      curatorDisabled: '已禁用',
-      curatorLastRun: when => `上次运行 ${when}`,
-      curatorNeverRan: '从未运行',
-      pause: '暂停',
-      resume: '恢复',
-      runNow: '立即运行',
-      memoryData: '记忆数据',
-      memoryDataDesc: '注入每个会话的内置记忆文件',
-      memoryProvider: name => `当前提供方：${name}`,
-      builtinMemory: '内置',
-      memoryFile: '智能体记忆（MEMORY.md）',
-      userFile: '用户画像（USER.md）',
-      bytes: size => size,
-      empty: '空',
-      resetMemory: '重置记忆',
-      resetUser: '重置画像',
-      resetAll: '全部重置',
-      resetConfirm: target => `删除 ${target}？此操作不可撤销。`,
-      resetDone: files => `已删除 ${files}。`,
-      resetFailed: '记忆重置失败',
-      actionStarted: name => `${name} 已启动 — 正在跟踪日志…`,
-      actionFailed: name => `${name} 启动失败`,
-      running: '运行中…',
-      viewLog: '操作日志'
-    }
+    maintenance: zhMaintenance,
   },
 
   messaging: {

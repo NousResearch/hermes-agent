@@ -151,7 +151,7 @@ describe('ModelMenuPanel current selection', () => {
     const { content } = renderPanel()
 
     const currentRow = (await content.findByText(/Gemini 3\.1 Pro/i)).closest('[role="menuitem"]')
-    const staleRow = content.getByText('Deepseek Chat').closest('[role="menuitem"]')
+    const staleRow = content.getByText('DeepSeek Chat').closest('[role="menuitem"]')
 
     expect(currentRow?.querySelector('.codicon-check')).not.toBeNull()
     expect(staleRow?.querySelector('.codicon-check')).toBeNull()
@@ -164,16 +164,21 @@ describe('ModelMenuPanel search', () => {
   // "type grok, get fable" bug). Every surveyed picker (VS Code, Zed, Open
   // WebUI, Cherry Studio) drops the pin while filtering.
   // Highlighted labels are split across <mark> nodes, so single-text-node
-  // queries miss them — match on the row span's composed textContent.
+  // queries miss them — match on the row span's composed textContent. Badge
+  // chips (#51833) live in a wrapper span around the name, so require a leaf
+  // span: the wrapper's composed textContent matches too.
   const rowWithText = (content: ReturnType<typeof renderPanel>['content'], pattern: RegExp) =>
-    content.queryByText((_, element) => element?.tagName === 'SPAN' && pattern.test(element.textContent ?? ''))
+    content.queryByText(
+      (_, element) =>
+        element?.tagName === 'SPAN' && !element.querySelector('span') && pattern.test(element.textContent ?? '')
+    )
 
   it('hides the non-matching current model while a query is active', async () => {
     $currentProvider.set('deepseek')
     $currentModel.set('deepseek-v4-pro')
     const { content } = renderPanel()
 
-    await content.findByText(/Deepseek V4 Pro/i)
+    await content.findByText(/DeepSeek V4 Pro/i)
 
     const input = screen.getByRole('textbox', { name: 'Search models' })
     fireEvent.change(input, { target: { value: 'gemini' } })
@@ -181,7 +186,7 @@ describe('ModelMenuPanel search', () => {
     await vi.waitFor(() => {
       expect(rowWithText(content, /Gemini 3\.1 Pro/i)).not.toBeNull()
     })
-    expect(rowWithText(content, /Deepseek V4 Pro/i)).toBeNull()
+    expect(rowWithText(content, /DeepSeek V4 Pro/i)).toBeNull()
   })
 
   it('Enter in the search field commits the first match', async () => {
@@ -272,6 +277,28 @@ describe('ModelMenuPanel search', () => {
     })
   })
 
+  it('keeps model rows hit-testable before any pointer movement (#123040)', async () => {
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText('DeepSeek')
+
+    const row = rowWithText(content, /Gemini 3\.1 Pro/i)!.closest('[role="menuitem"]')!
+
+    // CSS hit-testing is the regression boundary: the previous catalog put a
+    // pointer-events-none ancestor around every row until mousemove/wheel.
+    expect(row.closest('.pointer-events-none')).toBeNull()
+
+    fireEvent.click(row)
+
+    await vi.waitFor(() => {
+      expect(onSelectModel).toHaveBeenCalledWith({
+        model: 'gemini-3.1-pro',
+        provider: 'google',
+        sessionId: 'runtime-1'
+      })
+    })
+  })
+
   it('hovering a model row leaves focus in the search field and arrows still drive the list (#53980)', async () => {
     const { content, onSelectModel } = renderPanel()
 
@@ -285,8 +312,8 @@ describe('ModelMenuPanel search', () => {
       expect(rowWithText(content, /Gemini 2\.5 Pro/i)).not.toBeNull()
     })
 
-    // A real hand on the mouse: wake the rows, then move over one.
-    fireEvent.mouseMove(window)
+    // No wake event is needed: DropdownMenu's search-safe hover suppresses
+    // Radix focus theft directly while leaving deliberate clicks enabled.
     fireEvent.pointerMove(rowWithText(content, /Gemini 2\.5 Pro/i)!, { pointerType: 'mouse' })
 
     expect(input.ownerDocument.activeElement).toBe(input)
@@ -345,11 +372,11 @@ describe('ModelMenuPanel provider collapse', () => {
     const header = await content.findByText('DeepSeek')
     // Collapse
     fireEvent.click(header)
-    expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+    expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
     // Expand
     fireEvent.click(header)
     await vi.waitFor(() => {
-      expect(content.queryByText('Deepseek V4 Pro')).not.toBeNull()
+      expect(content.queryByText('DeepSeek V4 Pro')).not.toBeNull()
     })
   })
 
@@ -364,7 +391,7 @@ describe('ModelMenuPanel provider collapse', () => {
     // The current provider is collapsible like any other — clicking its header
     // hides its models rather than forcing them to stay open.
     await vi.waitFor(() => {
-      expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+      expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
     })
   })
 
@@ -373,7 +400,7 @@ describe('ModelMenuPanel provider collapse', () => {
 
     const header = await content.findByText('DeepSeek')
     fireEvent.click(header)
-    expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+    expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
 
     // Type in the search bar (auto-focused by DropdownMenuSearch)
     const input = screen.getByRole('textbox', { name: 'Search models' })
@@ -382,11 +409,16 @@ describe('ModelMenuPanel provider collapse', () => {
 
     // Should show models — search bypasses collapse. The matched letters render
     // inside a <mark>, splitting the label across nodes, so match on the row
-    // span's composed textContent instead of a single text node.
+    // span's composed textContent instead of a single text node. Badge chips
+    // (#51833) add a wrapper span whose composed textContent matches too, so
+    // require a leaf span.
     await vi.waitFor(() => {
       expect(
         content.queryByText(
-          (_, element) => element?.tagName === 'SPAN' && (element.textContent ?? '').startsWith('Deepseek V4 Pro')
+          (_, element) =>
+            element?.tagName === 'SPAN' &&
+            !element.querySelector('span') &&
+            (element.textContent ?? '').startsWith('DeepSeek V4 Pro')
         )
       ).not.toBeNull()
     })
@@ -399,7 +431,7 @@ describe('ModelMenuPanel provider collapse', () => {
     // Radix DropdownMenuItem fires onSelect on Enter from the onKeyDown handler
     fireEvent.keyDown(header.closest('[role="menuitem"]') ?? header, { key: 'Enter' })
 
-    expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+    expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
   })
 
   // The collapsed-providers set is a global presentation preference
@@ -472,7 +504,7 @@ describe('ModelMenuPanel provider collapse', () => {
 
     const { content, onSelectModel } = renderPanel()
 
-    await content.findByText(/Glm 4\.5 Air/i)
+    await content.findByText(/GLM 4.5 Air/i)
 
     fireEvent.click(await content.findByText('Refresh models'))
 
@@ -502,7 +534,7 @@ describe('ModelMenuPanel provider collapse', () => {
 
     const { content, onSelectModel } = renderPanel()
 
-    await content.findAllByText(/Glm 4\.5 Air/i)
+    await content.findAllByText(/GLM 4.5 Air/i)
     fireEvent.click(await content.findByText('Refresh models'))
 
     await vi.waitFor(() => {
@@ -526,7 +558,7 @@ describe('ModelMenuPanel provider collapse', () => {
 
     const { content, onSelectModel } = renderPanel()
 
-    const rows = await content.findAllByText(/Glm 4\.5 Air/i)
+    const rows = await content.findAllByText(/GLM 4.5 Air/i)
     const items = [...new Set(rows.map(row => row.closest('[role="menuitem"]')))]
 
     expect(items).toHaveLength(2)

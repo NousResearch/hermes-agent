@@ -13,12 +13,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
 
 _ORPHAN_RESCUE_REFS_TO_KEEP = 10
 _ORPHAN_RESCUE_REF_MAX_AGE_DAYS = 30
 
-_GIT_TEXT_KW = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
+# creationflags is folded in here so every ``**_GIT_TEXT_KW`` spawn (rev-parse label,
+# fork-bomb probe, EOL churn normalization) hides its console under the console-less
+# desktop backend (#117781).
+_GIT_TEXT_KW = dict(capture_output=True, text=True, encoding="utf-8", errors="replace",
+                   creationflags=windows_hide_flags())
 _BAR = "=" * 68
 _UPSTREAM_ADD_CMD = "git remote add upstream https://github.com/NousResearch/hermes-agent.git"
 
@@ -32,7 +38,8 @@ def _git_run(git_cmd, args, cwd=None, *, check=False):
     """Run ``git_cmd + args`` and return the CompletedProcess.
 
     The updater's git runner: capture all output and decode as UTF-8 regardless of the
-    Windows ANSI code page (#52649). ``check=True`` raises on non-zero exit.
+    Windows ANSI code page (#52649). ``check=True`` raises on non-zero exit. The spawn
+    always hides its console window (#117781).
     """
     return subprocess.run(
         git_cmd + list(args),
@@ -40,6 +47,7 @@ def _git_run(git_cmd, args, cwd=None, *, check=False):
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
         check=check,
+        creationflags=windows_hide_flags(),
     )
 
 
@@ -58,9 +66,10 @@ def _prune_orphan_rescue_refs(
 ) -> None:
     """Expire old rescue refs (``refs/hermes-update-backups/<kind>-<branch>-<ts>-<sha>``).
 
-    ``<kind>`` is ``orphan`` (no common ancestor) or ``diverged`` (local commits on the target
-    branch). Both are written before the same ``reset --hard`` and both pin objects, so both
-    expire on the same terms; each kind keeps its own ``keep`` newest.
+    ``<kind>`` is ``orphan`` (no common ancestor), ``diverged`` (local commits on the target
+    branch) or ``detached`` (commits made on a detached HEAD the update moved off). All are written
+    before the update moves HEAD and all pin objects, so they expire on the same terms; each kind
+    keeps its own ``keep`` newest.
 
     Each ref pins a possibly multi-GB snapshot against ``git gc``, so a repeatedly corrupted install would
     grow ``.git`` unbounded. Keep the ``keep`` newest AND drop any older than ``max_age_days`` by the
@@ -74,7 +83,7 @@ def _prune_orphan_rescue_refs(
     from hermes_cli.update_cmd_git import _git_run
     with suppress(OSError):
         stale: set[str] = set()
-        for kind in ("orphan", "diverged"):
+        for kind in ("orphan", "diverged", "detached"):
             prefix = f"refs/hermes-update-backups/{kind}-{branch}-"
             list_result = _git_run(
                 git_cmd, ["for-each-ref", "--format=%(refname)", "--sort=refname", f"{prefix}*"], cwd)
@@ -91,6 +100,43 @@ def _prune_orphan_rescue_refs(
                             stale.add(ref)
         for ref in sorted(stale):
             _git_run(git_cmd, ["update-ref", "-d", ref], cwd)
+
+
+def _park_detached_head(git_cmd, cwd, branch) -> None:
+    """Keep commits made on a detached HEAD reachable before the update moves HEAD off it.
+
+    Such commits belong to no branch: once HEAD moves, only the expiring reflog still reaches them,
+    and nothing in the output would name them. When HEAD is detached at a commit no ref contains
+    (the autostash's ``refs/stash`` does not count: it is dropped after the update), write
+    ``refs/hermes-update-backups/detached-<branch>-<ts>-<sha12>`` (the divergence rescue refs'
+    scheme and expiry) and name it. When that write fails, refuse (``sys.exit(1)``) rather than
+    orphan the work. Attached HEADs and already-reachable commits are left alone.
+    """
+    from hermes_cli.update_cmd import _git_run
+    if _git_run(git_cmd, ["symbolic-ref", "-q", "HEAD"], cwd).returncode == 0:
+        return  # on a branch
+    head = _git_run(git_cmd, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], cwd)
+    sha = (head.stdout or "").strip()
+    if head.returncode != 0 or not sha:
+        return
+    contains = _git_run(git_cmd, ["for-each-ref", "--contains", sha, "--format=%(refname)"], cwd)
+    holders = [r for r in (contains.stdout or "").split() if r != "refs/stash"]
+    if contains.returncode == 0 and holders:
+        return  # already reachable from a branch, tag, remote or backup ref
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    rescue_ref = f"refs/hermes-update-backups/detached-{branch}-{stamp}-{sha[:12]}"
+    if _git_run(git_cmd, ["update-ref", rescue_ref, sha], cwd).returncode != 0:
+        print(f"✗ HEAD is detached at {sha[:12]}, which no branch or tag contains, and backing it up "
+              f"to {rescue_ref} failed.")
+        print(f"  Update stopped so those commits are not orphaned. Keep them with: "
+              f"git -C {cwd} branch <name> {sha[:12]}")
+        sys.exit(1)
+    count = (_git_run(git_cmd, ["rev-list", "--count", sha, "--not", "--branches", "--tags", "--remotes"],
+                      cwd).stdout or "").strip()
+    print(f"  ⚠ {count or 'Some'} commit(s) made on the detached HEAD are on no branch — backed up to "
+          f"{rescue_ref} before moving HEAD. This backup expires after {_ORPHAN_RESCUE_REF_MAX_AGE_DAYS} days.")
+    print(f"    List them with: git log {rescue_ref} --not --branches --tags --remotes")
+    _prune_orphan_rescue_refs(git_cmd, cwd, branch)
 
 
 def _branch_head_label(git_cmd=None, cwd=None) -> str | None:
@@ -297,13 +343,14 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
     See #97052.
     """
     from hermes_cli.update_cmd import _count_commits_between, _has_upstream_remote, _no_prompt_git_kwargs, _should_skip_upstream_prompt
+    from hermes_cli.update_cmd_check import tracking_refspec
     if not _has_upstream_remote(git_cmd, cwd) and (
         _should_skip_upstream_prompt() or not _offer_upstream_remote(git_cmd, cwd, assume_yes=assume_yes, input_fn=input_fn)
     ):
         return False
     print("\n→ Fetching upstream...")
     try:
-        subprocess.run(git_cmd + ["fetch", "upstream", "main", "--quiet"], cwd=cwd, capture_output=True, check=True, **_no_prompt_git_kwargs())
+        subprocess.run(git_cmd + ["fetch", "upstream", tracking_refspec("upstream", "main"), "--quiet"], cwd=cwd, capture_output=True, check=True, **_no_prompt_git_kwargs())
     except subprocess.CalledProcessError:
         print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
         return False
@@ -557,4 +604,5 @@ def _normalize_managed_eol(git_cmd, repo_root):
             if _eol_only():  # still dirty: pinning would only surface churn we failed to clear
                 return
             print(f"→ Normalized line-ending churn ({len(eol_only)} file(s))")
-        subprocess.run(git_cmd + ["config", "core.autocrlf", "false"], cwd=repo_root, capture_output=True, check=False)
+        subprocess.run(git_cmd + ["config", "core.autocrlf", "false"], cwd=repo_root, capture_output=True, check=False,
+                       creationflags=windows_hide_flags())

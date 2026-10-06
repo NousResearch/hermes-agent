@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import subprocess
 
+from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,7 +36,10 @@ def checkout_contains(sha: str) -> bool:
     try:
         result = subprocess.run(
             ["git", "merge-base", "--is-ancestor", sha, "HEAD"],
-            cwd=_m().PROJECT_ROOT, capture_output=True, text=True, timeout=10,
+            cwd=_m().PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            # A SHA this checkout lacks is not contained; asking the promisor remote for it would
+            # download that commit's entire history (on-demand fetches send no "have" lines).
+            env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV},
         )
         return result.returncode == 0
     except Exception as exc:

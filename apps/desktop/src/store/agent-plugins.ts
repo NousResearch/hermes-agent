@@ -18,10 +18,12 @@ import { notifyError } from '@/store/notifications'
 export type AgentPluginServerState =
   | 'connected'
   | 'app_not_running'
+  | 'hermes_not_connected'
   | 'endpoint_unavailable'
   | 'no_interactive_session'
   | 'version_too_old'
   | 'missing_app'
+  | 'unsupported_gpu'
   | 'unknown'
 
 export interface AgentPluginServer {
@@ -96,6 +98,11 @@ export type GatewayRequest = <T>(method: string, params?: Record<string, unknown
 export const $agentPlugins = atom<AgentPluginRow[]>([])
 export const $agentPluginsStatus = atom<AgentPluginsStatus>('idle')
 export const $agentPluginsError = atom<string | null>(null)
+/** The profile `$agentPlugins` was loaded for (`null` = the backend's launch
+ *  profile; `undefined` = nothing loaded yet). Surfaces that write a row's
+ *  settings must check it: the list is shared, and a scope switch keeps the
+ *  previous profile's rows on screen until the new list lands. */
+export const $agentPluginsProfile = atom<null | string | undefined>(undefined)
 /** Best available address of the row whose toggle RPC is in flight. */
 export const $agentPluginBusy = atom<string | null>(null)
 
@@ -162,6 +169,7 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
       }
 
       $agentPlugins.set((result?.plugins ?? []).map(normalizeAgentPluginRow))
+      $agentPluginsProfile.set(scope)
       $agentPluginsStatus.set('ready')
       $agentPluginsError.set(null)
     } catch (e) {
@@ -217,7 +225,8 @@ export async function toggleAgentPlugin(
 
     const refreshed = result.plugin
 
-    if (refreshed) {
+    // Patch only a list loaded for the profile this toggle targeted.
+    if (refreshed && $agentPluginsProfile.get() === (profile ?? null)) {
       const snapshot = normalizeAgentPluginRow(refreshed)
 
       $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...snapshot } : row)))
@@ -470,11 +479,16 @@ export async function saveAgentPluginSettings(
       throw new Error(opts.failMessage)
     }
 
-    if (result?.plugin) {
+    // The shared list may belong to another profile by now (a scope switch
+    // mid-save): only a list loaded for the profile this save targeted takes
+    // its refreshed row, and a refetch would hijack the other profile's view.
+    const ownsList = $agentPluginsProfile.get() === (opts.profile ?? null)
+
+    if (ownsList && result?.plugin) {
       const refreshed = result.plugin
 
       $agentPlugins.set($agentPlugins.get().map(row => (row.key === opts.key ? { ...row, ...refreshed } : row)))
-    } else {
+    } else if (ownsList) {
       await loadAgentPlugins(request, opts.profile)
     }
 

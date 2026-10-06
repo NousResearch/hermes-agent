@@ -10,6 +10,7 @@ import pytest
 
 import json
 import os
+import shutil
 import tempfile
 import time
 import unittest
@@ -18,6 +19,7 @@ from unittest.mock import patch, MagicMock
 from tools.file_tools import (
     read_file_tool,
     write_file_tool,
+    patch_tool,
     _is_blocked_device,
     _DEFAULT_MAX_READ_CHARS,
 )
@@ -595,6 +597,81 @@ class TestDedupStubLoopGuard(unittest.TestCase):
         # The next unchanged read in this generation is lightweight again.
         r5 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
         self.assertTrue(r5.get("dedup"))
+
+
+# ---------------------------------------------------------------------------
+# Overlapping windows: only lines actually returned before are withheld
+# ---------------------------------------------------------------------------
+
+def _shown_line_numbers(result: dict) -> list:
+    # Fixture lines are never empty; skip the page's phantom trailing ``N|``.
+    return [int(n) for n, text in (line.split("|", 1) for line in result["content"].split("\n")) if text]
+
+
+class TestOverlappingReadDedup(unittest.TestCase):
+    """Real read path (real file ops): a read overlapping earlier ones returns
+    only lines never returned, and a read of nothing new is stubbed/blocked."""
+
+    def setUp(self):
+        _read_tracker.clear()
+        self._tmpdir = _make_safe_tempdir("hermes-overlap-")
+        self._tmpfile = os.path.join(self._tmpdir, "big.txt")
+        with open(self._tmpfile, "w", encoding="utf-8") as f:
+            f.write("".join(f"line {i}\n" for i in range(1, 3001)))
+
+    def tearDown(self):
+        _read_tracker.clear()
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _read(self, offset, limit):
+        return json.loads(read_file_tool(self._tmpfile, offset=offset, limit=limit, task_id="ov"))
+
+    def test_shifted_windows_over_seen_lines_are_stubbed_then_blocked(self):
+        """The observed evasion (2158/15 -> 2158/12 -> 2158/20 -> 2161/15)."""
+        self.assertEqual(_shown_line_numbers(self._read(2158, 15)), list(range(2158, 2173)))
+        self.assertTrue(self._read(2158, 12).get("dedup"))
+        # Only the 5 genuinely new lines come back.
+        self.assertEqual(_shown_line_numbers(self._read(2158, 20)), list(range(2173, 2178)))
+        self.assertTrue(self._read(2161, 15).get("dedup"))
+        blocked = self._read(2159, 10)
+        self.assertIn("BLOCKED", blocked["error"])
+        self.assertNotIn("exact region", blocked["error"])
+
+    def test_partly_unseen_window_returns_new_lines_and_names_skipped(self):
+        self._read(2158, 15)
+        self.assertTrue(self._read(2158, 15).get("dedup"))  # region is now flagged
+        # 2150-2157 were never shown, so they must come back despite the overlap.
+        r = self._read(2150, 20)
+        self.assertEqual(_shown_line_numbers(r), list(range(2150, 2158)))
+        self.assertEqual(r["omitted_lines"], "2158-2169")
+        self.assertIn("2158-2169", r["_note"])
+
+    def test_wide_read_returns_unseen_lines_on_both_sides(self):
+        self._read(2158, 15)
+        r = self._read(2150, 40)
+        self.assertEqual(_shown_line_numbers(r), list(range(2150, 2158)) + list(range(2173, 2190)))
+
+    def test_lines_cut_by_char_budget_are_not_counted_as_seen(self):
+        with patch("tools.file_tools._get_max_read_chars", return_value=200):
+            first = self._read(1, 100)
+        self.assertTrue(first["truncated"])
+        cut_at = first["next_offset"]
+        r = self._read(1, 99)
+        self.assertEqual(_shown_line_numbers(r), list(range(cut_at, 100)))
+
+    def test_edit_makes_the_whole_window_readable_again(self):
+        self._read(2158, 15)
+        # write_file_tool would refuse this: the task only ever read a partial
+        # (2158-2172) view of the file, not the full content it requires before
+        # overwriting. patch_tool has no such requirement and is enough to prove
+        # the point: any successful edit invalidates the whole path's seen-lines.
+        edit = json.loads(patch_tool(mode="replace", path=self._tmpfile,
+                                     old_string="line 2158\n", new_string="new 2158\n",
+                                     task_id="ov"))
+        self.assertNotIn("error", edit, edit)
+        r = self._read(2150, 20)
+        self.assertEqual(_shown_line_numbers(r), list(range(2150, 2170)))
+        self.assertNotIn("omitted_lines", r)
 
 
 # ---------------------------------------------------------------------------

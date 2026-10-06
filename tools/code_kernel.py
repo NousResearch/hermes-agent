@@ -274,6 +274,10 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
+            if tool_name == "read_file":
+                from tools.file_tools_read_tracking import programmatic_file_read
+                with programmatic_file_read():
+                    return handle_function_call(tool_name, tool_args, task_id=self.task_id)
             return handle_function_call(tool_name, tool_args, task_id=self.task_id)
         finally:
             if previous is not None:

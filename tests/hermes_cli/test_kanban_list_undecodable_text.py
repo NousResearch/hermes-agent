@@ -40,21 +40,21 @@ def test_list_survives_undecodable_and_blob_text_cells(board):
         good = kb.create_task(conn, title="good card", assignee="coder")
         conn.execute(
             "INSERT INTO tasks (id, title, body, assignee, status, priority, created_by, created_at) "
-            "VALUES ('t_text_bad', 'text invalid', CAST(X'FFFEABCD00' AS TEXT), 'coder', 'ready', 0, 'user', 1000)"
+            "VALUES ('t_bad0001', 'text invalid', CAST(X'FFFEABCD00' AS TEXT), 'coder', 'ready', 0, 'user', 1000)"
         )
         conn.execute(
             "INSERT INTO tasks (id, title, body, assignee, status, priority, created_by, created_at) "
-            "VALUES ('t_blob_bad', 'blob body', X'FFFEABCD00', 'coder', 'ready', 0, 'user', 1000)"
+            "VALUES ('t_bad0002', 'blob body', X'FFFEABCD00', 'coder', 'ready', 0, 'user', 1000)"
         )
 
     with kbc.connect() as conn:
         tasks = {t.id: t for t in kb.list_tasks(conn, status="ready")}
-        assert {good, "t_text_bad", "t_blob_bad"} <= set(tasks)
-        for tid in ("t_text_bad", "t_blob_bad"):
+        assert {good, "t_bad0001", "t_bad0002"} <= set(tasks)
+        for tid in ("t_bad0001", "t_bad0002"):
             body = tasks[tid].body
             assert isinstance(body, str) and "\ufffd" in body
             json.dumps(dataclasses.asdict(tasks[tid]))  # the --json path
-        assert kb.get_task(conn, "t_text_bad").title == "text invalid"
+        assert kb.get_task(conn, "t_bad0001").title == "text invalid"
 
 
 def test_show_json_survives_blob_cells_in_sibling_tables(board):

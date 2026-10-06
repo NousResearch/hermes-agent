@@ -41,7 +41,7 @@ export const zhHant = defineLocale({
     collectedModels: '模型路由和 token 總量',
     collectedNames: '內建工具、指令和目錄項名稱',
     collectedMilestones: '分組的設定計數',
-    collectedReliability: '更新結果與耗時、當機、啟動與回覆速度、訊息平台狀態',
+    collectedReliability: '更新和安裝的結果與耗時（失敗時包括來自固定清單的原因和所在階段；全新安裝記錄在本機，僅在你同意後計入）、當機、啟動與回覆速度、訊息平台狀態',
     collectedUsage:
       'Hermes 的使用方式：代理的準確度與效率（編輯是否成功、迴圈、錯誤後的恢復、每個任務的 token 與工具呼叫數、快取中斷），各介面與 Desktop 模式的活躍時間，哪些應用程式區域、操作與設定被使用、很快關閉或被關閉，以及供應商設定的結果',
     collectedMachine:
@@ -49,7 +49,7 @@ export const zhHant = defineLocale({
     installId:
       '傳送會把每日資料包上傳到 Nous 遙測服務。資料包帶有此設定檔的安裝 ID：一個不含個人資訊的固定隨機 UUID，刪除共享指標目錄即可重設。',
     consentWindow:
-      '只有整個收集期間都落在已記錄同意時段內的資料包才會被傳送——你同意之前的資料，或傳送關閉期間的資料，都會留在本機。你可以隨時再次關閉傳送。',
+      '只有整個收集期間都落在已記錄同意時段內的資料包才會被傳送。除全新安裝記錄（記錄在本機，僅在你同意後計入）外，你同意之前的資料，或傳送關閉期間的資料，都會留在本機。你可以隨時再次關閉傳送。',
     readDocs: '查看完整說明',
     share: '收集並傳送給 Nous',
     local: '僅在本機收集',

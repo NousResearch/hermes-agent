@@ -357,11 +357,46 @@ def _has_staged(raw: str) -> bool:
     return any(_entry_staged(tag, xy) for tag, xy, _ in _walk_entries(raw))
 
 
+def _review_commit_env(cwd: str) -> dict[str, str]:
+    """Carry Git's effective identity into an otherwise isolated commit.
+
+    Only read-only ``git var`` queries see the original config files. Git resolves
+    local/conditional config and author/committer environment precedence in *cwd*;
+    status, staging and the commit itself retain all noninteractive isolation.
+    """
+    base = dict(os.environ)
+    env = noninteractive_git_env(base)
+    probe_env = dict(env)
+    for key in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"):
+        if key in base:
+            probe_env[key] = base[key]
+        else:
+            probe_env.pop(key, None)
+    for role in ("AUTHOR", "COMMITTER"):
+        proc = _run(["git", "var", f"GIT_{role}_IDENT"], cwd, 5, probe_env)
+        if proc is None:
+            raise RuntimeError("git identity lookup failed")
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or "git identity lookup failed")
+        ident = re.fullmatch(r"(.*) <([^<>]*)> -?\d+ [+-]\d{4}", proc.stdout.strip())
+        if ident is None:
+            raise RuntimeError("git returned an invalid commit identity")
+        env[f"GIT_{role}_NAME"], env[f"GIT_{role}_EMAIL"] = ident.groups()
+    return env
+
+
 def review_commit(cwd: str, message: str, push: bool) -> dict:
     """Commit the working tree; stage everything first when nothing is staged."""
+    env = _review_commit_env(cwd)
     if not _has_staged(_status_z(cwd)[1]):
         _git_ok(cwd, ["add", "-A"])
-    _git_ok(cwd, ["commit", "-m", message])
+    proc = _run(
+        ["git", *harden_git_argv(["commit", "-m", message])], cwd, _GIT_TIMEOUT, env
+    )
+    if proc is None or proc.returncode != 0:
+        raise RuntimeError(
+            (proc.stderr.strip() if proc is not None else "") or "git commit failed"
+        )
     if push:
         _review_push(cwd)
     return {"ok": True}

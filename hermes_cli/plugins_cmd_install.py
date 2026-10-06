@@ -55,6 +55,16 @@ def _pc():
     return plugins_cmd
 
 
+class _ConsentRefusal(str):
+    """A refusal reason (user-facing text) carrying its closed extension-install ``failure_class``,
+    so publication classifies the refusal without matching the copy."""
+
+    def __new__(cls, text: str, failure_class: str) -> "_ConsentRefusal":
+        refusal = super().__new__(cls, text)
+        refusal.failure_class = failure_class
+        return refusal
+
+
 def _install_plugin_python_deps(
     manifest: dict, target: Path, console, *, assume_yes: bool = False
 ) -> tuple[bool, Optional[str]]:
@@ -78,7 +88,7 @@ def _install_plugin_python_deps(
         declaration = read_python_declaration(target)
         deps = declaration.install_requirements
     except Exception as exc:
-        return False, f"invalid Python dependency declaration: {exc}"
+        return False, _ConsentRefusal(f"invalid Python dependency declaration: {exc}", "manifest_invalid")
     has_python = declaration.is_member
     has_package_json = (target / "package.json").is_file()
     if not has_python and not has_package_json:
@@ -136,13 +146,13 @@ def _consent_python_deps(
             "[dim]Non-interactive install — skipping dependency install. "
             "Run `hermes plugins enable` when ready to prepare them.[/dim]\n"
         )
-        return False, "dependency install skipped (non-interactive)"
+        return False, _ConsentRefusal("dependency install skipped (non-interactive)", "non_interactive")
     if not _ask_yes_no(("python", plugin_name, deps), "  Prepare these with Hermes through PM now? [y/N]: ", console):
         console.print(
             "[dim]Skipped — run `hermes plugins enable` when ready "
             "to prepare them.[/dim]\n"
         )
-        return False, "dependency install declined"
+        return False, _ConsentRefusal("dependency install declined", "deps_declined")
 
     # Consent only — the python-deps resolution itself runs inside the ONE
     # admission transaction at enable-commit time (C13): env + config move
@@ -216,7 +226,8 @@ def _check_manifest_version(manifest: dict, plugin_name: str) -> None:
     reason = manifest_version_error(manifest, plugin_name)
     if reason:
         from hermes_cli.config import recommended_update_command
-        raise _pc().PluginOperationError(f"{reason} Run {recommended_update_command()} to update Hermes.")
+        raise _pc().PluginOperationError(f"{reason} Run {recommended_update_command()} to update Hermes.",
+                                         failure_class="incompatible")
 
 
 def _read_manifest_for_install(plugin_dir: Path) -> dict:
@@ -226,9 +237,11 @@ def _read_manifest_for_install(plugin_dir: Path) -> dict:
         try:
             manifest = _pc()._load_yaml_manifest(native)
         except Exception as exc:
-            raise _pc().PluginOperationError(f"Could not read plugin manifest {native}: {exc}") from exc
+            raise _pc().PluginOperationError(f"Could not read plugin manifest {native}: {exc}",
+                                             failure_class="manifest_invalid") from exc
         if not isinstance(manifest, dict):
-            raise _pc().PluginOperationError(f"Plugin manifest must be a mapping: {native}")
+            raise _pc().PluginOperationError(f"Plugin manifest must be a mapping: {native}",
+                                             failure_class="manifest_invalid")
         return manifest
     if not _pc()._has_portable_manifest(plugin_dir):
         return {}
@@ -236,7 +249,8 @@ def _read_manifest_for_install(plugin_dir: Path) -> dict:
         from hermes_cli.agent_plugins import read_agent_plugin_manifest
         manifest, diagnostics = read_agent_plugin_manifest(plugin_dir)
     except Exception as exc:
-        raise _pc().PluginOperationError(f"Portable plugin manifest validation failed: {exc}") from exc
+        raise _pc().PluginOperationError(f"Portable plugin manifest validation failed: {exc}",
+                                         failure_class="manifest_invalid") from exc
     for diagnostic in diagnostics:
         logger.warning("Agent Plugin install: %s", diagnostic.message)
     return manifest
@@ -275,7 +289,8 @@ def _ensure_tree_readable(root: Path, plugins_dir: Path) -> None:
                    else f"chmod -R u+rX {plugins_dir}")
             raise _pc().PluginOperationError(
                 f"Installed file {path.relative_to(root)} is not readable ({exc.strerror or exc}); "
-                f"nothing was installed. Fix permissions on {plugins_dir} (e.g. `{fix}`) and retry."
+                f"nothing was installed. Fix permissions on {plugins_dir} (e.g. `{fix}`) and retry.",
+                failure_class="permission",
             ) from exc
 
 
@@ -289,7 +304,8 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
     try:
         package = load_agent_plugin(tree, tree.parent / ".hermes-install-data")
     except ValueError as exc:
-        raise _pc().PluginOperationError(f"Plugin '{plugin_name}' is unavailable: {exc}.") from exc
+        raise _pc().PluginOperationError(f"Plugin '{plugin_name}' is unavailable: {exc}.",
+                                         failure_class="manifest_invalid") from exc
     for server_name, server_decl in package.server_declarations.items():
         result = availability(server_decl.declaration)
         if result.offerable:
@@ -298,7 +314,8 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
         if result.state == "unsupported_gpu":
             found = f", needs {gpu_label(server_decl.declaration.required_gpu)}"
         raise _pc().PluginOperationError(
-            f"Plugin '{plugin_name}' server '{server_name}' is unavailable: {result.state}{found}."
+            f"Plugin '{plugin_name}' server '{server_name}' is unavailable: {result.state}{found}.",
+            failure_class="incompatible",
         )
 
 
@@ -343,7 +360,7 @@ def _install_plugin_core(
     try:
         git_url, subdir = _pc()._resolve_git_url(identifier)
     except ValueError as e:
-        raise _pc().PluginOperationError(str(e)) from e
+        raise _pc().PluginOperationError(str(e), failure_class="invalid_source") from e
 
     plugins_dir = _pc()._plugins_dir()
     source = _pc()._canonical_source(git_url, subdir)
@@ -370,7 +387,7 @@ def _install_plugin_core(
         try:
             target = _pc()._sanitize_plugin_name(plugin_name, plugins_dir)
         except ValueError as e:
-            raise _pc().PluginOperationError(str(e)) from e
+            raise _pc().PluginOperationError(str(e), failure_class="manifest_invalid") from e
         _check_manifest_version(manifest, plugin_name)
         prior = old_metadata.get(plugin_name)
         # `install --force --ref` is the documented way to move a pin, so a reinstall of the same
@@ -396,17 +413,17 @@ def _install_plugin_core(
             if target.resolve() in enabled_plugin_dirs(installing=target):
                 raise _pc().PluginOperationError(
                     "--no-deps cannot replace an active plugin. Retry without --no-deps; "
-                    "PM must prepare its dependencies before publication.")
+                    "PM must prepare its dependencies before publication.", failure_class="already_installed")
         _refuse_unavailable_portable_plugin(plugin_name, tmp_target)
 
         if target.exists() and not force:
             raise _pc().PluginOperationError(
                 f"Plugin '{plugin_name}' already exists. Use force reinstall "
-                f"or run `hermes plugins update {plugin_name}`.")
+                f"or run `hermes plugins update {plugin_name}`.", failure_class="already_installed")
         if target.exists() and requested_revision is None and isinstance(prior, dict) and prior.get("pinned") is True:
             raise _pc().PluginOperationError(
                 f"Plugin '{plugin_name}' is pinned. Reinstall it with an explicit "
-                "--ref <40-character commit SHA> to change its source or revision.")
+                "--ref <40-character commit SHA> to change its source or revision.", failure_class="already_installed")
 
         record: dict[str, object] = {
             "pinned": requested_revision is not None,
@@ -422,7 +439,7 @@ def _install_plugin_core(
             try:
                 record["update_url"] = https_update_url(manifest["update_url"])
             except ValueError as exc:
-                raise _pc().PluginOperationError(f"Plugin '{plugin_name}' {exc}") from exc
+                raise _pc().PluginOperationError(f"Plugin '{plugin_name}' {exc}", failure_class="manifest_invalid") from exc
         if catalog:
             # ``sha`` = the commit checked out; ``pin`` = the reviewed catalog sha it satisfies (the
             # annotated-tag object for a tag pin), empty when installed off-pin via ``--ref``.
@@ -450,13 +467,34 @@ def _install_plugin_core(
             publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=True,
                            assume_consent=assume_deps_consent)
         except Exception as exc:
-            raise _pc().PluginOperationError(f"Plugin '{plugin_name}' was not published: {exc}") from exc
+            raise _pc().PluginOperationError(f"Plugin '{plugin_name}' was not published: {exc}",
+                                             failure_class=_publish_failure_class(exc)) from exc
 
     if not _pc()._looks_like_plugin_dir(target):
         logger.warning("%s has no plugin.yaml / __init__.py; may not be a valid plugin", plugin_name)
     _pc()._copy_example_files(target, _pc()._console())
     installed_manifest = _pc()._read_manifest(target)
     return target, installed_manifest, installed_manifest.get("name") or target.name
+
+
+# ---- iuf c1 ----
+def _publish_failure_class(exc: BaseException) -> str:
+    """Why publication failed, from the exception TYPE at this raise site. Publication is the PM
+    dependency sync (plugins_transaction.publish_plugin -> pm.client.sync_venv): a consent refusal
+    keeps the class plugins_transaction tagged, a filesystem error keeps its kind, and everything
+    else PM raised (InstallError, ResolutionConflict, AdmissionRefused, a worker error) is a
+    dependency failure."""
+    from hermes_cli.observability.shared_metrics_fields import tagged_failure_class
+
+    tagged = tagged_failure_class(exc) if isinstance(exc, _pc().PluginOperationError) else None
+    if tagged and tagged != "other":
+        return tagged
+    if isinstance(exc, PermissionError):
+        return "permission"
+    if isinstance(exc, OSError) and not isinstance(exc, (ConnectionError, TimeoutError)):
+        return "filesystem_error"
+    return "deps_failed"
+# ---- end iuf c1 ----
 
 
 def recorded_install(install: Callable[[], tuple], *, catalog_name: Optional[str], identifier: str) -> tuple:
@@ -469,8 +507,8 @@ def recorded_install(install: Callable[[], tuple], *, catalog_name: Optional[str
     before = set(_pc()._read_install_metadata())
     try:
         result = install()
-    except Exception:
-        record_extension_install(kind="plugin", source=source, name=catalog_name, outcome="failed")
+    except Exception as exc:
+        record_extension_install(kind="plugin", source=source, name=catalog_name, outcome="failed", error=exc)
         raise
     if result[2] not in before:
         record_extension_install(kind="plugin", source=source, name=catalog_name, outcome="success")

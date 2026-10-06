@@ -80,11 +80,24 @@ def _resolve_git_executable() -> Optional[str]:
 
 
 class PluginOperationError(Exception):
-    """Recoverable plugin install/update failure (CLI exits; HTTP maps to 4xx)."""
+    """Recoverable plugin install/update failure (CLI exits; HTTP maps to 4xx).
+
+    ``failure_class`` names the raise site for the extension-install metric (a closed name from
+    ``shared_metrics_contract.EXTENSION_PLUGIN_FAILURE_CLASSES``); untagged sites read ``other``.
+    """
+
+    failure_class = "other"
+
+    def __init__(self, *args, failure_class: Optional[str] = None):
+        super().__init__(*args)
+        if failure_class is not None:
+            self.failure_class = failure_class
 
 
 class PluginScanBlocked(PluginOperationError):
     """Plugin failed the security scan and was not installed."""
+
+    failure_class = "scan_blocked"
 
     def __init__(self, message: str, scan_result=None):
         super().__init__(message)
@@ -322,11 +335,14 @@ def _resolve_subdir_within(clone_root: Path, subdir: str) -> Path:
     clone_root = clone_root.resolve()
     candidate = (clone_root / subdir).resolve()
     if candidate != clone_root and clone_root not in candidate.parents:
-        raise PluginOperationError(f"Plugin subdirectory '{subdir}' escapes the repository.")
+        raise PluginOperationError(f"Plugin subdirectory '{subdir}' escapes the repository.",
+                                   failure_class="invalid_source")
     if not candidate.exists():
-        raise PluginOperationError(f"Plugin subdirectory '{subdir}' does not exist in the repository.")
+        raise PluginOperationError(f"Plugin subdirectory '{subdir}' does not exist in the repository.",
+                                   failure_class="invalid_source")
     if not candidate.is_dir():
-        raise PluginOperationError(f"Plugin subdirectory '{subdir}' is not a directory.")
+        raise PluginOperationError(f"Plugin subdirectory '{subdir}' is not a directory.",
+                                   failure_class="invalid_source")
     return candidate
 
 
@@ -345,7 +361,7 @@ def _native_manifest_file(plugin_dir: Path) -> Optional[Path]:
     try:
         return native_manifest_file(plugin_dir)
     except ValueError as exc:
-        raise PluginOperationError(str(exc)) from exc
+        raise PluginOperationError(str(exc), failure_class="manifest_invalid") from exc
 
 
 def _has_portable_manifest(plugin_dir: Path) -> bool:

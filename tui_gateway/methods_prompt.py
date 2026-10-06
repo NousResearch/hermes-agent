@@ -466,7 +466,9 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     # drop exactly one user turn, deeper cuts need confirm_deep_truncate.
     archived_user_turns = user_turn_count - ordinal
     if archived_user_turns > 1 and not is_truthy_value(params.get("confirm_deep_truncate")):
-        archived_messages = len(history) - len(truncated)
+        # A durable-carrier cut's ``truncated`` is physical rows: count the live cut instead.
+        archived_messages = len(history) - (
+            cut_index if durable_prefix is not None else len(truncated))
         logger.warning(
             "prompt.submit: REFUSED deep truncation of session %s (%d messages / %d user "
             "turns would be archived; ordinal=%d).",

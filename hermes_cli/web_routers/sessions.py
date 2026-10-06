@@ -703,6 +703,12 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
                 steer_text := _extract_steer_text_from_message(message)):
             message = {**message, "display_content": steer_text}
         if not is_compaction_summary_message(message):
+            if message.get("role") == "user" and message.get("display_kind") == STEER_DISPLAY_KIND:
+                from agent.conversation_compression import _extract_steer_text_from_message
+                steer_text = _extract_steer_text_from_message(message)
+                if steer_text:
+                    # Match session.resume without changing replay/export content.
+                    message = {**message, "display_content": steer_text}
             projected_messages.append(message)
             continue
         display_view = project_compaction_message_for_display(message)

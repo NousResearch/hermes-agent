@@ -2510,7 +2510,6 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     )
     # Mid-run provider ladder: same rule as resolution above, so a pinned job cannot be swapped
     # onto the global chain by a 5xx/429 either.
-    setup.fallback_model = _job_fallback_chain(job, _cfg)
     # Per-job fallback opt-out (#weekly-ops-review incident, 2026-08-23):
     # a tool-dependent cron job (e.g. one whose prompt tells it to run a
     # specific script via Bash and read real files) is actively harmed by
@@ -2530,6 +2529,8 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
             "instead of silently degrading to a local model)",
             job_id,
         )
+    else:
+        setup.fallback_model = _job_fallback_chain(job, _cfg)
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.
     _init_cron_mcp_tools(job_id)

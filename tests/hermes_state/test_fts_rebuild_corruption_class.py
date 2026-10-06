@@ -4,8 +4,8 @@ SQLITE_CORRUPT — ``sqlite3.DatabaseError("database disk image is malformed")``
 ``OperationalError`` (its subclass); it is a sibling. The in-place FTS rebuild is the recovery
 path for a corrupt index, so a failing ``'rebuild'`` command raises precisely the class the
 except arm must cover. Catching only ``OperationalError`` let the error escape the per-index
-loop un-rolled-back, and callers could not distinguish "rebuild attempted and hit structural
-corruption" from deferral. These tests pin the caught-and-rolled-back behavior.
+loop, and callers could not distinguish "rebuild attempted and hit structural
+corruption" from deferral. These tests pin the caught-and-reported behavior.
 """
 
 import sqlite3
@@ -49,7 +49,7 @@ def _corrupting_execute(match, command="rebuild", error=_MALFORMED):
     "error,repair_hint",
     [(_MALFORMED, True), (sqlite3.IntegrityError("UNIQUE constraint failed"), False)],
 )
-def test_corruption_class_error_is_caught_rolled_back_and_reported(
+def test_corruption_class_error_is_caught_and_reported(
     db, monkeypatch, caplog, error, repair_hint
 ):
     """The exact production failure (#133375): every index rebuild raises DatabaseError.

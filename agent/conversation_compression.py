@@ -4298,23 +4298,6 @@ def compress_context(
                 commit_fence.finish_commit()
 
 
-def _codex_compaction_cooldown_remaining(agent: Any) -> float:
-    """Seconds left on this session's compaction-failure cooldown (0 = clear)."""
-    compressor = getattr(agent, "context_compressor", None)
-    getter = getattr(compressor, "get_active_compression_failure_cooldown", None)
-    if not callable(getter):
-        return 0.0
-    try:
-        state = getter(refresh=True)
-    except Exception:
-        logger.debug("codex compaction cooldown lookup failed", exc_info=True)
-        return 0.0
-    try:
-        return max(0.0, float(state.get("remaining_seconds") or 0.0)) if state else 0.0
-    except (TypeError, ValueError):
-        return 0.0
-
-
 def _record_codex_compaction_failure(agent: Any, error: str) -> None:
     """Arm the shared compression-failure cooldown after a failed codex compaction.
     The codex path returns the transcript unchanged, so without a cooldown the still-over-threshold session
@@ -4346,6 +4329,7 @@ def _compress_context_via_codex_app_server(
     elif not force:
         # Automatic entrypoints honor the compressor-owned cooldown: a recent compaction
         # failed, and retrying every turn is what thrashes.
+        from agent.conversation_compression_codex import _codex_compaction_cooldown_remaining
         _cooldown_remaining = _codex_compaction_cooldown_remaining(agent)
         if _cooldown_remaining > 0:
             skip_reason = f"failure cooldown active for {_cooldown_remaining:.0f}s"

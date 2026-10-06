@@ -593,6 +593,7 @@
     "commandCenter.maintenance.curator",
     "commandCenter.maintenance.curatorActive",
     "commandCenter.maintenance.curatorDesc",
+    "commandCenter.maintenance.curatorDescWithBuiltins",
     "commandCenter.maintenance.curatorDisabled",
     "commandCenter.maintenance.curatorLastRun",
     "commandCenter.maintenance.curatorNeverRan",

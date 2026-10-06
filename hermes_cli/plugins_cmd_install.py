@@ -681,17 +681,21 @@ class InstallPhase(StrEnum):
     loading_tools = "loading_tools"
 
 
-def _catalog_install_on_disk(catalog_name: str) -> Optional[tuple]:
+def _catalog_install_on_disk(catalog_name: str, ref: Optional[str]) -> Optional[tuple]:
     """``(target, manifest, installed_name)`` of the installed, not enabled tree whose install record
     names catalog entry *catalog_name*, else None. A refused enable leaves the published clone in
     place (there is no rollback), so the card's Try again, or the model asking again, stopped at
-    "already exists" on a second clone and the plugin could never be turned on from the card."""
+    "already exists" on a second clone and the plugin could never be turned on from the card.
+    Like ``hermes plugins enable``, the tree is used at the commit it has; an explicit *ref* only
+    matches a tree checked out at that commit."""
     enabled = _pc()._get_enabled_set()
     for key, record in _pc()._read_install_metadata().items():
         block = record.get("catalog") if isinstance(record, dict) else None
         target = _pc()._plugins_dir() / key
         if not (isinstance(block, dict) and block.get("name") == catalog_name and target.is_dir()):
             continue
+        if ref and str(block.get("sha") or "").lower() != ref.lower():
+            return None
         manifest = _pc()._read_manifest(target)
         installed_name = manifest.get("name") or target.name
         return None if {installed_name, target.name} & enabled else (target, manifest, installed_name)
@@ -727,18 +731,19 @@ def _resolve_source(identifier: str, catalog_name: Optional[str]) -> tuple:
 def _place_tree(entry, identifier: str, *, force: bool, ref: Optional[str], assume_deps_consent: bool,
                 step: Callable[[InstallPhase], None]) -> tuple | dict:
     """``(target, manifest, installed_name)`` of the tree to enable, or the error result. A catalog
-    entry already on disk and not enabled (an earlier enable was refused) is used as it is."""
+    entry already on disk and not enabled (an earlier enable was refused) is used as it is, unless
+    an approved *ref* names another commit; a fresh install clones at *ref* when set, else the pin."""
     from hermes_cli import plugins_cmd_catalog as catalog
-    on_disk = _catalog_install_on_disk(entry.name) if entry is not None and not force else None
+    ref = (ref or "").strip() or None
+    on_disk = _catalog_install_on_disk(entry.name, ref) if entry is not None and not force else None
     if on_disk is not None:
         return on_disk
 
     def _install() -> tuple:
         if entry is not None:
-            return catalog.install_catalog_entry(entry, force=force, allow_removed=False,
+            return catalog.install_catalog_entry(entry, force=force, ref=ref, allow_removed=False,
                                                  assume_deps_consent=assume_deps_consent)
-        return _pc()._install_plugin_core(identifier, force=force, ref=(ref or "").strip() or None,
-                                          assume_deps_consent=assume_deps_consent)
+        return _pc()._install_plugin_core(identifier, force=force, ref=ref, assume_deps_consent=assume_deps_consent)
 
     step(InstallPhase.downloading)
     try:
@@ -778,7 +783,7 @@ def dashboard_install_plugin(
     on_step: Optional[Callable[[InstallPhase], None]] = None,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
-    pinned SHA (identifier may be empty); *ref* pins a custom source to one full commit SHA (same
+    pinned SHA (identifier may be empty); *ref* pins either source to one full commit SHA (same
     contract as ``--ref``); every path enforces the kill list (no GUI bypass). *assume_deps_consent*
     is consent the caller holds for the Python deps, so no terminal is needed to answer the gate.
     None (a user's Install click) is the consent the fresh-install enable already acts on: a plugin

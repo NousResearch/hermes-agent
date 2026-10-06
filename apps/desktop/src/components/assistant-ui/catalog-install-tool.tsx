@@ -12,7 +12,7 @@ import { Progress } from '@/components/ui/progress'
 import { useI18n } from '@/i18n'
 import { Book, Loader2, Plug } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { installAgentPlugin } from '@/store/agent-plugins'
+import { type AgentPluginInstallResult, installAgentPlugin } from '@/store/agent-plugins'
 import {
   type CatalogEntry,
   connectionOpOf,
@@ -56,6 +56,27 @@ function platformName(platform: string): string {
 
 const isCatalogTarget = (target: ConnectionTarget): target is CatalogTarget => Boolean(target.catalog)
 
+/** The row a successful settled Try again draws: the backend's install result for that retry, in the
+ *  fields the runner's installed row carries (`tools/connectors/catalog.py::_installed_row`). */
+function retriedRow(target: CatalogTarget, result: AgentPluginInstallResult): CatalogTarget {
+  const servers = result.live.mcpServers
+
+  return {
+    ...target,
+    catalog: {
+      ...target.catalog,
+      alreadyInstalled: false,
+      enabled: result.enabled ?? null,
+      missingEnv: result.missingEnv ?? [],
+      serverErrors: servers.filter(server => !server.connected).map(({ error, name }) => ({ error: error ?? '', name })),
+      skill: result.skillIds?.[0] ?? null
+    },
+    detail: '',
+    state: 'connected',
+    tools: servers.filter(server => server.connected).flatMap(server => server.tools)
+  }
+}
+
 /** `manage_catalog`: the host's catalog-install card. The model named ids; every word on a row is the
  *  host's resolution of that id. The card lives on the tool row that opened the operation only. */
 export function CatalogInstallTool(props: ToolCallMessagePartProps) {
@@ -64,6 +85,8 @@ export function CatalogInstallTool(props: ToolCallMessagePartProps) {
   const runtimeId = useStore(view.$runtimeId)
   const opId = connectionOpOf(props.args)
   const running = props.result === undefined
+  // Only an install opens an operation; a search row that reuses an install's call id draws no card.
+  const opens = opId !== null || props.args.action === 'install'
 
   const $request = useMemo(
     () => toolConnectionRequest(runtimeId, props.toolCallId, opId, running),
@@ -72,7 +95,7 @@ export function CatalogInstallTool(props: ToolCallMessagePartProps) {
 
   const request = useStore($request)
 
-  if (request && connectionRequestOwnsPart(props, request)) {
+  if (opens && request && connectionRequestOwnsPart(props, request)) {
     return <CatalogInstallCard request={request} />
   }
 
@@ -135,8 +158,8 @@ export function CatalogRow({ request, target }: CatalogRowProps) {
   // another operation can never hold this row.
   const [sentAt, setSentAt] = useState<null | { opId: string; seq: number }>(null)
   // Try again on a failed plugin row after the operation settled: a fresh host install (which enables a
-  // plugin already on disk). The settled operation is frozen, so the row shows this outcome over it.
-  const [retry, setRetry] = useState<null | { detail: string; status: 'failed' | 'installed' | 'running' }>(null)
+  // plugin already on disk). The settled operation is frozen, so the row draws that install's result.
+  const [retry, setRetry] = useState<null | { row: CatalogTarget; status: 'done' } | { status: 'running' }>(null)
   const sending = (sentAt?.opId === request.opId && request.seq <= sentAt.seq) || retry?.status === 'running'
   const Glyph = KIND_GLYPH[target.kind]
 
@@ -156,11 +179,11 @@ export function CatalogRow({ request, target }: CatalogRowProps) {
   }
 
   const retrySettled = async () => {
-    setRetry({ detail: '', status: 'running' })
+    setRetry({ status: 'running' })
     const owner = request.sessionId ? await connectionOwnerFor(request.sessionId, 'plugins.manage') : null
 
     if (!owner) {
-      setRetry({ detail: copy.sendFailed, status: 'failed' })
+      setRetry({ row: { ...target, detail: copy.sendFailed }, status: 'done' })
 
       return
     }
@@ -180,15 +203,11 @@ export function CatalogRow({ request, target }: CatalogRowProps) {
       }
     )
 
-    setRetry(result.ok ? { detail: '', status: 'installed' } : { detail: result.error ?? '', status: 'failed' })
+    const row = result.ok ? retriedRow(target, result) : { ...target, detail: result.error || target.detail }
+    setRetry({ row, status: 'done' })
   }
 
-  const shown: CatalogTarget =
-    retry?.status === 'installed'
-      ? { ...target, detail: '', state: 'connected' }
-      : retry?.status === 'failed'
-        ? { ...target, detail: retry.detail || target.detail }
-        : target
+  const shown = retry?.status === 'done' ? retry.row : target
 
   const onRetry = !request.settled
     ? () => void answer('approved')

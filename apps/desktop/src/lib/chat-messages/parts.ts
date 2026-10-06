@@ -317,6 +317,27 @@ export function chatMessageText(message: ChatMessage): string {
   return partsText(message.parts)
 }
 
+/** Whether the newest turn has a visible assistant reply (text or an error) after its user message. */
+export function turnHasReply(messages: ChatMessage[]): boolean {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+
+    if (message.hidden) {
+      continue
+    }
+
+    if (message.role === 'user') {
+      return false
+    }
+
+    if (message.role === 'assistant' && (message.error || chatMessageText(message).trim())) {
+      return true
+    }
+  }
+
+  return false
+}
+
 export interface UnspokenTurnSpeech {
   /** First unspoken assistant bubble — stable for the turn, the live speech session binds to it. */
   id: string

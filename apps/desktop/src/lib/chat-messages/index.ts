@@ -15,7 +15,8 @@ export {
   reasoningPart,
   reasoningTextFromDetails,
   renderMediaTags,
-  textPart
+  textPart,
+  turnHasReply
 } from './parts'
 export type { UnspokenTurnSpeech } from './parts'
 export {

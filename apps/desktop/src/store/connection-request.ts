@@ -131,7 +131,7 @@ export const $connectionRequests = atom<Record<string, ConnectionRequest>>({})
 /** Settled operations the session's current one replaced, oldest first. Their cards stay drawn on the
  *  rows that opened them: every settled install card, and the last settled connect card when the current
  *  operation is an install one. A later connect operation still replaces the connect card, so consecutive
- *  connect calls show one card. */
+ *  connect calls show one card. `dropSessionState` clears a session's entries when its runtime ends. */
 const $keptConnectionRequests = atom<Record<string, ConnectionRequest[]>>({})
 
 /** The key a tool row's args carry its operation id under, written when `connection.request` arrives.

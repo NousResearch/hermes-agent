@@ -391,7 +391,7 @@ For self-managed installations, you can do the same from the terminal — `herme
 Preview GUI cleanup with `hermes uninstall --gui --dry-run`. It lists the removal targets and returns without prompting or removing anything, including when `--yes` is also supplied.
 
 :::note
-Running `hermes uninstall --gui` from a **source checkout** (a `hermes desktop` dev build) removes `apps/desktop/{dist,release,node_modules}` and the desktop build stamp. The workspace-root `node_modules` stays installed because it is shared with the TUI, dashboard and other workspaces. Rebuild the GUI with `hermes desktop` if you need it again.
+Running `hermes uninstall --gui` from a **source checkout** (a `hermes desktop` dev build) removes `apps/desktop/{dist,release,node_modules}` and legacy desktop build stamps. The workspace-root `node_modules` stays installed because it is shared with the TUI, dashboard and other workspaces. Rebuild the GUI with `hermes desktop` if you need it again.
 :::
 
 ## CLI reference: `hermes desktop`
@@ -614,7 +614,7 @@ If a Desktop chat or bot stops responding while the connection still shows **Con
 
 ### The app vanished after `hermes update`
 
-An earlier update that replaced the checkout without keeping `apps/desktop/release/` leaves no packaged app to launch. As long as `HERMES_HOME/desktop-build-stamp.json` (written only by a successful Desktop build) still exists, the next `hermes update` notices the missing app and rebuilds it. To rebuild by hand: `hermes desktop --build-only --force-build`. On Windows the ZIP fallback also keeps the built app, its renderer bundle and its Electron `node_modules` across the swap.
+An earlier update that replaced the checkout without keeping `apps/desktop/release/` leaves no packaged app to launch. When the desktop app is missing, the next `hermes update` notices the missing app and rebuilds it. To rebuild by hand: `hermes desktop --build-only --force-build`. On Windows the ZIP fallback also keeps the built app, its renderer bundle and its Electron `node_modules` across the swap.
 
 ### The local backend stopped in the background
 

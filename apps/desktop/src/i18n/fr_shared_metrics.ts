@@ -1,11 +1,11 @@
-
 export const frSharedMetrics = {
   consentTitle: 'Aider à améliorer Hermes ?',
   consentBody:
     'Les métriques partagées ne contiennent que des compteurs bornés. Jamais de prompts, fichiers, chemins ni textes d’erreur. La collecte reste locale. Les envoyer à Nous est un consentement distinct.',
   whatIsCollected: 'Ce qui est collecté',
   collectedIntro: 'Uniquement des compteurs bornés :',
-  collectedActivity: 'Activité, durée des sessions, résultats et classes d’erreur, y compris un motif issu d’une liste fixe quand une écriture en mémoire ou une compression du contexte est refusée, échoue ou est ignorée',
+  collectedActivity:
+    'Activité, durée des sessions, résultats et classes d’erreur, y compris un motif issu d’une liste fixe quand une écriture en mémoire ou une compression du contexte est refusée, échoue ou est ignorée',
   collectedModels: 'Routes de modèles et totaux de tokens',
   collectedNames: 'Noms des outils, commandes et éléments du catalogue intégrés',
   collectedMilestones: 'Comptes de configuration regroupés',
@@ -26,14 +26,14 @@ export const frSharedMetrics = {
   changeLater: 'Vous pouvez changer cela à tout moment dans Réglages → Sécurité.',
   saveFailed: 'Impossible d’enregistrer votre choix',
   collectLabel: 'Collecter les statistiques d’utilisation',
-  collectDesc:
-    'Compteurs bornés conservés sur cet appareil. Jamais de prompts, fichiers, chemins ni textes d’erreur.',
+  collectDesc: 'Compteurs bornés conservés sur cet appareil. Jamais de prompts, fichiers, chemins ni textes d’erreur.',
   sendLabel: 'Envoyer les statistiques d’utilisation à Nous',
   sendDesc:
     'Envoyer chaque paquet quotidien au service de télémétrie de Nous. Seules les données d’une fenêtre de consentement sont envoyées. Nécessite la collecte activée.',
   unavailable: 'Mettez à jour le backend Hermes pour modifier ce réglage.',
   stripBody: 'Uniquement des compteurs bornés, jamais de prompts ni de fichiers.',
-  stripReaskBody: 'Nouvelle demande : une version précédente pouvait enregistrer « Non merci » avant que vous ne voyiez cette question.',
+  stripReaskBody:
+    'Nouvelle demande : une version précédente pouvait enregistrer « Non merci » avant que vous ne voyiez cette question.',
   stripChoices: { share: 'Envoyer à Nous', local: 'Local uniquement', off: 'Non merci' },
   stripDetails: 'Détails'
 }

@@ -1,11 +1,11 @@
-
 export const deSharedMetrics = {
   consentTitle: 'Hermes verbessern helfen?',
   consentBody:
     'Geteilte Metriken enthalten nur begrenzte Zähler. Niemals Prompts, Dateien, Pfade oder Fehlertexte. Die Erfassung bleibt lokal. Das Senden an Nous ist eine separate Zustimmung.',
   whatIsCollected: 'Was erfasst wird',
   collectedIntro: 'Nur begrenzte Zähler:',
-  collectedActivity: 'Aktivität, Session-Länge, Ergebnisse und Fehlerklassen, einschließlich eines Grunds aus einer festen Liste, wenn ein Speicherschreibvorgang oder eine Kontextkomprimierung abgelehnt wird, fehlschlägt oder übersprungen wird',
+  collectedActivity:
+    'Aktivität, Session-Länge, Ergebnisse und Fehlerklassen, einschließlich eines Grunds aus einer festen Liste, wenn ein Speicherschreibvorgang oder eine Kontextkomprimierung abgelehnt wird, fehlschlägt oder übersprungen wird',
   collectedModels: 'Modellrouten und Token-Summen',
   collectedNames: 'Namen integrierter Tools, Befehle und Katalogeinträge',
   collectedMilestones: 'Gruppierte Einrichtungszahlen',
@@ -32,7 +32,8 @@ export const deSharedMetrics = {
     'Jedes Tagespaket an den Nous-Telemetriedienst hochladen. Nur Daten aus einem Zustimmungsfenster werden gesendet. Erfordert aktive Erfassung.',
   unavailable: 'Aktualisieren Sie das Hermes-Backend, um diese Einstellung zu ändern.',
   stripBody: 'Nur begrenzte Zähler, niemals Prompts oder Dateien.',
-  stripReaskBody: 'Wir fragen noch einmal: Eine frühere Version konnte „Nein danke“ speichern, bevor Sie diese Frage gesehen haben.',
+  stripReaskBody:
+    'Wir fragen noch einmal: Eine frühere Version konnte „Nein danke“ speichern, bevor Sie diese Frage gesehen haben.',
   stripChoices: { share: 'An Nous senden', local: 'Nur lokal', off: 'Nein danke' },
   stripDetails: 'Details'
 }

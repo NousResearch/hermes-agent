@@ -15,6 +15,7 @@ import pytest
 
 from hermes_cli import main as cli_main
 from hermes_cli import main_desktop
+from hermes_cli import main_desktop_tcc
 from hermes_cli import main_install_repair
 from hermes_cli import main_web_build
 
@@ -485,7 +486,7 @@ def test_setup_tcc_identity_creates_cert_imports_trusts_and_configures(tmp_path,
     # Avoid writing the real user config.
     monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity(identity) is True
+    assert main_desktop_tcc._desktop_macos_setup_tcc_identity(identity) is True
 
     # openssl cert generation + pkcs12 export + security import + trust all ran.
     assert any(c[0] == "/usr/bin/openssl" and "req" in c for c in calls)
@@ -540,7 +541,7 @@ def test_setup_tcc_identity_retries_pkcs12_with_legacy_on_mac_verification_failu
     monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", lambda d: True)
     monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity(identity) is True
+    assert main_desktop_tcc._desktop_macos_setup_tcc_identity(identity) is True
 
     # Two pkcs12 exports (plain then -legacy) and two import attempts.
     pkcs12_calls = [c for c in calls if c[0] == "/usr/bin/openssl" and "pkcs12" in c]
@@ -569,7 +570,7 @@ def test_setup_tcc_identity_fails_when_trust_step_fails(tmp_path, monkeypatch, c
 
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity("Hermes Local Signing") is False
+    assert main_desktop_tcc._desktop_macos_setup_tcc_identity("Hermes Local Signing") is False
 
 
 @pytest.mark.platforms("macos")
@@ -591,7 +592,7 @@ def test_setup_tcc_identity_fails_when_identity_never_becomes_valid(tmp_path, mo
 
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity("Hermes Local Signing") is False
+    assert main_desktop_tcc._desktop_macos_setup_tcc_identity("Hermes Local Signing") is False
 
 
 @pytest.mark.platforms("macos")
@@ -617,7 +618,7 @@ def test_setup_tcc_identity_skips_generation_when_already_valid(tmp_path, monkey
     monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", lambda d: True)
     monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
+    assert main_desktop_tcc._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
 
     # No openssl generation, no security import — only find-identity + config.
     assert not any(c[0] == "/usr/bin/openssl" for c in calls)
@@ -657,7 +658,7 @@ def test_setup_tcc_identity_untrusted_existing_cert_is_repaired(tmp_path, monkey
     monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", lambda d: True)
     monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
+    assert main_desktop_tcc._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
     assert any(c[0] == "/usr/bin/security" and c[1] == "add-trusted-cert" for c in calls)
 
 
@@ -670,7 +671,7 @@ def test_cmd_gui_setup_tcc_identity_exits_before_build(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     _make_packaged_executable(root, monkeypatch)
 
-    with patch("hermes_cli.main_desktop._desktop_macos_setup_tcc_identity", return_value=True) as mock_setup, \
+    with patch("hermes_cli.main_desktop_tcc._desktop_macos_setup_tcc_identity", return_value=True) as mock_setup, \
          patch("hermes_cli.source_build.prepare_source_dependencies") as mock_install, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(setup_tcc_identity=True, identity="Hermes Local Signing"))

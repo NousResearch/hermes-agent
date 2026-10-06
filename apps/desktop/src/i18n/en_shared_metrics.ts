@@ -6,7 +6,8 @@ export const enSharedMetrics: Translations['sharedMetrics'] = {
     'Shared metrics contain only bounded counters. Never prompts, files, paths or error text. Collection is local. Sending them to Nous is a separate opt-in.',
   whatIsCollected: 'What is collected',
   collectedIntro: 'Only bounded counters:',
-  collectedActivity: 'Activity, session length, outcomes and error classes, including a fixed-list reason when a memory write or context compression is refused, fails or is skipped',
+  collectedActivity:
+    'Activity, session length, outcomes and error classes, including a fixed-list reason when a memory write or context compression is refused, fails or is skipped',
   collectedModels: 'Model routes and token totals',
   collectedNames: 'Built-in tool, command and catalog names',
   collectedMilestones: 'Bucketed setup counts',

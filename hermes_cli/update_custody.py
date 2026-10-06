@@ -267,14 +267,13 @@ def run(argv: Sequence[str], *, inherit_lock: bool = False, **kwargs) -> subproc
         try:
             stdout, stderr = proc.communicate(input, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
-            _kill_tree(proc)
-            proc.kill()
-            try:
-                exc.stdout, exc.stderr = proc.communicate(timeout=_DRAIN_SECONDS)
-            except subprocess.TimeoutExpired:
-                # A descendant the tree kill missed still holds the pipes: leave them to the
-                # reader threads (closing a pipe a thread is reading blocks) and give up on them.
-                proc.stdin = proc.stdout = proc.stderr = None
+            # git.exe's git-remote-https inherits the pipes: kill the tree, not git.exe alone (and
+            # never the job: it also holds the update's other children).
+            from hermes_cli._subprocess_compat import kill_and_drain
+
+            drained = kill_and_drain(proc, _DRAIN_SECONDS)
+            if drained is not None:
+                exc.stdout, exc.stderr = drained
             raise
         except BaseException:
             proc.kill()
@@ -317,16 +316,6 @@ def popen_post_commit(argv: Sequence[str], *, label: str, **kwargs) -> subproces
 
 # How long a timed-out child's output may still drain after its tree was killed.
 _DRAIN_SECONDS = 5
-
-
-def _kill_tree(proc: subprocess.Popen) -> None:
-    """Windows: kill the child AND what it started (git.exe's git-remote-https inherits the
-    stdout/stderr pipes; killing git.exe alone leaves communicate() waiting on the helper). Not
-    TerminateJobObject: the job also holds the update's other children."""
-    with contextlib.suppress(OSError, subprocess.SubprocessError):
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
-                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
 def run_git(git_cmd: Sequence[str], args: Sequence[str], **kwargs) -> subprocess.CompletedProcess:

@@ -2039,13 +2039,6 @@ def _(rid, params: dict, session: dict) -> dict:
     return _ok(rid, {"removed": removed})
 
 
-def _compute_host_ack_error(rid, ack: dict, code: int, default: str):
-    """``_err`` for a ``control.error``/``error`` ack, else None."""
-    if ack.get("type") in {"control.error", "error"}:
-        return _err(rid, code, str(ack.get("message") or default))
-    return None
-
-
 def _save_via_compute_host(rid, params: dict) -> dict:
     """``session.save`` for a turn-isolated session: the host owns the transcript file."""
     try:

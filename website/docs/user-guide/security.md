@@ -350,6 +350,61 @@ Safety rules:
 Useful flags: `--days N` (history window, default 90), `--min-count N`
 (minimum approvals to qualify, default 2), `--limit N`, and `--db PATH`.
 
+### Approval audit log (`hermes approvals audit`) {#approval-audit-log}
+
+Every approval decision and every guarded-command verdict is appended to an
+**append-only** audit store, which is what makes "since deployment, which attempts
+targeted a protected path?" answerable from data instead of a 783-file log sweep.
+
+**Where it lives — the store root, not `state.db`.** Partitions are files under
+`<hermes root>/audit/` (`approval_events-YYYY-MM-DD.db`, one per UTC day). `state.db`
+is per-profile, so it could only ever answer a cross-profile question by merging N
+databases — and would let activity in profile A hide from a query run in profile B.
+The root is also where the security review looked and found nothing. Each profile's
+rows carry a `profile` column, so per-profile queries are a filter, not a schema.
+
+**One row per decision**, carrying `ts`, `trace_id`, `profile`, `session_key`,
+`surface` (`terminal`, `execute_code`, `file_write`, `computer_use`, `plugin_rule`),
+`decision` (`allow` / `deny` / `prompt`), `outcome`, the **classification key**
+returned by the dangerous-command classifier (e.g. `access to Hermes secrets
+(Windows path)`), the matched `pattern_id`, and a **redacted** target: a keyed
+`HMAC-SHA256[:8]` digest — the first 8 **bytes**, i.e. 16 hex characters on disk —
+plus the target's length. Raw command text never reaches
+the store — there is a test asserting the raw bytes are absent from the file.
+
+**Append-only is enforced three ways:** the Python write surface exposes nothing but
+an insert (`record_event`); `UPDATE` and `DELETE` `RAISE(ABORT)` from a trigger for
+*every* reader of the file, including `sqlite3` from a shell; and every row's
+`row_hash` is `HMAC(key, partition || prev_hash || fields)`, so a rewrite performed by
+dropping the triggers — or by restoring an older file — is caught by `--verify`.
+
+**Retention** is `security.audit.retention_days` (default **180**, `0` keeps
+everything) and operates on **whole day-partition files only**, never on rows: a
+partition older than the policy is unlinked. No surviving row is ever mutated, which
+is what keeps the trigger unconditional. Pruning runs at most once per hour per
+process and skips any file that is still held open.
+
+**Backpressure** — appending is not free but it is bounded: a warm append measures
+**~0.5 ms** (it was ~16 ms before the connection pool and the config TTL cache), and
+a guarded call that decides *not* to record pays **~4 µs**. Benign commands are not
+recorded at all, so the common case writes nothing.
+
+```bash
+# The security review's question, since deployment:
+hermes approvals audit --days 0 --protected
+
+# Everything that was denied, machine-readable:
+hermes approvals audit --days 30 --decision deny --json
+
+# Follow one delegation chain end to end (Company OS §14):
+hermes approvals audit --trace-id <trace_id> --days 0
+
+# Recompute every row's HMAC chain; exit 1 on a broken partition:
+hermes approvals audit --verify
+```
+
+Set `security.audit.enabled: false` to write nothing, ever.
+
 ## File Write Safety {#file-write-safety}
 
 Before `write_file` or `patch` touches disk, Hermes checks the target path against a denylist and an optional sandbox. Blocked writes return an error to the agent immediately — **there is no approval prompt** and no way to override from the chat UI. The model may still claim the edit succeeded; when `display.file_mutation_verifier` is on (default), trust the [file-mutation verifier footer](./configuration.md#file-mutation-verifier) over the assistant's closing summary.

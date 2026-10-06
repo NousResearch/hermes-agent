@@ -28,6 +28,7 @@ from tools.approval_context import (
     _is_unattended_platform_approval_context, _resolve_cli_approval_callback, _should_fall_through_to_cli_approval,
     _tirith_fail_open, get_current_session_key,
 )
+from tools.approval_audit import audit_gate as _audit_gate, audit_note as _audit_note, audit_outcome as _audit_outcome
 from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
 )
@@ -645,14 +646,16 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
     if ctx.mode() != "deny":
         return None
 
-    def block(subject: str) -> dict:
+    def block(subject: str, *, pattern_id: str = "", class_key: str = "") -> dict:
+        _audit_note(surface="terminal", pattern_id=pattern_id, class_key=class_key or subject)
         return {"approved": False, "message": ctx.block_message(
             subject, noun="dangerous commands",
             advice="Find an alternative approach that avoids this command.")}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if is_dangerous and not _is_permanently_approved(pattern_key):
-        result = block(f"Command flagged as dangerous ({description})")
+        result = block(f"Command flagged as dangerous ({description})",
+                       pattern_id=pattern_key, class_key=description)
         if ctx.name == "single_query":
             result.update(pattern_key=pattern_key, description=description)
         return result
@@ -662,12 +665,15 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
     except ImportError:
         if _tirith_fail_open():
             return None
+        _audit_note(surface="terminal", pattern_id="tirith_unavailable",
+                    class_key="tirith scanner unavailable (fail-closed)")
         return {"approved": False, "message": (
             "BLOCKED: the Tirith security scanner could not be imported and security.tirith_fail_open is false, "
             f"so this command cannot be silently allowed — and {ctx.clause}. "
             f"Find an alternative approach, install tirith, or set approvals.{ctx.cfg_key}: approve in config.yaml.")}
     if tirith.get("action") in ("block", "warn"):
-        return block(_format_tirith_description(tirith))
+        return block(_format_tirith_description(tirith), pattern_id="tirith",
+                     class_key=_format_tirith_description(tirith))
     return None
 
 
@@ -948,12 +954,14 @@ def _presence(approval_callback=None) -> tuple:
     return approval_callback, is_cli, is_gateway, is_ask
 
 
+@_audit_gate(target_of=lambda args, kwargs: kwargs.get("display_target", ""))
 def _run_approval_gate(
     *, pattern_key: str, description: str, display_target: str, approval_callback=None,
     subject: str = "", noun: str = "flagged actions",
     advice: str = "Find an alternative approach that avoids this action.",
     cron_deny_message: str = "", single_query_deny_message: str = "", unattended_deny_message: str = "",
     autoapprove_log_prefix: str, fail_closed_when_no_human: bool = False, no_human_block_message: str = "",
+    audit_surface: str = "approval_gate",
 ) -> dict:
     """Shared human-approval gate for a flagged action (tool call or write): decision core for
     :func:`request_tool_approval` and the file-tool write gates.
@@ -966,14 +974,19 @@ def _run_approval_gate(
     Unattended deny text is ``ctx.block_message(subject, noun, advice)`` unless the caller passes
     an explicit ``*_deny_message`` (the file-tool write gates word their own).
     """
+    # Reaching this gate already means the caller classified the target as flagged, so the audit
+    # note starts here; the branches below only refine HOW it resolved.
+    _audit_note(surface=audit_surface, pattern_id=pattern_key, class_key=description)
     # Hardline blocks are the caller's job BEFORE this gate, so yolo here only skips the recoverable approval layer.
     # ``approvals.mode: off`` is the third bypass source (the Desktop "Approvals: off" toggle writes it); the shell
     # guards honour it, so every action routed through this gate (computer_use, plugin rules, SSH-config writes,
     # dangerous-pattern prompts) must too, or "off" still prompts on those surfaces.
     if _yolo_active() or approval_context._get_approval_mode() == "off":
+        _audit_outcome("bypass:yolo" if _yolo_active() else "bypass:mode_off")
         return _approved()
     session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):
+        _audit_outcome("session_approved")
         return _approved()
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
@@ -999,6 +1012,7 @@ def _run_approval_gate(
                 # otherwise block what single_query_mode: approve just authorized.
                 logger.warning("%s (pattern: %s): %s — single-query auto-approve "
                                "(approvals.single_query_mode: approve).", *log_args)
+                _audit_outcome("bypass:single_query")
                 return _approved()
             break  # cron/unattended approve-mode: auto-approve below
         else:
@@ -1012,6 +1026,7 @@ def _run_approval_gate(
                     pattern_key=pattern_key, description=description)
         logger.warning("%s (pattern: %s): %s — set HERMES_INTERACTIVE or "
                        "HERMES_GATEWAY_SESSION to require approval.", *log_args)
+        _audit_outcome("bypass:unattended")
         return _approved()
 
     return _human_decision(
@@ -1046,7 +1061,22 @@ def _user_deny_block(command: str) -> dict | None:
     if deny_pattern is None:
         return None
     logger.warning("User deny rule %r blocked command: %s", deny_pattern, command[:200])
+    _audit_note(surface="terminal", pattern_id=f"user_deny:{deny_pattern}",
+                class_key="user deny rule (approvals.deny)")
     return _user_deny_block_result(deny_pattern)
+
+
+def _audit_if_flagged(command: str, outcome: str) -> None:
+    """Note a command the classifier flags even though a bypass let it through.
+
+    The mode that most needs an audit trail is the one where nothing asked: without this,
+    a ``--yolo`` run of a protected-path command would leave no row. Benign commands stay
+    silent — that is the deliberate backpressure decision (see ``security.md`` §Approval
+    audit log).
+    """
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    if is_dangerous:
+        _audit_note(surface="terminal", pattern_id=pattern_key, class_key=description, outcome=outcome)
 
 
 def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
@@ -1062,19 +1092,24 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     is_hardline, hardline_desc = detect_hardline_command(command)
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
+        _audit_note(surface="terminal", pattern_id="hardline", class_key=hardline_desc)
         return _hardline_block_result(hardline_desc, command)
     runtime_target = command_deletes_runtime(command)
     if runtime_target:
         logger.warning("Runtime self-delete block: %s (command: %s)", runtime_target, command[:200])
-        return _hardline_block_result(f"recursive/any delete of {runtime_target}", command)
+        class_key = f"recursive/any delete of {runtime_target}"
+        _audit_note(surface="terminal", pattern_id="runtime_self_delete", class_key=class_key)
+        return _hardline_block_result(class_key, command)
     if sudo_guard:
         is_sudo_guess, sudo_guess_desc = _check_sudo_stdin_guard(command)
         if is_sudo_guess:
             logger.warning("Sudo stdin guard block: %s (command: %s)", sudo_guess_desc, command[:200])
+            _audit_note(surface="terminal", pattern_id="sudo_stdin", class_key=sudo_guess_desc)
             return _sudo_stdin_block_result(sudo_guess_desc)
     return _user_deny_block(command)
 
 
+@_audit_gate(target_of=lambda args, kwargs: args[0])
 def check_dangerous_command(command: str, env_type: str,
                             approval_callback=None,
                             has_host_access: bool = False) -> dict:
@@ -1087,8 +1122,10 @@ def check_dangerous_command(command: str, env_type: str,
     if blocked is not None:
         return blocked
     if _yolo_active():
+        _audit_if_flagged(command, "bypass:yolo")
         return _approved()
     if _command_matches_permanent_allowlist(command):
+        _audit_if_flagged(command, "bypass:allowlist")
         return _approved()
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
@@ -1098,6 +1135,7 @@ def check_dangerous_command(command: str, env_type: str,
         subject=f"Command flagged as dangerous ({description})", noun="dangerous commands",
         advice="Find an alternative approach that avoids this command.",
         autoapprove_log_prefix="AUTO-APPROVED dangerous command in non-interactive non-gateway context",
+        audit_surface="terminal",
     )
 
 
@@ -1123,6 +1161,7 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
         display_target=f"<{tool_name}> (plugin approval rule)", approval_callback=approval_callback,
         subject=subject, advice="Find an alternative approach.",
         autoapprove_log_prefix=f"plugin-escalated tool call '{tool_name}' in non-interactive non-gateway context",
+        audit_surface="plugin_rule",
         fail_closed_when_no_human=True,
         no_human_block_message=(f"BLOCKED: {subject} but no interactive user or gateway is present "
                                 "to approve it. A plugin flagged this action for human confirmation."),
@@ -1165,6 +1204,7 @@ def _tirith_scan(command: str) -> dict:
         }]}
 
 
+@_audit_gate(target_of=lambda args, kwargs: args[0])
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
                              has_host_access: bool = False) -> dict:
@@ -1182,12 +1222,16 @@ def check_all_command_guards(command: str, env_type: str,
     from agent.terminal_approval_batch import consume_prepared_guard
     prepared = consume_prepared_guard(command, env_type, has_host_access)
     if prepared is not None:
+        # The preparation pass already ran THIS function and recorded its row; recording again
+        # would double-count one decision.
         return prepared
 
     approval_mode = approval_context._get_approval_mode()
     if _yolo_active() or approval_mode == "off":
+        _audit_if_flagged(command, "bypass:yolo" if _yolo_active() else "bypass:mode_off")
         return _approved()
     if _command_matches_permanent_allowlist(command):
+        _audit_if_flagged(command, "bypass:allowlist")
         return _approved()
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
@@ -1198,6 +1242,7 @@ def check_all_command_guards(command: str, env_type: str,
             result = _unattended_deny(command, ctx)
             if result is not None:
                 return result
+        _audit_if_flagged(command, "bypass:unattended")
         return _approved()
 
     # Gather findings: warnings = [(pattern_key, description, is_tirith)]. Tirith block AND warn both go through the
@@ -1220,6 +1265,7 @@ def check_all_command_guards(command: str, env_type: str,
     combined_desc = "; ".join(desc for _, desc, _ in warnings)
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
+    _audit_note(surface="terminal", pattern_id=primary_key, class_key=combined_desc)
 
     # "Always" is offered when at least one warning is a dangerous-pattern key the persistence layer would actually
     # allowlist permanently. Pure-tirith findings are session-max by design, so a tirith-only prompt hides Always;
@@ -1239,6 +1285,7 @@ _EXECUTE_CODE_DESCRIPTION = (
 )
 
 
+@_audit_gate(target_of=lambda args, kwargs: args[0])
 def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.
 
@@ -1262,8 +1309,12 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
         return _approved()
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _approved()
+    # Past the skip checks the script IS a guarded execution: every resolution below records a row,
+    # which is the difference from the terminal gate (that one stays silent on benign commands).
+    _audit_note(surface="execute_code", pattern_id=pattern_key, class_key=description)
     approval_mode = approval_context._get_approval_mode()
     if _yolo_active() or approval_mode == "off":
+        _audit_outcome("bypass:yolo" if _yolo_active() else "bypass:mode_off")
         return _approved()
 
     # (-q clears the presence flags, but its unattended context resolves first anyway.)
@@ -1277,6 +1328,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
                 "subprocess calls that bypass shell-string approval checks). " + ctx.exec_tail,
                 pattern_key=pattern_key, description=description, outcome="blocked", noun="code",
             )
+        _audit_outcome("bypass:unattended")
         return _approved()
 
     # Only gateway/ask contexts get the one-shot whole-script approval. In an interactive CLI the script's terminal()
@@ -1285,6 +1337,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # and messaging ask-mode drive whole-script approval); when that leaks into a CLI with no notify callback, the
     # engine falls through to the CLI Dangerous Command panel instead of a silent pending_approval.
     if not is_gateway and not is_ask:
+        _audit_outcome("auto_allow:no_approval_channel")
         return _approved()
 
     session_key = get_current_session_key()
@@ -1294,6 +1347,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # Without this, "Approve session" / "Always" choices are stored but never
     # consulted, so every execute_code call re-prompts (#39275).
     if is_approved(session_key, pattern_key):
+        _audit_outcome("session_approved")
         return _approved()
 
     # Smart mode: an APPROVE only suppresses the redundant whole-script prompt; the per-call terminal() guards still

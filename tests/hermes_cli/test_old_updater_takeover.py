@@ -54,10 +54,12 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
     # checkout is the whole tree the child sees (CI has no editable finder for the source).
     shutil.copy2(source / "hermes_cli/update_handoff.py", package / "update_handoff.py")
     # write_handoff resolves the home through hermes_constants; the child tree is the whole
-    # sys.path (CI has no editable finder), so give it the one name the hand-off reads.
+    # sys.path (CI has no editable finder), so give it the names the hand-off reads (the
+    # payload lands beside the receipts in the ROOT home, which is HERMES_HOME here).
     (root / "hermes_constants.py").write_text(
         "import os\nfrom pathlib import Path\n"
-        "def get_hermes_home():\n    return Path(os.environ['HERMES_HOME'])\n", encoding="utf-8",
+        "def get_hermes_home():\n    return Path(os.environ['HERMES_HOME'])\n"
+        "get_default_hermes_root = get_hermes_home\n", encoding="utf-8",
     )
     program = root / "historical.py"
     program.write_text(
@@ -134,7 +136,10 @@ def test_shipped_post_swap_argv_enters_takeover_before_current_cli(tmp_path):
 @pytest.mark.parametrize("status", [0, 7])
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
 @pytest.mark.parametrize("desktop", [None, False, True])
-def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, status, encoding, desktop):
+# A Windows console/pipe in the ANSI code page: the old updater's stdout encodes strictly in cp1252,
+# and its hand-off banner runs before the child starts (review S1).
+@pytest.mark.parametrize("stdio", [None, "cp1252:strict"])
+def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, status, encoding, desktop, stdio):
     source = Path(__file__).resolve().parents[2]
     root = tmp_path / "updated checkout"
     package = root / "hermes_cli"
@@ -182,8 +187,10 @@ def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, 
     env = {key: value for key, value in os.environ.items()
            if not key.startswith(('HERMES_', 'PYTHON', 'UV_'))}
     env.update(HOME=str(home), HERMES_HOME=str(home), PYTHONPATH="/not/the/new/source")
+    if stdio:
+        env["PYTHONIOENCODING"] = stdio
     result = subprocess.run([sys.executable, "-B", str(program)], env=env,
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
     assert result.returncode == status, result.stdout + result.stderr
     assert (home / "runs").read_text() == "child\n"
     assert (home / "cleanup").read_text() == "ran"

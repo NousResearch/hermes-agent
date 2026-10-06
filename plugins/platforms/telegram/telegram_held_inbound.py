@@ -75,6 +75,7 @@ class TelegramHeldInboundMixin:
     def adopt_held_inbound(self, predecessor: "TelegramHeldInboundMixin") -> None:
         """Take over the hold queue of the instance the runner just replaced with us (#132829): it only
         drains on its own ``_mark_connected``, which never comes; later holds there forward here."""
+        self._held_inbound_successor = None  # we own the queue again: a reverse link would forward in a cycle
         predecessor._held_inbound_successor = weakref.ref(self)
         held = getattr(predecessor, "_held_inbound_events", None) or []
         events = list(held)

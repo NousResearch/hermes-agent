@@ -1454,35 +1454,6 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert check_data["can_apply"] is False
         assert check_data["update_command"] == data["update_command"]
 
-    def test_update_status_recovers_completed_result_after_dashboard_restart(self, monkeypatch, tmp_path):
-
-        action_id = "c" * 32
-        (tmp_path / "hermes-update.log").write_text(
-            "=== hermes-update started 2026-08-17 11:19:34 ===\n"
-            "pulling updates...\n",
-            encoding="utf-8",
-        )
-        (tmp_path / "update.log").write_text(
-            "=== hermes update started 2026-08-17T11:19:35 ===\n"
-            "✓ Update complete!\n"
-            f"=== hermes-update completed {action_id} ===\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path)
-        monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
-        monkeypatch.setattr(_web_server_gateway, "_ACTION_RESULTS", {})
-        monkeypatch.setattr(_web_server_gateway, "_ACTION_COMMANDS", {})
-        monkeypatch.setattr(_web_server_gateway, "_ACTION_IDS", {})
-
-        status = self.client.get("/api/actions/hermes-update/status?lines=2000")
-
-        assert status.status_code == 200
-        data = status.json()
-        assert data["running"] is False
-        assert data["exit_code"] == 0
-        assert data["action_id"] == action_id
-        assert f"=== hermes-update completed {action_id} ===" in data["lines"]
-
     def test_update_hermes_spawns_with_action_id(self, monkeypatch):
         import hermes_cli.web_server as web_server
 

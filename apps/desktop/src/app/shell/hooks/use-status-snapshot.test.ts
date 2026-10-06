@@ -409,7 +409,8 @@ describe('useStatusSnapshot', () => {
 
   it('does not force a background poll on non-success onboarding transitions while unfocused', async () => {
     const requestGateway = vi.fn(
-      async (method: string) => (method === 'setup.runtime_check' ? { ok: true } : { provider_configured: true }) as never
+      async (method: string) =>
+        (method === 'setup.runtime_check' ? { ok: true } : { provider_configured: true }) as never
     ) as unknown as GatewayRequester
 
     vi.mocked(document.hasFocus).mockReturnValue(false)

@@ -31,3 +31,38 @@ def test_format_connect_error_finds_missing_executable_through_deep_cyclic_chain
     missing.__context__ = current
 
     assert _format_connect_error(current) == "missing executable '/opt/homebrew/bin/removed-mcp-server'"
+
+
+def test_describe_http_failure_redacts_credentials_from_recorded_request_url():
+    from types import SimpleNamespace
+
+    from tools.mcp_tool_errors import _describe_http_failure
+
+    error = RuntimeError("Server returned an error response")
+    error.error = SimpleNamespace(code=-32603)
+    rejection = {
+        "status": 504,
+        "method": "POST",
+        "url": "https://mcp.example.com/mcp?token=SECRETVALUE&mode=tools",
+        "body": "upstream timeout",
+    }
+
+    result = _describe_http_failure(error, rejection)
+
+    assert "SECRETVALUE" not in result
+    assert "https://mcp.example.com/mcp?token=***&mode=tools" in result
+
+
+def test_describe_http_failure_forces_url_redaction_when_secret_redaction_is_disabled(monkeypatch):
+    from agent import redact
+    from tools.mcp_tool_errors import _describe_http_failure
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
+    error = RuntimeError("401 Unauthorized for https://user:pass@mcp.example.com/mcp?token=SECRETVALUE")
+    error.response = SimpleNamespace(status_code=401)
+
+    result = _describe_http_failure(error, {})
+
+    assert "SECRETVALUE" not in result and "user:pass" not in result
+    assert "https://***:***@mcp.example.com/mcp?token=***" in result

@@ -150,10 +150,10 @@ def _session_default_route(session: dict) -> tuple[str, str]:
     from hermes_cli.anon_auth import GUEST_MODEL, free_tier_route
     with _session_profile_runtime_scope({"profile_home": session.get("profile_home") or None},
                                         hydrate_secrets=False):
-        model, provider = _resolve_startup_runtime()
-        if not provider and free_tier_route():
+        if not _resolve_startup_runtime()[1] and free_tier_route():
             return GUEST_MODEL, "nous"
-        return model, provider or ""
+        # Off the free tier, the model id alone: the provider is resolved when the agent is built.
+        return _resolve_model(), ""
 
 
 def _lazy_info_route(session: dict, override: dict) -> dict:

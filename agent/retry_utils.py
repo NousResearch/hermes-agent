@@ -174,8 +174,8 @@ def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD
     return short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1
 
 
-# A wait longer than this is one a person feels: it is announced when it starts, and on the Nous
-# free tier an attended session ends the turn instead of sitting through it.
+# A wait longer than this is one a person feels: a non-rate-limit Retry-After this long is announced
+# when it starts, and on the Nous free tier an attended session ends the turn instead of sitting through it.
 LIVE_RETRY_WAIT_CAP_S = 60.0
 # Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap re-tripped the limit; 600s
 # covers realistic provider windows while still rejecting pathological values (#26293).

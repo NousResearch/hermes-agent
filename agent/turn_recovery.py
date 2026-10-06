@@ -1422,10 +1422,9 @@ def compute_error_backoff(
 ) -> float:
     """Pick the wait before the next API retry and announce it. Retry-After wins for
     rate limits and any other retryable error (capped at ``RETRY_AFTER_CAP_S``); otherwise
-    jittered backoff, replaced by the adaptive policy for 429s / Z.AI overloads. Short
-    retries are buffered (replayed only if every retry fails); a wait over
-    ``LIVE_RETRY_WAIT_CAP_S`` or a long Z.AI Coding wait is announced when it starts.
-    Every line names the attempt that runs after the wait."""
+    jittered backoff, replaced by the adaptive policy for 429s / Z.AI overloads. Retries are
+    buffered (replayed only if every retry fails); a long Z.AI Coding wait or a non-rate-limit
+    ``Retry-After`` over ``LIVE_RETRY_WAIT_CAP_S`` is announced when it starts."""
     # Imported lazily so tests that patch ``agent.retry_utils.jittered_backoff`` /
     # ``adaptive_rate_limit_backoff`` (incl. the run_agent conftest fast-backoff fixture) intercept.
     from agent.retry_utils import (
@@ -1448,35 +1447,38 @@ def compute_error_backoff(
         wait_time, _backoff_policy = adaptive_rate_limit_backoff(
             retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
         )
-    _next = f"attempt {retry_count + 1}/{max_retries}"
-    _announce_now = wait_time > LIVE_RETRY_WAIT_CAP_S or _backoff_policy == "zai_coding_overload_long"
     _reset = reset_hint(api_error) if _adaptive else ""
     _free_busy = is_rate_limited and on_free_model(agent, base_url)
-    _wait_reason = "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited"
-    if _free_busy:
-        _status = f"⏱️ The free model is busy. Retrying in {wait_time:.0f}s ({_next})..."
-    elif _adaptive:
+    _wait_reason = ("The free model is busy" if _free_busy
+                    else "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited")
+    if _adaptive:
         _policy_note = _ZAI_POLICY_NOTES.get(_backoff_policy or "", "")
         _status = (f"⏱️ {_wait_reason}.{f' Resets in {_reset}.' if _reset else ''} Waiting {wait_time:.1f}s "
-                   f"({_next}){_policy_note}...")
+                   f"(attempt {retry_count + 1}/{max_retries}){_policy_note}...")
+        _announce_now = _backoff_policy == "zai_coding_overload_long"
     else:
-        _status = f"⏳ Retrying in {wait_time:.1f}s ({_next})..."
+        _status = f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})..."
+        # A 5xx Retry-After can reach the cap; buffering it would leave the user silent for minutes.
+        _announce_now = _retry_after is not None and _retry_after > LIVE_RETRY_WAIT_CAP_S
     if _announce_now:
         agent._emit_diagnostic_status(_status)
     else:
         agent._buffer_diagnostic_status(_status)
-    # The live status line is transient (rewritten by the next frame, cleared on recovery), so
-    # it names the wait on every retry without adding transcript chatter. The reset window
-    # belongs here too: during the wait this line is where the user learns whether to sit it
-    # out or switch models.
-    if _free_busy:
-        _live_reason = "the free model is busy —"
+    # The buffered line replays only if every retry fails; the live status line is transient
+    # (rewritten by the next frame, cleared on recovery), so it names the wait on every retry
+    # without adding transcript chatter. The reset window belongs here too: during the wait this
+    # line is where the user learns whether to sit it out or switch models.
+    if _reset:
+        _live_reason = f"{_wait_reason.lower()} — resets in {_reset},"
     else:
-        _live_reason = f"{_wait_reason.lower()} — resets in {_reset}," if _reset else "waiting on provider —"
-    agent._emit_diagnostic_wait(f"⏳ {_live_reason} retrying in {wait_time:.0f}s ({_next})")
+        _live_reason = "the free model is busy —" if _free_busy else "waiting on provider —"
+    agent._emit_diagnostic_wait(
+        f"⏳ {_live_reason} retrying in {wait_time:.0f}s (attempt {retry_count}/{max_retries})"
+    )
     logger.warning(
-        "Retrying API call in %ss (%s) %s policy=%s error=%s",
-        wait_time, _next, agent._client_log_context(), _backoff_policy or "default", api_error,
+        "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
+        wait_time, retry_count, max_retries, agent._client_log_context(),
+        _backoff_policy or "default", api_error,
     )
     return wait_time
 

@@ -36,4 +36,9 @@ def session_source_for(platform: Optional[str]) -> str:
 
 
 def is_attended(agent: Any) -> bool:
-    return session_source_for(getattr(agent, "platform", None)) in ATTENDED_SOURCES
+    """A delegated child answers its parent, not a person, though its copied context still carries
+    the parent's source; a library caller (no platform) has no one reading either."""
+    platform = getattr(agent, "platform", None)
+    if not platform or platform == "subagent":
+        return False
+    return session_source_for(platform) in ATTENDED_SOURCES

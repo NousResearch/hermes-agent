@@ -1346,7 +1346,7 @@ def _(rid, params: dict) -> dict:
     session = None
     if sid:
         session, err = _sess_nowait(params, rid)
-        if err:
+        if err or (err := _busy_error(rid, session, "tools")):  # the reset bumps history_version mid-turn
             return err
     # The client sends session_id, not profile; the live session is authoritative.
     home = (session or {}).get("profile_home")

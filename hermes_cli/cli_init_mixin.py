@@ -227,6 +227,12 @@ class CLIInitMixin:
                 plugin_ts_names = get_plugin_toolset_keys_nowait()
             except Exception:
                 plugin_ts_names = set()
+            known_plugin_toolsets = (CLI_CONFIG.get("known_plugin_toolsets") or {}).get("cli")
+            if isinstance(known_plugin_toolsets, str):
+                from agent.skill_utils import parse_config_string_list
+                known_plugin_toolsets = parse_config_string_list(known_plugin_toolsets)
+            if isinstance(known_plugin_toolsets, list):
+                plugin_ts_names |= {str(name) for name in known_plugin_toolsets if name}
             invalid = [t for t in toolsets
                        if not validate_toolset(t) and t not in mcp_names and t not in plugin_ts_names]
             if invalid:

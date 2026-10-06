@@ -190,13 +190,16 @@ def test_strategy_event_rejects_set_value():
     assert "strategy='event' is not supported for set_value" in parsed["error"]
 
 
-def test_mcp_declared_session_pins_pipe_off_for_lease():
+def test_mcp_declared_session_pins_pipe_off_for_lease(monkeypatch):
     from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
     session = _CuaDriverSession(_AsyncBridge())
     session._started = True
     mock_pipe = MagicMock()
     mock_pipe.session_id = None
     session._pipe_transport = mock_pipe
+    # Force the transport selection itself to MCP on every platform; assigning a cached pipe
+    # alone would make native Windows take the pipe path before reaching the mocked bridge.
+    monkeypatch.setattr(session, "_get_pipe_transport", lambda: None)
 
     # The mocked response comes from MCP, so transport affinity belongs to MCP for this lease.
     mock_resp = {"isError": False}

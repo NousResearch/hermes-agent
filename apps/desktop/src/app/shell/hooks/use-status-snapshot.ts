@@ -96,10 +96,13 @@ export function useStatusSnapshot(
 
       // The free-tier verdict is a local, zero-network read that writes
       // straight to its own store and swallows its failures — nothing here
-      // waits on it or reads the result.
+      // waits on it or reads the result. Unlike the readiness publish below,
+      // its write happens inside the store, so hand it this run's liveness: a
+      // reply that lands after a source/profile switch must not repaint the
+      // shared atom the new run already answered.
       const [inferenceResult] = await Promise.allSettled([
         evaluateRuntimeReadiness(requestGateway),
-        refreshFreeTierStatus(requestGateway)
+        refreshFreeTierStatus(requestGateway, () => !cancelled)
       ])
 
       if (cancelled || inferenceResult.status !== 'fulfilled') {

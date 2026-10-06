@@ -895,10 +895,12 @@ def _should_route_through_aux_vision() -> bool:
     try:
         from agent.auxiliary_client import _read_main_model, _read_main_provider
         from hermes_cli.config import load_config_readonly
-        from tools.computer_use.vision_routing import should_route_capture_to_aux_vision
+        from tools.vision_tools import _native_tool_result_images
         stage = "decision"
         provider, model = _read_main_provider() or "", _read_main_model() or ""
-        return bool(should_route_capture_to_aux_vision(provider, model, load_config_readonly()))
+        # The shared native-tool-result gate (vision_analyze, browser screenshots, MCP images use it too), so a
+        # screenshot takes the same lane whichever tool produced it; anything it cannot vouch for goes to aux.
+        return not _native_tool_result_images(provider, model, load_config_readonly())
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("computer_use: aux-vision routing %s failed: %s", stage, exc)
         return False

@@ -126,6 +126,7 @@ def _cache_mcp_image_block(block) -> str:
 
 
 _MCP_NATIVE_IMAGE_MAX = 4  # images attached natively from one tool result; the rest stay MEDIA: paths
+_MCP_NATIVE_IMAGE_CANDIDATES = 16  # images prepared at most per result: skips refill the 4 slots, within a bound
 
 
 def _mcp_native_image_part(path: str) -> Optional[Tuple[Dict[str, Any], Optional[str]]]:
@@ -148,6 +149,7 @@ def _mcp_native_image_part(path: str) -> Optional[Tuple[Dict[str, Any], Optional
     if err or normalized is None:
         return None
     scale: Dict[str, int] = {}
+    target = min(resolve_embed_target_bytes(), _MAX_BASE64_BYTES)
     try:
         # A valid header over a truncated pixel stream passes the sniff and the cache; one undecodable
         # part makes the provider reject the whole request, so decode every frame first (as vision_analyze).
@@ -155,16 +157,17 @@ def _mcp_native_image_part(path: str) -> Optional[Tuple[Dict[str, Any], Optional
             return None
         with Image.open(normalized) as image:
             dims = image.size
-        url = _resize_image_for_vision(normalized, mime_type=mime, max_base64_bytes=resolve_embed_target_bytes(),
+        url = _resize_image_for_vision(normalized, mime_type=mime, max_base64_bytes=target,
                                        max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True, scale_out=scale)
     finally:
         if normalized != src:
             normalized.unlink(missing_ok=True)
-    # The resizer is best-effort (a 64 px short-edge floor keeps a 60000x64 strip at 60000 px): never attach
-    # what it could not bring under both caps, since the part rides history and providers reject it per turn.
+    # The resizer is best-effort on both caps (a 64 px short-edge floor keeps a 60000x64 strip at 60000 px; the
+    # quality ladder can bottom out above a low vision.embed_target_bytes). The part is re-sent every later turn,
+    # so attach only what fits both; the MEDIA: path still carries the rest (vision_analyze can read it).
     if max(scale.get("new_width", dims[0]), scale.get("new_height", dims[1])) > _EMBED_MAX_DIMENSION:
         return None
-    if len(url) > _MAX_BASE64_BYTES:
+    if len(url) > target:
         return None
     return {"type": "image_url", "image_url": {"url": url}}, _build_scale_note(scale or None, None)
 
@@ -178,34 +181,41 @@ def _mcp_result_with_native_images(text: str, image_paths: List[str]) -> Any:
     if not image_paths:
         return text
     try:
+        import contextvars
         from tools.vision_tools import _should_use_native_vision_fast_path, _vision_cpu_executor
         from tools.vision_tools_history_budget import repeat_refusal
         if not _should_use_native_vision_fast_path():
             return text
-        # Decode/resize on the bounded vision pool: a parallel tool batch of image-heavy MCP calls must not
-        # decode dozens of large images at once on tool threads. Each job runs in a copy of the caller's context:
-        # the active runtime (a managed local model narrows formats: no WebP) and the profile's vision settings
-        # are ContextVars a bare pool thread would not see.
-        import contextvars
-        jobs = [(p, _vision_cpu_executor.submit(contextvars.copy_context().run, _mcp_native_image_part, p))
-                for p in image_paths[:_MCP_NATIVE_IMAGE_MAX]]
-        prepared = [(p, f.result()) for p, f in jobs]
     except Exception:  # deliberate boundary: the MEDIA: paths already carry the images, so any failure keeps the text
-        logger.debug("MCP native image attach failed, keeping MEDIA: paths", exc_info=True)
+        logger.debug("MCP native image gate failed, keeping MEDIA: paths", exc_info=True)
         return text
     attached, notes = [], ""
-    for path, ready in prepared:
-        if not ready:
-            continue
-        part, note = ready
-        # vision.max_calls_per_image: a polled screenshot tool re-sends the same pixels under a fresh cache path
-        # each call, so the reservation keys on the resized data URL (identical pixels, identical key).
-        if repeat_refusal(part["image_url"]["url"]):
-            notes += f"\n- MEDIA:{path}: not attached; this image is already in context (vision.max_calls_per_image)."
-            continue
-        attached.append(part)
-        if note:
-            notes += f"\n- MEDIA:{path}: {note}"
+    candidates = image_paths[:_MCP_NATIVE_IMAGE_CANDIDATES]
+    # Prepare in waves sized to the free slots, so a damaged or already-in-context image hands its slot to the
+    # next one instead of hiding it. Decode/resize runs on the bounded vision pool (a parallel tool batch of
+    # image-heavy calls must not decode dozens of large images at once on tool threads), each job in a copy of
+    # the caller's context: the active runtime (a managed local model: no WebP) and the profile's vision
+    # settings are ContextVars a bare pool thread would not see.
+    while candidates and len(attached) < _MCP_NATIVE_IMAGE_MAX:
+        wave, candidates = candidates[:_MCP_NATIVE_IMAGE_MAX - len(attached)], candidates[_MCP_NATIVE_IMAGE_MAX - len(attached):]
+        jobs = [(p, _vision_cpu_executor.submit(contextvars.copy_context().run, _mcp_native_image_part, p)) for p in wave]
+        for path, job in jobs:
+            try:
+                ready = job.result()
+            except Exception:  # one bad file keeps its MEDIA: path; the others still attach
+                logger.debug("MCP native image prep failed for %s", path, exc_info=True)
+                continue
+            if not ready:
+                continue
+            part, note = ready
+            # vision.max_calls_per_image: a polled screenshot tool re-sends the same pixels under a fresh cache
+            # path each call, so the reservation keys on the resized data URL (identical pixels, identical key).
+            if repeat_refusal(part["image_url"]["url"]):
+                notes += f"\n- MEDIA:{path}: not attached; this image is already in context (vision.max_calls_per_image)."
+                continue
+            attached.append(part)
+            if note:
+                notes += f"\n- MEDIA:{path}: {note}"
     if not attached:
         return text + notes
     header = "\n\nThe image(s) from this call are attached — inspect them with your native vision."

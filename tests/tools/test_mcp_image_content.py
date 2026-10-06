@@ -126,7 +126,7 @@ class TestNativeImageAttach:
     pixels via the shared native gate; the image is re-encoded from the sniffed cache file within the embed
     budget, never the server's raw payload."""
 
-    def _call(self, monkeypatch, tmp_path, cfg, image: bytes = b"", mime: str = "image/png"):
+    def _call(self, monkeypatch, tmp_path, cfg, image: bytes = b"", mime: str = "image/png", images=None):
         import asyncio
         import io
         from unittest.mock import AsyncMock, patch
@@ -140,9 +140,10 @@ class TestNativeImageAttach:
             buf = io.BytesIO()
             Image.new("RGB", (3000, 2000), (20, 90, 200)).save(buf, "PNG")  # past the 1568 px embed edge
             image = buf.getvalue()
+        blocks = [SimpleNamespace(type="image", data=base64.b64encode(raw).decode(), mimeType=m)
+                  for raw, m in (images or [(image, mime)])]
         result = SimpleNamespace(isError=False, structuredContent=None, meta=None, content=[
-            SimpleNamespace(type="text", text="snapshot"),
-            SimpleNamespace(type="image", data=base64.b64encode(image).decode(), mimeType=mime)])
+            SimpleNamespace(type="text", text="snapshot"), *blocks])
         server = mcp_tool.MCPServerTask("srv")
         server._tools = [SimpleNamespace(name="snap", description="screenshot", inputSchema=None)]
         server.session = SimpleNamespace(call_tool=AsyncMock(return_value=result))
@@ -190,6 +191,27 @@ class TestNativeImageAttach:
             reset_runtime_main(token)
         assert isinstance(out, dict)
         assert not out["content"][1]["image_url"]["url"].startswith("data:image/webp")
+
+    def test_skipped_images_free_their_slot_and_the_byte_budget_is_the_configured_one(self, tmp_path, monkeypatch):
+        """Four damaged images ahead of a good fifth: the fifth still attaches. An embed the resizer could not
+        bring under vision.embed_target_bytes stays a MEDIA: path instead of riding history over budget."""
+        import io
+        from PIL import Image
+        jpeg, good = io.BytesIO(), io.BytesIO()
+        Image.effect_noise((256, 256), 64).convert("RGB").save(jpeg, "JPEG")
+        Image.new("RGB", (32, 32), (10, 200, 10)).save(good, "PNG")
+        broken = (jpeg.getvalue()[: len(jpeg.getvalue()) // 2], "image/jpeg")
+        out = self._call(monkeypatch, tmp_path, {}, images=[broken] * 4 + [(good.getvalue(), "image/png")])
+        assert isinstance(out, dict) and len(out["content"]) == 2
+
+        noise = io.BytesIO()
+        Image.new("RGB", (64, 64), (10, 10, 200)).save(noise, "PNG")
+        # The resizer is best-effort; whatever it returns above vision.embed_target_bytes stays a MEDIA: path.
+        from tools import vision_tools
+        monkeypatch.setattr(vision_tools, "_resize_image_for_vision",
+                            lambda *a, **k: "data:image/jpeg;base64," + "A" * (64 * 1024 + 1))
+        tight = self._call(monkeypatch, tmp_path, {"vision": {"embed_target_bytes": 64 * 1024}}, image=noise.getvalue())
+        assert isinstance(tight, str) and "MEDIA:" in tight
 
     def test_text_mode_an_undecodable_or_an_unshrinkable_image_keeps_the_string_result(self, tmp_path, monkeypatch):
         assert "MEDIA:" in self._call(monkeypatch, tmp_path, {"agent": {"image_input_mode": "text"}})

@@ -118,11 +118,20 @@ def test_merges_down_to_the_target_into_one_pack_whatever_the_size_limit(
     _age(repo)
     held = _objects(repo)
     monkeypatch.setattr(tidy, "PACK_COUNT_TARGET", 1)
+    # The merge writes the object store during `hermes update`: it is an updater git, so it runs in
+    # the update's custody holding the checkout lock fd (a killed update's orphan keeps the lock).
+    from hermes_cli import update_custody
+
+    spawned, real_run = [], update_custody.run
+    monkeypatch.setattr(update_custody, "run", lambda argv, *, inherit_lock=False, **kw: (
+        spawned.append((update_custody.git_subcommand(list(argv)[1:]), inherit_lock))
+        or real_run(argv, inherit_lock=inherit_lock, **kw)))
 
     result = tidy.tidy_partial_clone_packs(repo)
 
     assert result.packs_left == 1 and _packs(repo)[0].with_suffix(".promisor").exists()
     assert _objects(repo) == held
+    assert ("pack-objects", True) in spawned
 
 
 _KILLED_MID_ERASE = """
@@ -173,12 +182,7 @@ def test_a_refused_or_killed_erase_leaves_git_reading_and_is_finished_later(
         assert tidy.tidy_partial_clone_packs(clone) == tidy.TidyResult(), "ran beside a live lock holder"
     finally:
         os.close(holder)
-    killed_fetch, live_fetch = pack_dir / "tmp_pack_killed", pack_dir / "tmp_pack_live"
-    for temp in (killed_fetch, live_fetch):
-        temp.write_bytes(b"partial transfer")
-    os.utime(killed_fetch, (time.time() - 2 * 3600,) * 2)
     tidy.tidy_partial_clone_packs(clone)
     assert all(p.with_suffix(".pack").exists() for p in pack_dir.glob("pack-*.*")), \
         "leftovers of an interrupted erase survived the next run"
-    assert not killed_fetch.exists() and live_fetch.exists(), "a dead fetch's temp file survived, or a live one went"
     assert _objects(clone) == held

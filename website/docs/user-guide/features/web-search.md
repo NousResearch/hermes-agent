@@ -426,7 +426,7 @@ web:
 When a per-capability key is empty, that capability falls through to `web.backend`. Only when no **shared** web selection has ever been written (`web.backend` or the managed `hermes tools` row) is the backend auto-detected from whichever API key/URL is present — once a shared selection exists, the runtime always uses it, and adding a key to `.env` does not reroute web traffic. A per-capability key affects only its own capability: setting `web.extract_backend` alone leaves `web_search` on its auto-detected backend.
 
 **Priority order (per capability):**
-1. `web.search_backend` / `web.extract_backend` (explicit per-capability)
+1. `web.search_backend` / `web.extract_backend` (explicit per-capability; `nous` = managed Tool Gateway for that capability only, see [Tool Gateway](./tool-gateway.md#mixing-your-own-key-and-the-gateway-web-only))
 2. `web.backend` (shared fallback; `nous` = managed Tool Gateway)
 3. Auto-detect from environment variables (no shared selection written)
 

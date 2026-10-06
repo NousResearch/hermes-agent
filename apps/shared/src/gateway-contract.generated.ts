@@ -1064,7 +1064,7 @@ export interface CatalogScan {
 export type CatalogScanStatus = 'passed' | 'warnings' | 'failed'
 /** The desktop app a catalog plugin drives, from its ``hermes_platform`` declaration. */
 export type CatalogAppState = 'present' | 'missing_app' | 'app_not_running' | 'unknown'
-/** The slow steps of an install, as ids; the desktop catalog card words them in its own language. The wire contract imports this enum. */
+/** The slow steps of an install, as ids; the desktop catalog card words them in its own language. */
 export type InstallPhase = 'downloading' | 'python_packages' | 'loading_tools'
 /** The non-secret Advanced choices the user approved on a catalog row; a Try again after the operation settled repeats them. */
 export interface CatalogApproved {

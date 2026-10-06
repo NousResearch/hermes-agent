@@ -92,7 +92,7 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # dashboard) skip bundled-skill seeding. Delete the file to opt back in.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 
-# ``profile.yaml`` ``role`` values. A role grants backend capabilities (the setup toolset), so
+# ``profile.yaml`` ``role`` values. A role marks a backend-created profile (setup) and grants no toolset;
 # only the backend writes one, and a copy of a profile (clone-all, import) never inherits it.
 SETUP_ROLE = "setup"
 PROFILE_ROLES = frozenset({SETUP_ROLE})

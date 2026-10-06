@@ -11,13 +11,15 @@ import logging
 import os
 import sys
 import tempfile
+import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
-from enum import StrEnum
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from hermes_cli.cli_output import line_input
+from hermes_cli.plugin_install_phase import InstallPhase
+from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
 
@@ -672,15 +674,6 @@ def _select_memory_provider(name: str, console, *, select: bool) -> None:
         f"Run `hermes memory setup {name}` to configure it; new sessions use it.")
 
 
-class InstallPhase(StrEnum):
-    """The slow steps of an install, as ids; the desktop catalog card words them in its own language.
-    The wire contract imports this enum."""
-
-    downloading = "downloading"
-    python_packages = "python_packages"
-    loading_tools = "loading_tools"
-
-
 def _catalog_install_on_disk(catalog_name: str, ref: Optional[str]) -> Optional[tuple]:
     """``(target, manifest, installed_name)`` of the installed, not enabled tree whose install record
     names catalog entry *catalog_name*, else None. A refused enable leaves the published clone in
@@ -688,13 +681,14 @@ def _catalog_install_on_disk(catalog_name: str, ref: Optional[str]) -> Optional[
     "already exists" on a second clone and the plugin could never be turned on from the card.
     Like ``hermes plugins enable``, the tree is used at the commit it has; an explicit *ref* only
     matches a tree checked out at that commit."""
+    from hermes_cli.plugins_cmd_catalog import catalog_install_record
     enabled = _pc()._get_enabled_set()
-    for key, record in _pc()._read_install_metadata().items():
-        block = record.get("catalog") if isinstance(record, dict) else None
+    for key in _pc()._read_install_metadata():
         target = _pc()._plugins_dir() / key
-        if not (isinstance(block, dict) and block.get("name") == catalog_name and target.is_dir()):
+        record = catalog_install_record(target) if target.is_dir() else None
+        if not record or record["catalog_name"] != catalog_name:
             continue
-        if ref and str(block.get("sha") or "").lower() != ref.lower():
+        if ref and str(record["sha"]).lower() != ref.lower():
             return None
         manifest = _pc()._read_manifest(target)
         installed_name = manifest.get("name") or target.name
@@ -763,6 +757,18 @@ def _place_tree(entry, identifier: str, *, force: bool, ref: Optional[str], assu
         return {"ok": False, "error": str(exc)}
 
 
+# One lock per Hermes home. The Desktop install card enables several plugins at once, each on its own
+# thread; without it every thread read the same config version and all but the first commit were
+# refused as stale. The version check in PM stays: it still catches an edit from another process.
+_ENABLE_LOCKS: dict[str, threading.Lock] = {}
+_ENABLE_LOCKS_GUARD = threading.Lock()
+
+
+def _enable_lock() -> threading.Lock:
+    with _ENABLE_LOCKS_GUARD:
+        return _ENABLE_LOCKS.setdefault(hermes_home_key(), threading.Lock())
+
+
 def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], None]) -> Optional[dict]:
     """None once enabled, else the refusal result. Enabling admits the plugin, and admission resolves
     its Python dependencies."""
@@ -771,7 +777,8 @@ def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], Non
     if deps:
         step(InstallPhase.python_packages)
     try:
-        _pc()._set_plugin_enabled(installed_name, enable=True)
+        with _enable_lock():
+            _pc()._set_plugin_enabled(installed_name, enable=True)
     except AdmissionRefused as exc:
         return {"ok": False, "error": f"enable refused: {exc}", "plugin_name": installed_name, "enabled": False}
     return None

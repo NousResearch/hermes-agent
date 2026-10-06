@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from hermes_cli.plugins_cmd_install import InstallPhase
+from hermes_cli.plugin_install_phase import InstallPhase
 
 from .base import Params, Payload, Result, WireEnum
 from .common import ConnectorOwner, ProfileParams

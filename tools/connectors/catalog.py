@@ -20,15 +20,13 @@ import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
+from hermes_cli.plugin_install_phase import InstallPhase
 from hermes_constants import get_hermes_home, profile_name_for_home
 from tools.connectors.contract import Actor, SettleReason, TargetState
 from tools.connectors.mcp import _fail, _move
 from tools.connectors.operation import ConnectionOperation, IllegalTransition, Target
-
-if TYPE_CHECKING:
-    from hermes_cli.plugins_cmd_install import InstallPhase
 
 logger = logging.getLogger(__name__)
 
@@ -262,8 +260,6 @@ class _Runner:
 
     def _install(self, target: Target, env: Dict[str, str], options: Dict[str, Any],
                  step: Callable[[InstallPhase], None]) -> Dict[str, Any]:
-        from hermes_cli.plugins_cmd_install import InstallPhase
-
         named = (env.get("target_profile") or "").strip()
         with target_scope(_named_home(named) if named else self.home):
             _save_credentials({k: v for k, v in env.items() if k not in _OPTION_KEYS and v})
@@ -299,8 +295,9 @@ class _Runner:
         from agent.redact import redact_sensitive_text
 
         text = str(exc) or exc.__class__.__name__
-        for value in self.approved_env.get(target.name, {}).values():
-            if value and len(value) > 3:
+        # Only credentials are secret: the Advanced choices (a profile name, a commit) stay readable.
+        for key, value in self.approved_env.get(target.name, {}).items():
+            if key not in _OPTION_KEYS and value and len(value) > 3:
                 text = text.replace(value, "[REDACTED]")
         return redact_sensitive_text(text, force=True) or "error"
 

@@ -37,7 +37,9 @@ def _resolve_refresh_toolsets(agent, enabled_override, disabled_override):
     disabled = getattr(agent, "disabled_toolsets", None)
     if enabled_override is not None or disabled_override is not None:
         enabled = enabled_override if enabled_override is not None else enabled
-        disabled = disabled_override if disabled_override is not None else disabled
+        if disabled_override is not None:
+            from toolsets import session_disabled_toolsets
+            disabled = session_disabled_toolsets(disabled_override, getattr(agent, "platform", None))
         agent.enabled_toolsets, agent.disabled_toolsets = enabled, disabled
     return enabled, disabled
 

@@ -119,6 +119,33 @@ def test_only_a_desktop_session_carries_the_tool():
     assert is_deferrable_tool_name("manage_catalog", frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"]))
 
 
+def _desktop_child_toolsets():
+    from tools.delegate_tool_toolsets import _resolve_child_toolsets
+    parent = SimpleNamespace(enabled_toolsets=["catalog", "web"], disabled_toolsets=None)
+    return _resolve_child_toolsets(parent, None, "leaf")
+
+
+@pytest.mark.parametrize("platform", ["desktop", "cli", "subagent"])
+def test_a_session_off_the_desktop_never_hears_of_the_tool_even_through_tool_search(monkeypatch, platform):
+    """A CLI config naming ``catalog``, and a delegate child of a desktop chat, lose manage_catalog from
+    the direct tools, the tool_search listing and the bridge's search, not just from the direct tools."""
+    import model_tools
+    from agent.agent_init import _load_tools
+
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    enabled, disabled = _desktop_child_toolsets() if platform == "subagent" else (["catalog", "web"], None)
+    assert "catalog" in enabled
+    agent = SimpleNamespace(quiet_mode=True, platform=platform, enabled_toolsets=enabled, disabled_toolsets=disabled)
+
+    _load_tools(agent, enabled, disabled)
+    found = json.loads(model_tools.handle_function_call(
+        "tool_search", {"queries": ["catalog plugin install"]},
+        enabled_toolsets=agent.enabled_toolsets, disabled_toolsets=agent.disabled_toolsets))
+
+    carried = "manage_catalog" in json.dumps(agent.tools) or "manage_catalog" in json.dumps(found)
+    assert carried is (platform == "desktop")
+
+
 @pytest.mark.parametrize("args", [
     {"action": "install", "items": [{"kind": "plugin", "id": "x"}], "profile": "work"},
     {"action": "install", "items": [{"kind": "plugin", "id": "x", "sha": "b" * 40}]},

@@ -16687,7 +16687,7 @@
         "type": "object"
       },
       "InstallPhase": {
-        "description": "The slow steps of an install, as ids; the desktop catalog card words them in its own language.\nThe wire contract imports this enum.",
+        "description": "The slow steps of an install, as ids; the desktop catalog card words them in its own language.",
         "enum": [
           "downloading",
           "python_packages",

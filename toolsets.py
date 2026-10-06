@@ -458,6 +458,15 @@ def session_platform_tool_drops(platform: Optional[str]) -> frozenset:
                      for tool in resolve_toolset(name))
 
 
+def session_disabled_toolsets(disabled: Optional[List[str]], platform: Optional[str]) -> Optional[List[str]]:
+    """*disabled* plus every platform-gated toolset a session on *platform* does not get. An agent stores
+    this as its ``disabled_toolsets``, so the tool list, the tool_search listing and bridge, MCP refreshes
+    and delegate children (which inherit it) all subtract the gated tools in ``_select_tool_names``."""
+    gated = [name for name, platforms in TOOLSET_SESSION_PLATFORMS.items()
+             if platform not in platforms and name not in (disabled or ())]
+    return [*(disabled or ()), *gated] if gated else disabled
+
+
 def agent_tool_drops(agent: Any) -> frozenset:
     """Tool names *agent* never carries, whatever its toolsets resolved to: the side-agent drops and
     the toolsets its session platform does not get. Applied at load, MCP refresh and prefix restore."""

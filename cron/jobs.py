@@ -1248,24 +1248,12 @@ def _write_marker(name: str, text: str, tmp_prefix: str) -> None:
         pass
 
 
-# One WARNING per (store, errno, site) per window: an unwritable store fails every 60s tick until fixed;
-# the site keeps the scan's warning from silencing the tick's "skipped jobs" one.
-_STORE_WARN_INTERVAL_SECONDS = 900.0
-_last_store_warning: dict = {}
-
-
-def warn_store_unwritable(exc: OSError, consequence: str, site: str) -> None:
-    """Rate-limited WARNING for a failed cron store write (ENOSPC/EROFS/EACCES). Callers skip the
-    dispatch that needed the write: no job runs without a durable advance/fire claim."""
-    cron_dir = str(_current_cron_store().cron_dir)  # multi-profile gateway: one key per store
-    now, key = time.monotonic(), (cron_dir, exc.errno, site)
-    last = _last_store_warning.get(key)
-    if last is not None and now - last < _STORE_WARN_INTERVAL_SECONDS:
-        return
-    _last_store_warning[key] = now
-    logger.warning(
-        "Cron store %s is unwritable (%s); %s. Jobs stay due and fire once the store accepts writes "
-        "again.", cron_dir, exc, consequence)
+def warn_store_unwritable(exc: OSError, consequence: str, site: str, skipped_jobs=()) -> None:
+    """Record a failed cron store write (ENOSPC/EROFS/EACCES) in the store's degraded state, which
+    warns once per outage. Callers skip the dispatch that needed the write: no job runs without a
+    durable advance/fire claim."""
+    from cron.store_health import note_unwritable
+    note_unwritable(_current_cron_store().cron_dir, exc, consequence, site, skipped_jobs)
 
 
 def record_ticker_heartbeat(success: bool = False) -> None:
@@ -1616,6 +1604,8 @@ def _save_jobs_unlocked(
             # Invalidate (never refresh) the stamp: a refresh would let a nested save certify disk
             # against an OUTER caller's stale payload. Later saves take the full merge (fail-safe).
             _record_load_stamp(None)
+            from cron.store_health import note_writable
+            note_writable(jobs_file.parent)
             return
     except BaseException:
         _unlink_quiet(tmp_path)

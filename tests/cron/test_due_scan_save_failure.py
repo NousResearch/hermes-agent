@@ -22,6 +22,7 @@ import pytest
 from datetime import datetime, timezone
 
 from cron import jobs as cronjobs
+from cron import store_health
 from cron.jobs import get_due_jobs, load_jobs, save_jobs
 
 FIXED_NOW = datetime(2026, 6, 22, 12, 0, 0, tzinfo=timezone.utc)
@@ -29,7 +30,9 @@ FIXED_NOW = datetime(2026, 6, 22, 12, 0, 0, tzinfo=timezone.utc)
 
 @pytest.fixture()
 def cron_store(tmp_path, monkeypatch):
-    """Redirect cron storage to a temp dir and pin the clock."""
+    """Redirect cron storage to a temp dir, pin the clock, start with no degraded store."""
+    monkeypatch.setattr(store_health, "_degraded", {})
+    monkeypatch.setattr(store_health, "_listener", None)
     monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
     monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
     monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
@@ -75,7 +78,6 @@ def full_disk(monkeypatch):
 
 def test_due_jobs_are_returned_when_the_store_cannot_be_saved(cron_store, full_disk, monkeypatch, caplog):
     save_jobs([_due_job(), _half_paused_job()])
-    monkeypatch.setattr(cronjobs, "_last_store_warning", {})
 
     with caplog.at_level(logging.WARNING, logger="cron.jobs"):
         assert [d["id"] for d in get_due_jobs()] == ["due-job"]
@@ -84,7 +86,7 @@ def test_due_jobs_are_returned_when_the_store_cannot_be_saved(cron_store, full_d
         with cronjobs.use_cron_store(cron_store / "other-profile"):  # a second profile's store
             cronjobs.warn_store_unwritable(OSError(errno.ENOSPC, "No space left on device"), "x", "scan")
 
-    # Rate-limited per store: one WARNING per outage per profile, not one per 60s scan, and a
+    # One WARNING per outage per store (its degraded state), not one per 60s scan, and a
     # sibling profile on the same errno is not silenced; each names its store.
     warnings = [r.getMessage() for r in caplog.records if r.name == "cron.jobs" and r.levelno == logging.WARNING]
     assert len(warnings) == 2 and "due-scan repairs not persisted" in warnings[0]
@@ -112,14 +114,14 @@ def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, m
     monkeypatch.setattr(scheduler, "run_one_job", lambda job, **k: ran.append(job["id"]) or True)
     monkeypatch.setattr(scheduler, "_should_yield_tick_to_fresh_gateway", lambda: None)
     monkeypatch.setattr(scheduler, "_sweep_mcp_orphans", lambda: sweeps.append(1))
-    monkeypatch.setattr(cronjobs, "_last_store_warning", {})
     monkeypatch.setattr(cronjobs, "_stage_jobs_payload", _enospc)
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         assert scheduler.tick(verbose=False, sync=True) == 0
 
     assert ran == [] and sweeps == [1]
     assert f"Cron store {cron_store / 'cron'} is unwritable" in caplog.text
     assert "skipped 1 recurring job(s)" in caplog.text  # not silenced by the scan's earlier warning
+    assert store_health.degraded_record(cron_store / "cron").skipped_runs == 1 + with_once
     assert executions.latest_execution("due-job") is None  # skipped before its fire claim
     assert load_jobs() == before
     row = executions.latest_execution("once")
@@ -164,3 +166,4 @@ def test_dispatch_failure_after_receipt_never_leaves_it_claimed(
     assert row is not None and row["status"] == "failed"
     if site == "note_cron_execution":  # the receipt exists, so creation did not fail
         assert "dispatch preparation failed" in caplog.text
+

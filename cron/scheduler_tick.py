@@ -5,6 +5,7 @@ import contextlib
 import logging
 import time
 
+from cron import store_health
 from cron.jobs import warn_store_unwritable
 
 logger = logging.getLogger("cron.scheduler")
@@ -99,6 +100,12 @@ def _tick_admitted(
             _sched._sweep_mcp_orphans()
             return 0
 
+        if store_health.dispatch_blocked(due_jobs):
+            # Known-unwritable store, re-probed at most once a minute: every advance/claim would
+            # fail, so skip them (the skip is recorded) and keep the tick's housekeeping alive.
+            _sched._sweep_mcp_orphans()
+            return 0
+
         if verbose:
             _sched.logger.info("%s - %s job(s) due", _sched._hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
@@ -110,9 +117,10 @@ def _tick_admitted(
         except OSError as exc:
             # No durable advance -> a crash mid-run would re-fire recurring jobs; skipping is the
             # at-most-once side. One-shots still go through their own fire claim.
-            n = len(due_jobs)
-            due_jobs = [j for j in due_jobs if j.get("schedule", {}).get("kind") not in {"cron", "interval"}]
-            warn_store_unwritable(exc, f"skipped {n - len(due_jobs)} recurring job(s)", "advance")
+            recurring = [j.get("schedule", {}).get("kind") in {"cron", "interval"} for j in due_jobs]
+            skipped = [j for j, r in zip(due_jobs, recurring) if r]
+            due_jobs = [j for j, r in zip(due_jobs, recurring) if not r]
+            warn_store_unwritable(exc, f"skipped {len(skipped)} recurring job(s)", "advance", skipped)
             if not due_jobs:
                 _sched._sweep_mcp_orphans()
                 return 0

@@ -84,3 +84,22 @@ export function isZombieSuspect(silentForMs, thresholdMs, probeOutcome) {
   if (silentForMs < thresholdMs) return false;
   return probeOutcome != null && probeOutcome.alive === true;
 }
+
+/**
+ * Heartbeat stall rule. Photon's messages stream sends a server heartbeat
+ * about every 30s even on a quiet line, so once one has been seen, silence is
+ * benign and a missing heartbeat is the real stall signal. Returns null while
+ * the rule does not apply (disabled, or no heartbeat seen yet — the
+ * silence-probe rules above stay in charge), else whether the stream has gone
+ * `stallMs` without a heartbeat or a yielded message.
+ *
+ * @param {number} now
+ * @param {{lastHeartbeatAt: number, heartbeatCount: number, lastInboundAt: number}} state
+ * @param {number} stallMs stall threshold (<= 0 disables the rule)
+ * @returns {null | {stalled: boolean, stalledForMs: number}}
+ */
+export function heartbeatStall(now, state, stallMs) {
+  if (!(stallMs > 0) || !(state.heartbeatCount > 0)) return null;
+  const stalledForMs = now - Math.max(state.lastHeartbeatAt, state.lastInboundAt);
+  return { stalled: stalledForMs >= stallMs, stalledForMs };
+}

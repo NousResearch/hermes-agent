@@ -1522,27 +1522,43 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
 
 
 def detect_dangerous_command(command: str) -> tuple:
-    """Check dangerous patterns -> (is_dangerous, pattern_key, description)."""
-    if _command_parser_limit_exceeded(command):
-        return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
-    if _is_verification_artifact_cleanup(command):
+    """Check dangerous patterns -> (is_dangerous, pattern_key, description) for the first match."""
+    matches = detect_dangerous_commands(command)
+    if not matches:
         return (False, None, None)
+    return (True, *matches[0])
+
+
+def detect_dangerous_commands(command: str) -> list:
+    """Every dangerous-pattern match as ``(pattern_key, description)``, first match first.
+
+    Approvals are keyed per pattern, so a gate that only looked at the first match would let
+    an approval of one pattern (``rm -rf node_modules``) carry a different one chained after it
+    (``rm -rf build && git push --force``)."""
+    if _command_parser_limit_exceeded(command):
+        return [(_PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)]
+    if _is_verification_artifact_cleanup(command):
+        return []
+    found: list[str] = []
     for command_variant in _command_detection_variants(command):
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+            if description in found:
+                continue
             if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
                 if masked_lower is None:
                     masked_lower = _lower_preserving_flags(
                         _mask_quoted_prose(command_variant)
                     )
                 if pattern_re.search(masked_lower):
-                    return (True, description, description)
+                    found.append(description)
             elif pattern_re.search(command_lower):
-                return (True, description, description)
+                found.append(description)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
-        return (True, description, description)
-    if _is_shell_token_spliced_gateway_lifecycle(command):
-        return (True, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION)
-    return (False, None, None)
+        if description not in found:
+            found.append(description)
+    if _is_shell_token_spliced_gateway_lifecycle(command) and _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION not in found:
+        found.append(_GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION)
+    return [(description, description) for description in found]

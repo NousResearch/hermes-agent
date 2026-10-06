@@ -149,6 +149,24 @@ class TestTirithAllowDangerous:
         assert cb.call_args[1]["allow_permanent"] is True
 
 
+class TestSessionApprovalCoversOnlyItsPattern:
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_second_dangerous_pattern_still_prompts(self, mock_tirith):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        session_key = os.getenv("HERMES_SESSION_KEY", "default")
+        _, first_key, _ = approval_module.detect_dangerous_command("rm -rf node_modules")
+        approve_session(session_key, first_key)
+        cb = MagicMock(return_value="deny")
+
+        result = check_all_command_guards(
+            "rm -rf build && git push --force origin main", "local", approval_callback=cb)
+
+        assert result["approved"] is False
+        cb.assert_called_once()
+        assert first_key not in cb.call_args[0][1]
+
+
 # ---------------------------------------------------------------------------
 # tirith warn + safe command
 # ---------------------------------------------------------------------------

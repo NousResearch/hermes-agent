@@ -303,11 +303,19 @@ jobs:
   #
   # Branch protection should require ONLY this check.
   #
+  # The check name carries a version. The ruleset requires a check NAME, and a
+  # green check run recorded on a PR head stays valid forever, so a PR whose
+  # last CI predates a new required job still merges on that old green (32
+  # PRs merged without the code-health ratchet that way). When the required
+  # set gains a job every open PR must pass, bump the version here and in the
+  # protect-main ruleset in the same rollout: older greens then no longer
+  # count, and each PR needs one fresh CI run before it can merge.
+  #
   # Outputs ``needs-json`` — a compact ``{job_name: result}`` dict — so
   # the live comment poller can list failed jobs in the PR comment.
   # ─────────────────────────────────────────────────────────────────────
   all-checks-pass:
-    name: All required checks pass
+    name: All required checks pass (v2)
     needs:
       - detect
       - tests

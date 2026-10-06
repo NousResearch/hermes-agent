@@ -347,6 +347,27 @@ def cron_runs(job_id: Optional[str] = None, limit: int = 20):
             print(f"    {record['error']}")
 
 
+def cron_drain(target: str, *, as_json: bool = False) -> int:
+    """Query attempt-scoped worker drain state for external deploy gates (#125513)."""
+    from cron.worker_drain import query_drain
+    status = query_drain(target)
+    if as_json:
+        print(json.dumps(status))
+        return 0 if status.get("drained") else 1
+    if status.get("drained"):
+        from datetime import datetime
+        ts = status.get("drained_at")
+        when = datetime.fromtimestamp(ts).isoformat(sep=" ", timespec="seconds") if ts else "?"
+        print(f"✓ {status['target']}: worker drained at {when} (pid {status.get('pid', '?')})")
+        return 0
+    reason = status.get("reason")
+    if reason == "no execution or job matched":
+        print(f"✗ {status['target']}: no execution or job matched")
+    else:
+        print(f"… {status['target']}: drain unproven (no teardown record — keep the deploy gate closed)")
+    return 1
+
+
 _INCIDENT_STATE_COLORS = {"detected": Colors.RED, "alerted": Colors.YELLOW, "resolved": Colors.GREEN,
                           "closed": Colors.DIM}
 
@@ -931,6 +952,7 @@ _CRON_SUBCOMMANDS = {
     "doctor": lambda a: cron_doctor(),
     "tick": lambda a: cron_tick(),
     "runs": lambda a: cron_runs(getattr(a, "job_id", None), getattr(a, "limit", 20)) or 0,
+    "drain": lambda a: cron_drain(getattr(a, "target", ""), as_json=getattr(a, "json", False)),
     "incidents": lambda a: cron_incidents(a),
     "notepad": lambda a: cron_notepad(a),
     "create": lambda a: cron_create(a),

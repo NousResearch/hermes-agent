@@ -172,6 +172,11 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     # cron status
     cron_subparsers.add_parser("status", help="Check if cron scheduler is running")
 
+    cron_drain = cron_subparsers.add_parser(
+        "drain", help="Query whether an attempt's worker has fully drained (#125513)")
+    cron_drain.add_argument("target", help="Execution id or job id to query")
+    _flag(cron_drain, "--json", help="Print the raw drain record as JSON")
+
     cron_runs = cron_subparsers.add_parser(
         "runs", aliases=["history"], help="Show durable execution attempts")
     cron_runs.add_argument("job_id", nargs="?", help="Optional job ID filter")

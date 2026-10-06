@@ -17,23 +17,37 @@ export function displayName(bot: Partial<RosterRow>, meta?: BotMeta | null): str
   // activation and Cloud-only rosters (#89131).
   const alias = aliasIdentityFor(bot)
 
+  // The Bot Mode title the row's own backend reports: rich rows carry it in
+  // ui_meta, thin rows from another connection as `title` (bot_title). Same
+  // rung as botFriendlyNames, so the row and its @handle name the same bot.
+  const backendTitle = alias
+    ? ''
+    : String(bot?.ui_meta?.['hermes-bots']?.title || (typeof bot?.title === 'string' ? bot.title : '')).trim()
+
   // Only THIN rows from another source trade the friendly name for their
   // connection label — the active gateway's own default must keep reading
   // "Hermes". Annotated active rows carry sourceScoped too, and keying this
   // off sourceScoped renamed the user's main agent to an IP-derived label
-  // (community report, Aug 17 2026).
+  // (community report, Aug 17 2026). A name its own backend reports is a real
+  // name, never traded for a Desktop-side label.
   if (
     bot?.remoteSource &&
     (bot.name || '').trim().toLowerCase() === 'default' &&
     bot.connectionLabel &&
     !alias &&
-    !meta?.title?.trim()
+    !meta?.title?.trim() &&
+    !backendTitle &&
+    !bot.display_name?.trim()
   ) {
     return bot.connectionLabel
   }
 
   if (meta?.title?.trim()) {
     return meta.title.trim()
+  }
+
+  if (backendTitle) {
+    return backendTitle
   }
 
   // Core-profile display name (profile.yaml, set via `hermes profile rename

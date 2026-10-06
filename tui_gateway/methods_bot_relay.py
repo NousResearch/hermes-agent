@@ -7,6 +7,7 @@ the SENDER gateway for its waiter). Plumbing: ``tools/bot_relay.py``; handlers a
 server.py's globals (method_ctx.py) and reference ``_ok``/``_err`` bare."""
 
 import contextlib
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -53,10 +54,24 @@ def _run_delivery(profile: str, tmp: str, env: dict | None = None, *,
 @method("bot_relay.roster.sync")
 def _(rid, params: dict, _root=_relay_root) -> dict:
     """Replace this gateway's view of agents on OTHER connections → ``{count}`` accepted rows
-    (``agents`` rows ``{profile, handle, connection_id, ...}``; invalid rows are dropped)."""
+    (``agents`` rows ``{profile, handle, connection_id, ...}``; invalid rows are dropped).
+    A roster that changes is logged with its rows: a peer connection listed with this machine's
+    own profiles, or two publishers alternating, shows up as a flapping line (the pushing window
+    is in the Desktop's desktop.log ``[bot-relay win=…]`` lines at the same time)."""
     try:
-        from tools.bot_relay import write_remote_roster
-        return _ok(rid, {"count": write_remote_roster(_root(), params.get("agents"))})
+        from tools.bot_relay import read_remote_roster, write_remote_roster
+
+        def trace() -> str:
+            rows = read_remote_roster(_root())
+            return f"n={len(rows)} [" + " ".join(
+                f"{r.get('connection_id')}/{r.get('profile')}={r.get('title')!r}" for r in rows) + "]"
+
+        before = trace()
+        count = write_remote_roster(_root(), params.get("agents"))
+        after = trace()
+        if after != before:
+            logging.getLogger(__name__).info("bot_relay roster changed: %s -> %s", before, after)
+        return _ok(rid, {"count": count})
     except Exception as e:
         return _err(rid, 5090, str(e))
 

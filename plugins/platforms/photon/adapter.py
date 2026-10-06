@@ -294,7 +294,7 @@ def _reinstall_sidecar_deps() -> None:
 
     def _run(verb: str) -> subprocess.CompletedProcess:
         return subprocess.run(  # noqa: S603
-            [npm, verb], cwd=str(_sidecar_dir()), capture_output=True, text=True, encoding="utf-8",
+            [npm, verb], stdin=subprocess.DEVNULL, cwd=str(_sidecar_dir()), capture_output=True, text=True, encoding="utf-8",
             errors="replace", check=False, env=env, timeout=_NPM_REINSTALL_TIMEOUT, creationflags=windows_hide_flags())
     try:
         result = _run("ci")
@@ -880,7 +880,7 @@ class PhotonAdapter(BasePlatformAdapter):
         """stdout of a short shell-out, or None if it failed to run."""
         try:
             return subprocess.run(  # noqa: S603, S607
-                cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5.0,
+                cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5.0,
                 check=False).stdout
         except (OSError, subprocess.TimeoutExpired):
             return None

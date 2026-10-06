@@ -10,7 +10,7 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_REQUIRE_MENTION (default true), MATRIX_THREAD_REQUIRE_MENTION, MATRIX_FREE_RESPONSE_ROOMS,
   MATRIX_PROCESS_NOTICES, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
   MATRIX_AUTO_THREAD (default true), MATRIX_DM_AUTO_THREAD, MATRIX_DM_MENTION_THREADS,
-  MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_MAX_MESSAGE_LENGTH (default 16000),
+  MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_MAX_MESSAGE_LENGTH (UTF-8 bytes, default/max 15000),
   MATRIX_MAX_MEDIA_BYTES, MATRIX_ROOM_IDENTITY_TTL_SECONDS; MATRIX_APPROVAL_REQUIRE_SENDER (default
   true), MATRIX_APPROVAL_TIMEOUT_SECONDS (default 300).
 
@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import array
 import inspect
+import json
 from contextlib import suppress
 import logging
 import mimetypes
@@ -370,12 +371,23 @@ class _MatrixPickerPrompt:
 _MatrixModelPickerPrompt = _MatrixChoicePickerPrompt = _MatrixPickerPrompt
 
 
-# Spec allows ~65 KB events; 4000 was too small (split Markdown tables mid-row).
-# Matrix message size limit. The spec allows large events (~65 KB), but very large bodies can render poorly
-# in some clients. The previous 4,000-char default was overly conservative and split Markdown tables mid-row
-# (#53026).
-DEFAULT_MAX_MESSAGE_LENGTH = 16000
-MATRIX_MAX_MESSAGE_LENGTH_CEILING = 65535
+# The homeserver rejects an event whose JSON exceeds 65,536 bytes (M_TOO_LARGE). Event content stays
+# under this budget so the envelope (ids, hashes, signatures) and E2EE's 4/3 base64 inflation still fit.
+_MAX_CONTENT_BYTES = 45_000
+# Outbound text is measured in UTF-8 bytes (``message_len_fn``). A message carries it twice (body +
+# formatted_body, whose HTML runs up to about twice the Markdown), so a chunk gets a third of the
+# budget. The previous 4,000-char default split Markdown tables mid-row (#53026).
+MATRIX_MAX_MESSAGE_LENGTH_CEILING = _MAX_CONTENT_BYTES // 3
+DEFAULT_MAX_MESSAGE_LENGTH = MATRIX_MAX_MESSAGE_LENGTH_CEILING
+
+
+def _utf8_len(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def _content_bytes(content: Dict[str, Any]) -> int:
+    """Size of event content as the homeserver counts it (canonical JSON is UTF-8, not \\u-escaped)."""
+    return _utf8_len(json.dumps(content, ensure_ascii=False, separators=(",", ":")))
 
 
 def _resolve_max_message_length(config) -> int:
@@ -778,48 +790,6 @@ def ensure_matrix_deps() -> bool:
     return True
 
 
-class _CryptoStateStore:
-    """StateStore shim for OlmMachine (MemoryStateStore lacks is_encrypted/get_encryption_info/
-    find_shared_rooms); falls back to a homeserver state query when the store has no info."""
-
-    def __init__(self, client_state_store: Any, joined_rooms: set, client=None):
-        self._ss = client_state_store
-        self._joined_rooms = joined_rooms
-        self._client = client
-        # MemoryStateStore has no set_encryption_info, so cache homeserver answers here.
-        self._enc_info_cache: dict = {}
-
-    async def is_encrypted(self, room_id: str) -> bool:
-        return (await self.get_encryption_info(room_id)) is not None
-
-    async def get_encryption_info(self, room_id: str):
-        info = await self._ss.get_encryption_info(room_id) if hasattr(self._ss, "get_encryption_info") else None
-        if info is not None:
-            return info
-        if room_id in self._enc_info_cache:
-            return self._enc_info_cache[room_id]
-        if self._client is None:
-            return None
-        try:
-            from mautrix.types import EventType as _ET, RoomEncryptionStateEventContent as _Enc, RoomID as _RID
-            raw = await self._client.get_state_event(_RID(room_id), _ET.ROOM_ENCRYPTION)
-        except Exception as exc:
-            logger.debug("Matrix: homeserver encryption-info query failed for %s: %s", room_id, exc)
-            return None
-        if not raw:
-            return None
-        content = raw if isinstance(raw, _Enc) else _Enc.deserialize(
-            raw.serialize() if hasattr(raw, "serialize") else raw)
-        if hasattr(self._ss, "set_encryption_info"):
-            with suppress(Exception):
-                await self._ss.set_encryption_info(_RID(room_id), content)
-        self._enc_info_cache[room_id] = content
-        return content
-
-    async def find_shared_rooms(self, user_id: str) -> list:
-        return list(self._joined_rooms)  # all joined rooms: correct for a single-user bot
-
-
 class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
@@ -829,6 +799,11 @@ class MatrixAdapter(BasePlatformAdapter):
     # Class-level defaults keep object.__new__-built test instances working.
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
     _SPLIT_THRESHOLD = DEFAULT_MAX_MESSAGE_LENGTH - 100
+
+    @property
+    def message_len_fn(self):
+        """UTF-8 bytes, the unit of the homeserver's event cap (a CJK character is three)."""
+        return _utf8_len
 
     def _resolve_store_dir(self) -> Path:
         """Pin the crypto-store dir to the active profile (connect() runs inside the profile
@@ -876,6 +851,8 @@ class MatrixAdapter(BasePlatformAdapter):
         from collections import deque
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
         self._processed_events_set: set = set()
+        # Rooms already warned for dropping encrypted events this process lifetime (#131778).
+        self._warned_encrypted_drop_rooms: Set[str] = set()
         self._threads = ThreadParticipationTracker("matrix")  # require_mention bypass
         self._parked_voices = ParkedVoices()  # unmentioned voice awaiting a bare @mention
         self._require_mention: bool = self._parse_require_mention(config)
@@ -1238,6 +1215,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if not _store_was_reset and not await self._migrate_legacy_crypto_pickle(
                     crypto_store, crypto_db, _acct_id, _pickle_key):
                 logger.warning("Matrix: crypto pickle migration failed — E2EE may not work correctly")
+            from plugins.platforms.matrix.adapter_crypto import _CryptoStateStore
             crypto_state = _CryptoStateStore(state_store, self._joined_rooms, client)
             olm = OlmMachine(client, crypto_store, crypto_state)
             olm.share_keys_min_trust = TrustState.UNVERIFIED
@@ -1408,7 +1386,8 @@ class MatrixAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=True)
         last_event_id = None
-        for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
+        for chunk in self.truncate_message(
+                self.format_message(content), self.max_message_length, len_fn=self.message_len_fn):
             msg_content = self._build_text_message_content(chunk)
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
             try:
@@ -1501,6 +1480,20 @@ class MatrixAdapter(BasePlatformAdapter):
             msg_content["format"] = "org.matrix.custom.html"
             msg_content["formatted_body"] = f'* {new_content["formatted_body"]}'
         msg_content["m.relates_to"] = {"rel_type": "m.replace", "event_id": message_id}
+        if _content_bytes(msg_content) > _MAX_CONTENT_BYTES:
+            # The top-level copy is only the fallback for clients without edit support (edit-aware
+            # clients render m.new_content); shorten it rather than double the event past the cap.
+            msg_content.pop("format", None)
+            msg_content.pop("formatted_body", None)
+            msg_content["body"] = ""
+            if _content_bytes(msg_content) > _MAX_CONTENT_BYTES:
+                # Many distinct mentions: the top-level list only drives this edit's notifications,
+                # while m.new_content keeps the full list, so the duplicate goes rather than the edit.
+                msg_content.pop("m.mentions", None)
+            room = _MAX_CONTENT_BYTES - _content_bytes(msg_content)
+            # JSON escaping grows a character at most sixfold (\u00XX).
+            fallback = formatted.encode("utf-8")[: max(0, room // 6)].decode("utf-8", "ignore")
+            msg_content["body"] = f"* {fallback}…"
         return await self._send_content_event(chat_id, msg_content)
 
     async def send_image(
@@ -1891,6 +1884,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if rooms_join or initial:
             self._joined_rooms.update(rooms_join.keys())
             self._invalidate_room_identities()
+        self._warn_encrypted_drops(rooms_join, client)
         nb = sync_data.get("next_batch")  # incremental syncs resume from here
         if nb:
             await client.sync_store.put_next_batch(nb)
@@ -1903,6 +1897,33 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.warning("Matrix: %s: %s", "initial sync event dispatch error" if initial else "sync event dispatch error", exc)
         self._schedule_pending_invite_joins(sync_data)
         return nb
+
+    def _warn_encrypted_drops(self, rooms_join: Dict[str, Any], client: Any) -> None:
+        """Fail loud when encrypted room events arrive but no decryptor is attached (#131778).
+
+        With E2EE off, or after the optional mode degraded (missing deps / failed setup) and
+        kept the connection, ``m.room.encrypted`` timeline events dispatch to an empty
+        ROOM_ENCRYPTED handler set — mautrix drops them without a trace, so an encrypted room
+        looks connected but deaf: syncs succeed, no errors, no warnings. One warning per room
+        per process; with a decryptor attached, mautrix's own machinery already reports
+        decryption failures."""
+        if getattr(client, "crypto", None) is not None:
+            return
+        for room_id, room_data in rooms_join.items():
+            if room_id in self._warned_encrypted_drop_rooms:
+                continue
+            events = room_data.get("timeline", {}).get("events", [])
+            if any(isinstance(ev, dict) and ev.get("type") == "m.room.encrypted" for ev in events):
+                self._warned_encrypted_drop_rooms.add(room_id)
+                if self._e2ee_mode == "off":
+                    cause = f"{_E2EE_INSTALL_HINT}, then set MATRIX_E2EE_MODE=optional (or required)"
+                else:
+                    cause = (f"E2EE mode is {self._e2ee_mode} but the decryptor was not set up at connect; "
+                             "see the earlier Matrix E2EE warning for the cause")
+                logger.warning(
+                    "Matrix: dropping encrypted messages in %s — this process has no E2EE decryptor. %s. "
+                    "Without it, messages in encrypted rooms never reach the agent.",
+                    room_id, cause)
 
     async def _dispatch_sync(self, sync_data: Dict[str, Any]) -> None:
         """Dispatch a sync response through the mautrix event machinery."""
@@ -2294,7 +2315,7 @@ class MatrixAdapter(BasePlatformAdapter):
         is_direct = bool(getattr(getattr(event, "content", None), "is_direct", False))
         inviter = str(getattr(event, "sender", ""))
         # Only authorized inviters — otherwise any federated user could pull the bot into rooms.
-        if not self._is_authorized_user(inviter):
+        if not self._is_authorized_user(inviter, str(room_id)):
             logger.warning("Matrix: rejecting invite to %s from unauthorized user %s", room_id, inviter)
             return
         logger.info("Matrix: invited to %s — joining (is_direct=%s)", room_id, is_direct)
@@ -2361,7 +2382,7 @@ class MatrixAdapter(BasePlatformAdapter):
             # auto-join any invite from an arbitrary federated user on
             # restart. An inviter missing from the stripped invite state
             # fails closed, like an empty sender in _on_invite.
-            if not self._is_authorized_user(inviter):
+            if not self._is_authorized_user(inviter, str(room_id)):
                 logger.warning(
                     "Matrix: rejecting invite to %s from unauthorized user %s",
                     room_id,
@@ -2577,15 +2598,17 @@ class MatrixAdapter(BasePlatformAdapter):
         expires_at = getattr(prompt, "expires_at", None)
         return expires_at is not None and time.monotonic() > float(expires_at)
 
-    def _is_authorized_user(self, user_id: str) -> bool:
-        """GATEWAY_ALLOW_ALL_USERS, or membership in MATRIX_ALLOWED_USERS."""
+    def _is_authorized_user(self, user_id: str, room_id: str | None = None) -> bool:
+        """Resolve live gateway authorization, falling back to the startup snapshot when unwired."""
+        if getattr(self, "_authorization_check", None) is not None:
+            return self._is_sender_authorized(user_id, chat_id=room_id) is True
         # Scoped read — the DEFAULT profile's os.environ opt-in must not authorize on a secondary bot.
         return _get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes") or bool(
             self._allowed_user_ids and user_id in self._allowed_user_ids)
 
     async def _validate_matrix_prompt_reactor(
         self, room_id: str, target_event_id: str, sender: str, prompt: Any, prompt_label: str) -> bool:
-        if not self._is_authorized_user(sender):
+        if not self._is_authorized_user(sender, room_id):
             logger.info(
                 "Matrix: ignoring %s reaction from unauthorized user %s on %s", prompt_label, sender, target_event_id)
             await self._send_invalid_reaction_feedback(
@@ -2860,6 +2883,9 @@ class MatrixAdapter(BasePlatformAdapter):
         if html and html != text:
             msg_content["format"] = "org.matrix.custom.html"
             msg_content["formatted_body"] = html
+            if _content_bytes(msg_content) > _MAX_CONTENT_BYTES:
+                # Escape-heavy text can outgrow the budget as HTML; send it as plain text instead.
+                del msg_content["format"], msg_content["formatted_body"]
         return msg_content
 
     def _apply_relation_metadata(
@@ -3094,34 +3120,50 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         token = getattr(pconfig, "token", None) or get_secret("MATRIX_ACCESS_TOKEN", "") or ""
         if not homeserver or not token:
             return send_error("Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)")
-        txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
         from urllib.parse import quote
-        url = f"{homeserver}/_matrix/client/v3/rooms/{quote(chat_id, safe='')}/send/m.room.message/{txn_id}"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        payload = {"msgtype": "m.text", "body": message}
-        with suppress(ImportError):
-            import markdown as _md
-            tokenized, tex_store = _latex_to_tokens(message)
-            html = _md.markdown(tokenized, extensions=["fenced_code", "tables"])
-            payload["format"] = "org.matrix.custom.html"
-            payload["formatted_body"] = _tokens_to_mx_maths(
-                re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html), tex_store)
         # asyncio.wait_for, not aiohttp.ClientTimeout: cron invokes this via
         # run_coroutine_threadsafe ("Timeout context manager should be used inside a task").
         async with aiohttp.ClientSession() as session:
-            async def _do_send():
+            async def _do_send(payload):
+                txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
+                url = f"{homeserver}/_matrix/client/v3/rooms/{quote(chat_id, safe='')}/send/m.room.message/{txn_id}"
                 async with session.put(url, headers=headers, json=payload) as resp:
                     if resp.status not in {200, 201}:
                         return send_error(f"Matrix API error ({resp.status}): {await resp.text()}")
                     data = await resp.json()
                     return {"success": True, "platform": "matrix", "chat_id": chat_id,
                             "message_id": data.get("event_id")}
-            try:
-                return await asyncio.wait_for(_do_send(), timeout=30)
-            except asyncio.TimeoutError:
-                return send_error("Matrix API timeout (30s)")
+            for payload in _standalone_payloads(message):
+                try:
+                    result = await asyncio.wait_for(_do_send(payload), timeout=30)
+                except asyncio.TimeoutError:
+                    return send_error("Matrix API timeout (30s)")
+                if not result.get("success"):
+                    return result
+            return result
     except Exception as e:
         return send_error(f"Matrix send failed: {e}")
+
+
+def _standalone_payloads(message: str) -> list[Dict[str, Any]]:
+    """One m.room.message content per chunk. The caller chunks on characters, and a chunk of
+    non-Latin text can still exceed the homeserver's byte cap, so re-chunk on UTF-8 bytes."""
+    _md = None
+    with suppress(ImportError):
+        import markdown as _md
+    payloads = []
+    for chunk in BasePlatformAdapter.truncate_message(message, MATRIX_MAX_MESSAGE_LENGTH_CEILING, _utf8_len):
+        payload = {"msgtype": "m.text", "body": chunk}
+        if _md is not None:
+            tokenized, tex_store = _latex_to_tokens(chunk)
+            html = _md.markdown(tokenized, extensions=["fenced_code", "tables"])
+            formatted = {"format": "org.matrix.custom.html", "formatted_body": _tokens_to_mx_maths(
+                re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html), tex_store)}
+            if _content_bytes({**payload, **formatted}) <= _MAX_CONTENT_BYTES:
+                payload.update(formatted)
+        payloads.append(payload)
+    return payloads
 
 
 def interactive_setup() -> None:

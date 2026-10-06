@@ -181,7 +181,16 @@ also carries `call_role` (`primary` or `auxiliary`), `outcome` (`success`,
 `failed`, `cancelled`) and `error_class`: the error classifier's own
 `FailoverReason` value (`rate_limit`, `auth`, `context_overflow`, ...) for the
 last failed attempt of that logical call, or `none`. A `success` row with a
-non-`none` class is a call that recovered after that error. The previous
+non-`none` class is a call that recovered after that error. Auxiliary calls
+(titles, compression, vision, ...) follow the same rules: one row per logical
+call however many fallback attempts it took, classified by the same classifier
+(an HTTP-200 body carrying a provider `error` object is classified from that
+object), `cancelled` with `none` when Hermes aborted it (`/stop`, Ctrl+C, an
+interrupt, shutdown), and `unknown` only when the classifier cannot name the
+failure. An auxiliary call that runs beside the turn (title generation) and
+finishes under the turn's own live scopes is still counted: its result closes
+the scope when the turn drains it. Auxiliary rows report `ttft_bucket`
+`unknown`: most auxiliary calls are not streamed. The previous
 `hermes.model_call.count` contract remains readable only so pending local
 counters created by older builds can be exported without losing data.
 
@@ -217,6 +226,29 @@ ID after a terminal tool result is observed. The outer `AIAgent` execution
 boundary closes the task for normal returns, early returns, exceptions, and
 cancellations. Active task ownership follows the task ID if Hermes rotates its
 conversation session during context compression.
+
+The `entrypoint` dimension (on `hermes.task_run.started`, `hermes.task_run.finished`
+and `hermes.session.count`) says who dispatched the run, from a closed set:
+
+| Value | Meaning |
+|---|---|
+| `interactive` | A person in a chat UI: the `hermes` REPL, a `hermes chat -q` that seeds the REPL on a TTY, `--tui`, Desktop, ACP editors. |
+| `one_shot` | A finite CLI run that answers one prompt and exits: `hermes -z` / `--oneshot`, `hermes chat -q` off a TTY or with `--oneshot`, `-Q` / `--quiet`. A person's shell line and a script looping it look the same, so both read `one_shot`. Bot Chat delivery turns (`hermes -p <profile> chat -c "Bot Chat" -Q`) are one-shot runs too: their author may be a person on another connection. Surface stays `cli`. |
+| `background` | An unattended run a Hermes dispatcher spawned: a kanban worker (`HERMES_SESSION_SOURCE=kanban`) or an A2A forward (`--source a2a`). |
+| `delegated` | A subagent run under a parent task or session (wins over the values above). |
+| `gateway_message` | A messaging-platform message. |
+| `scheduled_task`, `batch`, `api`, `python` | Cron, batch runner, API server, Python embedding. |
+| `other`, `unknown` | Unattributable. |
+
+A run is `one_shot` or `background` when its process carries the
+`HERMES_SINGLE_QUERY_SESSION` marker that the one-shot paths set (the same marker the
+session source and `cache_ttl: auto` read). Engagement (`hermes.engagement.*`) and the
+attended-only rows (task cost, tool usage per session, model friction) treat `one_shot`
+like `interactive`, as they did before the value existed; `background` and `delegated`
+runs are unattended and excluded there. Packages written before `one_shot` existed
+carry these runs as `interactive` and still validate. `hermes -z` leaves through
+`os._exit`, so it closes its metrics session before exiting rather than relying on the
+atexit hook.
 
 Each tool invocation is represented by a Relay tool lifecycle named
 `hermes.tool_call`. The terminal counter contains only bounded tool category,
@@ -307,16 +339,16 @@ itself ships.
 | `hermes.setup.completed` | surface (`cli`/`desktop`), provider | Which providers people choose at setup, and on which surface. |
 | `hermes.model_tokens.sum` | call role, model, provider, auxiliary task, token type | Token volume per model/provider, prompt-cache share, and what auxiliary work (compression, titles, vision, ...) costs. The value is a token sum, not an event count. |
 | `hermes.model_route.count` `ttft_bucket` | time to first token | Perceived latency per provider/model. |
-| `hermes.compression.count` | trigger, outcome, context-fill bucket | How often compaction runs, how full contexts get, and whether it fails. |
+| `hermes.compression.count` | trigger, outcome, context-fill bucket, failure class | How often compaction runs, how full contexts get, and whether it fails. `skipped` = nothing could fail: lock held elsewhere, nothing summarizable (no model call), user stop, or a newer attempt replaced it. Since package schema v4 the row also carries `failure_class`, the attempt log's own class name from a closed list: the skip reasons (`lock_contended`, `insufficient_messages`, `no_compressible_window`, `empty_post_handoff_window`, `explicit_interrupt`, `attempt_superseded`, `snapshot_stale`) on skipped rows; the failure reasons (`summary_auth_failure`, `summary_network_failure`, `summary_truncated_failure`, `summary_empty_content_failure`, `summary_overload_failure`, `summary_generation_aborted`, `summary_generation_failed`, `summary_overload_degraded`, `aux_model_fallback`, `feasibility_skip`, `stall_deterministic_fallback`, `stall_interrupted`, `would_grow`, `no_progress`, `commit_fence_cancelled`, `pool_saturated`, `session_split_failed`, `exception`, `rollback`) on failed rows; `none` on success. An exception's or rollback's Python type name is dropped (`exception:TimeoutError` reads `exception`), any other value reads `other`, a failure with no class `unknown`. |
 | `hermes.model_switch.count` | from/to provider, surface | Which providers people leave and move to. |
 | `hermes.fallback.count` | from/to provider, error class | How often fallback providers rescue a turn, and from what. |
 | `hermes.slash_command.count` | command, surface | Which built-in commands are used (`/retry`, `/undo`, `/new` are friction signals). Skill and plugin commands report `skill`/`plugin`. |
 | `hermes.extension.install.count` | kind, source, name, outcome | Which catalog skills, MCP servers and plugins get installed. `name` is a bundled/optional skill, `optional-mcps/` or `plugin-catalog/` entry, otherwise `custom`. |
-| `hermes.memory.op.count` | op (`add`/`replace`/`remove`/`read`/`search`/`other`), provider (`builtin`, a bundled memory plugin, else `plugin`), origin (`foreground`/`background_review`), outcome (`success`/`failed`/`rejected`) | Is the learning loop writing memory, who asks for it (the user's turn or the background review), and how often writes are refused or fail. Never the memory text. |
+| `hermes.memory.op.count` | op (`add`/`replace`/`remove`/`read`/`search`/`other`), provider (`builtin`, a bundled memory plugin, else `plugin`), origin (`foreground`/`background_review`), outcome (`success`/`failed`/`rejected`), failure class | Is the learning loop writing memory, who asks for it (the user's turn or the background review), and how often writes are refused or fail, and why. Since package schema v4 `failure_class` names the reason from a closed list mapped from each refusal/failure return of the built-in store: `no_match` (old_text matched no entry), `ambiguous` (it matched several), `over_budget` (the write would pass the char limit), `would_empty` (a batch would remove the last entry), `drift` (the file holds text the store cannot round-trip), `read_failed` (the file exists but cannot be read), `retry_cap` (the per-turn retry budget is spent), `scan_blocked` (the content matched a threat pattern), `missing_content`, `missing_old_text`, `invalid_args`, `stale_entry` (a staged write's entry changed), `disabled` (that target is off in config), `staged` (held for the user's approval), `gate_refused` (the write-approval gate blocked it); `provider_error` / `exception` for a plugin provider's tool that returned an error or raised; `none` on success; `other`/`unknown` otherwise. A batch applies all or none, so every op row of a refused batch carries the class of the op that stopped it. Never the memory text, the old_text or the error message. |
 | `hermes.curator.run.count` | trigger (`scheduled`/`manual`), outcome (`success`/`failed`/`skipped`), archived/merged/patched/created buckets | Does the skill curator run, and does it actually consolidate anything. Dry runs report `skipped`; a scheduled check that finds another process already running the pass records nothing. Never skill names. |
 | `hermes.delegation.run.count` | subagent-count bucket, depth (`1`–`3`, `gte_4`), mode (`foreground`/`background`), outcome (`success`/`partial`/`failed`/`cancelled`) | How wide and deep delegate_task fan-outs go and how often every child finishes. One row per call, however many completion units it splits into. |
 | `hermes.execution_backend.count` | kind (`terminal`/`browser`/`code`), backend, outcome, error class | Which sandboxes carry real work and how reliable each is. Terminal backends are the `terminal.backend` values (else `other`); browser backends are `local`, `lightpanda`, `cdp`, `camofox`, `extension` or a bundled cloud provider (else `other`); execute_code is `local` or `remote`. A command's own nonzero exit is still a backend success, but a foreground command that hits its timeout is `failed`/`timeout`; terminal and execute_code calls a guard refuses before they reach the backend, Hermes' own listings for TUI/Desktop path completion, and calls made by the background review and curator forks are not counted. |
-| `hermes.platform.health` | platform, event (`connect_ok`/`connect_failed`/`reconnect`/`disconnect`), error class (`auth`/`network`/`rate_limited`/`config`/`other`) | Which messaging platforms fail to connect or drop, and why. Classified from exception types, HTTP statuses and Hermes's own fatal codes, never error text. |
+| `hermes.platform.health` | platform, event (`connect_ok`/`connect_failed`/`reconnect`/`disconnect`), error class (`auth`/`network`/`rate_limited`/`config`/`other`) | Which messaging platforms fail to connect or drop, and why. `connect_failed` counts a failed-connect episode once per profile, platform and UTC day (the reconnect watcher's retries are not new rows; the next success ends the episode, and a platform still failing the next day counts again), with the error class of the episode's first failure. Classified from exception types, HTTP statuses and Hermes's own fatal codes, never error text. |
 | `hermes.platform.delivery` | platform, outcome (`sent`/`failed`), failure class (`rate_limited`/`too_long`/`auth`/`network`/`forbidden`/`other`) | How often replies fail to reach the user per platform (one count per logical reply, retries included). |
 | `hermes.gateway.reply_latency` | platform, first-response bucket (`lt_2s` … `gte_60s`) | Time from an accepted inbound message to the first visible reply text (stream first chunk or final message). |
 | `hermes.cron.run` | outcome (`success`/`failed`/`missed`/`skipped`), delivery kind (`local`/`platform`/`webhook`/`none`/`other`), duration bucket | Do scheduled jobs run, fail, get skipped by a gate or overlap, or get missed while Hermes was down. Job names, prompts, schedules and targets are never included. |
@@ -460,10 +492,29 @@ database and the count is not reported.
 | Metric | Dimensions | Question it answers |
 |---|---|---|
 | `hermes.tool_unavailable.count` | provider, model, tool name (shipped built-ins only) | Which toolsets should be on by default: the model called a tool Hermes ships that this session did not enable. Any other unknown name (plugin, MCP, hallucinated) stays a `model_tool_quality` `unknown_tool` issue only. A built-in the session enabled but deferred behind `tool_search` (reachable through `tool_call`) is not unavailable. Background reviews, delegated children and cron jobs, whose toolsets are narrowed on purpose, are excluded. |
-| `hermes.provider_setup.count` | provider (catalog name; custom endpoints read `custom`), surface (`cli_setup`, `cli_model`, `tui`, `desktop`, `dashboard`), event (`started`, `completed`, `failed`, `abandoned`), failure class (`auth`, `network`, `no_models`, `cancelled`, `other`; `none` unless failed) | Where connecting a provider breaks down. `started` counts once a provider is picked; the flow's end is recorded by the surface that ran it. In the CLI pickers Esc ends the flow `failed`/`cancelled`; Back (Left arrow) keeps it open, so picking the same provider again continues it (one `started`), while picking another provider or leaving the command ends it `cancelled`. A flow nobody finished leaves a local marker that the next setup start or Hermes start in the profile reports as `abandoned` (its process is gone, or it has been pending over an hour); an OAuth device code left to expire is also `abandoned`. A new or changed provider API key saved from a form (TUI/Desktop/dashboard) and a newly added custom endpoint start and complete in one action; clearing a key, re-saving the same key, editing an existing endpoint, ecosystem tokens (`GITHUB_TOKEN`, `GH_TOKEN`, `HF_TOKEN`) and keys a tool's settings panel also asks for (e.g. `GEMINI_API_KEY`, `XAI_API_KEY`, `DEEPINFRA_API_KEY`) are not counted from the generic key form (the Desktop's onboarding and model settings mark their saves as a provider connection, so those count). Never a key, token, base URL or error text. Leaving the provider picker before choosing one is not counted. |
+| `hermes.provider_setup.count` | provider (catalog name; custom endpoints read `custom`), surface (`cli_setup`, `cli_model`, `tui`, `desktop`, `dashboard`), event (`started`, `completed`, `failed`, `abandoned`), failure class (`auth`, `network`, `no_models`, `other`; `none` unless failed; `cancelled` is no longer recorded, a cancel is `abandoned`) | Where connecting a provider breaks down. `started` counts once a provider is picked; the flow's end is recorded by the surface that ran it. A flow the user walked away from is `abandoned`, never `failed`: Esc or Ctrl-C in the CLI pickers, Cancel/Back on a Desktop or dashboard sign-in, consent declined on the provider's page, and a sign-in code left to expire (any provider). Back (Left arrow) in the CLI keeps the flow open, so picking the same provider again continues it (one `started`), while picking another provider or leaving the command ends it `abandoned`. A flow nobody finished leaves a local marker that the next setup start or Hermes start in the profile reports as `abandoned` (its process is gone, or it has been pending over an hour). A Desktop/dashboard sign-in that dies mid-poll keeps the class of the error that ended it (`network` for a dropped connection, `auth` for a refusal), not a bare `other`. A new or changed provider API key saved from a form (TUI/Desktop/dashboard) and a newly added custom endpoint start and complete in one action; clearing a key, re-saving the same key, editing an existing endpoint, ecosystem tokens (`GITHUB_TOKEN`, `GH_TOKEN`, `HF_TOKEN`) and keys a tool's settings panel also asks for (e.g. `GEMINI_API_KEY`, `XAI_API_KEY`, `DEEPINFRA_API_KEY`) are not counted from the generic key form (the Desktop's onboarding and model settings mark their saves as a provider connection, so those count). Never a key, token, base URL or error text. Leaving the provider picker before choosing one is not counted. |
 | `hermes.feature_adoption.count` | feature (`memory`, `skills_created`, `delegation`, `cron`, `gateway_platform`, `desktop`, `tui`, `mcp`, `plugins`, `browser`, `voice`, `kanban`, `projects`, `bot_mode`, `curator`), days since install (`same_day`, `1d_to_7d`, `7d_to_30d`, `30d_to_90d`, `gte_90d`, `unknown`) | How long after install each major feature is first really used. Once per feature per install, latched in the local database, derived from the counters above (a foreground memory write, a skill created at the user's request (not by Hermes' background review), a successful MCP/plugin/browser/TTS/kanban tool call, a Desktop/TUI/gateway task, a cron run, a manual curator run; the scheduled curator pass does not count) plus direct first-use reports for Bot Mode messages and project creation. The age is the owning profile's (its first session). |
 | `hermes.feature_disabled.count` | kind (`toolset`, `skill`, `plugin`, `platform`, `setting`, `memory`, `curator`, `compression`), name, surface (`cli_tools`, `cli_config`, `cli_slash`, `tui`, `desktop`, `dashboard`), event (`disabled`, `re_enabled`) | What users turn off. Diffed at the config write itself: a default-on toolset removed, a skill or plugin added to its disabled list, a default-`true` setting set false (and each moved back). Names are public only when shipped — toolset key, bundled/catalog skill, bundled/catalog plugin (messaging-platform plugins report as `platform`), `DEFAULT_CONFIG` key path (never a value) — else `custom`. Uninstalling a catalog skill counts as `disabled`. Only user entry points record (`hermes tools` / `config` / `skills` / `plugins`, chat slash commands, TUI/Desktop, dashboard); setup and migrations do not, even when a migration runs inside one of them (`hermes config migrate`, a profile created from the dashboard). A setting whose value is a `${VAR}` template is not compared. The diff and the record run on a background thread after the write, outside every config lock. At most once per (kind, name, event) per day. |
 <!-- ---- end v5 signals ---- -->
+
+<!-- ---- iuf c1 ---- -->
+#### Install and update failure reasons
+
+Since package schema v4 (extended in place while v4 was canary-only), two existing metrics say why
+they failed. Rows recorded before the change keep their old field set and still package.
+
+| Metric | Dimensions added | Question it answers |
+|---|---|---|
+| `hermes.extension.install.count` | failure class, registry | Why skill, plugin and MCP installs fail, and which skills-hub source fails. `failure_class` is `none` on success, else a closed name for the failure exit that stopped the install. Skills: `ambiguous`, `auth_rejected`, `fetch_failed`, `invalid_bundle`, `invalid_name`, `not_found`, `rate_limited`, `scan_blocked`, `stale_index`. Plugins: `already_installed`, `clone_failed`, `deps_declined`, `deps_failed`, `git_missing`, `incompatible`, `invalid_source`, `manifest_invalid`, `non_interactive`, `removed_from_catalog`, `scan_blocked`. MCP servers: `auth_required`, `bootstrap_failed`, `clone_failed`, `config_invalid`, `config_rejected`, `connect_failed`, `git_missing`, `missing_credentials`, `server_start_failed`. Every kind may also read `exception`, `filesystem_error`, `network`, `other`, `permission`. A raised error without a named class is classified by its Python type only (`PermissionError` reads `permission`, connection and timeout errors `network`, other `OSError`s `filesystem_error`, anything else `exception`, its type name dropped). `registry` is set on skill rows only: the skills-hub adapter that resolved or served the skill, one of `browse-sh`, `clawhub`, `github`, `hermes-index`, `lobehub`, `official`, `skills-sh`, `url`, `well-known` (the adapter ids `tools/skills_hub_search.py::create_source_router` builds), `unresolved` when no adapter answered, `none` for built-in restores and every plugin/MCP row, `other` otherwise. A row whose `failure_class` is outside its kind's set, is `none` on a failure or set on a success, or that names a registry on a plugin/MCP row is invalid. Never the identifier, URL, error text or path; `name` keeps its existing catalog-or-`custom` rule. |
+| `hermes.update.run` | failure class | Why `hermes update` fails, next to where (`failed_stage`). `none` unless the outcome is `failed` or `refused`. Derived from the final update receipt only: `aborted_before_apply`, `build_failed`, `deps_failed`, `exception`, `fleet_stale`, `fleet_unverified`, `git_failed`, `interrupted`, `lock_held`, `managed_install`, `os_error`, `restart_failed`, `subprocess_failed`, else `other`; Desktop packaged self-updates report `unknown` (their RPC carries a stage, never a reason). An exception that ended the run is read by its type name alone, never its message; a failed Windows gateway resume after the update reads `restart_failed`. A failed run whose every stage mark passed now reads `failed_stage` `verify` (the post-restart verification wrote `partial`) or `restart` (a skipped restart left the fleet owing one) instead of `other`; a `partial` run with a failed build or restart mark keeps that stage, and its verify stage row is failed only when the fleet has a stale or down row. |
+<!-- ---- end iuf c1 ---- -->
+<!-- ---- iuf c2 ---- -->
+#### Fresh installs
+
+| Metric | Dimensions | Question it answers |
+|---|---|---|
+| `hermes.install.run` | installer (`install_sh`, `install_ps1`, `other`), outcome (`success`, `failed`), failed_stage (`prerequisites`, `repository`, `venv`, `python_deps`, `config`, `products`, `setup`, `gateway`, `complete`, `other`; `none` on success), failure_class (`unsupported_platform`, `download_failed`, `download_digest_mismatch`, `uv_unusable`, `git_missing`, `curl_missing`, `libstdcxx_missing`, `git_extract_failed`, `dir_not_checkout`, `git_clone_failed`, `git_fetch_failed`, `local_changes_blocked`, `git_checkout_failed`, `git_reset_failed`, `commit_not_on_branch`, `filesystem_error`, `python_install_failed`, `deps_install_failed`, `products_build_failed`, `setup_failed`, `gateway_failed`, `interrupted`, `other`; `none` on success), duration bucket (`lt_30s` … `gte_15m`) | How often a fresh `install.sh` / `install.ps1` run succeeds, and at which stage and for which closed reason it fails. The installer runs before the consent question and never sends anything: a full run (not a single `--stage` / `-Stage` call, so the Desktop bootstrap installer's per-stage calls are not counted) leaves one small local file under `$HERMES_HOME/telemetry/shared_metrics/pending_installs/` holding only these tokens, a random id and the start/finish times (never the error text, paths, URLs or host names). A later Hermes start in that profile counts it once, and only when collection is on at that moment; a start with collection off, or any opt-out answer, deletes the files unreported. With sending on, the row is recorded only on a UTC day whose package the send consent gate can pass, that is when a send consent window opened at or before 00:00 UTC that day: an opt-in given during the install itself (the setup stage) opens the window mid-day, so the receipt waits for the first start on a later day instead of landing in the opt-in day's package, which is never sent. With collection on and sending off the row is recorded at the first start and stays on this machine. A receipt that no start counted within 7 days is deleted unreported, so an old install is never counted under a later Hermes version; an unreadable receipt is deleted too. A Ctrl-C, SIGTERM or closed terminal (SIGHUP) that stops the install reads `interrupted`, even when the stage's child caught it and exited with its own error; a Ctrl-C a stage handles and recovers from (setup's provider picker) does not stop the install. So a failed install is counted only once a later install or Hermes start in the same profile succeeds with collection on; a failed install that is never followed by one is never counted. |
+<!-- ---- end iuf c2 ---- -->
 
 Local state is written under:
 
@@ -484,10 +535,13 @@ platform strings, hostnames, and paths are never included. Fully packaged
 aggregate rows and successfully exported package rows and files are retained
 locally for 30 days. Pending package rows and counters with unexported deltas
 are never pruned.
-Package schemas v1 and v2 remain unchanged for existing outbox files. New
-packages use v3, which also accepts the v2 field sets of `hermes.model_route.count`,
-`hermes.tool_call.count` and the task counters so counters recorded before an upgrade
-drain safely.
+Package schemas v1, v2 and v3 remain unchanged for existing outbox files. New
+packages use v4, which adds `failure_class` to `hermes.compression.count` and
+`hermes.memory.op.count` and still accepts their v3 field sets (and, extended in place,
+`failure_class` on `hermes.extension.install.count` / `hermes.update.run` plus `registry` on the
+former, still accepting their earlier v4 field sets), as v3 accepted the v2
+field sets of `hermes.model_route.count`, `hermes.tool_call.count` and the task
+counters, so counters recorded before an upgrade drain safely.
 Vocabularies derived from in-repo registries (tool names, platforms, memory
 providers, error classes) are bounded by pattern in the JSON schema; the
 authoritative allowlist is `shared_metrics_contract.py`.
@@ -572,13 +626,30 @@ telemetry:
 - Like `enabled`, `send` is profile-owned and is not overridden by
   managed-scope configuration.
 
-Both keys are asked once per profile: by the Shared Metrics section of
-`hermes setup`, or in Hermes Desktop by an offer strip above the composer
-(Send to Nous / Local only / No thanks, with a Details view). The Desktop offer
-never blocks the composer or takes focus, appears only after first-run
-onboarding, and stays until answered. A profile whose `config.yaml` already
-carries either key is never asked again on any surface. Settings › Safety ›
-Privacy & network toggles both keys later.
+Both keys are asked once per profile, with the same three answers everywhere
+(Send to Nous / Local only / No thanks):
+
+| Surface | Where the offer appears |
+| --- | --- |
+| `hermes setup` | At the end of every flow (Quick, Full, Blank Slate, Portal, `--quick`). |
+| `hermes` / `hermes --tui` | Once before an interactive chat starts. Skipped for `-q`, piped or JSON output, spawned actions and Desktop-hosted panes. |
+| Hermes Desktop | A strip above the composer, after first-run onboarding. It never blocks the composer or takes focus. |
+| Web dashboard | A banner above every page, for the profile being managed. |
+
+"No thanks" is the default in the terminal, so pressing Enter never opts
+anyone in. Esc in the terminal and the dashboard banner's ✕ leave the question
+open, so it is asked again next time. Answering on any surface writes both keys
+to the profile's `config.yaml`, plus `offer_version`, and a profile that already
+carries either key is never asked again. A managed install is never offered.
+
+One exception: before the type-ahead fix, an Enter pressed while `hermes chat`
+was starting could save "No thanks" before the question appeared. A "No thanks"
+recorded without `offer_version` is therefore offered once more on every surface,
+with a note saying why. Any response settles it for good, including Esc or the
+banner's ✕, which keep "No thanks". Answers that opted in are never re-asked.
+To change the answer
+later, use `hermes setup telemetry`, `hermes tools`, or Desktop's Settings ›
+Safety › Privacy & network.
 
 **A package is only sent when its whole period falls inside a recorded
 consent window.** Consent is stored as explicit intervals in the shared-

@@ -49,7 +49,12 @@ def test_migration_policy(monkeypatch, capsys, case, expected):
     monkeypatch.setattr('builtins.input', prompt)
     gateway_prompts = []
     monkeypatch.setattr(update_cmd, '_gateway_prompt', lambda text, default: gateway_prompts.append((text, default)) or 'y')
-    update_cmd._check_and_apply_config_migration(assume_yes=case == 'yes', gateway_mode=case == 'gateway')
+    if case == 'migration-error':
+        # A failed write is owed, not silently completed: the owed-step guard needs the raise.
+        with pytest.raises(RuntimeError, match=r'v2 → v3 was not written: cannot write config'):
+            update_cmd._check_and_apply_config_migration(assume_yes=False, gateway_mode=False)
+    else:
+        update_cmd._check_and_apply_config_migration(assume_yes=case == 'yes', gateway_mode=case == 'gateway')
     assert calls == expected
     assert bool(prompts) is (case in {'tty-yes', 'tty-decline', 'eof', 'unicode'})
     assert bool(gateway_prompts) is (case == 'gateway')
@@ -85,9 +90,48 @@ def test_update_copies_bundled_skill_bytes_to_default_active_and_sibling(tmp_pat
         (profile / 'config.yaml').write_text('{}\n', encoding='utf-8')
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(homes[1] if named else home))
-    monkeypatch.setattr('plugins.memory.honcho.cli.sync_honcho_profiles_quiet', lambda: [])
     update_cmd_maint._sync_profiles_after_update()
     bundled = Path(__file__).resolve().parents[2] / 'skills'
     witness = next(bundled.rglob('SKILL.md'))
     for profile in homes:
         assert (profile / 'skills' / witness.relative_to(bundled)).read_bytes() == witness.read_bytes()
+
+
+def test_active_config_write_failure_still_migrates_siblings_and_restores_snapshots(tmp_path, monkeypatch):
+    """A failed ACTIVE config write is owed debt, but the independent sibling migration and the
+    pre-update snapshot safety nets (the only holders of this run's snapshot ids) still run."""
+    import json
+    from pathlib import Path
+
+    from hermes_cli import backup, update_cmd_config
+
+    root = tmp_path / '.hermes'
+    sibling = root / 'profiles' / 'sibling'
+    jobs = {'jobs': [{'id': 'nightly', 'name': 'nightly', 'schedule': '0 3 * * *', 'prompt': 'report'}]}
+    for home in (root, sibling):
+        (home / 'cron').mkdir(parents=True)
+        (home / 'config.yaml').write_text('_config_version: 48\n', encoding='utf-8')
+        (home / 'cron' / 'jobs.json').write_text(json.dumps(jobs), encoding='utf-8')
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setenv('HERMES_HOME', str(root))
+    active_snapshot = backup.create_quick_snapshot(label='pre-update', hermes_home=root)
+    monkeypatch.setattr(update_cmd_config, '_LAST_SIBLING_SNAPSHOTS',
+                        backup.create_pre_update_snapshots_all_profiles(root))
+    for home in (root, sibling):  # the documented mutation-window loss the safety nets repair
+        (home / 'cron' / 'jobs.json').write_text('{"jobs": []}', encoding='utf-8')
+    real_replace = config.atomic_config_replace
+
+    def replace(path, *args, **kwargs):
+        if Path(path) == root / 'config.yaml':
+            raise OSError('disk full')
+        return real_replace(path, *args, **kwargs)
+
+    monkeypatch.setattr(config, 'atomic_config_replace', replace)
+    with pytest.raises(RuntimeError, match='was not written: disk full'):
+        update_cmd_config._check_and_apply_config_migration(pre_update_snapshot_id=active_snapshot)
+    for home in (root, sibling):
+        assert json.loads((home / 'cron' / 'jobs.json').read_text(encoding='utf-8')) == jobs
+    assert config.check_config_version()[0] == 48  # the active write stays owed
+    monkeypatch.setenv('HERMES_HOME', str(sibling))
+    sibling_version, latest = config.check_config_version()
+    assert sibling_version == latest > 48

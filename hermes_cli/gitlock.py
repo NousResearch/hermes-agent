@@ -543,7 +543,7 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
     """
     shallow_path = _shallow_file_path(repo_root)
     shallow = shallow_path is not None
-    # Callers already inject creationflags via _no_prompt_git_kwargs(); OR the
+    # Callers already inject creationflags via no_prompt_git_kwargs(); OR the
     # hide flag into the shared kwargs instead of passing the keyword twice
     # (TypeError: got multiple values) — the config probes below inherit it.
     run_kwargs["creationflags"] = run_kwargs.get("creationflags", 0) | windows_hide_flags()
@@ -650,6 +650,27 @@ def convert_treeless_checkout(repo_root: Path, **run_kwargs) -> bool:
         cwd=str(repo_root), check=True, capture_output=True, timeout=30, **run_kwargs,
     )
     return True
+
+
+def convert_treeless_checkout_first(repo_root: Path) -> None:
+    """Run the one-time conversion as the update's first new-code step. Never raises.
+
+    Both update hand-offs (``update_completion._prepare`` and an older updater's
+    ``_update_takeover.prepare``) call this before minutes of dependency work: a Desktop built before
+    the fix keeps walking history during that window, and on a treeless checkout every walk
+    downloads trees again (#129514: 434 GB, disk full mid-update). Runs in the dependency-free
+    bootstrap interpreter.
+    """
+    from hermes_cli._subprocess_compat import no_prompt_git_kwargs
+
+    try:
+        if convert_treeless_checkout(repo_root, **no_prompt_git_kwargs()):
+            print("  ✓ Fetched this checkout's directory history once; updates stop re-downloading it",
+                  flush=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
+        print(f"  ⚠ Could not fetch this checkout's directory history ({detail[0]}); retrying next update",
+              flush=True)
 
 
 def _git_version(**run_kwargs) -> tuple:

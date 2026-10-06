@@ -90,19 +90,12 @@ set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_
 - **One writer seam.** Every write of a `config.yaml` (main or profile) goes through
   `hermes_cli.config.atomic_config_write` (refuses deletion by omission) or the explicit
   `atomic_config_replace` full-state path (→ `utils.atomic_roundtrip_yaml_save`, ruamel
-  round-trip): comments, key order, quoting and blank lines survive, and the fail-closed unreadable-file
-  guard runs first. Deliberate `pop()`/unset/migration paths use `atomic_config_replace`; additive
+  round-trip): formatting survives, and the fail-closed unreadable-file guard runs first. Deliberate `pop()`/unset/migration paths use `atomic_config_replace`; additive
   writers stay on `atomic_config_write`. Never call
   `atomic_yaml_write` / `yaml.dump` / `yaml.safe_dump` on a config path — `scripts/check_config_yaml_writers.py`
   (CI lint) rejects it, and `tests/hermes_cli/test_config_yaml_comment_preservation.py` guards each
   path (#92554). The commented example blocks are appended only when the file is created.
-- **Config backend seam:** every read, stat, existence check and write of a user `config.yaml`
-  goes through `hermes_cli/config_backend.py` (`read_config_doc`, `read_config_doc_readonly`,
-  `config_version`, `config_exists`, `write_config_key`, `write_config_document`). The backend
-  is chosen by `HERMES_CONFIG_BACKEND` only (default `file`; never by a config value). Tools that
-  copy, edit or back up the file itself check `supports_file_tooling()` first.
-  `scripts/check_config_yaml_readers.py` (CI lint) rejects a direct `open`/`read_text`/`stat`/
-  `exists`/YAML load of a config path; mark a true false positive `# config-reader: ok — <why>`.
+- **Reads** too go only through `config_backend.py`; see `developer-guide/config-backend.md`.
 - **Three loaders — know which you're in:** `load_cli_config()` (CLI, `cli.py`); `load_config()`
   (`hermes tools/setup`, most subcommands, `hermes_cli/config.py`, merges `DEFAULT_CONFIG`);
   `hermes_cli/config_effective.py::load_user_config_effective()` (gateway runtime via

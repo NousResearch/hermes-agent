@@ -2638,6 +2638,47 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
+def _resolve_worker_profile_home(profile_arg: str) -> Optional[str]:
+    """Resolve the assignee profile's HERMES_HOME for a spawn, from the platform's own rules.
+
+    The dispatcher is a detached process: its ambient ``HERMES_HOME`` is
+    whatever the process that started it exported. The observed failure
+    (erp-runtime exit-126 incident, t_05e2e685) was a card workspace home,
+    later pruned, that workers keep inheriting — so resolution never trusts
+    the inherited value directly. It goes through ``get_default_hermes_root()``
+    (which collapses any ambient value under the real home back to it, and
+    honors a genuine custom root otherwise) with the native platform home as
+    a second candidate, and accepts whichever root actually holds the live
+    assignee profile. Returns ``None`` when the profile lives under neither
+    root; the caller then still hands the child the platform default instead
+    of the inherited path, so the worker's own ``-p`` resolution reports the
+    missing profile against a real root.
+    """
+    from hermes_constants import (
+        _get_platform_default_hermes_home,
+        get_default_hermes_root,
+        named_profile_is_live,
+    )
+
+    native_default = _get_platform_default_hermes_home()
+    roots = [get_default_hermes_root(), native_default]
+    if profile_arg == "default":
+        # The default profile lives AT the root itself; the platform resolver
+        # is the authority (it folds a workspace home under ~/.hermes back to
+        # the real root instead of trusting the inherited spelling).
+        return str(roots[0])
+    seen: set[str] = set()
+    for root in roots:
+        key = os.path.normcase(str(root))
+        if key in seen:
+            continue
+        seen.add(key)
+        profile_dir = root / "profiles" / profile_arg
+        if named_profile_is_live(profile_dir):
+            return str(profile_dir)
+    return None
+
+
 @contextlib.contextmanager
 def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
     """Bind an assigned profile's runtime scope (secrets + terminal policy, optionally home) for
@@ -2840,19 +2881,31 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
-    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    from hermes_cli.profiles import normalize_profile_name
 
     profile_arg = normalize_profile_name(task.assignee)
 
     from agent.secret_scope import is_multiplex_active
     from tools.environments.local import _is_routed_home, build_subprocess_env, strip_launch_profile_env
 
-    try:
-        profile_home = resolve_profile_env(profile_arg)
-    except FileNotFoundError:
-        # No profile dir (isolated test fixtures) — the CLI resolves it from
-        # HERMES_PROFILE (set below) instead.
-        profile_home = None
+    # Resolve the assignee's home from the platform's own root rules at spawn
+    # time instead of trusting this detached process's inherited HERMES_HOME:
+    # a card workspace home that was later pruned must never be what a worker
+    # boots against (erp-runtime exit-126 incident, t_05e2e685). ``None`` means
+    # the profile is configured under no known root; the child still gets the
+    # platform default below and its own ``-p`` resolution reports the missing
+    # profile against a real root.
+    profile_home = _resolve_worker_profile_home(profile_arg)
+    from hermes_constants import _get_platform_default_hermes_home
+
+    # Seed the deliberate home into the base BEFORE the builder runs: the
+    # builder's home bridging (real-HOME repair, scratch TMPDIR) derives from
+    # HERMES_HOME, so an inherited workspace home leaked a dead scratch dir
+    # into every worker's env too. The child's HERMES_HOME is therefore either
+    # the resolved assignee home or the platform default — never a
+    # pass-through value.
+    base_env = dict(os.environ)
+    base_env["HERMES_HOME"] = profile_home or str(_get_platform_default_hermes_home())
 
     # Scrub for a ROUTED home, not only under multiplex: the authority test is "does this worker act
     # for another profile", exactly as served_profile_child_env decides it (tools/environments/local.py).
@@ -2865,6 +2918,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     with (_worker_profile_scope(profile_home, bind_home=False) if profile_home
           else contextlib.nullcontext()):
         env = build_subprocess_env(
+            base=base_env,
             scrub_secrets=is_multiplex_active() or routed,
             inherit_profile_home=True,
         )
@@ -2874,10 +2928,13 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     for key in _VAR_MAP:
         env.pop(key, None)
 
-    # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml:
-    # without it the child's get_hermes_home() falls back to the DEFAULT
-    # profile root because `hermes -p` applies its override before
-    # hermes_constants is imported.
+    # The child's HERMES_HOME was seeded into the base before the env build so
+    # every derived value followed the resolved home; re-assert it here so it
+    # stays authoritative through any override applied during the build. The
+    # worker reads the profile-scoped config.yaml from this value; without it
+    # the child's get_hermes_home() falls back to the DEFAULT profile root
+    # because `hermes -p` applies its override before hermes_constants is
+    # imported.
     if profile_home:
         env["HERMES_HOME"] = profile_home
         # A multiplexer dispatching for another profile must not hand it the launch

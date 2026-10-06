@@ -12,7 +12,8 @@ context inherits it — httpx, requests/urllib3, aiohttp, AND the stdlib
 ``urllib.request`` call sites (the llama.cpp engine download among them)
 that a certifi-only or requests-only approach never reached.
 
-The only thing above the platform store is EXPLICIT PER-PROVIDER CONFIG:
+An exported ``SSL_CERT_FILE`` bundle is trusted ON TOP of the platform
+store; only EXPLICIT PER-PROVIDER CONFIG replaces that trust:
 ``ssl_ca_cert`` (a self-signed or internal endpoint's bundle) and
 ``ssl_verify: false`` (local development). Those are deliberate
 statements about one endpoint, not an ambient guess about the machine.

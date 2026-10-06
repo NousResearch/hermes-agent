@@ -218,13 +218,15 @@ messaging, and cron sessions.
 | `read_window_below` | Identify the OS window directly underneath the Hermes desktop window — app name, title, bounds (metadata only, never pixels). On macOS, other apps' titles appear only when Screen Recording is already granted; the tool never prompts for it. | — |
 | `focus_pane` | Reveal and focus a pane in the Hermes desktop app (chat, files, terminal, review, sessions). | — |
 | `react_to_message` | React to a message with a single emoji, iMessage-tapback style. Opt-in via Settings → Appearance (`display.message_reactions`). | — |
-| `gui_tour` | Give a live guided tour: dim the screen, highlight an element, and attach a narrated popover (driver.js). Works on the Hermes app's own UI and on any page open in the preview pane; `targets` discovers what's on screen, `show` narrates step-by-step, `start` hands the user Next/Prev controls. | — |
+| `gui_tour` | Give a live guided tour: dim the screen, highlight an element, and attach a narrated popover (driver.js). Works on the Hermes app's own UI and on any page open in the preview pane. `start` with no steps runs the app's built-in tour (`preset` `quick` or `full`, default `full`). For a custom tour, `targets` discovers what's on screen, `show` narrates step-by-step, and `start` with `steps` hands the user Next/Prev controls. | — |
 | `show_tip` | Point at one element with a small accent bubble and an arrow — the quiet sibling of `gui_tour`, with no dimming, no spotlight, and no Next/Prev. Same `data-tour` handles and the same `tour(action='targets')` discovery call. | — |
 | `apply_layout` | Apply a saved layout preset to the Hermes desktop app when the user asks to rearrange the workspace. Built-ins: default (chat + sidebars), focus (chat only), terminal-deck, quad; plugin/user presets by id. To reveal ONE pane, use `focus_pane` instead. | — |
 
 ### Tours
 
-The `gui_tour` tool discovers its own targets — call `action='targets'` and it returns every addressable element on screen with a selector, a label, and a `stable` flag. Stable selectors key off identity (`data-tour`, `id`, `data-testid`, `aria-label`) and survive a re-render; positional `nth-child` paths don't, so stable ones sort first and should be preferred.
+For a general look around the app, `gui_tour(action='start')` with no steps runs the desktop app's built-in tour. `preset='quick'` shows four essentials (sessions, composer, new session, model); `preset='full'` (the default) adds the stops for the current interface mode. Stops whose element is not on screen are skipped. The built-in tour runs only on `surface='app'`, and `preset` cannot be combined with `steps`.
+
+For a custom tour, the `gui_tour` tool discovers its own targets — call `action='targets'` and it returns every addressable element on screen with a selector, a label, and a `stable` flag. Stable selectors key off identity (`data-tour`, `id`, `data-testid`, `aria-label`) and survive a re-render; positional `nth-child` paths don't, so stable ones sort first and should be preferred.
 
 To give an element a durable handle of your own, mark it up:
 

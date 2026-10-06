@@ -39,6 +39,8 @@ def tour_tool(action: str = "", surface: Optional[str] = None, selector: Optiona
         return tool_error(f"side must be one of: {', '.join(SIDES)}.")
     if preset is not None and preset not in PRESETS:
         return tool_error(f"preset must be one of: {', '.join(PRESETS)}.")
+    if preset is not None and steps is not None:
+        return tool_error("preset picks a built-in tour; pass steps or preset, not both.")
     # Every highlighted moment needs something to point at or something to say.
     if verb == "show" and not (selector or title or text):
         return tool_error("show needs a selector (and/or title/text for the popover).")

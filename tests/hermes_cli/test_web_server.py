@@ -3280,6 +3280,79 @@ class TestDesktopLoopbackAuthExemption:
         ) is True
 
 
+class TestIsolatedHostRendezvous:
+    """Dedicated ordinary backends must not become the machine rendezvous owner."""
+
+    @staticmethod
+    def _start(monkeypatch, tmp_path):
+        import asyncio
+        from types import SimpleNamespace
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        monkeypatch.setattr(web_server.app, "state", SimpleNamespace())
+        monkeypatch.setattr(web_server, "_SESSION_TOKEN", "isolated-test-token")
+        monkeypatch.setattr(web_server, "_start_parent_death_watchdog", lambda: None)
+        monkeypatch.setattr(web_server, "_write_dashboard_ready_file", lambda port: None)
+        monkeypatch.setattr(web_server, "_write_machine_sentinel_line", lambda line: None)
+        monkeypatch.setattr(web_server, "_maybe_open_browser", lambda *args: None)
+        # Unrelated startup maintenance is outside these rendezvous invariants.
+        monkeypatch.setattr(web_server, "_best_effort",
+                            lambda label, action: action() if label == "host rendezvous publish" else None)
+
+        async def started():
+            web_server._on_server_started(
+                SimpleNamespace(servers=[]), host="127.0.0.1", port=9231,
+                headless=False, isolated=True, open_browser=False, initial_profile="",
+                start_mcp_discovery_after_bind=False,
+            )
+
+        asyncio.run(started())
+        return web_server.app.state
+
+    def test_isolated_start_with_free_machine_role_publishes_nothing(self, monkeypatch, tmp_path):
+        from gateway import host_rendezvous as hr
+
+        cleanup = []
+        monkeypatch.setattr(hr, "cleanup_on_exit", cleanup.append)
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        try:
+            state = self._start(monkeypatch, tmp_path)
+            assert hr.read_record(hr.ROLE_SERVE) is None
+            assert not hr.owns_host_lock(hr.ROLE_SERVE)
+            assert not hr.lock_path(hr.ROLE_SERVE).exists()
+            assert not hr.token_path(hr.ROLE_SERVE).exists()
+            assert not hasattr(state, "host_role")
+            assert cleanup == []
+        finally:
+            hr.clear_record(hr.ROLE_SERVE)
+            hr.release_host_lock(hr.ROLE_SERVE)
+
+    def test_isolated_start_preserves_existing_machine_owner(self, monkeypatch, tmp_path):
+        from gateway import host_rendezvous as hr
+
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        cleanup = []
+        monkeypatch.setattr(hr, "cleanup_on_exit", cleanup.append)
+        assert hr.claim_host_lock(hr.ROLE_SERVE)[0] is hr.HostLockOutcome.ACQUIRED
+        try:
+            hr.publish_record(hr.ROLE_SERVE, host="127.0.0.1", port=9341,
+                              profiles=("default",), token="existing-owner-test-token")
+            paths = (hr.record_path(hr.ROLE_SERVE), hr.token_path(hr.ROLE_SERVE),
+                     hr.lock_path(hr.ROLE_SERVE))
+            before = tuple(path.read_bytes() for path in paths)
+            state = self._start(monkeypatch, tmp_path)
+            assert tuple(path.read_bytes() for path in paths) == before
+            assert hr.owns_host_lock(hr.ROLE_SERVE)
+            assert not hasattr(state, "host_role")
+            assert cleanup == []
+        finally:
+            hr.clear_record(hr.ROLE_SERVE)
+            hr.release_host_lock(hr.ROLE_SERVE)
+
+
 class TestDesktopHostRendezvousIsolation:
     """Desktop pool children have a private lifecycle, not a host ownership role."""
 
@@ -3314,7 +3387,7 @@ class TestDesktopHostRendezvousIsolation:
 
         monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
         try:
-            web_server._publish_host_rendezvous("127.0.0.1", 9231)
+            web_server._publish_host_rendezvous("127.0.0.1", 9231, isolated=True)
 
             # Not a host owner: the supervised public dashboard's attach ladder sees nobody.
             assert hr.read_record(hr.ROLE_SERVE) is None

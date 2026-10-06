@@ -113,3 +113,16 @@ def test_chat_offer_asks_an_undecided_profile_once(monkeypatch):
 
     assert len(asked) == 1
     assert consent.consent_state(read_raw_config()) == {"enabled": True, "send": False, "decided": True}
+
+
+def test_offer_drops_keys_typed_before_it_appeared(monkeypatch):
+    """An Enter typed while Hermes booted answered "No thanks" before the offer was on screen."""
+    from hermes_cli.observability import shared_metrics_consent as consent
+
+    events = []
+    monkeypatch.setattr("hermes_cli.curses_ui.flush_stdin", lambda: events.append("flush"))
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", lambda *a, **k: events.append("ask") or -1)
+
+    consent.offer_consent()
+
+    assert events == ["flush", "ask"]

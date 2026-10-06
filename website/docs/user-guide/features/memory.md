@@ -454,11 +454,16 @@ setting, `max_input_tokens` (see "Capping review cost" below), caps the input
 tokens one automatic review may consume across its whole tool loop; like
 `max_replay_tokens` it can only be lowered, never lifted, and explicit `/refine`
 is exempt. The effective replay bound is the smaller of `max_replay_tokens` and
-that aggregate budget (derived from the review model's context window when
-`max_input_tokens` is unset) net of what the review's first request carries
+one third of that aggregate budget (derived from the review model's context
+window when `max_input_tokens` is unset) net of what every request carries
 besides the replay — the system prompt and tool definitions the fork inherits
-from the conversation and the review prompt — so that first request fits the
-budget the fork runs under. When those fixed parts alone leave no room, the
+from the conversation and the review prompt. Every provider request the review
+makes replays the conversation and is charged in full, cache reads included, so
+a replay sized for the first request alone would leave room for exactly one
+request: the review could read but never write. Three shares leave it a read
+(the review prompt enforces read-before-write), a write and a closing response;
+on a 200k-token model with the default budget that is roughly 30k tokens of
+replay on a gateway surface. When the fixed parts alone leave no room, the
 automatic review is skipped as `oversized_snapshot`; a first request that is
 still refused by the budget makes no provider call and is logged as
 `review_input_budget_refused`.

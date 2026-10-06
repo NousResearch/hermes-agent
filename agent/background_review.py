@@ -505,14 +505,15 @@ def rebind_foreground_review_ownership(agent: Any, session_id: str) -> None:
 # to a DIFFERENT model the cache is cold anyway, so the fork replays a compact digest instead.
 _REVIEW_MAX_ITERATIONS = 16
 # Aggregate INPUT-token budget for one review fork (checked in conversation_loop's
-# ``_review_input_budget_exhausted``). Request #1 replays the snapshot as a warm cache read —
-# the replay is bounded at spawn so that request (replay + the inherited system prompt and
-# tools[] + the review prompt) fits this budget (``review_admission.replay_token_budget``; a
-# projection that still exceeds it is refused before any provider call and logged as
-# ``review_input_budget_refused``), both compression gates deferred until the first response;
-# compaction then bounds each request, but nothing else caps the SUM across the tool loop. The
-# default leaves 25% of the review model's context window available and never exceeds the
-# historical cloud-scale ceiling.
+# ``_review_input_budget_exhausted``). Every request is charged its full prompt, cache reads
+# included, and every request replays the snapshot — so the replay is bounded at spawn to one
+# of ``review_admission.REVIEW_REQUEST_SHARES`` shares of this budget net of the inherited
+# system prompt, tools[] and the review prompt (``review_admission.replay_token_budget``),
+# leaving the fork a read, a write and a closing response; a first request that still exceeds
+# the budget is refused before any provider call and logged as ``review_input_budget_refused``.
+# Both compression gates are deferred until the first response; compaction then bounds each
+# request, but nothing else caps the SUM across the tool loop. The default leaves 25% of the
+# review model's context window available and never exceeds the historical cloud-scale ceiling.
 # Override via ``auxiliary.background_review.max_input_tokens``; operators may lower the limit
 # but cannot disable or raise the 600k ceiling — <= 0, larger or invalid values fall back to
 # the derived default.

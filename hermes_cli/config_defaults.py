@@ -808,6 +808,9 @@ DEFAULT_CONFIG = {
         # values fall back to the derived default. max_replay_tokens caps the verbatim conversation
         # replay of one AUTOMATIC review (agent/review_admission.py): 120000 is the default AND the
         # hard ceiling — lower values narrow the replay; <= 0, larger or invalid fall back to it.
+        # The replay is also never wider than a third of the input budget net of the system prompt,
+        # tools and review prompt: every request replays it and is charged in full, so this keeps a
+        # read, a write and a closing response within the budget (a 200k window: ~30k of replay).
         # reasoning_effort is IGNORED while the review stays on the main model: the fork inherits the
         # conversation's reasoning config verbatim so its request bytes keep the parent's warm
         # prompt-cache prefix (#30532). Set provider/model below to route the review to another model

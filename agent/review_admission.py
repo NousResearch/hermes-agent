@@ -86,6 +86,13 @@ MAX_REPLAY_TOKENS_DEFAULT = 120_000
 # fork's first request: the tool-whitelist notice appended to the review prompt, ephemeral
 # per-request context, cache markers.
 REQUEST_OVERHEAD_MARGIN_TOKENS = 2_048
+# Provider requests the automatic replay is sized for under the aggregate input budget. The
+# budget is charged the FULL prompt on every request — cache reads included — and the replay
+# rides every one of them, so a replay sized for the first request alone leaves room for
+# exactly one: the fork reads and can never write. Three shares leave a read (the review prompt
+# enforces read-before-write), a write and a closing response; the tool results that grow the
+# later requests come out of the per-request margin.
+REVIEW_REQUEST_SHARES = 3
 
 _lock = threading.RLock()
 _live_turns: Dict[Tuple[str, str], Set[int]] = {}
@@ -316,13 +323,15 @@ def replay_token_budget(
 ) -> int:
     """Resolve the operator setting without permitting automatic replay to become unbounded.
 
-    With ``agent`` (the spawning parent) the replay is also never wider than what the fork's
-    FIRST provider request can carry under the aggregate input budget: that request is the
-    replay plus :func:`request_overhead_tokens` (system prompt, tools[], ``review_prompt``),
-    and a projection above the budget with nothing consumed is refused before any provider
-    call — a zero-request review. The fork resolves the same context window as its parent on
-    the same-model path, so the parent answers for it at replay-bounding time. Never below 1:
-    when the fixed parts alone exceed the budget no replay fits, and
+    With ``agent`` (the spawning parent) the replay is also never wider than one of
+    :data:`REVIEW_REQUEST_SHARES` equal shares of the aggregate input budget net of
+    :func:`request_overhead_tokens` (system prompt, tools[], ``review_prompt``): every provider
+    request the fork makes carries the replay plus that overhead and is charged in full, so the
+    first request alone fitting the budget would leave no second request — a review that reads
+    but never writes. A projection above the budget with nothing consumed is refused before any
+    provider call (a zero-request review). The fork resolves the same context window as its
+    parent on the same-model path, so the parent answers for it at replay-bounding time. Never
+    below 1: when the fixed parts alone exceed a share no replay fits, and
     :func:`bounded_replay_history` skips the review as ``oversized_snapshot``.
     """
     ceiling = _replay_ceiling(task_cfg)
@@ -330,9 +339,9 @@ def replay_token_budget(
         return ceiling
     from agent.background_review import _review_input_token_budget
 
-    aggregate = _review_input_token_budget(task_cfg, agent)
+    request_share = _review_input_token_budget(task_cfg, agent) // REVIEW_REQUEST_SHARES
     return max(
-        1, min(ceiling, aggregate - request_overhead_tokens(agent, review_prompt))
+        1, min(ceiling, request_share - request_overhead_tokens(agent, review_prompt))
     )
 
 

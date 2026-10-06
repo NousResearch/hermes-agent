@@ -30,7 +30,8 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar
 from hermes_state_common import (
     TITLE_SOURCE_DERIVED as _TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM as _TITLE_SOURCE_LLM,
     TITLE_SOURCE_USER as _TITLE_SOURCE_USER,
-    escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity,
+    escape_like as _escape_like, routed_sessions_setting as _routed_sessions_setting,
+    stat_db_file_identity as _stat_db_file_identity,
 )
 from hermes_state_holders import read_only_db_uri
 from hermes_state_pidns import holder_pid_checkable
@@ -450,6 +451,41 @@ def _foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     return _state_holders.foreign_state_db_holders(db_path)
 
 
+# Write-contention patience is tunable per host: ``sessions.write_patience_s`` /
+# ``sessions.transcript_write_patience_s`` (config.yaml, canonical) are bridged to the env carriers below
+# by the gateway (``gateway.run._SESSIONS_ENV_BRIDGE``) and the CLI
+# (``hermes_cli.cli_config_load._mirror_config_to_env``), and ``routed_sessions_setting`` reads a
+# multiplexed profile's own config.yaml rather than the launch profile's env slot.
+_DEFAULT_WRITE_PATIENCE_S = 20.0
+_DEFAULT_TRANSCRIPT_WRITE_PATIENCE_S = 60.0
+
+# attr name -> (sessions.<key>, env carrier, compiled default). Only the routine and transcript
+# budgets are here: the activity budget is observation-only, and the compression-lease wait is a
+# correctness boundary (see the class comment).
+_PATIENCE_CONFIG: Tuple[Tuple[str, str, str, float], ...] = (
+    ("_WRITE_PATIENCE_S", "write_patience_s", "HERMES_WRITE_PATIENCE_S", _DEFAULT_WRITE_PATIENCE_S),
+    ("_TRANSCRIPT_WRITE_PATIENCE_S", "transcript_write_patience_s",
+     "HERMES_TRANSCRIPT_WRITE_PATIENCE_S", _DEFAULT_TRANSCRIPT_WRITE_PATIENCE_S),
+)
+
+
+def _configured_patience_seconds(key: str, env_var: str) -> Optional[float]:
+    """``sessions.<key>`` patience in seconds, or ``None`` when unset or not usable.
+
+    Patience may be *raised* by configuration, but a non-positive or unparseable value is treated as
+    absent so the compiled default stays in force: a zero-wait writer would reinstate exactly the
+    lock-contention turn abort this knob exists to prevent. Mirrors ``hermes_state_search._search_slow_ms``.
+    """
+    value = _routed_sessions_setting(key, env_var)
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
+
 # ── Process-wide shared SessionDB registry (#90837) ── lives in hermes_state_registry.py (acquire /
 # release / close_all / release_or_close). Long-lived in-process callers (gateway, tui_gateway, cron,
 # in-process tools) share ONE writer connection per resolved path via hermes_state_registry.acquire(); CLI
@@ -479,7 +515,14 @@ class SessionDB(
     # optimize); attempt-counted budgets destroyed turns on a healthy store. Transcript
     # writes (failure aborts the turn) get the long budget; observation-only activity
     # writes sit on the response-critical path and get a sub-second one.
-    _WRITE_PATIENCE_S, _TRANSCRIPT_WRITE_PATIENCE_S, _ACTIVITY_WRITE_PATIENCE_S = 20.0, 60.0, 0.5
+    # The two budgets below are DEFAULTS: ``sessions.write_patience_s`` /
+    # ``sessions.transcript_write_patience_s`` override them per handle (see
+    # ``_apply_write_patience_config``). The activity budget and ``_COMPRESSION_BUSY_WAIT_S``
+    # are deliberately NOT configurable — the first is observation-only and must never
+    # lengthen a response-critical write, and the second is a correctness boundary (a writer
+    # still locked out after it must be refused, not allowed to land a stale turn).
+    _WRITE_PATIENCE_S, _TRANSCRIPT_WRITE_PATIENCE_S, _ACTIVITY_WRITE_PATIENCE_S = (
+        _DEFAULT_WRITE_PATIENCE_S, _DEFAULT_TRANSCRIPT_WRITE_PATIENCE_S, 0.5)
     # A live compression lock gets a short wait (compression publishes in seconds), but the lease
     # is a correctness boundary: a writer still locked out afterwards is refused.
     # Observation-only activity heartbeat/label writes (#76354 review S1): these run on (or adjacent to) the
@@ -575,10 +618,25 @@ class SessionDB(
         except Exception as exc:
             logger.warning("%s close failed for %s: %s", label, self.db_path, exc)
 
+    def _apply_write_patience_config(self) -> None:
+        """Apply configured ``sessions.*`` write patience to THIS handle (called once, in ``__init__``).
+
+        Only the routine and transcript budgets are configurable (see ``_PATIENCE_CONFIG``). A value is
+        materialised on the handle only when it actually DIFFERS from the compiled default, which keeps
+        that default the single visible source of the number and keeps the class attribute working as
+        the override seam tools and tests use; done per handle, not per process, so a multiplexed
+        profile reads ITS OWN config.yaml (``routed_sessions_setting``).
+        """
+        for attr, key, env_var, default in _PATIENCE_CONFIG:
+            configured = _configured_patience_seconds(key, env_var)
+            if configured is not None and configured != default:
+                setattr(self, attr, configured)
+
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or _default_db_path()
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
+        self._apply_write_patience_config()
         # Keep only the opening call site, never a frame (which pins caller locals).
         self._creation_site = "unknown"
         caller = None

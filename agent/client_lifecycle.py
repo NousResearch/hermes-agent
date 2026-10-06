@@ -923,6 +923,8 @@ class ClientLifecycleMixin:
         if cc is not None and getattr(cc, "api_key", None) == old_token:
             cc.api_key = new_token
         rt = getattr(self, "_primary_runtime", None) or {}
+        if rt.get("anthropic_api_key") == old_token:  # fallback restore rebuilds from the key + flag pair
+            rt["is_anthropic_oauth"] = self._is_anthropic_oauth
         for k in ("api_key", "anthropic_api_key", "compressor_api_key"):
             if rt.get(k) == old_token:
                 rt[k] = new_token

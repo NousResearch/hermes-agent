@@ -114,6 +114,7 @@ class TestOAuthFlagOnRefresh:
         agent._anthropic_base_url = base_url
         agent._anthropic_client = MagicMock()
         agent._is_anthropic_oauth = True
+        agent._primary_runtime = {"anthropic_api_key": old, "is_anthropic_oauth": False}
 
         with (
             patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
@@ -123,6 +124,8 @@ class TestOAuthFlagOnRefresh:
 
         assert result is True
         assert agent._anthropic_api_key == new
+        # Fallback restore rebuilds from the key + flag pair, so the flag moves with the key.
+        assert agent._primary_runtime == {"anthropic_api_key": new, "is_anthropic_oauth": agent._is_anthropic_oauth}
 
     def test_compression_before_any_request_sends_the_refreshed_token(self, agent):
         """Claude Code revokes the old token on refresh. Manual /compress and turn-start compaction
@@ -154,7 +157,8 @@ class TestOAuthFlagOnRefresh:
 
         assert seen == [new]
         assert agent._anthropic_api_key == agent.api_key == new
-        assert set(agent._primary_runtime.values()) == {new}
+        assert agent._primary_runtime == {"api_key": new, "anthropic_api_key": new, "compressor_api_key": new,
+                                          "is_anthropic_oauth": agent._is_anthropic_oauth}
 
     def test_auxiliary_main_route_uses_refreshed_token(self, agent):
         """Production order: the turn publishes its aux runtime BEFORE the first request triggers

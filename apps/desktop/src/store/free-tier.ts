@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { runFreeTierChallenge } from '@/store/free-tier-challenge'
+import { setModeContext } from '@/store/interface-mode'
 import { $onboardingGate, guidedOnboardingActive } from '@/store/onboarding-gate'
 import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { FreeTierStatus } from '@/types/hermes'
@@ -34,6 +35,9 @@ export const $freeTierSignInOpen = computed(
   [$freeTierStatus, $onboardingGate],
   status => Boolean(status?.available) && !guidedOnboardingActive()
 )
+
+// Fed here, beside the atom, so every importer of this store gets the same link.
+$freeTierSignInOpen.subscribe(open => setModeContext({ freeTierSignInOpen: open }))
 
 function isFreeTierStatus(value: unknown): value is FreeTierStatus {
   return typeof value === 'object' && value !== null && typeof (value as FreeTierStatus).has_guest === 'boolean'

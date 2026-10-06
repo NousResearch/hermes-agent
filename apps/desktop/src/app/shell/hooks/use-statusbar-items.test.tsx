@@ -2,13 +2,13 @@ import { renderHook } from '@testing-library/react'
 import type { WritableAtom } from 'nanostores'
 import { isValidElement, type ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $freeTierSignInOpen, $freeTierStatus } from '@/store/free-tier'
-import { INTERFACE_MODES, setInterfaceMode, setModeContext } from '@/store/interface-mode'
+import { $freeTierStatus } from '@/store/free-tier'
+import { INTERFACE_MODES, setInterfaceMode } from '@/store/interface-mode'
 import { $onboardingGate } from '@/store/onboarding-gate'
 import {
   $connection,
@@ -287,8 +287,6 @@ describe('free-tier Sign in in every interface mode', () => {
   })
 
   const desktopBridge = window.hermesDesktop
-  // The shell feeds the mode context from the same atom (app/contrib/controller.tsx).
-  const unwire = $freeTierSignInOpen.subscribe(open => setModeContext({ freeTierSignInOpen: open }))
 
   function signInChipVisible(): boolean {
     const { leftStatusbarItems, statusbarItems } = renderStatusbarItems()
@@ -303,8 +301,6 @@ describe('free-tier Sign in in every interface mode', () => {
     window.hermesDesktop = desktopBridge
     setInterfaceMode('advanced')
   })
-
-  afterAll(() => unwire())
 
   it.each(INTERFACE_MODES)('shows the Sign in chip to a signed-out free-tier user in %s mode', mode => {
     setInterfaceMode(mode)

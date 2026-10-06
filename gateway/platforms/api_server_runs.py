@@ -233,7 +233,9 @@ def _initialize_run_state(self, *, store_factory) -> None:
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
     return [
-        ("POST", "/v1/runs", self._handle_runs), ("GET", "/v1/runs/{run_id}", self._handle_get_run),
+        ("POST", "/v1/runs", self._handle_runs),
+        ("GET", "/v1/runs/by-idempotency-key", self._handle_get_run_by_idempotency_key),
+        ("GET", "/v1/runs/{run_id}", self._handle_get_run),
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
@@ -1052,6 +1054,24 @@ def _load_owned_run(self, request, *, _api_server, permission: Optional[str], ac
     if status is None:
         return run_id, None, agent, task, _run_not_found(_openai_error, run_id)
     return run_id, status, agent, task, None
+
+
+async def _handle_get_run_by_idempotency_key(self, request: "web.Request", *, _api_server) -> "web.Response":
+    """Resolve an accepted run without a second admission or a key in the URL."""
+    auth_err = self._check_auth(request)
+    if auth_err:
+        return auth_err
+    key = request.headers.get("Idempotency-Key", "")
+    if not key or len(key) > 255 or any(ord(ch) < 33 or ord(ch) > 126 for ch in key):
+        response = _json_error(_api_server._openai_error, "Invalid Idempotency-Key", status=400)
+    elif not self._run_idempotency_store.durable:
+        response = _json_error(_api_server._openai_error, "Durable run lookup unavailable", status=503)
+    else:
+        run_id = self._run_idempotency_store.find_run_by_key(self._run_idempotency_scope(request), key)
+        response = (web.json_response({"run_id": run_id}) if run_id is not None else
+                    _json_error(_api_server._openai_error, "Run not found", code="run_not_found", status=404))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 async def _handle_get_run(self, request: "web.Request", *, _api_server) -> "web.Response":

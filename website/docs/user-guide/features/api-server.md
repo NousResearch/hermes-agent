@@ -460,6 +460,10 @@ Runs accept a simple `input` string and optional `session_id`, `instructions`, `
 
 For safely retryable creation, send an `Idempotency-Key` header (1–255 visible ASCII characters). Hermes durably reserves the key before starting work. An identical retry returns the original `run_id` with HTTP 202 and `Idempotency-Replayed: true`, including after a gateway restart and after the run has completed, failed, or been cancelled. Reusing the same key with a different JSON payload returns HTTP 409 with code `idempotency_key_conflict`. Keys are isolated by authenticated API profile/credential and retained for 24 hours after their last status update; clients should use unique, unguessable keys and must not reuse them for unrelated operations. Requests without the header retain the legacy behavior and always create a new run.
 
+### GET /v1/runs/by-idempotency-key
+
+Resolve a previously admitted run without submitting another request. Send the same `Idempotency-Key` in a header, plus the API bearer credential and profile used for the original POST; the key is not placed in a URL. Returns only `{ "run_id": "run_..." }` with `Cache-Control: no-store`. An unknown or expired key returns 404, and a non-durable idempotency store returns 503. Neither response proves that a lost POST did not start work: **do not retry an uncertain POST on a 404/503**. This lookup does not reserve a key, launch a run, extend retention, or disclose the original prompt. Use the returned ID with `GET /v1/runs/{run_id}` and the stop endpoint for further reconciliation; an ID alone is not proof that a worker is still running.
+
 When `session_id` identifies an existing Hermes session and no explicit
 `conversation_history` or `previous_response_id` is supplied, the run loads
 that session's active transcript. Session turn leases serialize concurrent

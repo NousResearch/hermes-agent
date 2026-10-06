@@ -201,6 +201,14 @@ function nativeRemovalInstructions(kind, platform, appPath = null) {
     )
   }
 
+  if (kind === 'external') {
+    // Deleting a package manager's files by hand leaves the package registered with missing files.
+    return (
+      'Another package manager installed this Hermes desktop app. ' +
+      'Uninstall it with that package manager, the same way you installed it.'
+    )
+  }
+
   if (platform === 'win32') {
     return 'To uninstall, go to Windows Settings → Apps → Installed apps.'
   }

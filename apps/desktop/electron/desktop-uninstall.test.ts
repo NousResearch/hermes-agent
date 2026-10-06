@@ -69,6 +69,13 @@ test('only standard installs allow desktop uninstall; managed kinds have no safe
 test('nativeRemovalInstructions names the steward per kind and OS', () => {
   assert.match(nativeRemovalInstructions('nix', 'linux'), /installed by Nix/)
   assert.match(nativeRemovalInstructions('nix', 'darwin'), /flake or profile/)
+
+  for (const platform of ['linux', 'darwin', 'win32']) {
+    const steps = nativeRemovalInstructions('external', platform, '/usr/lib/hermes/hermes')
+    assert.match(steps, /with that package manager/)
+    assert.doesNotMatch(steps, /Delete|Trash/)
+  }
+
   assert.match(nativeRemovalInstructions('bundled', 'win32'), /Installed apps/)
   assert.equal(
     nativeRemovalInstructions('bundled', 'darwin', '/Applications/Hermes Agent Canary.app'),

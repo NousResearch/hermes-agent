@@ -441,3 +441,24 @@ class TestLoginPageRender:
         finally:
             clear_providers()
 
+    def test_prefix_rewrites_fetch_fonts_and_links(self):
+        """Under a reverse-proxy mount (X-Forwarded-Prefix) the login page's
+        password fetch, font URLs and OAuth provider links must stay inside
+        the prefix; an unprefixed render must keep the bare root paths."""
+        clear_providers()
+        register_provider(StubAuthProvider())
+        register_provider(PasswordProvider())
+        try:
+            plain = render_login_html()
+            assert "fetch('/auth/password-login'" in plain
+            assert "url('/fonts/" in plain
+            assert 'href="/auth/login?provider=stub"' in plain
+
+            prefixed = render_login_html(prefix="/hermes")
+            assert "fetch('/hermes/auth/password-login'" in prefixed
+            assert "url('/hermes/fonts/" in prefixed
+            assert 'href="/hermes/auth/login?provider=stub"' in prefixed
+            assert "__BASE__" not in prefixed
+        finally:
+            clear_providers()
+

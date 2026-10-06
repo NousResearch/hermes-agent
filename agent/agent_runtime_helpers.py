@@ -1603,21 +1603,18 @@ def answer_in_reasoning_capability(agent: Any) -> bool:
         if isinstance(configured, bool):
             return configured
 
-    # Custom model maps already support exact per-route boolean capabilities. Keep the
-    # lookup best-effort: a malformed optional config must not break response handling.
-    try:
-        from hermes_cli.config import get_custom_provider_model_capability
+    # Custom model maps already support exact per-route boolean capabilities (the lookup
+    # returns None on unreadable config).
+    from hermes_cli.config import get_custom_provider_model_capability
 
-        configured = get_custom_provider_model_capability(
-            model=str(getattr(agent, "model", "") or ""),
-            base_url=base_url,
-            capability=_ANSWER_IN_REASONING_CAPABILITY,
-            custom_providers=getattr(agent, "_custom_providers", None),
-        )
-        if configured is not None:
-            return configured
-    except Exception:
-        logger.debug("answer-in-reasoning capability lookup failed", exc_info=True)
+    configured = get_custom_provider_model_capability(
+        model=str(getattr(agent, "model", "") or ""),
+        base_url=base_url,
+        capability=_ANSWER_IN_REASONING_CAPABILITY,
+        custom_providers=getattr(agent, "_custom_providers", None),
+    )
+    if configured is not None:
+        return configured
 
     model = str(getattr(agent, "model", "") or "").strip().lower()
     if _NEMOTRON_PARSER_MODEL_MARKER not in model:

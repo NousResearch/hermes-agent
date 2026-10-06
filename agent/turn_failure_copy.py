@@ -337,11 +337,6 @@ _ONE_OFF_COPY: Dict[str, str] = {
         "Hermes hit an internal error while handling the model's reply and stopped this turn. "
         + _NEXT_STEPS_LOOP + "\n\nDetails: {detail}"
     ),
-    "reasoning_only": (
-        "⚠️ {model} spent all of its output budget thinking and never wrote an answer. Lower "
-        "its reasoning effort with `/reasoning low`, or switch to a different model with /model. "
-        "Its last thoughts, which may contain the answer:\n\n{preview}"
-    ),
     "max_iterations_no_summary": (
         "I ran out of steps for this turn ({limit} tool calls) before finishing, and couldn't "
         "produce a summary. Send `continue` to keep going, or raise `max_iterations` in your config."

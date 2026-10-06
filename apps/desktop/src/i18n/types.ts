@@ -8,6 +8,9 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
+import type { AuxTaskCopyMap } from './types_aux_tasks'
+import type { ModelMenuTranslations } from './types_model_menu'
+
 /** The locales compiled into the app (`TRANSLATIONS`). */
 export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
 
@@ -58,11 +61,6 @@ interface ToolTitleCopy {
 interface ModeOptionCopy {
   label: string
   description: string
-}
-
-interface AuxTaskCopy {
-  label: string
-  hint: string
 }
 
 export interface Translations {
@@ -725,6 +723,9 @@ export interface Translations {
     resetConfirm: string
     exportFailed: string
     resetFailed: string
+    pluginPages: Record<'agentSettings' | 'blurb' | 'empty' | 'manage' | 'missing', string> & {
+      pageCount: (n: number) => string
+    }
     nav: {
       providers: string
       providerAccounts: string
@@ -743,21 +744,15 @@ export interface Translations {
       billing: string
       notifications: string
       vault: string
+      plugins: string
     }
     plugins: {
       title: string
-      blurb: string
-      count: (n: number) => string
       openFolder: string
       rescan: string
       reveal: string
-      enable: string
-      disable: string
       failed: string
-      empty: string
       kinds: { bundled: string; disk: string; runtime: string }
-      agentHalfMissing: string
-      agentHalfMissingTip: string
       installModal: {
         installFromGit: string
         reviewRepository: string
@@ -1421,6 +1416,7 @@ export interface Translations {
       sshErrPlatform: string
       sshErrTimeout: string
       sshErrUpdateRequired: string
+      sshErrInteractiveAuth: string
       sshErrUnknown: string
     }
     keys: {
@@ -1520,6 +1516,8 @@ export interface Translations {
       change: string
       autoUseMain: string
       inheritMainEffort: string
+      inheritsFrom: (task: string) => string
+      followTask: (task: string) => string
       providerDefault: string
       fallbackAdd: string
       fallbackEmpty: string
@@ -1530,7 +1528,7 @@ export interface Translations {
       moaAggregator: string
       moaAggregatorBilled: string
       moaReferenceHint: string
-      tasks: Record<string, AuxTaskCopy>
+      tasks: AuxTaskCopyMap
     }
     localModels: {
       connectionChanged: string
@@ -2164,7 +2162,7 @@ export interface Translations {
         save: string
         saved: (name: string) => string
         saveFailed: (name: string) => string
-        optional: string
+        required: string
         secretSet: string
         secretStoredAs: (env: string) => string
       }
@@ -3859,21 +3857,7 @@ export interface Translations {
     windowControls: string
     paneControls: string
     appControls: string
-    modelMenu: {
-      search: string
-      noModels: string
-      editModels: string
-      followDefault: string
-      refreshModels: string
-      favorites: string
-      addFavorite: string
-      removeFavorite: string
-      favoriteShortcut: string
-      fast: string
-      free: string
-      cacheRead: string
-      priceTitle: (input: string, output: string, cache: string) => string
-    }
+    modelMenu: ModelMenuTranslations
     modelOptions: {
       noOptions: string
       options: string
@@ -3944,6 +3928,9 @@ export interface Translations {
       showTerminal: string
       hideTerminal: string
       gateway: string
+      backend: string
+      messagingStopped: string
+      messagingDegraded: (name: string) => string
       gatewayReady: string
       gatewayNeedsSetup: string
       gatewayUnavailable: string
@@ -4562,8 +4549,6 @@ export interface Translations {
     sessionUnavailable: string
     createSessionFailed: string
     promptFailed: string
-    staleSessionTitle: string
-    staleSessionBody: string
     providerCredentialRequired: string
     emptySlashCommand: string
     slashCommandIgnoredTitle: string

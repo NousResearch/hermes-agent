@@ -615,11 +615,14 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
     from hermes_cli.codex_runtime_switch import get_configured_codex_binary
     from hermes_cli.config import load_config
-    # Approval callback: Hermes' standard prompt flow when a CLI thread installed one.
+    # Approval callback: Hermes' standard prompt flow when a CLI thread installed one. `hermes chat -q`, cron and
+    # unattended platforms can have one registered with nobody to answer it, so they get none and fail closed at once.
     approval_callback = None
     with suppress(Exception):
+        from tools.approval_context import _no_user_can_answer
         from tools.terminal_tool import _get_approval_callback
-        approval_callback = _get_approval_callback()
+        if not _no_user_can_answer():
+            approval_callback = _get_approval_callback()
     # Gateway/cron have no UI for codex approval requests, so exec/apply_patch fail closed by default. Only an
     # explicit approval bypass (approvals.mode: off, /yolo, --yolo, HERMES_YOLO_MODE) hands policy to codex's sandbox.
     auto_approve_requests = False

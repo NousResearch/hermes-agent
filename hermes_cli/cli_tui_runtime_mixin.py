@@ -339,6 +339,14 @@ class CLITuiRuntimeMixin:
         except Exception:
             pass
 
+        # Replay provider-plugin load failures buffered during pre-logging
+        # discovery (raw stderr stays clean for the fullscreen TUI; the
+        # failures surface here instead, once startup output is safe).
+        with suppress(Exception):
+            from providers import format_provider_load_failures, get_provider_load_failures
+            for _failure_line in format_provider_load_failures(get_provider_load_failures()):
+                self._console_print(f"[yellow]{_escape(_failure_line)}[/]")
+
     def _tui_startup_background_maintenance(self):
         """Best-effort startup passes: curator skill maintenance, personal + org skill sync.
 

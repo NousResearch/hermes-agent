@@ -95,6 +95,74 @@ _BUNDLED_PLUGINS_DIR = (
 )
 
 
+@dataclass
+class ProviderLoadFailure:
+    """One swallowed provider-plugin discovery load failure, buffered for TUI replay.
+
+    Provider discovery runs before ``setup_logging()``, when ``logger.warning``
+    falls through to stdlib ``logging.lastResort`` and writes raw stderr —
+    which corrupts the fullscreen prompt_toolkit TUI. Load failures are
+    therefore buffered here (bounded) at debug level and replayed once startup
+    output is safe (see ``cli_tui_runtime_mixin``). Policy refusals
+    (disabled-plugin gates) are NOT buffered — they are routine config, not
+    failures, and stay bare ``logger.debug``.
+    """
+
+    plugin_name: str
+    source: str  # "bundled" | "user" | "entry-point" | "legacy"
+    error: str
+
+
+MAX_LOAD_FAILURES = 50
+_LOAD_FAILURES: list[ProviderLoadFailure] = []
+_LOAD_FAILURES_LOCK = threading.Lock()
+
+
+def get_provider_load_failures() -> tuple[ProviderLoadFailure, ...]:
+    """Snapshot (oldest first) of buffered provider-plugin load failures."""
+    with _LOAD_FAILURES_LOCK:
+        return tuple(_LOAD_FAILURES)
+
+
+def _record_plugin_failure(plugin_name: str, source: str, exc: BaseException) -> None:
+    """Buffer a swallowed discovery load failure and debug-log it (never warn).
+
+    Warning here would hit ``logging.lastResort``'s raw-stderr handler before
+    ``setup_logging()`` runs and corrupt the fullscreen TUI.
+    """
+    failure = ProviderLoadFailure(plugin_name=str(plugin_name), source=source, error=str(exc))
+    with _LOAD_FAILURES_LOCK:
+        _LOAD_FAILURES.append(failure)
+        del _LOAD_FAILURES[: max(0, len(_LOAD_FAILURES) - MAX_LOAD_FAILURES)]
+    logger.debug("Failed to load %s provider plugin %s: %s", source, plugin_name, exc)
+
+
+def format_provider_load_failures(
+    failures: tuple[ProviderLoadFailure, ...] | list[ProviderLoadFailure], limit: int = 3
+) -> list[str]:
+    """Format buffered load failures as TUI startup lines (pure: no I/O).
+
+    At most ``limit`` failure lines, plus a trailing overflow line naming the
+    remaining count and pointing at agent.log. Empty input → ``[]``.
+    """
+    from agent.i18n import t  # lazy: this module loads before the i18n catalogs
+
+    items = list(failures)[: max(0, limit)]
+    lines = [
+        t(
+            "cli.tui.provider_plugin_load_failed",
+            name=failure.plugin_name,
+            source=failure.source,
+            error=failure.error,
+        )
+        for failure in items
+    ]
+    overflow = len(list(failures)) - len(items)
+    if overflow > 0:
+        lines.append(t("cli.tui.provider_plugin_load_failed_more", count=overflow))
+    return lines
+
+
 def _sync_auth_registry() -> None:
     """Mirror profiles into the ``hermes_cli`` snapshots (auth registry, picker catalog) that are loaded.
 
@@ -468,8 +536,7 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
                 for profile in load_hosted_profiles(plugin_dir, _user_module_name(plugin_dir, home_key)):
                     register_provider(profile)
             except Exception as exc:
-                logger.warning("Failed to load user provider plugin %s in the plugin host: %s",
-                               plugin_dir.name, exc)
+                _record_plugin_failure(plugin_dir.name, "user", exc)
             finally:
                 _current_source = None
             return
@@ -497,9 +564,7 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
     except Exception as exc:
-        logger.warning(
-            "Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc
-        )
+        _record_plugin_failure(plugin_dir.name, source, exc)
         sys.modules.pop(module_name, None)
     finally:
         _current_source = None
@@ -532,7 +597,9 @@ def _discover_entry_point_providers() -> None:
       provider registration hooks take no arguments by contract.
 
     Failures are swallowed per-entry (a broken third-party package must not
-    break provider discovery) and logged at warning level. This scan runs
+    break provider discovery), buffered via :func:`_record_plugin_failure`
+    for TUI replay, and debug-logged — never warned, so pre-``setup_logging``
+    discovery stays off raw stderr. This scan runs
     first, so filesystem plugins (bundled + ``$HERMES_HOME``) keep their
     documented override precedence via last-writer-wins in
     ``register_provider()`` — a pip package cannot hijack a first-party
@@ -576,14 +643,12 @@ def _discover_entry_point_providers() -> None:
         from hermes_cli.plugin_isolation import in_process_import_refusal
         refusal = in_process_import_refusal(f"pip-installed model-provider plugin {ep.name!r}")
         if refusal:
-            logger.warning("%s", refusal)
+            logger.debug("%s", refusal)
             continue
         try:
             loaded = ep.load()
         except Exception as exc:
-            logger.warning(
-                "Failed to load entry-point provider plugin %r: %s", ep.name, exc
-            )
+            _record_plugin_failure(ep.name, "entry-point", exc)
             continue
         # ``module:func`` → callable we invoke; bare ``module`` → import side
         # effect already happened during load(). Only call when it's callable
@@ -601,11 +666,7 @@ def _discover_entry_point_providers() -> None:
             try:
                 loaded()
             except Exception as exc:
-                logger.warning(
-                    "Entry-point provider plugin %r raised on invocation: %s",
-                    ep.name,
-                    exc,
-                )
+                _record_plugin_failure(ep.name, "entry-point", exc)
 
 
 def _requires_arguments(fn) -> bool:
@@ -696,9 +757,7 @@ def _run_discovery_steps() -> None:
             try:
                 importlib.import_module(f"providers.{modname}")
             except ImportError as exc:
-                logger.warning(
-                    "Failed to import legacy provider module %s: %s", modname, exc
-                )
+                _record_plugin_failure(modname, "legacy", exc)
     except Exception:
         pass
 

@@ -122,23 +122,30 @@ class TestCacheMcpImageBlock:
 
 
 class TestNativeImageAttach:
-    """The registry handler hands a vision route the pixels through the shared native gate; the image is
-    re-encoded from the sniffed cache file within the embed budget, never the server's raw payload."""
+    """An MCP tool registered the real way and dispatched through the registry hands a vision route the
+    pixels via the shared native gate; the image is re-encoded from the sniffed cache file within the embed
+    budget, never the server's raw payload."""
 
-    def _call(self, monkeypatch, tmp_path, cfg):
+    def _call(self, monkeypatch, tmp_path, cfg, image: bytes = b"", mime: str = "image/png"):
         import asyncio
+        import io
         from unittest.mock import AsyncMock, patch
         from PIL import Image
-        from tools import mcp_tool, mcp_tool_handlers
+        from tools import mcp_tool
+        from tools.mcp_tool_registration import _register_server_tools
+        from tools.registry import ToolRegistry
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        buf = __import__("io").BytesIO()
-        Image.new("RGB", (3000, 2000), (20, 90, 200)).save(buf, "PNG")  # past the 1568 px embed edge
+        if not image:
+            buf = io.BytesIO()
+            Image.new("RGB", (3000, 2000), (20, 90, 200)).save(buf, "PNG")  # past the 1568 px embed edge
+            image = buf.getvalue()
         result = SimpleNamespace(isError=False, structuredContent=None, meta=None, content=[
             SimpleNamespace(type="text", text="snapshot"),
-            SimpleNamespace(type="image", data=base64.b64encode(buf.getvalue()).decode(), mimeType="image/png")])
-        session = SimpleNamespace(call_tool=AsyncMock(return_value=result))
-        server = SimpleNamespace(session=session, _rpc_lock=None)
+            SimpleNamespace(type="image", data=base64.b64encode(image).decode(), mimeType=mime)])
+        server = mcp_tool.MCPServerTask("srv")
+        server._tools = [SimpleNamespace(name="snap", description="screenshot", inputSchema=None)]
+        server.session = SimpleNamespace(call_tool=AsyncMock(return_value=result))
 
         def run(factory, timeout=30):
             async def go():
@@ -146,13 +153,16 @@ class TestNativeImageAttach:
                 return await factory()
             return asyncio.run(go())
 
-        with patch.dict(mcp_tool._servers, {"srv": server}), \
+        registry = ToolRegistry()
+        with patch("tools.registry.registry", registry), \
+             patch.dict(mcp_tool._servers, {"srv": server}), \
              patch("tools.mcp_tool_loop._run_on_mcp_loop", side_effect=run), \
              patch("hermes_cli.config.load_config", return_value=cfg), \
              patch("agent.auxiliary_client._read_main_provider", return_value="anthropic"), \
              patch("agent.auxiliary_client._read_main_model", return_value="claude-opus-4-5"), \
              patch("agent.image_routing._lookup_supports_vision", return_value=True):
-            return mcp_tool_handlers._make_tool_handler("srv", "snap", 30, native_images=True)({})
+            assert "mcp__srv__snap" in _register_server_tools("srv", server, {})
+            return registry.dispatch("mcp__srv__snap", {})
 
     def test_vision_route_gets_a_resized_envelope_and_keeps_the_media_path(self, tmp_path, monkeypatch):
         out = self._call(monkeypatch, tmp_path, {})
@@ -162,6 +172,13 @@ class TestNativeImageAttach:
         assert url.startswith("data:image/jpeg;base64,") and len(url) <= resolve_embed_target_bytes()
         assert "MEDIA:" in out["text_summary"]
 
-    def test_image_input_mode_text_keeps_the_string_result(self, tmp_path, monkeypatch):
-        out = self._call(monkeypatch, tmp_path, {"agent": {"image_input_mode": "text"}})
-        assert isinstance(out, str) and "MEDIA:" in out
+    def test_image_input_mode_text_or_an_undecodable_image_keeps_the_string_result(self, tmp_path, monkeypatch):
+        assert "MEDIA:" in self._call(monkeypatch, tmp_path, {"agent": {"image_input_mode": "text"}})
+        # A valid JPEG header over a truncated pixel stream passes the cache's and the sniff's header checks.
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.effect_noise((256, 256), 64).convert("RGB").save(buf, "JPEG")
+        truncated = self._call(monkeypatch, tmp_path, {}, image=buf.getvalue()[: len(buf.getvalue()) // 2],
+                               mime="image/jpeg")
+        assert isinstance(truncated, str) and "MEDIA:" in truncated

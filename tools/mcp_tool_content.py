@@ -135,7 +135,8 @@ def _mcp_native_image_part(path: str) -> Optional[Dict[str, Any]]:
     from pathlib import Path
     from tools.vision_tools import _EMBED_MAX_DIMENSION, _MAX_BASE64_BYTES, _resize_image_for_vision
     from tools.vision_tools_history_budget import resolve_embed_target_bytes
-    from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes, _normalize_to_supported_image
+    from tools.vision_tools_image_prep import (_detect_image_mime_type_from_bytes, _normalize_to_supported_image,
+                                               _validate_raster_image_decodable)
     src = Path(path)
     mime = _detect_image_mime_type_from_bytes(src.read_bytes())
     if not mime:
@@ -144,6 +145,10 @@ def _mcp_native_image_part(path: str) -> Optional[Dict[str, Any]]:
     if err or normalized is None:
         return None
     try:
+        # A valid header over a truncated pixel stream passes the sniff and the cache; one undecodable
+        # part makes the provider reject the whole request, so decode every frame first (as vision_analyze).
+        if _validate_raster_image_decodable(normalized):
+            return None
         url = _resize_image_for_vision(normalized, mime_type=mime, max_base64_bytes=resolve_embed_target_bytes(),
                                        max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
     finally:

@@ -36,10 +36,14 @@ export const $focusedTreePaneId = computed(
     let active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
 
     if (groupId && tree && !isChatPane(active)) {
-      active =
-        lastContentPane && findGroupOfPane(tree, lastContentPane)
-          ? lastContentPane
-          : findGroupOfPane(tree, 'workspace')?.active
+      // Follow the remembered pane's group when it fronts another chat
+      // (⌘1..9, drag-to-split); keep the pane while a preview covers it.
+      const content = lastContentPane ? findGroupOfPane(tree, lastContentPane) : null
+      active = content
+        ? isChatPane(content.active)
+          ? content.active
+          : lastContentPane!
+        : findGroupOfPane(tree, 'workspace')?.active
     }
 
     if (active?.startsWith('session-tile:')) {

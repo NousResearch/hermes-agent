@@ -80,6 +80,17 @@ describe('session focus while interacting with the sidebar', () => {
     tools.focus()
     expect($activeTreeGroup.get()).toBe('tools')
     expect($focusedStoredSessionId.get()).toBe('split')
+
+    // The remembered group fronting another chat while chrome owns focus (⌘1..9, drag-to-split) is followed.
+    $layoutTree.set(
+      split('row', [
+        group(['sessions'], { active: 'sessions', id: 'sidebar' }),
+        group(['workspace', pane('main')], { active: pane('main'), id: 'main' }),
+        group([pane('split'), pane('other')], { active: pane('other'), id: 'split' }),
+        group(['files', 'terminal'], { active: 'files', id: 'tools' })
+      ])
+    )
+    expect($focusedStoredSessionId.get()).toBe('other')
   })
 
   it('retains the chat when a preview replaces its active tab in the same group', () => {

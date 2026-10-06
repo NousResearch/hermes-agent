@@ -1327,6 +1327,51 @@ def _isolate_computer_use_approval_state():
         pass
 
 
+def _aux_runtime_main_mirrors(aux) -> dict:
+    """The legacy ``_RUNTIME_MAIN_*`` globals set_runtime_main publishes (not the ContextVar or lock)."""
+    return {
+        name: value for name, value in vars(aux).items()
+        if name.startswith("_RUNTIME_MAIN_")
+        and name not in ("_RUNTIME_MAIN_CONTEXT", "_RUNTIME_MAIN_COMPAT_LOCK")
+    }
+
+
+@pytest.fixture(autouse=True)
+def _restore_aux_runtime_main():
+    """Restore the auxiliary client's main-runtime binding after every test.
+
+    ``build_turn_context`` binds the turn's main route with
+    ``agent.auxiliary_client.set_runtime_main`` in a ContextVar and publishes
+    it to the legacy ``_RUNTIME_MAIN_*`` mirrors. Production turns each run in
+    their own context; a single pytest process runs every test in one, so a
+    fake agent's route outlives its test and later tests' auxiliary routing
+    treats it as the main model. For example, after
+    ``test_api_content_row_addressed_backfill.py`` (which drives the prologue
+    with a fake ``test/model`` on OpenRouter), six tests in
+    ``test_auxiliary_main_first.py`` fail in the same process: a patched
+    custom vision main resolves to openrouter. Snapshot/restore keeps bindings
+    made by wider-scoped fixtures; a module first imported during the test
+    goes back to its import-time state; a near no-op otherwise.
+    """
+    aux = sys.modules.get("agent.auxiliary_client")
+    before = None
+    if aux is not None:
+        before = (aux._RUNTIME_MAIN_CONTEXT.get(), _aux_runtime_main_mirrors(aux))
+    yield
+    aux = sys.modules.get("agent.auxiliary_client")
+    if aux is None:
+        return
+    if before is None:
+        aux.clear_runtime_main()
+        return
+    context, mirrors = before
+    if aux._RUNTIME_MAIN_CONTEXT.get() is not context:
+        aux._RUNTIME_MAIN_CONTEXT.set(context)
+    for name, value in mirrors.items():
+        if getattr(aux, name) is not value:
+            setattr(aux, name, value)
+
+
 @pytest.fixture(autouse=True)
 def _moa_caches_isolated():
     """Clear module-level MoA cold-start caches before each test.

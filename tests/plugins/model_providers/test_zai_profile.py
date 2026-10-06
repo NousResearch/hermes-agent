@@ -136,12 +136,14 @@ class TestZaiGLM52ReasoningEffort:
 
 
 class TestZaiGLM53ReasoningEffort:
-    """GLM-5.3's graded low/medium/high/max effort scale (issue #91789).
-
-    Verified live on api.z.ai/api/coding/paas/v4: all four levels accepted
-    with monotonic reasoning-token scaling. Unlike 5.2, low and medium must
-    reach the wire instead of clamping up to high.
+    """GLM-5.3's graded low/medium/high/max effort scale (issue #91789) on the
+    coding-plan endpoint (api.z.ai/api/coding/paas/v4): all four levels accepted
+    with monotonic reasoning-token scaling. On the standard pay-as-you-go
+    endpoint ``medium`` is rejected (issue #133595) — see the standard-endpoint
+    class below.
     """
+
+    CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
 
     @pytest.mark.parametrize(
         ("effort", "expected"),
@@ -158,6 +160,7 @@ class TestZaiGLM53ReasoningEffort:
         extra_body, top_level = zai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort},
             model="glm-5.3",
+            base_url=self.CODING_BASE_URL,
         )
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {"reasoning_effort": expected}
@@ -170,6 +173,7 @@ class TestZaiGLM53ReasoningEffort:
         _, top_level = zai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "low"},
             model=model,
+            base_url=self.CODING_BASE_URL,
         )
         assert top_level == {"reasoning_effort": "low"}
 
@@ -178,9 +182,9 @@ class TestZaiGLM53ReasoningEffort:
         _, top_level = zai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "low"},
             model="glm-5.2",
+            base_url=self.CODING_BASE_URL,
         )
         assert top_level == {"reasoning_effort": "high"}
-
 
     @pytest.mark.parametrize(
         "model",
@@ -202,6 +206,71 @@ class TestZaiGLM53ReasoningEffort:
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {"reasoning_effort": "low"}
 
+
+class TestZaiGLM53StandardEndpointReasoningEffort:
+    """GLM-5.3 on the standard pay-as-you-go endpoint (issue #133595).
+
+    api.z.ai/api/paas/v4 rejects ``reasoning_effort=medium`` with HTTP 400 /
+    code 1210 ("please use low, high, or max") — the profile's default
+    base_url — so ``medium`` rounds up to ``high`` (its rung position on the
+    three-level scale, mirroring Kimi K3) instead of reaching the wire.
+    Unrecognized URLs (relays, unset) follow the same conservative ladder so a
+    default-profile ``medium`` can never 400 before producing a token.
+    """
+
+    @pytest.mark.parametrize(
+        ("effort", "expected"),
+        [
+            ("low", "low"),
+            ("medium", "high"),
+            ("high", "high"),
+            ("max", "max"),
+            ("xhigh", "max"),
+            ("minimal", "low"),
+        ],
+    )
+    def test_standard_endpoint_maps_efforts(self, zai_profile, effort, expected):
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="glm-5.3-flash",
+            base_url="https://api.z.ai/api/paas/v4",
+        )
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": expected}
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            None,  # direct profile calls without transport context
+            "https://api.z.ai/api/paas/v4",
+            "https://open.bigmodel.cn/api/paas/v4",
+        ],
+    )
+    def test_non_coding_urls_never_send_medium(self, zai_profile, base_url):
+        """The bug path: default profile medium must not reach a non-coding wire."""
+        kwargs = {
+            "reasoning_config": {"enabled": True, "effort": "medium"},
+            "model": "glm-5.3",
+        }
+        if base_url is not None:
+            kwargs["base_url"] = base_url
+        _, top_level = zai_profile.build_api_kwargs_extras(**kwargs)
+        assert top_level == {"reasoning_effort": "high"}
+
+    def test_transport_integration_sends_high_for_medium(self, zai_profile):
+        """End-to-end through the transport on the standard endpoint."""
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="glm-5.3-flash",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=zai_profile,
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://api.z.ai/api/paas/v4",
+            provider_name="zai",
+        )
+        assert kwargs["reasoning_effort"] == "high"
 
 
 class TestZaiModelGating:

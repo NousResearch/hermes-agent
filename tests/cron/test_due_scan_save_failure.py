@@ -14,6 +14,7 @@ dispatch (no durable advance) without raising or mutating the store.
 """
 
 import errno
+import json
 import logging
 
 import pytest
@@ -89,8 +90,9 @@ def test_due_jobs_are_returned_when_the_store_cannot_be_saved(cron_store, full_d
     assert str(cron_store / "cron") in warnings[0] and str(cron_store / "other-profile") in warnings[1]
 
 
-@pytest.mark.parametrize("with_once", [True, False], ids=["one-shot-due", "recurring-only"])
-def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, monkeypatch, caplog, with_once):
+@pytest.mark.parametrize("with_once,junk", [(True, False), (False, False), (False, True)],
+                         ids=["one-shot-due", "recurring-only", "load-repair"])
+def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, monkeypatch, caplog, with_once, junk):
     """Real tick(): the advance cannot be persisted, so the recurring job is NOT run (at-most-once);
     a due one-shot still reaches its fire claim, which fails closed with a ``failed`` execution row.
     The tick neither raises nor alters the store, still reaps MCP orphans (also when every due job
@@ -101,6 +103,9 @@ def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, m
                 repeat={"times": 1, "completed": 0})
     save_jobs([_due_job(), _half_paused_job()] + ([once] if with_once else []))
     before = load_jobs()
+    if junk:  # load_jobs() drops a non-object entry and persists that repair: the save must not abort the tick
+        raw = json.loads(cronjobs.JOBS_FILE.read_text())
+        cronjobs.JOBS_FILE.write_text(json.dumps(dict(raw, jobs=raw["jobs"] + [42])))
     ran, sweeps = [], []
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", cron_store / "cron" / "executions.db")
     monkeypatch.setattr(scheduler, "run_one_job", lambda job, **k: ran.append(job["id"]) or True)

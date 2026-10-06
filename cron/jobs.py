@@ -1457,8 +1457,11 @@ def load_jobs() -> List[Dict[str, Any]]:
             logger.warning("%s", note)
         # Keep the shrink-merge (a degraded-lock sibling's create may have landed since the read)
         # unless disk is STILL a shape the merge would refuse: a sibling may have rewritten it.
-        save_jobs(jobs, replace=unmergeable and _peek_jobs_unlocked() is None)
-        logger.warning("Auto-repaired jobs.json (%s)", repair)
+        try:
+            save_jobs(jobs, replace=unmergeable and _peek_jobs_unlocked() is None)
+            logger.warning("Auto-repaired jobs.json (%s)", repair)
+        except OSError as exc:  # repaired in memory; the next load retries the persist
+            warn_store_unwritable(exc, f"jobs.json repair ({repair}) not persisted", "load")
     _record_load_stamp(pre_read_stamp)
     return jobs
 

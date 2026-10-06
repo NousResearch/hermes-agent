@@ -76,11 +76,8 @@ import {
   parseResumeControlMessage,
   shouldFollowPtyOutput,
 } from "@/lib/pty-scroll";
-import {
-  imageFilesFromTransfer,
-  transferMayContainImage,
-  uploadChatImage,
-} from "@/lib/chatImagePaste";
+import { uploadChatImage } from "@/lib/chatImagePaste";
+import { attachChatImageDropListeners } from "@/lib/chat-image-drop";
 import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
 import {
   PTY_GAVE_UP_BANNER,
@@ -98,6 +95,13 @@ import {
   refitWhenTerminalFontLoads,
   TERMINAL_FONT_FAMILY,
 } from "@/lib/terminal-font-refit";
+import { generateChannelId } from "@/lib/chat-channel-id";
+import { sendCopyLastCommand } from "@/lib/chat-copy-last";
+import {
+  probeWebglSupport,
+  shouldUseWebglRenderer,
+  textNeedsDomShaping,
+} from "@/lib/xterm-webgl-gating";
 import { loseWebglContexts } from "@/lib/xterm-webgl-release";
 import {
   buildTerminalTheme,
@@ -115,20 +119,6 @@ import { errorMessage } from "@/lib/api-error";
 // Per-tab keep-alive identity (`?attach=`): lives in pty-attach-token.ts so a
 // second tab — including a Chrome "Duplicate tab" — gets its own PTY instead of
 // taking over this one. See #115304.
-
-// Channel id ties this chat tab's PTY child (publisher) to its sidebar
-// (subscriber).  Generated once per mount so a tab refresh starts a fresh
-// channel — the previous PTY child terminates with the old WS, and its
-// channel auto-evicts when no subscribers remain.
-function generateChannelId(scope?: string): string {
-  const prefix = scope ? "chat" : "chat-fresh";
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-  return `${prefix}-${Math.random().toString(36).slice(2)}-${Date.now().toString(
-    36,
-  )}`;
-}
 
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -494,22 +484,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
 
   const handleCopyLast = () => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // Send the slash as a burst, wait long enough for Ink's tokenizer to
-    // emit a keypress event for each character (not coalesce them into a
-    // paste), then send Return as its own event.  The timing here is
-    // empirical — 100ms is safely past Node's default stdin coalescing
-    // window and well inside UI responsiveness.
-    ws.send("/copy");
-    setTimeout(() => {
-      const s = wsRef.current;
-      if (s && s.readyState === WebSocket.OPEN) s.send("\r");
-    }, 100);
-    setCopyState("copied");
-    if (copyResetRef.current) clearTimeout(copyResetRef.current);
-    copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
-    termRef.current?.focus();
+    sendCopyLastCommand({
+      wsRef,
+      termRef,
+      copyResetRef,
+      onCopied: () => setCopyState("copied"),
+      onCopyReset: () => setCopyState("idle"),
+    });
   };
 
   useEffect(() => {
@@ -665,28 +646,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         await driveImageAttach(paths);
       })().catch(reportImageUploadError);
     };
-    const handleBrowserPaste = (ev: ClipboardEvent) => {
-      const files = imageFilesFromTransfer(ev.clipboardData);
-      if (!files.length) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      uploadAndAttachImages(files);
-    };
-    const handleBrowserDragOver = (ev: DragEvent) => {
-      if (!transferMayContainImage(ev.dataTransfer)) return;
-      ev.preventDefault();
-      if (ev.dataTransfer) ev.dataTransfer.dropEffect = "copy";
-    };
-    const handleBrowserDrop = (ev: DragEvent) => {
-      const files = imageFilesFromTransfer(ev.dataTransfer);
-      if (!files.length) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      uploadAndAttachImages(files);
-    };
-    host.addEventListener("paste", handleBrowserPaste, { capture: true });
-    host.addEventListener("dragover", handleBrowserDragOver, { capture: true });
-    host.addEventListener("drop", handleBrowserDrop, { capture: true });
+    const handleBrowserDropCleanup = attachChatImageDropListeners(
+      host,
+      uploadAndAttachImages,
+    );
 
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
@@ -896,13 +859,28 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // in DevTools device mode that often produces *visually* much larger cells
     // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
     // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
-    // hosts.  Wide layouts still get WebGL for crisp box-drawing.
-    const useWebgl = terminalTierWidthPx(host) >= 768;
+    // hosts.  Wide layouts still get WebGL for crisp box-drawing — but only
+    // where WebGL actually works. Safari's atlas garbles box-drawing glyphs
+    // (#18773), hosts whose only GL is a software rasterizer (llvmpipe,
+    // SwiftShader) crash the addon with "(regl) webgl not supported"
+    // (#45520), and without any GL context there is nothing to load at all.
+    // Everything else falls back to the default DOM renderer.
+    const userAgent = typeof navigator !== "undefined" ? navigator.userAgent : "";
+    const useWebgl = shouldUseWebglRenderer({
+      layoutWidthPx: terminalTierWidthPx(host),
+      userAgent,
+      support: probeWebglSupport(document),
+    });
+    // Set once the addon is live; the PTY write path below drops it again if
+    // shaping-requiring text (Bengali conjuncts, Devanagari, Khmer…) arrives,
+    // so xterm re-renders through the DOM renderer (#58685).
+    let webglAddon: { dispose(): void } | null = null;
     if (useWebgl) {
       try {
         const webgl = new WebglAddon();
         webgl.onContextLoss(() => webgl.dispose());
         term.loadAddon(webgl);
+        webglAddon = webgl;
       } catch (err) {
         console.warn(
           "[hermes-chat] WebGL renderer unavailable; falling back to default",
@@ -1387,6 +1365,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       )
         ? () => termRef.current?.scrollToBottom()
         : undefined;
+      // Complex scripts (Bengali conjuncts etc.) cannot be drawn from a
+      // per-glyph atlas — the first such payload swaps to the DOM renderer,
+      // whose text shaping renders them properly (#58685). Disposing the
+      // addon makes xterm fall back and redraw on its own.
+      if (webglAddon && textNeedsDomShaping(text)) {
+        try {
+          webglAddon.dispose();
+        } catch {
+          /* already gone */
+        }
+        webglAddon = null;
+      }
       term.write(rendered, followScroll);
       noteResumePtyChunk(rendered);
     };
@@ -1566,9 +1556,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onScrollDisposable?.dispose();
       mobileInputCleanup?.();
       compositionForwarder.dispose();
-      host.removeEventListener("paste", handleBrowserPaste, true);
-      host.removeEventListener("dragover", handleBrowserDragOver, true);
-      host.removeEventListener("drop", handleBrowserDrop, true);
+      handleBrowserDropCleanup();
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.clearTimeout(keyboardRevealTimer);

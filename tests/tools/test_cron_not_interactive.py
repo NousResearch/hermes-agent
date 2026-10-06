@@ -3,8 +3,8 @@
 A gateway sets HERMES_EXEC_ASK=1 at startup and hands its environ to every external cron
 worker; interactive launches export HERMES_INTERACTIVE=1. Inside cron nobody can answer the
 card, so ``_presence()`` must clear the trio and let the gate resolve from
-``approvals.cron_mode``. Unattended platforms are NOT cleared: api_server answers via the
-``/v1/runs`` approval bridge, which needs ``is_ask`` intact.
+``approvals.cron_mode``. Unattended platforms also clear it: an external request has no
+interactive approver, so a dangerous command must resolve from ``approvals.unattended_mode``.
 """
 
 import pytest
@@ -33,9 +33,8 @@ def test_interactive_session_keeps_presence(monkeypatch, leaked_presence):
     assert (is_cli, is_gateway, is_ask) == (True, True, True)
 
 
-def test_api_server_platform_keeps_exec_ask_for_runs_approval_bridge(monkeypatch, leaked_presence):
-    """api_server resolves approvals via ``approval.request`` → ``POST /v1/runs/{id}/approval``;
-    clearing ``is_ask`` there would turn every dangerous command into an instant BLOCK."""
+def test_api_server_platform_clears_exec_ask_and_fails_fast(monkeypatch, leaked_presence):
+    """api_server has no interactive approver, even if the gateway environment leaked ask mode."""
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "api_server")
     _, _, _, is_ask = approval_mod._presence()
-    assert is_ask is True
+    assert is_ask is False

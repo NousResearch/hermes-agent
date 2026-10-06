@@ -269,10 +269,7 @@ describe('CustomEndpointsSettings', () => {
 // --- #108786: the API-key placeholder surface (PR's own harness) ---
 stubResizeObserver()
 // `mocked` bridges the PR's harness to this file's existing '@/hermes' mocks.
-const mocked = {
-  getCustomEndpoints: { mockResolvedValue: (v: unknown) => Promise.resolve(getCustomEndpoints.mockResolvedValue(v)) },
-  validateCustomEndpoint: { mockResolvedValue: (v: unknown) => Promise.resolve(validateCustomEndpoint.mockResolvedValue(v)) }
-}
+const mocked = { getCustomEndpoints, saveCustomEndpoint, validateCustomEndpoint }
 const SAVED_ENDPOINT: CustomEndpoint = {
   api_key_preview: 'sk-s...kI0c',
   base_url: 'https://spark.example.com/v1',
@@ -349,7 +346,8 @@ describe('CustomEndpointsSettings API key', () => {
 
     await waitFor(() => expect(mocked.validateCustomEndpoint).toHaveBeenCalledTimes(1))
     expect(mocked.validateCustomEndpoint).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'custom', api_key: undefined, base_url: SAVED_ENDPOINT.base_url })
+      expect.objectContaining({ id: 'custom', api_key: undefined, base_url: SAVED_ENDPOINT.base_url }),
+      'default' // profile-scoped like save/list (#108785)
     )
   })
 
@@ -364,7 +362,10 @@ describe('CustomEndpointsSettings API key', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(mocked.saveCustomEndpoint).toHaveBeenCalledTimes(1))
-    expect(mocked.saveCustomEndpoint).toHaveBeenCalledWith(expect.objectContaining({ api_key: 'sk-typed-key' }))
+    expect(mocked.saveCustomEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({ api_key: 'sk-typed-key' }),
+      'default' // profile-scoped like list (#108785)
+    )
     await screen.findByPlaceholderText('Leave blank to keep the saved key (sk-s...kI0c)')
     expect((screen.getByPlaceholderText('Leave blank to keep the saved key (sk-s...kI0c)') as HTMLInputElement).value).toBe('')
   })

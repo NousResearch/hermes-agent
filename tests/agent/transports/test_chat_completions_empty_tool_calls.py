@@ -13,12 +13,10 @@ import pytest
 
 from agent.transports import get_transport
 
-
 @pytest.fixture
 def transport():
     import agent.transports.chat_completions  # noqa: F401
     return get_transport("chat_completions")
-
 
 class TestEmptyToolCallsStripping:
     """Assistant messages with empty/invalid tool_calls must be normalized."""
@@ -118,4 +116,3 @@ class TestEmptyToolCallsStripping:
         assert msgs[0]["tool_calls"] == []
         assert "tool_calls" not in out[0]
         assert out is not msgs
-

@@ -508,7 +508,12 @@ class TestHeicDetection:
         monkeypatch.setenv("TERMINAL_ENV", "local")
 
         heic = tmp_path / "photo.heic"
-        Image.new("RGB", (8, 8), (120, 60, 200)).save(str(heic), format="HEIF")
+        # x265's default CPU-sized pool can exhaust CI threads and hang the encoder.
+        # This fixture needs one worker, not a pool per parallel test process.
+        Image.new("RGB", (8, 8), (120, 60, 200)).save(
+            str(heic), format="HEIF",
+            enc_params={"x265:pools": "none", "x265:frame-threads": "1"},
+        )
 
         res = await isrc.resolve_image_source(str(heic), isrc.ResolveContext())
         assert res.mime == "image/heic"

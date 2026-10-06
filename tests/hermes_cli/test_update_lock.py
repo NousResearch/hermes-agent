@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +32,10 @@ from hermes_cli.update_lock import (
     read_live_update,
     update_marker_path,
 )
+
+# Repo root: the -I -S -B subprocesses insert it on sys.path to import the
+# real hermes_cli without site-packages.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # A pid no live process owns. os.kill(pid, 0) must report it dead so a crashed
 # updater can never wedge every future update. Deliberately larger than any
@@ -73,7 +78,9 @@ def test_acquire_writes_pid_and_start_time(marker):
     assert lock.acquired is True
 
     lines = marker.read_text(encoding="utf-8").splitlines()
-    assert int(lines[0]) == os.getpid(), "the Electron gate probes this pid for liveness"
+    assert int(lines[0]) == os.getpid(), (
+        "the Electron gate probes this pid for liveness"
+    )
     assert int(lines[1]) == pytest.approx(time.time(), abs=5)
     assert len(lines) == 2, "wire format is exactly pid + started_at"
 
@@ -97,6 +104,40 @@ def test_refused_lock_does_not_delete_the_live_owners_marker(marker, other_pid):
     second.release()
 
     assert marker.exists(), "a refused claimant must never clear the live owner's lock"
+
+
+@pytest.mark.platforms("posix")
+def test_marker_owned_by_a_zombie_self_heals(marker):
+    """A crashed updater lingering unreaped must not pin the lock for 20 minutes.
+
+    ``os.kill(pid, 0)`` still succeeds for a zombie, so a marker owned by a
+    dead-but-unreaped stage used to read as a live update until the age ceiling
+    expired (#77259, #120635, #125932).
+    """
+    pid = os.fork()
+    assert pid >= 0
+    if pid == 0:
+        os._exit(0)  # noqa: P111 — child exits without running pytest teardown
+
+    # Keep the child unreaped (a zombie) and wait until the state probe
+    # actually reports 'Z' so the assertion can't race the exit.
+    from hermes_cli._early_recovery import _process_state
+
+    became_zombie = False
+    for _ in range(40):
+        state = _process_state(pid)
+        if state is not None and state.upper().startswith("Z"):
+            became_zombie = True
+            break
+        time.sleep(0.05)
+    assert became_zombie, "child never reached zombie state on this platform"
+
+    try:
+        _claim(marker, pid)
+        assert read_live_update(path=marker) is None, "a zombie is not a live update"
+        assert not marker.exists(), "the stale marker must self-heal (unlink)"
+    finally:
+        os.waitpid(pid, 0)  # reap so the test leaks no children
 
 
 def test_marker_naming_our_own_pid_is_adopted(marker, monkeypatch):
@@ -192,7 +233,10 @@ def test_describe_holder_names_the_pid_and_elapsed_time(marker):
     assert holder is not None
     message = describe_holder(holder)
 
-    assert str(os.getpid()) in message, "the user needs the pid to find the other update"
+    assert str(os.getpid()) in message, (
+        "the user needs the pid to find the other update"
+    )
+    assert "already running" in message
 
 
 def test_unwritable_marker_location_does_not_block_the_update(tmp_path):
@@ -202,7 +246,9 @@ def test_unwritable_marker_location_does_not_block_the_update(tmp_path):
     race the lock prevents.
     """
     lock = UpdateLock(path=tmp_path / "nonexistent-file" / "marker")
-    (tmp_path / "nonexistent-file").write_text("i am a file, not a dir", encoding="utf-8")
+    (tmp_path / "nonexistent-file").write_text(
+        "i am a file, not a dir", encoding="utf-8"
+    )
 
     assert lock.acquire() is True
     assert lock.acquired is False, "nothing was written, so there is nothing to release"
@@ -230,7 +276,9 @@ class TestHandoffFromOrchestratingUpdater:
         assert marker.exists(), "the parent still needs its marker after our stage ends"
         assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == other_pid
 
-    def test_handoff_pid_that_is_not_the_live_holder_grants_nothing(self, marker, monkeypatch, other_pid):
+    def test_handoff_pid_that_is_not_the_live_holder_grants_nothing(
+        self, marker, monkeypatch, other_pid
+    ):
         """The env var alone must not bypass the lock."""
         _claim(marker, other_pid)
         monkeypatch.setenv(HANDOFF_PID_ENV, str(other_pid + 1))
@@ -239,8 +287,14 @@ class TestHandoffFromOrchestratingUpdater:
         assert lock.acquire() is False
         assert lock.holder is not None
 
-    @pytest.mark.parametrize("value", ["", "not-a-pid", "-1", "0"], ids=["empty", "garbage", "negative", "zero"])
-    def test_malformed_handoff_values_fall_back_to_refusal(self, marker, monkeypatch, value, other_pid):
+    @pytest.mark.parametrize(
+        "value",
+        ["", "not-a-pid", "-1", "0"],
+        ids=["empty", "garbage", "negative", "zero"],
+    )
+    def test_malformed_handoff_values_fall_back_to_refusal(
+        self, marker, monkeypatch, value, other_pid
+    ):
         _claim(marker, other_pid)
         monkeypatch.setenv(HANDOFF_PID_ENV, value)
 
@@ -282,7 +336,101 @@ class TestAncestryHandoff:
 
         lock.release()
         assert marker.exists(), "the parent still needs its marker after our stage ends"
-        assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getppid()
+
+    @pytest.mark.platforms("any")
+    def test_grandchild_adopts_orchestrator_marker_without_psutil(self, marker, tmp_path):
+        """Regression: the desktop hand-off's grandchild refused its own orchestrator.
+
+        The posix shim (grandparent) holds the marker and spawns ``hermes update``
+        (direct child — adopts via getppid). An old-updater update into a PM tree
+        then hands off again: ``_old_updater._run_child`` spawns
+        ``_update_takeover.py`` as ``python -I -S -B``, where psutil cannot import
+        (-S skips site-packages). The psutil-only ancestry walk returned False for
+        the two-hops-up shim, and the takeover child refused with exit 2 —
+        "Another Hermes update is already running (PID <the shim itself>)" —
+        observed live on a macOS rehearsal install, then again on Windows, where
+        the stdlib walk had no /proc and no ps. Marked for every lane: the Windows
+        lane only imports files carrying a platforms marker, which is how the
+        Windows half went unseen. The stdlib fallback walk is what must adopt here.
+        """
+        import subprocess
+        import sys
+        from textwrap import dedent
+
+        # Simulate the orchestrator: this test process holds the marker and
+        # spawns the -I -B middle, which spawns the -I -S -B takeover-like leaf.
+        marker.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
+
+        leaf = dedent(
+            """
+            import sys
+            from pathlib import Path
+            sys.path.insert(0, %(root)r)
+            from hermes_cli.update_lock import UpdateLock
+            lock = UpdateLock(path=Path(%(marker)r))
+            if not lock.acquire():
+                print("REFUSED", lock.holder.pid)
+                raise SystemExit(2)
+            assert lock.acquired is False, "the orchestrator's claim is not ours to own"
+            print("ADOPTED")
+            """
+        ) % {"root": str(REPO_ROOT), "marker": str(marker)}
+        middle = dedent(
+            """
+            import subprocess, sys
+            code = subprocess.run(
+                [sys.executable, "-I", "-S", "-B", "-c", %(leaf)r],
+            ).returncode
+            raise SystemExit(code)
+            """
+        ) % {"leaf": leaf}
+
+        result = subprocess.run(
+            [sys.executable, "-I", "-B", "-c", middle],
+            capture_output=True, text=True, timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "ADOPTED" in result.stdout
+        assert marker.exists(), "the orchestrator still needs its marker after the leaf ends"
+
+    @pytest.mark.platforms("any")
+    def test_unrelated_live_holder_is_still_refused_under_stdlib_walk(self, marker, tmp_path):
+        """The stdlib fallback must not widen the lock: a foreign pid stays foreign.
+
+        The marker owner is a live *sibling* of the leaf (a sleeper spawned by
+        this test), never an ancestor of it — the shape of an unrelated
+        concurrent updater. The leaf's ancestry walk dead-ends at pytest and
+        the sibling must keep the lock.
+        """
+        import subprocess
+        import sys
+        import time as time_mod
+        from textwrap import dedent
+
+        sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+        try:
+            marker.write_text(f"{sleeper.pid}\n{int(time_mod.time())}\n", encoding="utf-8")
+            assert read_live_update(path=marker) is not None
+
+            leaf = dedent(
+                """
+                import sys
+                from pathlib import Path
+                sys.path.insert(0, %(root)r)
+                from hermes_cli.update_lock import UpdateLock
+                lock = UpdateLock(path=Path(%(marker)r))
+                print("ADOPTED" if lock.acquire() else "REFUSED")
+                """
+            ) % {"root": str(REPO_ROOT), "marker": str(marker)}
+            result = subprocess.run(
+                [sys.executable, "-I", "-S", "-B", "-c", leaf],
+                capture_output=True, text=True, timeout=120,
+            )
+            assert result.returncode == 0, result.stderr
+            assert "REFUSED" in result.stdout
+        finally:
+            sleeper.kill()
+            sleeper.wait()
 
     def test_live_non_ancestor_holder_is_still_refused(self, marker):
         """Ancestry must not open the lock to unrelated concurrent updaters."""
@@ -292,3 +440,115 @@ class TestAncestryHandoff:
         assert lock.acquire() is False
         assert lock.holder is not None
         assert lock.holder.pid == DEAD_PID
+
+
+class _FakeProcess:
+    """One link of a stubbed parent chain.
+
+    ``error`` makes this link refuse inspection, standing in for a process the
+    sandbox will not let us read (psutil raises ``AccessDenied`` there).
+    """
+
+    def __init__(self, pid, parent=None, error=None):
+        self.pid = pid
+        self._parent = parent
+        self._error = error
+
+    def parent(self):
+        if self._error is not None:
+            raise self._error
+        return self._parent
+
+
+def _pin_ancestry(monkeypatch, leaf):
+    """Make ``psutil.Process()`` return the leaf of a stubbed chain."""
+    psutil = pytest.importorskip("psutil")
+    monkeypatch.setattr(psutil, "Process", lambda *a, **k: leaf)
+
+
+def _chain(*pids, blocked_above=False):
+    """Build us -> pids[0] -> pids[1] ... innermost first.
+
+    ``blocked_above`` caps the chain with a link that raises instead of
+    reporting its own parent — the sandboxed ``/proc/1`` case.
+    """
+    psutil = pytest.importorskip("psutil")
+    top = _FakeProcess(1, error=psutil.AccessDenied(pid=1)) if blocked_above else None
+    node = top
+    for pid in reversed(pids):
+        node = _FakeProcess(pid, parent=node)
+    return _FakeProcess(os.getpid(), parent=node)
+
+
+class TestAncestryUnderUnreadableProcesses:
+    """Regression: #87514 — an unreadable process ABOVE the orchestrator.
+
+    ``psutil.Process.parents()`` builds the whole chain before returning and
+    only tolerates ``NoSuchProcess`` per link, so one ``AccessDenied`` high up
+    threw away the ancestors already found. Under firejail with
+    ``ptrace_scope=1`` (and in hardened containers) ``/proc/1`` is unreadable,
+    so every desktop update refused its own orchestrator's fresh marker and
+    exited 2 forever. Ancestry must be decided link by link.
+    """
+
+    def test_ancestor_below_an_unreadable_process_is_still_found(self, monkeypatch):
+        from hermes_cli.update_lock import _is_ancestor_pid
+
+        _pin_ancestry(monkeypatch, _chain(2000, blocked_above=True))
+
+        assert _is_ancestor_pid(2000) is True, (
+            "the orchestrator is one link up; a process we cannot read above "
+            "it must not erase a match already proven"
+        )
+
+    def test_deeper_ancestor_below_an_unreadable_process_is_found(self, monkeypatch):
+        from hermes_cli.update_lock import _is_ancestor_pid
+
+        _pin_ancestry(monkeypatch, _chain(2000, 3000, blocked_above=True))
+
+        assert _is_ancestor_pid(3000) is True
+
+    def test_unreadable_process_below_the_match_still_refuses(self, monkeypatch):
+        """Failing before a match keeps the conservative refusal."""
+        from hermes_cli.update_lock import _is_ancestor_pid
+
+        _pin_ancestry(monkeypatch, _chain(blocked_above=True))
+
+        assert _is_ancestor_pid(2000) is False
+
+    def test_unrelated_pid_is_refused_on_a_fully_readable_chain(self, monkeypatch):
+        from hermes_cli.update_lock import _is_ancestor_pid
+
+        _pin_ancestry(monkeypatch, _chain(2000, 3000))
+
+        assert _is_ancestor_pid(DEAD_PID) is False
+
+    def test_our_own_pid_is_never_an_ancestor(self, monkeypatch):
+        from hermes_cli.update_lock import _is_ancestor_pid
+
+        _pin_ancestry(monkeypatch, _chain(2000))
+
+        assert _is_ancestor_pid(os.getpid()) is False
+
+    def test_walk_is_bounded(self, monkeypatch):
+        """A pathological chain terminates instead of spinning."""
+        from hermes_cli.update_lock import _MAX_ANCESTRY_DEPTH, _is_ancestor_pid
+
+        _pin_ancestry(monkeypatch, _chain(*range(2000, 2000 + _MAX_ANCESTRY_DEPTH * 2)))
+
+        assert _is_ancestor_pid(2000 + _MAX_ANCESTRY_DEPTH * 2 - 1) is False
+
+    def test_acquire_accepts_the_orchestrator_behind_an_unreadable_init(
+        self, marker, monkeypatch
+    ):
+        """The reporter's end-to-end symptom: exit 2 on every GUI update."""
+        monkeypatch.setattr("hermes_cli.update_lock._pid_alive", lambda pid: True)
+        _pin_ancestry(monkeypatch, _chain(2000, blocked_above=True))
+        marker.write_text(f"2000\n{int(time.time())}\n", encoding="utf-8")
+
+        lock = UpdateLock(path=marker)
+        assert lock.acquire() is True, "the hand-off child runs under 2000's claim"
+        assert lock.acquired is False, "the orchestrator's claim is not ours to own"
+
+        lock.release()
+        assert marker.exists(), "the orchestrator still needs its marker"

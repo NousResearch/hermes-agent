@@ -358,7 +358,7 @@ def test_recursion_cap_terminates(caplog):
 
 def test_manifest_parse_reads_emits_listens(tmp_path):
     """parse_manifest_file picks up optional emits/listens from plugin.yaml."""
-    import yaml
+    import hermes_yaml as yaml
 
     plugin_dir = tmp_path / "myplug"
     plugin_dir.mkdir()
@@ -386,7 +386,7 @@ def test_manifest_parse_reads_emits_listens(tmp_path):
 
 
 def test_plugins_show_includes_emits_listens(tmp_path, monkeypatch, capsys):
-    import yaml
+    import hermes_yaml as yaml
     from hermes_cli import plugins_cmd
 
     plugin_dir = tmp_path / "showplug"

@@ -170,11 +170,11 @@ class Mem0MemoryProvider(MemoryProvider):
         return template.format(vs=self._config.get("oss", {}).get("vector_store", {}).get("provider", default)) if self._mode == "oss" else ""
 
     def _create_backend(self):
-        # Lazy-install the mem0 SDK before the backend imports it (honors security.allow_lazy_installs);
-        # on failure the backend import raises the canonical error, captured below.
+        # Make the pinned mem0 extra importable first; on failure the backend import
+        # raises the canonical error, captured below.
         with suppress(Exception):
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("memory.mem0", prompt=False)
+            from pm import ensure_import
+            ensure_import("mem0")
         try:
             from . import _backend
             if self._mode == "oss":
@@ -391,82 +391,3 @@ class Mem0MemoryProvider(MemoryProvider):
 def register(ctx) -> None:
     """Register Mem0 as a memory provider plugin."""
     ctx.register_memory_provider(Mem0MemoryProvider())
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-ADD_SCHEMA = {
-    "name": "mem0_add",
-    "description": (
-        "Store a durable fact about the user, verbatim (no LLM extraction). "
-        "Call this the moment the user states a lasting preference, correction, "
-        "decision, or personal detail worth recalling on future turns — don't "
-        "wait to be asked to remember. Skip transient chit-chat and facts you've "
-        "already stored."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "content": {"type": "string", "description": "The fact to store."},
-        },
-        "required": ["content"],
-    },
-}
-
-DELETE_SCHEMA = {
-    "name": "mem0_delete",
-    "description": (
-        "Delete a memory by its ID (take the ID from a mem0_search "
-        "result). Use when a stored fact is obsolete or the user asks you to "
-        "forget it; prefer mem0_update if the fact merely changed."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "memory_id": {"type": "string", "description": "Memory UUID to delete."},
-        },
-        "required": ["memory_id"],
-    },
-}
-
-SEARCH_SCHEMA = {
-    "name": "mem0_search",
-    "description": (
-        "Search the user's memories by meaning; returns facts ranked by "
-        "relevance. Use this before answering any question that may depend on "
-        "what you know about the user (preferences, facts, history, people, "
-        "projects, past decisions). For multi-part or multi-hop questions, "
-        "call it several times — vary the wording and run follow-up searches "
-        "on what earlier results reveal; one search is rarely enough."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "What to search for."},
-            "top_k": {"type": "integer", "description": "Max results (default: 10, max: 50)."},
-            "rerank": {"type": "boolean", "description": "Rerank results for relevance (default: false, platform mode only)."},
-        },
-        "required": ["query"],
-    },
-}
-
-UPDATE_SCHEMA = {
-    "name": "mem0_update",
-    "description": (
-        "Replace the text of an existing memory by its ID (take the ID from a "
-        "mem0_search result). Use when a stored fact has changed "
-        "or was wrong — correct it in place instead of adding a duplicate."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "memory_id": {"type": "string", "description": "Memory UUID to update."},
-            "text": {"type": "string", "description": "New text content."},
-        },
-        "required": ["memory_id", "text"],
-    },
-}
-# ---- END PLUGIN-COMPAT ----

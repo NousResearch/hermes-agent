@@ -10,6 +10,7 @@ from agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
     _fetch_portal_account,
+    _usage_windows,
     fetch_account_usage,
     render_account_usage_lines,
 )
@@ -401,6 +402,23 @@ def test_fetch_account_usage_anthropic_prefers_explicit_runtime_key_over_resolve
     assert snapshot is not None
     assert snapshot.provider == "anthropic"
     assert client.requests[0][1]["Authorization"] == "Bearer runtime-token"
+
+def test_usage_windows_combines_dynamic_labels_with_model_scope():
+    windows = _usage_windows(
+        {"opus": {"utilization": 0.25, "resets_at": "2026-10-07T00:00:00Z"}},
+        (("opus", "Opus week"),),
+        "utilization",
+        "resets_at",
+        fraction=True,
+        label_fn=lambda window, fallback: f"{fallback} ({window['utilization']})",
+        model_scoped={"opus"},
+    )
+
+    assert len(windows) == 1
+    assert windows[0].label == "Opus week (0.25)"
+    assert windows[0].used_percent == 25
+    assert windows[0].scope == "model"
+
 
 def test_fetch_account_usage_custom_deepseek_base_url_is_supported(monkeypatch):
     client = _RecordingClient(

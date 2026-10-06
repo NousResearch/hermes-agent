@@ -1,15 +1,19 @@
 """Version transition reporting after ``hermes update``.
 
 Ported from PrimeIntellect-ai/prime-agent#630: a successful self-update
-reports both versions (``v0.19.4 → v0.20.0``) when the pyproject version
-changed, and degrades gracefully when either side is unknown.
+reports both versions (``v0.19.4 → v0.20.0``). pyproject.toml is an inert
+0.0.0 on source checkouts, so the reported versions are the checkout's
+runtime identity -- the same one the completion publishes in its stamp.
 """
 
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from hermes_cli import update_cmd
+from hermes_cli.source_stamp import write_source_stamp
 
 
 def _write_pyproject(root: Path, version: str) -> None:
@@ -28,6 +32,12 @@ def fake_root(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _git(root: Path, *args: str) -> str:
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+    return subprocess.run(["git", *args], cwd=root, env=env, check=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
+
+
 class TestReadProjectVersion:
     def test_reads_version(self, fake_root):
         _write_pyproject(fake_root, "0.20.0")
@@ -42,19 +52,27 @@ class TestReadProjectVersion:
 
 
 class TestUpdateCompleteMessage:
-    def test_reports_transition_when_version_changed(self, fake_root):
-        _write_pyproject(fake_root, "0.20.0")
-        msg = update_cmd._update_complete_message("0.19.4")
-        assert "v0.19.4" in msg and "v0.20.0" in msg
+    def test_transition_reports_the_identity_the_stamp_publishes(self, fake_root):
+        _git(fake_root, "init", "-q")
+        _write_pyproject(fake_root, "0.0.0")
+        _git(fake_root, "add", "pyproject.toml")
+        _git(fake_root, "commit", "-qm", "release")
+        _git(fake_root, "tag", "v0.21.4")
+        pre = update_cmd._checkout_version()
+        _git(fake_root, "commit", "-q", "--allow-empty", "-m", "update")
 
-    def test_same_version_reports_single_version(self, fake_root):
-        _write_pyproject(fake_root, "0.20.0")
-        assert update_cmd._update_complete_message("0.20.0").count("v0.20.0") == 1
+        message = update_cmd._update_complete_message(pre)
+        stamp = write_source_stamp(fake_root)
+        assert stamp is not None
 
-    def test_unknown_pre_version_still_shows_current(self, fake_root):
-        _write_pyproject(fake_root, "0.20.0")
-        assert "v0.20.0" in update_cmd._update_complete_message(None)
+        assert message == f"✓ Update complete! (v{pre} → v{stamp['displayVersion']})"
 
-    def test_unknown_post_version_falls_back_to_plain(self, fake_root):
-        msg = update_cmd._update_complete_message("0.19.4")
-        assert msg and "0.19.4" not in msg
+    def test_tagless_checkout_reports_its_commit_identity(self, fake_root):
+        _git(fake_root, "init", "-q")
+        _git(fake_root, "commit", "-q", "--allow-empty", "-m", "only")
+
+        message = update_cmd._update_complete_message("0.21.4")
+        stamp = write_source_stamp(fake_root)
+        assert stamp is not None
+
+        assert message == f"✓ Update complete! (v0.21.4 → {stamp['displayVersion']})"

@@ -43,6 +43,8 @@ class FakeTerminal {
 
   clearSelection() {}
 
+  clearTextureAtlas() {}
+
   dispose() {}
 
   focus() {}
@@ -478,6 +480,31 @@ describe("ChatPage", () => {
     }
   });
 
+  it("redials after a clean 1012 service-restart close (#95951)", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    // 1012 is a CLEAN close (wasClean=true) that is neither 1001 nor 1006 —
+    // the old guard fell through to "[session ended]" with no retry. The
+    // server is coming back, so the pane must redial: the 250ms first-attempt
+    // backoff re-runs the connect effect and opens a fresh socket.
+    FakeWebSocket.instances[0].onclose?.({
+      code: 1012,
+      reason: "",
+      wasClean: true,
+    });
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), {
+      timeout: 3000,
+    });
+  });
+
   it("attaches visualViewport keyboard-inset listeners only while the chat tab is active", async () => {
     // NS-434 follow-up: ChatPage stays mounted (hidden) on every dashboard
     // route. The keyboard-inset/scroll-pin listeners must only be live while
@@ -579,6 +606,46 @@ describe("ChatPage side panel collapse", () => {
 // (that timer is set after `new WebSocket`). Without its own deadline the tab
 // strands on "connecting" with no retry. Mirrors the ChatSidebar events-feed
 // coverage in src/components/ChatSidebar.test.tsx.
+describe("ChatPage bundled font swap-in", () => {
+  it("redraws the terminal with the bundled font once it finishes loading", async () => {
+    let releaseFont!: () => void;
+    const fontGate = new Promise<void>((resolve) => {
+      releaseFont = resolve;
+    });
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: {
+        check: () => false,
+        load: async () => {
+          await fontGate;
+          return [{}];
+        },
+      },
+    });
+    const clearAtlas = vi.spyOn(FakeTerminal.prototype, "clearTextureAtlas");
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      expect(clearAtlas).not.toHaveBeenCalled();
+
+      await act(async () => {
+        releaseFont();
+        await fontGate;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(clearAtlas).toHaveBeenCalledTimes(1);
+    } finally {
+      clearAtlas.mockRestore();
+      delete (document as { fonts?: unknown }).fonts;
+    }
+  });
+});
+
 describe("ChatPage PTY ticket connect deadline", () => {
   beforeEach(() => {
     vi.useFakeTimers();

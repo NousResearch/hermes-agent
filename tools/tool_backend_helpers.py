@@ -21,6 +21,7 @@ def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
     via ``tool_gateway_entitled_for``; ``force_fresh`` is for flows needing a just-bought grant."""
     try:
         from hermes_cli.nous_account import get_nous_portal_account_info
+        # Branched call, not ``force_fresh=force_fresh``: tests stub the reader with zero-arg lambdas.
         account_info = (get_nous_portal_account_info(force_fresh=True) if force_fresh
                         else get_nous_portal_account_info())
         return bool(account_info.logged_in) and account_info.tool_gateway_entitled

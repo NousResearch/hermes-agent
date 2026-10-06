@@ -137,19 +137,48 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.authz_mixin import _coerce_allow_set
+from agent.i18n import get_language, t
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
 
-# Every refused button tap answers with the same sentence.
-_UNAUTHORIZED = unauthorized_action_notice(Platform.TELEGRAM)
+# Telegram truncates ``answerCallbackQuery`` text at 200 chars; ``BotCommand`` descriptions at 256.
+_TOAST_LIMIT = 200
+_BOT_COMMAND_DESCRIPTION_LIMIT = 256
+
+
+def _unauthorized() -> str:
+    """Every refused button tap answers with the same sentence — resolved per tap so the active
+    language applies (never bound at import)."""
+    return unauthorized_action_notice(Platform.TELEGRAM)[:_TOAST_LIMIT]
+
+
+def _toast(key: str, **kwargs: Any) -> str:
+    """``t()`` for ``query.answer(text=...)`` payloads, cut at Telegram's 200-char toast cap."""
+    return t(key, **kwargs)[:_TOAST_LIMIT]
+
+
+def _bold_label_html(line: str) -> str:
+    """HTML-bold the ``Label:`` prefix of a translated line (whole line when it has no colon)."""
+    label, sep, rest = line.partition(":")
+    if not sep:
+        return f"<b>{_html.escape(line)}</b>"
+    return f"<b>{_html.escape(label)}:</b>{_html.escape(rest)}"
+
+
+# Inbound-media ``kind`` labels are dual-use: the English word stays in the agent-visible observed note,
+# the chat reply shows the catalog translation.
+_MEDIA_KIND_KEYS = {
+    "attachment": "platform.telegram.media.kind_attachment", "photo": "platform.telegram.media.kind_photo",
+    "voice message": "platform.telegram.media.kind_voice", "audio file": "platform.telegram.media.kind_audio",
+    "video file": "platform.telegram.media.kind_video"}
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
+from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
@@ -304,7 +333,13 @@ def telegram_deps_present() -> bool:
 
 
 def check_telegram_requirements() -> bool:
-    """Lazy-install python-telegram-bot if missing, then re-import and rebind the module aliases."""
+    """Check if Telegram dependencies are available.
+
+    If python-telegram-bot is missing, attempts to lazy-install it via
+    ``pm.ensure_import("telegram")``. After a successful
+    install, re-imports the SDK and flips ``TELEGRAM_AVAILABLE`` to True
+    so the adapter's class-level type aliases get rebound.
+    """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler
@@ -312,8 +347,8 @@ def check_telegram_requirements() -> bool:
     if TELEGRAM_AVAILABLE:
         return True
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("platform.telegram", prompt=False)
+        from pm import ensure_import as _lazy_ensure
+        _lazy_ensure("telegram")
     except Exception:
         return False
     try:
@@ -366,7 +401,6 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
     TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns, convert_table_to_bullets as _wrap_markdown_tables)
-from gateway.platforms.helpers import cancel_task
 
 # Rich-message regions whose internal newlines must stay bare (Telegram renders them natively):
 # fenced code blocks OR GFM pipe-table blocks (header row, delimiter row, data rows).
@@ -436,10 +470,13 @@ _POLLING_PROGRESS_TIMEOUT = 60.0  # generation unhealthy until getUpdates return
 # #92991) and no other probe can see it. ~3x the worst-case poll window leaves ample margin against false
 # positives while still recovering within a few heartbeat intervals.
 _POLLING_STALL_TIMEOUT = 150.0
-# Ingress dispatch stall (#102260): the transport probes prove getUpdates round-trips complete, not
-# that PTB's dispatcher ever handed the fetched updates to a handler. Two heartbeats (180s) with a
-# backlog and no dispatch progress: diagnostic only, never drives recovery (#71240 owns that).
-_INGRESS_DISPATCH_STALL_HEARTBEATS = 2
+# Ingress dispatch stall (#102260, #130407): the transport probes prove getUpdates round-trips complete, not
+# that PTB's dispatcher ever handed the fetched updates to a handler. A backlog with no dispatch progress for
+# four heartbeats (360s) hands the adapter to the supervisor for a rebuild (an in-place restart keeps the
+# wedged dispatcher). Sized past _POLLING_ERROR_TASK_STUCK_TIMEOUT (300s), the bound on a slow handler: updates
+# of one chat still dispatch in order (PerChatUpdateProcessor), so e.g. a sticker vision_analyze (120s default)
+# must not trip it. Re-arms on progress.
+_INGRESS_DISPATCH_STALL_HEARTBEATS = 4
 # sendVideo transcodes before answering, outlasting the 20s read timeout; also how long a user waits
 # to hear the attachment failed, so kept modest.
 _MEDIA_SEND_READ_TIMEOUT = 60.0
@@ -473,7 +510,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(BasePlatformAdapter):
+class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -643,6 +680,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._general_request_drain_lock = asyncio.Lock()
         self._dm_topics: Dict[str, int] = {}  # topic_name -> message_thread_id
         self._forum_command_registered: set[int] = set()  # forum chats with commands registered
+        self._command_menu_fingerprint: str = ""  # language + menu payload last pushed via set_my_commands
         self._forum_lock = asyncio.Lock()
         # Status indicator: bot short description "Online"/"Offline" on connect/clean disconnect. Off by
         # default because it mutates the GLOBAL profile; opt in via extra.status_indicator.
@@ -748,111 +786,10 @@ class TelegramAdapter(BasePlatformAdapter):
         Callers must NOT destroy the event (PTB already advanced the offset) — hold and redispatch."""
         return bool(getattr(self, "_drop_delayed_deliveries", False))
 
-    def _schedule_held_inbound_redispatch(self) -> None:
-        """Ensure a tracked drain runs when held events exist and delivery is live (no-op while
-        down or after permanent fatal; an in-flight drain schedules its own follow-up)."""
-        if self._is_permanent_fatal() or self._should_drop_delayed_delivery():
-            return
-        if not getattr(self, "_held_inbound_events", None):
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        prior = getattr(self, "_held_inbound_redispatch_task", None)
-        try:
-            current = asyncio.current_task()
-        except RuntimeError:
-            current = None
-        if prior is not None and not prior.done() and prior is not current:
-            return
-        self._held_inbound_redispatch_task = loop.create_task(self._redispatch_held_inbound(prior=None if prior is current else prior))
-
-    def _hold_inbound_event(self, event: "MessageEvent", *, where: str, schedule: bool = True) -> None:
-        """Preserve an inbound event that cannot be dispatched now (PTB already acked the update, so dropping is silent loss).
-        Capped, identity-deduped; permanent fatal discards. ``schedule=False`` inside a drain avoids poison-event loops.
-
-        The disconnect drop-guard (#55971) correctly prevents dispatch into a torn-down session. Destroying
-        the event is wrong: by the time we reach enqueue/flush, python-telegram-bot has already acked the
-        update and advanced the offset — silent permanent loss, no log, no error.
-        """
-        if self._is_permanent_fatal():
-            logger.warning(
-                "[Telegram] Discarding inbound under non-retryable fatal (%s, %d chars)", where, len(getattr(event, "text", None) or ""))
-            return
-        held = getattr(self, "_held_inbound_events", None)
-        if held is None:
-            self._held_inbound_events = held = []
-        if any(existing is event for existing in held):
-            return
-        max_n = int(getattr(self, "HELD_INBOUND_MAX", 64) or 64)
-        while len(held) >= max_n:
-            dropped = held.pop(0)
-            logger.warning(
-                "[Telegram] Held-inbound queue full (%d); dropping oldest (%d chars)", max_n, len(getattr(dropped, "text", None) or ""))
-        held.append(event)
-        self._accept_update()
-        logger.warning(
-            "[Telegram] Holding inbound (%s, %d chars, queue=%d)%s", where, len(getattr(event, "text", None) or ""), len(held),
-            " - will redispatch on reconnect" if self._should_drop_delayed_delivery() else (" - scheduling redispatch" if schedule else ""))
-        # A live-path hold must not orphan the event waiting for a reconnect that never comes.
-        if schedule and not self._should_drop_delayed_delivery():
-            self._schedule_held_inbound_redispatch()
-
-    def _rehold_from(self, events: list, idx: int, where: str) -> None:
-        """Re-hold ``events[idx:]`` without rescheduling (drain interrupted / failed / cancelled)."""
-        for rest in events[idx:]:
-            self._hold_inbound_event(rest, where=where, schedule=False)
-
-    async def _redispatch_held_inbound(self, prior: Optional[asyncio.Task] = None) -> None:
-        """Drain the hold queue after reconnect or a connected-path hold; ``prior`` (previous
-        redispatch task) is cancelled+awaited here so ``_mark_connected`` stays synchronous."""
-        if prior is not asyncio.current_task():  # a self-redispatch must not cancel itself
-            await cancel_task(prior)
-        held = getattr(self, "_held_inbound_events", None)
-        if self._is_permanent_fatal():
-            if held:
-                n = len(held)
-                held.clear()
-                logger.warning("[Telegram] Redispatch aborted; discarded %d held inbound under non-retryable fatal", n)
-            return
-        if not held:
-            return
-        # Take ownership atomically; concurrent holds append to the fresh list for a follow-up.
-        events = list(held)
-        held.clear()
-        logger.warning("[Telegram] Redispatching %d held inbound message(s)", len(events))
-        allow_followup_schedule = True
-        try:
-            for idx, event in enumerate(events):
-                if self._is_permanent_fatal() or self._should_drop_delayed_delivery():
-                    self._rehold_from(events, idx, "redispatch-interrupted")
-                    return
-                try:
-                    await self.handle_message(event)
-                except asyncio.CancelledError:
-                    self._rehold_from(events, idx, "redispatch-cancelled")
-                    raise
-                except Exception:
-                    # Retryable failure: re-hold but do NOT reschedule now (a poison event would
-                    # tight-loop); the next mark_connected/live hold drains.
-                    logger.exception(
-                        "[Telegram] Failed to redispatch held inbound (%d chars); re-holding", len(getattr(event, "text", None) or ""))
-                    self._rehold_from(events, idx, "redispatch-failed")
-                    allow_followup_schedule = False
-                    return
-        finally:
-            # Events that arrived mid-drain while still connected need another pass.
-            if (
-                allow_followup_schedule
-                and getattr(self, "_held_inbound_events", None)
-                and not self._should_drop_delayed_delivery()
-                and not self._is_permanent_fatal()):
-                self._schedule_held_inbound_redispatch()
-
     def _notification_kwargs(self, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """In "important" mode return disable_notification=True unless ``metadata["notify"]``."""
-        if getattr(self, "_notifications_mode", "important") != "important" or (metadata or {}).get("notify"):
+        """In "important" mode return disable_notification=True unless ``notify`` or ``is_approval_prompt`` (#132516)."""
+        if getattr(self, "_notifications_mode", "important") != "important" or (metadata or {}).get("notify") \
+                or (metadata or {}).get("is_approval_prompt"):
             return {}
         return {"disable_notification": True}
 
@@ -2097,8 +2034,8 @@ class TelegramAdapter(BasePlatformAdapter):
             # Not a retry: no counter bump, no backoff, no in-place stop/drain. The supervisor's rebuild
             # runs disconnect(), which performs the same bounded updater.stop() and app.shutdown().
             message = (
-                "Telegram polling stall confirmed (getUpdates made no progress); "
-                "rebuilding the adapter instead of reusing an Updater whose long-poll action did not quiesce."
+                "Telegram polling stall confirmed (%s); rebuilding the adapter instead of reusing "
+                "a wedged Updater/dispatcher in place." % _redact_telegram_error_text(error)
             )
             await self._go_fatal_network(message, "[%s] %s (rebuilding adapter via supervisor)", self.name, message)
             return
@@ -2314,14 +2251,15 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_error_task = asyncio.get_running_loop().create_task(self._handle_polling_network_error(RuntimeError(reason)))
 
     def _check_ingress_dispatch_stall(self) -> None:
-        """Report fetched updates PTB's dispatcher is not handing to handlers (#102260).
+        """Escalate fetched updates PTB's dispatcher is not handing to handlers (#102260, #130407).
 
         ``received`` and ``dispatched`` count the same population (every fetched update reaches the
         group-99 catch-all: no handler raises ApplicationHandlerStop, no error handler is registered),
         so a backlog with no dispatch progress across ``_INGRESS_DISPATCH_STALL_HEARTBEATS`` heartbeats
-        is a wedged dispatcher at any traffic rate. Reports once per stall, re-arms on progress.
+        is a wedged dispatcher at any traffic rate. Hands the adapter to the supervisor for a rebuild once
+        per stall (``_PollingStallError``: an in-place restart keeps the wedged dispatcher); re-arms on progress.
         """
-        if self._webhook_mode or self._teardown_started or self.has_fatal_error:
+        if self._webhook_mode or self._teardown_started or self.has_fatal_error or self._recovery_in_flight():
             return
         received = getattr(self, "_updates_received_total", 0)
         dispatched = getattr(self, "_updates_dispatched_total", 0)
@@ -2335,12 +2273,14 @@ class TelegramAdapter(BasePlatformAdapter):
         self._ingress_stalled_heartbeats = stalled + 1
         if stalled + 1 < _INGRESS_DISPATCH_STALL_HEARTBEATS:
             return
-        logger.warning(
-            "[%s] Telegram ingress is healthy but deaf: %d update(s) fetched by getUpdates have not been "
-            "dispatched to any handler across %d heartbeats (%d received, %d dispatched, generation %d). "
-            "Polling is fine; PTB's dispatcher is not draining its queue.",
-            self.name, received - dispatched, _INGRESS_DISPATCH_STALL_HEARTBEATS, received, dispatched,
-            getattr(self, "_polling_generation", 0))
+        # No pre-log: the handoff warning and ``_go_fatal_network`` carry this text (see _check_polling_stall).
+        generation = getattr(self, "_polling_generation", 0)
+        self._schedule_polling_recovery(
+            _PollingStallError(
+                "ingress healthy but deaf: PTB dispatcher made no progress for %d heartbeats with %d update(s) "
+                "fetched but not dispatched (%d received, %d dispatched, generation %d)"
+                % (_INGRESS_DISPATCH_STALL_HEARTBEATS, received - dispatched, received, dispatched, generation)),
+            reason="ingress dispatch stall watchdog")
 
     async def _check_polling_stall(self) -> None:
         """Watchdog the last successful getUpdates round-trip: a long-poll can wedge without raising
@@ -2747,7 +2687,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skill discovery resolves every skill path on disk; a slow filesystem after a reconnect must
         # not hold the gateway loop past the liveness watchdog (#110707). Only the Bot API call stays here.
         menu_commands, hidden_count = await asyncio.to_thread(telegram_menu_commands, max_commands=max_commands)
-        bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+        bot_commands = self._bot_commands(menu_commands)
+        # Descriptions are localized, so the fingerprint carries the language: a display.language change
+        # invalidates the lazily registered forum scopes (and any future "skip if unchanged" check).
+        fingerprint = self._menu_fingerprint(menu_commands)
+        if fingerprint != getattr(self, "_command_menu_fingerprint", ""):
+            self._forum_command_registered.clear()
+            self._command_menu_fingerprint = fingerprint
         for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
             scope_name = getattr(scope_cls, "__name__", str(scope_cls))
             try:
@@ -2759,6 +2705,18 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.info(
                 "[%s] Telegram menu: %d commands registered, %d hidden (over %d limit). Use /commands for full list.",
                 self.name, len(menu_commands), hidden_count, max_commands)
+
+    @staticmethod
+    def _bot_commands(menu_commands) -> list:
+        """``BotCommand`` rows; Telegram caps a description at 256 chars (longer locales get cut)."""
+        from telegram import BotCommand
+        return [BotCommand(name, str(desc or "")[:_BOT_COMMAND_DESCRIPTION_LIMIT]) for name, desc in menu_commands]
+
+    @staticmethod
+    def _menu_fingerprint(menu_commands) -> str:
+        import hashlib
+        payload = repr([get_language(), [tuple(row) for row in menu_commands]])
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     async def _run_post_connect_housekeeping(self) -> None:
         """Command menu, status indicator and DM topics off the connect path; every step is non-fatal.
@@ -3217,7 +3175,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
-            from plugins.platforms.telegram.update_admission import TelegramApplication
+            from plugins.platforms.telegram.update_admission import TelegramApplication, build_update_processor
             builder = Application.builder().token(self.config.token)
             builder.application_class(TelegramApplication, {"adapter": self})
             custom_base_url = self.config.extra.get("base_url")
@@ -3232,6 +3190,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[%s] Using Telegram local_mode (read files from disk)", self.name)
             request, get_updates_request = await self._build_ptb_requests()
             builder = builder.request(request).get_updates_request(get_updates_request)
+            # PTB's default processor awaits each update inline, so one slow turn deafens every chat.
+            # Concurrent across chats, FIFO within a chat; the builder keeps this instance, so the
+            # connect-retry rebuild in _initialize_app_with_retries gets it too.
+            builder = builder.concurrent_updates(build_update_processor(self.config.extra, self.name))
             self._app = builder.build()
             self._bot = self._app.bot
             # Plugin PTB handlers go BEFORE core: PTB dispatches the first matching handler per group.
@@ -4222,20 +4184,33 @@ class TelegramAdapter(BasePlatformAdapter):
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "", metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an inline-keyboard Yes/No prompt for the gateway ``/update`` watcher."""
         def build():
-            default_hint = f" (default: {default})" if default else ""
-            text = self.format_message(f"☤ *Update needs your input:*\n\n{prompt}{default_hint}")
+            default_hint = t("platform.telegram.prompt.default_hint", default=default) if default else ""
+            text = self.format_message(f"☤ *{t('platform.telegram.prompt.update_header')}*\n\n{prompt}{default_hint}")
             keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("✓ Yes", callback_data="update_prompt:y"),
-                InlineKeyboardButton("✗ No", callback_data="update_prompt:n")]])
+                InlineKeyboardButton(t("platform.telegram.prompt.affirm"), callback_data="update_prompt:y"),
+                InlineKeyboardButton(t("platform.telegram.prompt.negate"), callback_data="update_prompt:n")]])
             return text, keyboard, None
         return await self._send_prompt(
             "send_update_prompt", chat_id, metadata, build, thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
 
-    # Template attrs for the shared _format_exec_approval core (HTML mode).
-    _EA_HEADER = f"⚠️ <b>{EA_HEADER_TEXT}</b>\n\n"
+    # Template attrs for the shared _format_exec_approval core (HTML mode). Properties, not class
+    # constants: the wording comes from the catalog for the language active at send time, and the
+    # translated text is HTML-escaped BEFORE the <b> wrapper (a stray ``&``/``<`` would break the card).
+    @property
+    def _EA_HEADER(self) -> str:  # noqa: N802 — shadows the base class attr
+        return f"⚠️ <b>{_html.escape(t('gateway.exec_approval.header'))}</b>\n\n"
+
     _EA_CODE_OPEN = "<pre>"
     _EA_CODE_CLOSE = "</pre>\n\n"
-    _EA_SMART_DENY_LINE = "\n\n<b>Smart DENY:</b> owner override applies to this one operation only."
+
+    @property
+    def _EA_REASON_LABEL(self) -> str:  # noqa: N802
+        return f"{_html.escape(t('gateway.exec_approval.reason_label'))}: "
+
+    @property
+    def _EA_SMART_DENY_LINE(self) -> str:  # noqa: N802
+        return "\n\n" + _bold_label_html(t("gateway.exec_approval.smart_deny_line"))
+
     _EA_REASON_BUDGET = 500  # escaped chars; the reason shares the 4096 cap with the command
 
     def _ea_escape(self, text: str) -> str:
@@ -4250,7 +4225,10 @@ class TelegramAdapter(BasePlatformAdapter):
             + (self._EA_SMART_DENY_LINE if smart_denied else ""))
         return max(0, self.MAX_MESSAGE_LENGTH - fixed)
 
-    _EA_ACTION_LABELS = {"once": "✅ Allow Once", "session": "✅ Session", "always": "✅ Always", "deny": "❌ Deny"}
+    @property
+    def _EA_ACTION_LABELS(self) -> Dict[str, str]:  # noqa: N802
+        # Shorter than the base wording on purpose: two buttons share a row on mobile.
+        return {choice: t(f"platform.telegram.approval.action_{choice}") for choice in ("once", "session", "always", "deny")}
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
@@ -4276,9 +4254,9 @@ class TelegramAdapter(BasePlatformAdapter):
         def build():
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Approve Once", callback_data=f"sc:once:{confirm_id}"),
-                    InlineKeyboardButton("🔒 Always Approve", callback_data=f"sc:always:{confirm_id}")],
-                [InlineKeyboardButton("❌ Cancel", callback_data=f"sc:cancel:{confirm_id}")],
+                    InlineKeyboardButton(t("platform.telegram.slash_confirm.approve_once"), callback_data=f"sc:once:{confirm_id}"),
+                    InlineKeyboardButton(t("platform.telegram.slash_confirm.always_approve"), callback_data=f"sc:always:{confirm_id}")],
+                [InlineKeyboardButton(t("platform.telegram.slash_confirm.cancel"), callback_data=f"sc:cancel:{confirm_id}")],
            ])
             # Budget the MarkdownV2 rendering (escaping expands text), not the raw message.
             preview = self.format_message(self._ea_fit(
@@ -4300,7 +4278,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 text += "\n\n" + "\n".join(f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices))
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
                 rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
-                rows.append([InlineKeyboardButton("✏️ Other (type answer)", callback_data=f"cl:{clarify_id}:other")])
+                rows.append([InlineKeyboardButton(t("platform.telegram.prompt.other"), callback_data=f"cl:{clarify_id}:other")])
                 keyboard = InlineKeyboardMarkup(rows)
             return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)
         return await self._send_prompt(
@@ -4372,25 +4350,22 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle choice picker button taps (cp:<index>)."""
         state = self._choice_picker_state.get(chat_id)
         if not state:
-            await query.answer(text="Picker expired — run the command again.")
-            return
-        # Same auth gate as approval buttons: strangers in a shared group must not flip session state.
-        if not await self._callback_authorized(query, self._callback_ctx(query), _UNAUTHORIZED):
+            await query.answer(text=_toast("platform.telegram.picker.expired_rerun"))
             return
         try:
             choice = state["choices"][int(data[3:])]
         except (ValueError, IndexError):
-            await query.answer(text="Invalid selection.")
+            await query.answer(text=_toast("platform.telegram.picker.invalid_selection"))
             return
         callback = state.get("on_choice_selected")
         if not callback:
-            await query.answer(text="Picker expired.")
+            await query.answer(text=_toast("platform.telegram.picker.expired"))
             return
         try:
             result_text = await callback(chat_id, str(choice.get("value") or ""))
         except Exception as exc:
             logger.error("Choice picker selection failed: %s", exc)
-            result_text = f"Error applying selection: {exc}"
+            result_text = t("platform.telegram.picker.apply_error", error=str(exc))
         await self._edit_result_text(query, result_text)
         await query.answer()
         self._choice_picker_state.pop(chat_id, None)
@@ -4410,15 +4385,15 @@ class TelegramAdapter(BasePlatformAdapter):
         """``◀ Prev | n/N | Next ▶`` row (``prefix`` = ``mpv``/``mg`` page callback)."""
         nav: list = []
         if page > 0:
-            nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"{prefix}:{page - 1}"))
+            nav.append(InlineKeyboardButton(t("platform.telegram.picker.prev"), callback_data=f"{prefix}:{page - 1}"))
         nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="mx:noop"))
         if page < total_pages - 1:
-            nav.append(InlineKeyboardButton("Next ▶", callback_data=f"{prefix}:{page + 1}"))
+            nav.append(InlineKeyboardButton(t("platform.telegram.picker.next"), callback_data=f"{prefix}:{page + 1}"))
         return nav
 
     @staticmethod
     def _picker_back_cancel_row() -> list:
-        return [InlineKeyboardButton("◀ Back", callback_data="mb"), InlineKeyboardButton("✗ Cancel", callback_data="mx")]
+        return [InlineKeyboardButton(t("platform.telegram.picker.back"), callback_data="mb"), InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")]
 
     def _paged_keyboard(self, buttons: list, page_meta: dict, nav_prefix: str, tail_row: list) -> tuple:
         rows = self._rows_of_two(buttons)
@@ -4452,7 +4427,7 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             buttons = [self._provider_button(p) for p in providers]
         page_buttons, page_meta = self._format_choice_page(buttons, page, self._PROVIDER_PAGE_SIZE)
-        return self._paged_keyboard(page_buttons, page_meta, "mpv", [InlineKeyboardButton("✗ Cancel", callback_data="mx")])
+        return self._paged_keyboard(page_buttons, page_meta, "mpv", [InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")])
 
     def _build_model_keyboard(self, models: list, page: int) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
@@ -4481,13 +4456,20 @@ class TelegramAdapter(BasePlatformAdapter):
         provider = next((p for p in state["providers"] if p["slug"] == provider_slug), None)
         total = provider.get("total_models", len(models)) if provider else len(models)
         shown = len(models)
-        extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
-        await self._picker_edit(query, f"⚙ *Model Configuration*\n\nProvider: *{pname}*{page_info}\nSelect a model:{extra}", keyboard)
+        extra = f"\n_{t('platform.telegram.picker.more_available', count=str(total - shown))}_" if total > shown else ""
+        await self._picker_edit(
+            query,
+            f"⚙ *{t('platform.telegram.picker.title')}*\n\n"
+            f"{t('platform.telegram.picker.provider_label', provider=f'*{pname}*')}{page_info}\n"
+            f"{t('platform.telegram.picker.select_model')}{extra}",
+            keyboard)
 
     @staticmethod
     def _provider_list_text(current_model: str, provider_label: str, page_info: str) -> str:
-        return (f"⚙ *Model Configuration*\n\nCurrent model: `{current_model or 'unknown'}`\n"
-                f"Provider: {provider_label}\n\nSelect a provider:{page_info}")
+        model = f"`{current_model or t('platform.telegram.picker.unknown_model')}`"
+        return (f"⚙ *{t('platform.telegram.picker.title')}*\n\n{t('platform.telegram.picker.current_model', model=model)}\n"
+                f"{t('platform.telegram.picker.provider_label', provider=provider_label)}\n\n"
+                f"{t('platform.telegram.picker.select_provider')}{page_info}")
 
     async def _picker_show_providers(self, query, state: dict, page: int, get_label) -> None:
         """Render the (folded, paginated) provider list."""
@@ -4503,15 +4485,15 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             idx = int(raw_idx)
         except ValueError:
-            await query.answer(text="Invalid selection.")
+            await query.answer(text=_toast("platform.telegram.picker.invalid_selection"))
             return None
         model_list = state.get("model_list", [])
         if idx < 0 or idx >= len(model_list):
-            await query.answer(text="Invalid model index.")
+            await query.answer(text=_toast("platform.telegram.picker.invalid_model_index"))
             return None
         callback = state.get("on_model_selected")
         if not callback:
-            await query.answer(text="Picker expired.")
+            await query.answer(text=_toast("platform.telegram.picker.expired"))
             return None
         return idx, model_list[idx], state.get("selected_provider", ""), callback
 
@@ -4522,10 +4504,10 @@ class TelegramAdapter(BasePlatformAdapter):
             result_text = await callback(chat_id, model_id, provider_slug)
         except Exception as exc:
             logger.error("Model picker switch failed: %s", exc)
-            result_text = f"Error switching model: {exc}"
+            result_text = t("platform.telegram.picker.switch_error", error=str(exc))
             switch_failed = True
         await self._edit_result_text(query, result_text)
-        await query.answer(text="Switch failed." if switch_failed else "Model switched!")
+        await query.answer(text=_toast("platform.telegram.picker.switch_failed" if switch_failed else "platform.telegram.picker.switched"))
         self._model_picker_state.pop(chat_id, None)
 
     @staticmethod
@@ -4533,21 +4515,21 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             return int(raw)
         except ValueError:
-            await query.answer(text="Invalid page.")
+            await query.answer(text=_toast("platform.telegram.picker.invalid_page"))
             return None
 
     async def _handle_model_picker_callback(self, query, data: str, chat_id: str) -> None:
         """Handle model picker callbacks (mp:/mpg:/mpv:/mm:/mc:/mb/mx/mg:)."""
         state = self._model_picker_state.get(chat_id)
         if not state:
-            await query.answer(text="Picker expired — use /model again.")
+            await query.answer(text=_toast("platform.telegram.picker.expired_model"))
             return
         get_label = self._provider_get_label()
         if data.startswith("mp:"):  # provider selected: show model buttons (page 0)
             provider_slug = data[3:]
             provider = next((p for p in state["providers"] if p["slug"] == provider_slug), None)
             if not provider:
-                await query.answer(text="Provider not found.")
+                await query.answer(text=_toast("platform.telegram.picker.provider_not_found"))
                 return
             state["selected_provider"] = provider_slug
             state["selected_provider_name"] = provider.get("name", provider_slug)
@@ -4580,11 +4562,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 warning = None
             if warning is not None:
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Switch anyway", callback_data=f"mc:{idx}")], self._picker_back_cancel_row()])
+                    [InlineKeyboardButton(t("platform.telegram.picker.switch_anyway"), callback_data=f"mc:{idx}")], self._picker_back_cancel_row()])
                 await query.edit_message_text(
                     text=self.format_message(f"⚠ *{warning.title}*\n\n{warning.message}"),
                     parse_mode=ParseMode.MARKDOWN_V2, reply_markup=keyboard)
-                await query.answer(text="Confirm model selection")
+                await query.answer(text=_toast("platform.telegram.picker.confirm_selection"))
                 return
             await self._picker_switch(query, chat_id, model_id, provider_slug, callback)
         elif data.startswith("mpg:"):  # provider group selected: show member providers
@@ -4597,18 +4579,21 @@ class TelegramAdapter(BasePlatformAdapter):
             by_slug = {p["slug"]: p for p in state["providers"]}
             members = [by_slug[m] for m in member_slugs if m in by_slug]
             if not members:
-                await query.answer(text="Group not found.")
+                await query.answer(text=_toast("platform.telegram.picker.group_not_found"))
                 return
             rows = self._rows_of_two([self._provider_button(p) for p in members])
             rows.append(self._picker_back_cancel_row())
             await self._picker_edit(
-                query, f"⚙ *Model Configuration*\n\nProvider family: *{_label or group_id}*\n\nSelect a provider:",
+                query,
+                f"⚙ *{t('platform.telegram.picker.title')}*\n\n"
+                f"{t('platform.telegram.picker.provider_family', family=f'*{_label or group_id}*')}\n\n"
+                f"{t('platform.telegram.picker.select_provider')}",
                 InlineKeyboardMarkup(rows))
         elif data == "mb":  # back to provider list (folds groups)
             await self._picker_show_providers(query, state, int(state.get("provider_page", 0) or 0), get_label)
         elif data == "mx":
             self._model_picker_state.pop(chat_id, None)
-            await query.edit_message_text(text="Model selection cancelled.", reply_markup=None)
+            await query.edit_message_text(text=t("platform.telegram.picker.cancelled"), reply_markup=None)
             await query.answer()
         else:
             await query.answer()  # e.g. page-counter button "mx:noop"
@@ -4617,9 +4602,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """Tell the user a clarify tap arrived too late (entry evicted or gateway restarted) — otherwise
         the tap leaves a misleading ✓ the agent never sees."""
         with contextlib.suppress(Exception):
-            await query.answer(text="⚠️ This prompt expired — please /retry.")
+            await query.answer(text=_toast("platform.telegram.prompt.expired_toast"))
         await self._edit_html_quiet(
-            query, f"❓ {_html.escape(query.message.text or '')}\n\n<i>⚠️ This question expired or the session reset — please /retry.</i>")
+            query, f"❓ {_html.escape(query.message.text or '')}\n\n<i>{_html.escape(t('platform.telegram.prompt.expired_body'))}</i>")
 
     @staticmethod
     async def _edit_html_quiet(query, text: str) -> None:
@@ -4711,7 +4696,8 @@ class TelegramAdapter(BasePlatformAdapter):
             (("cp:",), self._handle_choice_picker_callback)):
             if data.startswith(prefixes):
                 chat_id = str(query.message.chat_id) if query.message else None
-                if chat_id:
+                # One auth gate for every chat-id picker: strangers in a shared group must not drive the owner's picker.
+                if chat_id and await self._callback_authorized(query, cb, _unauthorized()):
                     await handler(query, data, chat_id)
                 return
         for prefix, handler in (
@@ -4740,14 +4726,14 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             approval_id = int(parts[2])
         except (ValueError, IndexError):
-            await query.answer(text="Invalid approval data.")
+            await query.answer(text=_toast("platform.telegram.approval.toast_invalid_data"))
             return
         session_key = await self._claim_callback_state(
-            query, cb, self._approval_state, approval_id, _UNAUTHORIZED,
-            "This approval has already been resolved.")
+            query, cb, self._approval_state, approval_id, _unauthorized(),
+            _toast("platform.telegram.approval.toast_already_resolved"))
         if not session_key:
             return
-        user_display = getattr(query.from_user, "first_name", "User")
+        user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
         # Resolve FIRST (unblocks the agent thread), render after: a tap landing after the wait timed out
         # (count == 0) must NOT claim "Approved" — the command was already denied.
         try:
@@ -4762,15 +4748,14 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
             count = 0
         if count:
-            label_map = {
-                "once": "✅ Approved once", "session": "✅ Approved for session", "always": "✅ Approved permanently", "deny": "❌ Denied",
-            }
-            label = label_map.get(choice, "Resolved")
-            edit_text = f"{label} by {user_display}"
+            label_key = {"once": "resolved_once", "session": "resolved_session", "always": "resolved_always", "deny": "resolved_deny"}.get(
+                choice, "resolved_generic")
+            label = t(f"platform.telegram.approval.{label_key}")
+            edit_text = t("platform.telegram.approval.resolved_by_user", label=label, user=user_display)
         else:
-            label = "⌛ Approval expired"
-            edit_text = f"{label} — no command was waiting. It already timed out (and was denied) or was resolved elsewhere."
-        await query.answer(text=label)
+            label = t("platform.telegram.approval.expired")
+            edit_text = t("platform.telegram.approval.expired_detail", label=label)
+        await query.answer(text=label[:_TOAST_LIMIT])
         await self._edit_md_quiet(query, edit_text)
         # Typing was paused when the approval was sent; the text /approve and /deny paths resume it too.
         if count and cb["chat_id"] is not None:
@@ -4784,15 +4769,16 @@ class TelegramAdapter(BasePlatformAdapter):
         choice = parts[1]  # once, always, cancel
         confirm_id = parts[2]
         session_key = await self._claim_callback_state(
-            query, cb, self._slash_confirm_state, confirm_id, _UNAUTHORIZED,
-            "This prompt has already been resolved.")
+            query, cb, self._slash_confirm_state, confirm_id, _unauthorized(),
+            _toast("platform.telegram.slash_confirm.already_resolved"))
         if not session_key:
             return
-        label_map = {"once": "✅ Approved once", "always": "🔒 Always approve", "cancel": "❌ Cancelled"}
-        user_display = getattr(query.from_user, "first_name", "User")
-        label = label_map.get(choice, "Resolved")
-        await query.answer(text=label)
-        await self._edit_md_quiet(query, f"{label} by {user_display}")
+        label_key = {"once": "slash_confirm.resolved_once", "always": "slash_confirm.resolved_always", "cancel": "slash_confirm.resolved_cancel"}.get(
+            choice, "approval.resolved_generic")
+        user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
+        label = t(f"platform.telegram.{label_key}")
+        await query.answer(text=label[:_TOAST_LIMIT])
+        await self._edit_md_quiet(query, t("platform.telegram.approval.resolved_by_user", label=label, user=user_display))
         # The runner stored a handler keyed by session_key; run it and send any returned text as a follow-up.
         try:
             from tools import slash_confirm as _slash_confirm_mod
@@ -4830,11 +4816,11 @@ class TelegramAdapter(BasePlatformAdapter):
         clarify_id = parts[1]
         choice_token = parts[2]
         session_key = await self._claim_callback_state(
-            query, cb, self._clarify_state, clarify_id, _UNAUTHORIZED,
-            "This prompt has already been resolved.", pop=False)
+            query, cb, self._clarify_state, clarify_id, _unauthorized(),
+            _toast("platform.telegram.slash_confirm.already_resolved"), pop=False)
         if not session_key:
             return
-        user_display = getattr(query.from_user, "first_name", "User")
+        user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
         if choice_token == "other":
             # Flip to text-capture: the gateway's text-intercept resolves the clarify with the next message.
             # Do NOT pop _clarify_state yet — still needed if the entry gets cleared by something else.
@@ -4849,15 +4835,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._clarify_state.pop(clarify_id, None)
                 await self._notify_clarify_expired(query, user_display)
                 return
-            await query.answer(text="✏️ Type your answer in the chat.")
+            await query.answer(text=_toast("platform.telegram.prompt.type_answer"))
             await self._edit_html_quiet(
-                query, f"❓ {query.message.text or ''}\n\n<i>Awaiting typed response from {_html.escape(user_display)}…</i>")
+                query,
+                f"❓ {query.message.text or ''}\n\n"
+                f"<i>{_html.escape(t('platform.telegram.prompt.awaiting_typed', user=user_display))}</i>")
             return
         # Numeric choice → resolve immediately with the chosen text
         try:
             idx = int(choice_token)
         except (ValueError, TypeError):
-            await query.answer(text="Invalid choice.")
+            await query.answer(text=_toast("platform.telegram.prompt.invalid_choice"))
             return
         resolved_text: Optional[str] = None
         try:
@@ -4890,10 +4878,11 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_update_prompt_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
         """``update_prompt:<y|n>`` — forward the answer to the update process."""
         answer = data.split(":", 1)[1]  # "y" or "n"
-        if not await self._callback_authorized(query, cb, _UNAUTHORIZED):
+        if not await self._callback_authorized(query, cb, _unauthorized()):
             return
-        await query.answer(text=f"Sent '{answer}' to the update process.")
-        await self._edit_md_quiet(query, f"☤ Update prompt answered: *{'Yes' if answer == 'y' else 'No'}*")
+        await query.answer(text=_toast("platform.telegram.prompt.update_sent", answer=answer))
+        word = t("platform.telegram.prompt.affirm_word" if answer == "y" else "platform.telegram.prompt.negate_word")
+        await self._edit_md_quiet(query, f"☤ {t('platform.telegram.prompt.update_answered', answer=f'*{word}*')}")
         try:
             from hermes_constants import get_hermes_home
             response_path = get_hermes_home() / ".update_response"
@@ -4907,64 +4896,69 @@ class TelegramAdapter(BasePlatformAdapter):
     # `gt:<verb>` -> (script in ~/.hermes/scripts/gmail-triage/, extra-args, success-label, is_state). The callback
     # `arg` is always the first positional arg. is_state=True keeps the keyboard tappable (sticky sender rule);
     # False strips it on success (per-email one-shot).
+    # The success label is a ``platform.telegram.gmail_triage.*`` catalog key, resolved per tap.
     _GT_VERB_DISPATCH = {
-        "send":         ("send-draft.sh",      [],         "✓ sent draft",         False),
-        "archive":      ("archive.sh",         [],         "✓ archived",           False),
-        "draft":        ("draft-blank.sh",     [],         "✓ drafted reply",      False),
-        "spam":         ("spam.sh",            [],         "✓ marked spam",        False),
-        "mute":         ("mute-add.sh",        ["email"],  "✓ muted",              True),
-        "mute-domain":  ("mute-add.sh",        ["domain"], "✓ muted domain",       True),
-        "trust":        ("trusted-ops-add.sh", ["email"],  "✓ trusted",            True),
-        "trust-domain": ("trusted-ops-add.sh", ["domain"], "✓ trusted domain",     True),
-        "vip":          ("vip-add.sh",         ["email"],  "✓ marked VIP",         True),
-        "vip-domain":   ("vip-add.sh",         ["domain"], "✓ marked VIP domain",  True)}
+        "send":         ("send-draft.sh",      [],         "done_send",          False),
+        "archive":      ("archive.sh",         [],         "done_archive",       False),
+        "draft":        ("draft-blank.sh",     [],         "done_draft",         False),
+        "spam":         ("spam.sh",            [],         "done_spam",          False),
+        "mute":         ("mute-add.sh",        ["email"],  "done_mute",          True),
+        "mute-domain":  ("mute-add.sh",        ["domain"], "done_mute_domain",   True),
+        "trust":        ("trusted-ops-add.sh", ["email"],  "done_trust",         True),
+        "trust-domain": ("trusted-ops-add.sh", ["domain"], "done_trust_domain",  True),
+        "vip":          ("vip-add.sh",         ["email"],  "done_vip",           True),
+        "vip-domain":   ("vip-add.sh",         ["domain"], "done_vip_domain",    True)}
 
     async def _handle_gmail_triage_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
         """Dispatch a gmail-triage inline-button callback (gt:verb:arg)."""
         parts = data.split(":", 2)
         if len(parts) != 3:
-            await query.answer(text="Invalid gmail-triage data.")
+            await query.answer(text=_toast("platform.telegram.gmail_triage.invalid_data"))
             return
         verb, arg = parts[1], parts[2]
-        if not await self._callback_authorized(query, cb, _UNAUTHORIZED):
+        if not await self._callback_authorized(query, cb, _unauthorized()):
             return
         entry = self._GT_VERB_DISPATCH.get(verb)
         if not entry:
-            await query.answer(text=f"Unknown verb: {verb}")
+            await query.answer(text=_toast("platform.telegram.gmail_triage.unknown_verb", verb=verb))
             return
-        script_name, extra_args, success_label, is_state_verb = entry
+        script_name, extra_args, success_key, is_state_verb = entry
         from hermes_constants import get_hermes_home
         script_path = get_hermes_home() / "scripts" / "gmail-triage" / script_name
         if not script_path.exists():
-            await query.answer(text=f"❌ {script_name} missing")
+            await query.answer(text=_toast("platform.telegram.gmail_triage.script_missing", script=script_name))
             logger.error("[%s] gmail-triage script missing: %s", self.name, script_path)
             return
         success = False
         try:
+            # A user script under HERMES_HOME the agent can write: scrubbed like cron and quick-command scripts.
+            from tools.environments.local import build_subprocess_env
             proc = await asyncio.create_subprocess_exec(
-                str(script_path), arg, *extra_args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                str(script_path), arg, *extra_args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                env=build_subprocess_env(strip_launch_profile=True))
             _stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=60)
             if proc.returncode == 0:
-                label = success_label
+                label = t(f"platform.telegram.gmail_triage.{success_key}")
                 success = True
                 logger.info("[%s] gmail-triage callback ok: verb=%s arg=%s", self.name, verb, arg)
             else:
                 stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
-                last_line = stderr_text.splitlines()[-1] if stderr_text else f"exit {proc.returncode}"
-                label = f"❌ {verb} failed: {last_line[:80]}"
+                last_line = stderr_text.splitlines()[-1] if stderr_text else t("platform.telegram.gmail_triage.exit_code", code=str(proc.returncode))
+                label = t("platform.telegram.gmail_triage.failed", verb=verb, detail=last_line[:80])
                 logger.error(
                     "[%s] gmail-triage callback failed: verb=%s arg=%s rc=%s stderr=%s", self.name, verb, arg, proc.returncode, stderr_text)
         except asyncio.TimeoutError:
-            label = f"❌ {verb} timed out"
+            label = t("platform.telegram.gmail_triage.timed_out", verb=verb)
             logger.error("[%s] gmail-triage callback timed out: verb=%s arg=%s", self.name, verb, arg)
         except Exception as exc:
-            label = f"❌ {verb} error: {exc}"
+            label = t("platform.telegram.gmail_triage.error", verb=verb, error=str(exc))
             logger.error("[%s] gmail-triage callback exception: verb=%s arg=%s err=%s", self.name, verb, arg, exc, exc_info=True)
-        await query.answer(text=label)
+        await query.answer(text=label[:_TOAST_LIMIT])
         if not success:
             return
         original_text = (query.message.text or "") if query.message else ""
-        appended = f"{original_text}\n— {label} by {getattr(query.from_user, 'first_name', 'User')}"
+        user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
+        appended = f"{original_text}\n{t('platform.telegram.gmail_triage.appended_by', label=label, user=user_display)}"
         # Sticky state verbs keep the keyboard so further actions can stack; one-shots strip it (can't fire twice).
         with contextlib.suppress(Exception):
             await query.edit_message_text(text=appended, **({} if is_state_verb else {"reply_markup": None}))
@@ -5632,19 +5626,50 @@ class TelegramAdapter(BasePlatformAdapter):
         def _ph_wrap(open_: str, close: str):
             return lambda m: _ph(f"{open_}{_escape_mdv2(m.group(1))}{close}")
 
-        # 0) GFM pipe tables → Telegram-friendly row groups, before the MarkdownV2 conversions.
+        # 0) Rewrite GFM-style pipe tables into Telegram-friendly row groups
+        #    before the normal MarkdownV2 conversions run.
         text = _wrap_markdown_tables(content)
-        # 1) Protect fenced code blocks; per MarkdownV2 spec \ and ` inside pre/code must be escaped.
-        def _protect_fenced(m):
-            raw = m.group(0)
-            open_end = raw.index('\n') + 1 if '\n' in raw[3:] else 3  # opening ``` (+ optional language)
-            body = raw[open_end:][:-3].replace('\\', '\\\\').replace('`', '\\`')
-            return _ph(raw[:open_end] + body + '```')
 
-        text = re.sub(r'(```(?:[^\n]*\n)?[\s\S]*?```)', _protect_fenced, text)
-        # 2) Protect inline code; escape \ inside it per MarkdownV2 spec.
-        text = re.sub(r'(`[^`]+`)', lambda m: _ph(m.group(0).replace('\\', '\\\\')), text)
-        # 3) Links: escape display text; inside the URL only ')' and '\' need escaping.
+        # 1) Protect fenced code blocks (``` ... ```)
+        #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.
+        #    A fence still opens on its own line — the opening ``` must be the
+        #    first triple-backtick run on that line and must end it — but the
+        #    line may carry arbitrary leading whitespace (list/blockquote-
+        #    nested code indents fences by 4+ spaces) or lead-in prose
+        #    ("Here is the code: ```"), both of which the line-start-only
+        #    anchor silently downgraded from <pre> to escaped literal text.
+        #    Requiring the rest of the opening line to be backtick-free is
+        #    what keeps *inline* triple backticks (e.g. "the syntax is
+        #    ```x``` inline") out of the match: a closing run can never sit
+        #    on the same line as the opener, and the tempered prefix cannot
+        #    skip past an earlier run to a later one.  The closing fence must
+        #    sit on its own line (any indent), with optional trailing
+        #    whitespace and an optional ``\r`` so CRLF-terminated fences
+        #    (Windows-authored content) match too.
+        def _protect_fenced(m):
+            prefix = m.group(1)   # lead-in text / indent before the opening fence
+            opening = m.group(2)  # opening ``` (with optional language) and newline
+            body = m.group(3)     # code body (may be empty)
+            closing = m.group(4)   # closing fence (with its indent)
+            body = body.replace('\\', '\\\\').replace('`', '\\`')
+            return prefix + _ph(opening + body + closing)
+
+        text = re.sub(
+            r'(?m)^((?:(?!```)[^\n])*)(```[^`\n]*\n)([\s\S]*?)(^[ \t]*```)[ \t]*\r?$',
+            _protect_fenced,
+            text,
+        )
+
+        # 2) Protect inline code (`...`)
+        #    Escape \ inside inline code per MarkdownV2 spec.
+        text = re.sub(
+            r'(`[^`]+`)',
+            lambda m: _ph(m.group(0).replace('\\', '\\\\')),
+            text,
+        )
+
+        # 3) Convert markdown links – escape the display text; inside the URL
+        #    only ')' and '\' need escaping per the MarkdownV2 spec.
         def _convert_link(m):
             url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
             return _ph(f'[{_escape_mdv2(m.group(1))}]({url})')
@@ -6289,9 +6314,12 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         # Inbound media fails before handle_message binds the routed profile.
         with self._media_delivery_scope(event.source):
-            named = f" ({display_name})" if display_name else ""
-            notice = self.warning_text(
-                f"\u26a0\ufe0f Couldn't download your {kind}{named} ({exc.__class__.__name__}). Please try sending it again.")
+            named = t("platform.telegram.media.named_suffix", name=display_name) if display_name else ""
+            # ``kind`` is the English label the agent-visible note below keeps; the chat reply is localized.
+            notice = self.warning_text(t(
+                "platform.telegram.media.download_failed",
+                kind=t(_MEDIA_KIND_KEYS[kind]) if kind in _MEDIA_KIND_KEYS else kind,
+                name=named, error=exc.__class__.__name__))
             if notice:
                 try:
                     self._accept_update()
@@ -6400,11 +6428,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_id = int(chat.id)
                 if chat_id in self._forum_command_registered:
                     return
-                from telegram import BotCommand, BotCommandScopeChat
+                from telegram import BotCommandScopeChat
                 from hermes_cli.commands_platforms import telegram_menu_commands, telegram_menu_max_commands
                 menu_commands, _ = await asyncio.to_thread(
                     telegram_menu_commands, max_commands=telegram_menu_max_commands())
-                bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+                bot_commands = self._bot_commands(menu_commands)
                 await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)
                 logger.info("[%s] Lazy-registered %d commands for forum chat %s", self.name, len(bot_commands), chat_id)
@@ -7287,30 +7315,6 @@ def register(ctx) -> None:
     ctx.register_platform(
         name="telegram", label="Telegram", adapter_factory=_build_adapter, check_fn=telegram_deps_present,
         ensure_deps_fn=check_telegram_requirements, is_connected=_is_connected, required_env=["TELEGRAM_BOT_TOKEN"],
-        install_hint="Run `hermes setup` to install Telegram support.", setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config,
+        install_hint=t("platform.telegram.install_hint"), setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config,
         allowed_users_env="TELEGRAM_ALLOWED_USERS", allow_all_env="TELEGRAM_ALLOW_ALL_USERS", cron_deliver_env_var="TELEGRAM_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send, max_message_length=4096, emoji="✈️", allow_update_command=True)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import threading  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'atomic_replace': ('utils', 'atomic_replace'),
-    'cache_document_from_bytes': ('gateway.platforms.base', 'cache_document_from_bytes'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

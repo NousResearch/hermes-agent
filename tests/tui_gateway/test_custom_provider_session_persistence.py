@@ -172,6 +172,29 @@ class TestResumeRoundTrip:
         assert kwargs["api_key"] == MIMO_KEY
 
 
+class TestMakeAgentForwardsProviderRequestBody:
+    """#103738 hole 1: the resolver lifts a custom entry's ``extra_body`` onto ``request_overrides``; the
+    TUI/Desktop build must hand it to AIAgent like the CLI and cron do, or a proxy that requires a body field
+    (``user``) 400s in the app while ``hermes chat`` works."""
+
+    def test_entry_extra_body_reaches_agent(self, monkeypatch):
+        entry = {**LEGACY_LIST_CONFIG["custom_providers"][0], "extra_body": {"user": "proxy-user"}}
+        config = {"custom_providers": [entry]}
+        override = {"model": "mimo-v2.5-pro", "provider": "custom:mimo-v2.5-pro"}
+
+        kwargs = _make_agent_with_override(override, monkeypatch, config)
+
+        assert kwargs["base_url"] == MIMO_URL
+        assert kwargs["request_overrides"] == {"extra_body": {"user": "proxy-user"}}
+
+    def test_entry_without_extra_body_sends_none(self, monkeypatch):
+        override = {"model": "mimo-v2.5-pro", "provider": "custom:mimo-v2.5-pro"}
+
+        kwargs = _make_agent_with_override(override, monkeypatch, LEGACY_LIST_CONFIG)
+
+        assert not kwargs["request_overrides"]
+
+
 # --- Regression: bare "custom" WITHOUT a base_url (GH #44022 / #47714) ------
 #
 # The recurring Desktop/TUI "No LLM provider configured" regression. Every
@@ -578,8 +601,8 @@ class TestFollowProfileConfigRuntimeOverrides:
         launch, secondary = tmp_path / "a", tmp_path / "b"
         for home, model in ((launch, "launch/model"), (secondary, "profile/default")):
             home.mkdir()
-            (home / "config.yaml").write_text(f"model:\n  default: {model}\n  provider: nous\n")
-            (home / ".env").write_text("")
+            (home / "config.yaml").write_text(f"model:\n  default: {model}\n  provider: nous\n", encoding="utf-8")
+            (home / ".env").write_text("", encoding="utf-8")
         stored = "20260919-000000-botc"
         db = SessionDB(db_path=secondary / "state.db")
         db.create_session(stored, "desktop", model="profile/default",
@@ -612,7 +635,6 @@ class TestFollowProfileConfigRuntimeOverrides:
         known = set(server._sessions)
         try:
             with (
-                patch("hermes_cli.model_switch.parse_model_flags", return_value=("glm-5.1", None, False, False, None)),
                 patch("hermes_cli.model_switch.resolve_persist_behavior", return_value=False),
                 patch("hermes_cli.model_switch.switch_model", return_value=result),
                 server._profile_build_scope(secondary),
@@ -636,10 +658,51 @@ class TestFollowProfileConfigRuntimeOverrides:
             assert record["model_override"]["model"] == "zai/glm-5.1"
             assert record["composer_override_profile"] == {"model": "profile/default", "provider": "nous"}
 
-            (secondary / "config.yaml").write_text("model:\n  default: profile/new-default\n  provider: nous\n")
+            (secondary / "config.yaml").write_text("model:\n  default: profile/new-default\n  provider: nous\n", encoding="utf-8")
             assert resume().get("model_override") is None
         finally:
             db.close()
+            with server._sessions_lock:
+                for sid in [s for s in server._sessions if s not in known]:
+                    server._sessions.pop(sid, None)
+
+    def test_create_time_composer_pick_on_bot_chat_records_owning_profile_marker(self, monkeypatch, tmp_path):
+        """A composer pick handed to ``session.create`` on a follow_profile_config chat is the same
+        chat-scoped pick a mid-chat switch records: the record carries the OWNING profile's model as the
+        divergence marker (not the launch profile's), the first row write persists it, and the resume read
+        under that profile restores model AND provider instead of the ambient fallback (#123805)."""
+        import tui_gateway.server as server
+
+        launch, secondary = tmp_path / "a", tmp_path / "b"
+        for home, model in ((launch, "launch/model"), (secondary, "profile/default")):
+            home.mkdir()
+            (home / "config.yaml").write_text(f"model:\n  default: {model}\n  provider: nous\n")
+            (home / ".env").write_text("")
+        monkeypatch.setenv("HERMES_HOME", str(launch))
+        monkeypatch.setattr(server, "_hermes_home", str(launch))
+        monkeypatch.setattr(server, "_profile_home", lambda p: secondary if p == "b" else None)
+        monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+        monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_default_session_cwd", lambda *a, **k: str(tmp_path))
+        known = set(server._sessions)
+        try:
+            resp = server.handle_request({"id": "1", "method": "session.create", "params": {
+                "cols": 80, "source": "desktop", "profile": "b", "model": "zai/glm-5.1", "provider": "zai",
+                "follow_profile_config": True}})
+            assert "error" not in resp, resp
+            session = server._sessions[resp["result"]["session_id"]]
+            assert session["composer_override_profile"] == {"model": "profile/default", "provider": "nous"}
+            assert server._ensure_session_db_row(session)
+            db = SessionDB(db_path=secondary / "state.db")
+            try:
+                row = db.get_session(session["session_key"])
+            finally:
+                db.close()
+            with server._profile_build_scope(secondary):
+                restored = server._stored_session_runtime_overrides(row)["model_override"]
+            assert (restored["model"], restored["provider"]) == ("zai/glm-5.1", "zai")
+        finally:
             with server._sessions_lock:
                 for sid in [s for s in server._sessions if s not in known]:
                     server._sessions.pop(sid, None)
@@ -679,6 +742,7 @@ class TestFollowProfileConfigRuntimeOverrides:
         apply_switch.assert_called_once_with(
             "sid", session, "profile/new-default --provider nous",
             confirm_expensive_model=True, pin_session_override=False, persist_override=False,
+            count_switch=False,
         )
 
     def test_marked_row_returns_no_overrides(self):

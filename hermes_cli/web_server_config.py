@@ -15,6 +15,7 @@ from hermes_cli.config import (
     read_raw_config,
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
+from tools.wake_word import _PROVIDER_PREFERENCE
 
 if TYPE_CHECKING:
     from hermes_cli.model_switch import ModelSwitchResult
@@ -31,7 +32,7 @@ def _memory_provider_options() -> List[str]:
     """Discovered memory providers for the ``memory.provider`` select.
 
     Directory-scan only (no provider imports), so safe at module import time. ``""``
-    (built-in only) is always first; discovery failures degrade to the bundled defaults.
+    (built-in only) is always first; a discovery failure leaves only that.
     The literal ``builtin`` alias is deliberately NOT offered — built-in memory is not a
     provider plugin; ``_normalize_memory_provider_name`` maps legacy aliases back to ``""``.
 
@@ -43,7 +44,7 @@ def _memory_provider_options() -> List[str]:
 
         options.extend(list_memory_provider_names())
     except Exception:
-        options.extend(["honcho"])
+        _log.debug("memory provider discovery failed", exc_info=True)
     return list(dict.fromkeys(options))
 
 
@@ -82,7 +83,13 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity",
     ),
     # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
-    "terminal.vercel_runtime": _select("Vercel Sandbox runtime", "node24", "node22", "python3.13"),
+    "terminal.vercel_image": {
+        "type": "string",
+        "description": "Vercel Sandbox image: a Vercel managed image (vercel/sandbox/universal:latest) or a VCR repository[:tag]",
+    },
+    "terminal.vercel_runtime": _select(
+        "Legacy Vercel Sandbox runtime (deprecated by Vercel; a pinned runtime overrides the image; clear to use the image)",
+        "node24", "node22", "python3.13", clearable=True),
     "terminal.modal_mode": _select("Modal sandbox mode", "sandbox", "function"),
     "proxy.enabled": {
         "type": "boolean",
@@ -108,6 +115,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         ),
         "category": "security",
     },
+    "wake_word.provider": _select(
+        "Wake engine. Auto selects a platform-supported engine; Porcupine requires PORCUPINE_ACCESS_KEY.",
+        "auto", *_PROVIDER_PREFERENCE,
+    ),
     "tts.provider": _select(
         "Text-to-speech provider",
         "edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper",
@@ -543,6 +554,31 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
 )
 
 
+def _plugin_aux_tasks() -> List[Dict[str, Any]]:
+    """Auxiliary tasks registered by plugins (``PluginContext.register_auxiliary_task``) for the
+    Hermes home active in this context.
+
+    Callers run inside ``_profile_scope`` / ``_config_profile_scope``, and ``get_plugin_manager()``
+    keys its manager on the same context-local home, so a request for profile B enumerates
+    B's plugins even though this process was started for profile A. Discovery failure is
+    fail-soft: the built-in slots must keep working without plugins.
+    """
+    try:
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        return [dict(entry) for entry in get_plugin_auxiliary_tasks()
+                if entry.get("key") and entry["key"] not in _AUX_TASK_SLOTS]
+    except Exception:  # health: allow BLE001 -- plugin discovery must never break the built-in slots
+        _log.debug("plugin auxiliary task lookup failed", exc_info=True)
+        return []
+
+
+def _aux_task_slots() -> Tuple[str, ...]:
+    """Every auxiliary slot the dashboard may read or assign: built-ins first (UI order), then
+    plugin-registered keys. The picker in ``hermes model`` (``main_provider_setup._all_aux_tasks``)
+    folds plugin tasks in the same way; the dashboard must not disagree with it."""
+    return _AUX_TASK_SLOTS + tuple(entry["key"] for entry in _plugin_aux_tasks())
+
+
 def _dashboard_code_skew_guard() -> Optional[str]:
     """Return a "restart required" message when this process runs stale code, else None.
 
@@ -649,7 +685,7 @@ def _stale_aux_pins(cfg: dict, new_provider: str) -> list:
     aux_cfg = cfg.get("auxiliary", {})
     if not isinstance(aux_cfg, dict):
         return stale_aux
-    for slot in _AUX_TASK_SLOTS:
+    for slot in _aux_task_slots():
         slot_cfg = aux_cfg.get(slot)
         if not isinstance(slot_cfg, dict):
             continue
@@ -745,10 +781,11 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
         return slot_cfg if isinstance(slot_cfg, dict) else {}
 
     effort = _normalize_aux_reasoning_effort(reasoning_effort) if reasoning_effort is not _UNSET else _UNSET
+    slots = _aux_task_slots()
 
     if task == "__reset__":
         # Reset every slot to provider="auto", model="", no effort override — keeps other fields intact.
-        for slot in _AUX_TASK_SLOTS:
+        for slot in slots:
             slot_cfg = _slot(slot)
             slot_cfg["provider"] = "auto"
             slot_cfg["model"] = ""
@@ -763,10 +800,10 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
     if not provider:
         raise HTTPException(status_code=400, detail="provider required for auxiliary")
 
-    targets = [task] if task else list(_AUX_TASK_SLOTS)
+    targets = [task] if task else list(slots)
     new_provider = provider.strip().lower()
     for slot in targets:
-        if slot not in _AUX_TASK_SLOTS:
+        if slot not in slots:
             raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")
         slot_cfg = _slot(slot)
         prev_provider = str(slot_cfg.get("provider") or "").strip().lower()

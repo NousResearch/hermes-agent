@@ -24,7 +24,7 @@ from agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION, ErrorKind, FetchResult, SecretSource, is_valid_env_name,
     reset_source_environment, set_source_environment,
 )
-from hermes_constants import hermes_home_key
+from hermes_constants import hermes_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +111,7 @@ def register_source(source: SecretSource, *, replace: bool = False, builtin: boo
     if problem:
         logger.warning(problem)
         return False
+    scope = normalize_scope(scope)
     name = source.name
     with _REGISTRY_LOCK:
         effective = dict(_SOURCES)
@@ -135,7 +136,7 @@ def register_source(source: SecretSource, *, replace: bool = False, builtin: boo
 def _merged(scope: Optional[str]) -> Dict[str, SecretSource]:
     """Global sources overlaid with the scope's (default: current home) registrations."""
     merged = dict(_SOURCES)
-    merged.update(_SCOPED_SOURCES.get(scope or hermes_home_key(), {}))
+    merged.update(_SCOPED_SOURCES.get(hermes_home_key(scope), {}))
     return merged
 
 
@@ -148,6 +149,7 @@ def get_source(name: str, *, scope: Optional[str] = None) -> Optional[SecretSour
 def snapshot_registration(name: str, *, scope: Optional[str] = None) -> Optional[SecretSource]:
     """Return the registration owned by exactly one registry layer."""
     _ensure_builtin_sources()
+    scope = normalize_scope(scope)
     with _REGISTRY_LOCK:
         return (_SOURCES if scope is None else _SCOPED_SOURCES.get(scope, {})).get(name)
 
@@ -156,6 +158,7 @@ def restore_registration(name: str, current: SecretSource, previous: Optional[Se
                          scope: Optional[str] = None) -> bool:
     """Restore a host-owned source registration if it is still current."""
     _ensure_builtin_sources()
+    scope = normalize_scope(scope)
     with _REGISTRY_LOCK:
         target = _SOURCES if scope is None else _SCOPED_SOURCES.setdefault(scope, {})
         if target.get(name) is not current:
@@ -282,6 +285,14 @@ def _ordered_enabled_sources(secrets_cfg: dict, *, scope: Optional[str] = None) 
         except Exception:  # noqa: BLE001
             logger.warning("Secret source '%s' is_enabled() raised; skipping", name, exc_info=True)
     return enabled
+
+
+def enabled_source_names(secrets_cfg: dict, home_path: Path) -> frozenset:
+    """Names of the sources :func:`apply_all` would fetch for *home_path* right now (registered
+    and enabled). A source missing here was removed or disabled, so a value it injected earlier
+    is no longer backed by anything and must be revoked, not kept as process residue."""
+    secrets_cfg = secrets_cfg if isinstance(secrets_cfg, dict) else {}
+    return frozenset(s.name for s in _ordered_enabled_sources(secrets_cfg, scope=hermes_home_key(home_path)))
 
 
 def _active_profile_name(home_path: Optional[Path]) -> str:

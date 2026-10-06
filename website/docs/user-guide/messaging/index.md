@@ -41,7 +41,7 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 | Signal | — | ✅ | ✅ | — | — | ✅ | — |
 | SMS | — | — | — | — | — | — | — |
 | Email | — | ✅ | ✅ | ✅ | — | — | — |
-| Home Assistant | — | — | — | — | — | — | — |
+| Home Assistant (plugin) | — | — | — | — | — | — | — |
 | Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
@@ -153,6 +153,8 @@ user: next message
 ```
 
 Failed turns still surface as errors; Hermes does not hide failures just because the text resembles a silence token.
+
+On a message from a person, a bare silence token is replaced by a short notice, because a message that needed a reply must not vanish. Internal wakes such as background-process notifications may stay silent, and so may a message the platform adapter reports as not addressed to the bot. Slack reports this for messages that open by @mentioning someone else and for unmentioned top-level messages that start a new thread in a free-response channel; other platforms always get the notice.
 
 ## Quick Setup
 
@@ -312,8 +314,11 @@ old behavior: in-flight responses are lost on crash).
 
 Gateway conversations do not reset after inactivity or at a daily boundary. Use `/new`
 or `/reset` for an explicit new conversation; context compression remains automatic.
-Legacy `session_reset` settings, reset-policy overrides and reset-timer environment
-variables are ignored. Cached agents may be released to reclaim resources without
+Core ignores legacy `session_reset` settings, reset-policy overrides and reset-timer
+environment variables. If your config still sets `session_reset.mode` to `idle`, `daily`
+or `both`, gateway startup and `hermes doctor` warn about it. To keep time-based resets,
+install the catalog plugin that reads the same block unchanged:
+`hermes plugins install hermes-session-reset-policy`. Cached agents may be released to reclaim resources without
 replacing the durable conversation. Restart-recovery freshness limits automatic
 continuation, not the history loaded when you send a message.
 
@@ -562,7 +567,7 @@ display:
 | `all` | Running-output updates **and** the final status message with the output tail |
 | `result` | Only the final status message with the output tail (regardless of exit code) |
 | `error` | Only the final status message with the output tail when the exit code is non-zero |
-| `off` | No process watcher messages at all |
+| `off` | No process watcher messages at all. Also honored by the CLI, TUI and Desktop: background-process completions and heartbeats no longer wake the agent (subagent results still do) |
 
 You can also set this via environment variable:
 
@@ -674,14 +679,14 @@ The plist sets `RunAtLoad`, so loading it starts the gateway. `hermes gateway in
 :::
 
 :::info Local Network access (LAN devices fail with "No route to host")
-macOS Local Network Privacy attributes a socket to the executable launchd spawned for the job. A bare venv Python has no application identity, so a launchd-run gateway could not reach LAN hosts (Home Assistant, local model servers) — every connect failed with `errno 65 No route to host` while the same URL worked from Terminal, and no prompt was ever shown to grant it. The generated plist therefore runs the gateway through `/usr/bin/osascript` (`do shell script "exec …"`), whose children macOS treats as osascript's own — an Apple platform binary, exempt from the check. `ps` shows `osascript → stderr_timestamp → gateway run`; stop/restart/KeepAlive behave exactly as before. A plist installed by an older Hermes is refreshed by `hermes gateway install` (or on the next `hermes gateway start`).
+macOS Local Network Privacy attributes a socket to the executable launchd spawned for the job. A bare venv Python has no application identity, so a launchd-run gateway could not reach LAN hosts (Home Assistant, local model servers) — every connect failed with `errno 65 No route to host` while the same URL worked from Terminal, and no prompt was ever shown to grant it. The generated plist therefore runs the gateway through `/usr/bin/osascript`; a JXA `system()` call starts the gateway without an interactive event-polling loop, and macOS treats its children as osascript's own — an Apple platform binary, exempt from the check. `ps` shows `osascript → stderr_timestamp → gateway run`; stop/restart/KeepAlive behave exactly as before. A plist installed by an older Hermes is refreshed by `hermes gateway install` (or on the next `hermes gateway start`).
 :::
 
 :::tip Picking up new credentials after `hermes auth add` / `hermes auth reset`
 Agents run as threads inside the one gateway process; the only child processes are tool subprocesses (terminal commands, browsers), which never hold provider credentials. A running gateway also re-reads the `openai-codex` login it seeded from `auth.json` the next time its pool selects that entry after it had gone `exhausted` or `dead` (entries added with `hermes auth add openai-codex` are independent accounts and are not resynced). When you want every session on the fresh login at once, restart the gateway — but prefer the drain-aware path over a bare kill:
 
 - `hermes gateway restart` asks the gateway (SIGUSR1) to refuse new turns, waits up to `agent.restart_after_turn_timeout` (default 1800 s) for in-flight turns to finish, exits, and lets launchd's `KeepAlive` relaunch it; the new process reads `auth.json` from scratch.
-- `launchctl kickstart -k gui/$UID/ai.hermes.gateway` sends SIGTERM instead: the gateway interrupts in-flight chat turns after `agent.restart_drain_timeout` (default `0` — immediately; the user is told and the turn resumes on their next message), gives cron runs `agent.cron_drain_timeout` (default 30 s), kills tool subprocesses and exits, then launchd relaunches it. Nothing from the old process survives, so a session that still fails with `401` after the relaunch is talking to a different gateway process — check `hermes gateway status` (and `launchctl list | grep hermes`) for a second PID, such as a manually started `hermes gateway run`, and stop that one too.
+- `launchctl kickstart -k gui/$UID/ai.hermes.gateway` sends SIGTERM instead: the gateway interrupts in-flight chat turns after `agent.restart_drain_timeout` (default `0` — immediately; the user is told and the turn resumes on their next message), gives cron runs and api_server (`/v1`) runs `agent.cron_drain_timeout` (default 30 s), kills tool subprocesses and exits, then launchd relaunches it. Nothing from the old process survives, so a session that still fails with `401` after the relaunch is talking to a different gateway process — check `hermes gateway status` (and `launchctl list | grep hermes`) for a second PID, such as a manually started `hermes gateway run`, and stop that one too.
 :::
 
 :::info Multiple installations
@@ -728,7 +733,7 @@ Each platform has its own toolset:
 | Signal | `hermes-signal` | Full tools including terminal |
 | SMS | `hermes-sms` | Full tools including terminal |
 | Email | `hermes-email` | Full tools including terminal |
-| Home Assistant | `hermes-homeassistant` | Full tools + HA device control (ha_list_entities, ha_get_state, ha_call_service, ha_list_services) |
+| Home Assistant (plugin) | `hermes-homeassistant` | Full tools + HA device control (ha_list_entities, ha_get_state, ha_call_service, ha_list_services) from the `homeassistant` catalog plugin |
 | Mattermost | `hermes-mattermost` | Full tools including terminal |
 | Matrix | `hermes-matrix` | Full tools including terminal |
 | DingTalk | `hermes-dingtalk` | Full tools including terminal |
@@ -881,6 +886,8 @@ Telegram is usually a mobile inbox, so the defaults are tuned for that surface:
 - **`interim_assistant_messages`** stays **on** — real mid-turn assistant commentary (the model literally telling you what it's about to do) is signal, not noise.
 - **`long_running_notifications`** stays **on** — a single edit-in-place "⏳ Working — N min" bubble updates every few minutes so you have a heartbeat instead of staring at `typing…` for half an hour.
 
+These per-platform defaults apply only while the same key is unset directly under `display:`. A global `display.tool_progress`, `display.show_reasoning`, `display.busy_ack_detail`, `display.interim_assistant_messages` or `display.long_running_notifications` applies to every platform and replaces its default. A `config.yaml` copied from an older `cli-config.yaml.example` sets all five globally, and an older first-time `hermes setup` wrote `tool_progress: all`; delete those lines to get the per-platform defaults back.
+
 Opt out of either of the kept-on defaults or opt back into verbose progress per platform:
 
 ```yaml
@@ -968,7 +975,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Signal Setup](signal.md)
 - [SMS Setup (Twilio)](sms.md)
 - [Email Setup](email.md)
-- [Home Assistant Integration](homeassistant.md)
+- [Home Assistant Integration](homeassistant.md) (plugin catalog)
 - [Mattermost Setup](mattermost.md)
 - [Matrix Setup](matrix.md)
 - [DingTalk Setup](dingtalk.md)

@@ -101,6 +101,8 @@ class SkillsShSource(SkillSource):
             bundle = self.github.fetch(github_id) if github_id else None
             if bundle:
                 bundle.source, bundle.identifier = "skills.sh", self._wrap_identifier(canonical)
+                if bundle.name == "skills":  # a generic dir: install under the slug, as the index does
+                    bundle.name = canonical.rstrip("/").rsplit("/", 1)[-1]
                 bundle.metadata.update(self._detail_to_metadata(canonical, detail))
             return bundle or None
 

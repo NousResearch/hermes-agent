@@ -52,6 +52,7 @@ export const $botsPaneVisible = atom(false)
  *  canonical chat was resolved). This transient view observation is never an
  *  identity preference. */
 export const $openBotChat = atom<{ key: string; openedRegistryId: string; openedSessionId?: string } | null>(null)
+export { $pendingBotOpen } from './shared'
 /** A session owns the main workspace. The roster highlight and the Cronjobs
  *  lifecycle both key off this rather than reading host.state conditionally
  *  from render. */

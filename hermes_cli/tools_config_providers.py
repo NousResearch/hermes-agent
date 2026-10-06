@@ -125,7 +125,17 @@ _PLUGIN_ROW_BUILDERS = {
     "Video Generation": _plugin_video_gen_providers,
     "Web Search & Extract": _plugin_web_search_providers,
     "Browser Automation": _plugin_browser_providers,
-    "Text-to-Speech": _plugin_tts_providers}
+    "Text-to-Speech": _plugin_tts_providers,
+    "Computer Use (macOS/Windows/Linux)": lambda: _computer_use_provider_rows()}
+
+
+def _computer_use_provider_rows() -> list[dict]:
+    """Rows for installed computer-use providers other than the built-in ``cua`` (hand-written row with its
+    install post-setup). Read from plugin.yaml without importing: an unselected provider stays dormant."""
+    from plugins.computer_use import DEFAULT_BACKEND, discover_computer_use_providers
+
+    return [{"name": name, "badge": "", "tag": desc, "env_vars": [], "computer_use_backend": name}
+            for name, desc in discover_computer_use_providers() if name != DEFAULT_BACKEND]
 
 
 def _visible_providers(
@@ -835,7 +845,8 @@ def _print_provider_selection(provider: dict, managed_feature, *, reconfigure: b
         _print_success(f"  Browser engine set to: {provider['browser_engine']}")
     if provider.get("web_backend"):
         tier = f" ({provider['web_tier']} tier)" if reconfigure and provider.get("web_tier") else ""
-        _print_success(f"  Web backend set to: {provider['web_backend']}{tier}")
+        backend = NOUS_MANAGED_PROVIDER if managed_feature else provider["web_backend"]
+        _print_success(f"  Web backend set to: {backend}{tier}")
     if reconfigure and provider.get("computer_use_backend"):
         _print_success(f"  Computer Use backend set to: {provider['computer_use_backend']}")
 

@@ -285,6 +285,17 @@ def _uninstall_values(entry: Any) -> dict[str, str]:
     return values
 
 
+def _uninstall_entry(key: Any, index: int) -> dict[str, str]:
+    """One child entry's values; an entry can vanish between EnumKey and OpenKey, which reads as no values."""
+    import winreg
+
+    try:
+        with winreg.OpenKey(key, winreg.EnumKey(key, index)) as entry:
+            return _uninstall_values(entry)
+    except OSError:
+        return {}
+
+
 def _uninstall_entries(display_name_prefix: str) -> Iterator[dict[str, str]]:
     """Each uninstall entry whose `DisplayName` starts with the prefix, machine-wide before per-user."""
     import winreg
@@ -299,9 +310,7 @@ def _uninstall_entries(display_name_prefix: str) -> Iterator[dict[str, str]]:
             with winreg.OpenKey(hive, root) as key:
                 count = winreg.QueryInfoKey(key)[0]
                 for i in range(count):
-                    sub = winreg.EnumKey(key, i)
-                    with winreg.OpenKey(key, sub) as entry:
-                        values = _uninstall_values(entry)
+                    values = _uninstall_entry(key, i)
                     if values.get("DisplayName", "").startswith(display_name_prefix):
                         yield values
         except OSError:

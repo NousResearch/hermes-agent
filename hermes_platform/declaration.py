@@ -105,9 +105,10 @@ def _location_is_rooted(location: str, osf: str) -> bool:
 
 
 def _is_relative_name(value: Any, *, allow_dirs: bool) -> bool:
+    """Checks the stripped value, the one later joined: an empty part rejects a leading / or \\, a colon rejects a drive."""
     if not isinstance(value, str) or not value.strip() or "://" in value:
         return False
-    parts = value.replace("\\", "/").split("/")
+    parts = value.strip().replace("\\", "/").split("/")
     return ".." not in parts and "" not in parts and (allow_dirs or len(parts) == 1) and ":" not in parts[0]
 
 
@@ -121,7 +122,7 @@ def _parse_location(where: str, osf: str, presence: str, label: str, raw: Any) -
             raise DeclarationError(
                 f"{where}: {label} must be absolute or start with ~ / %VAR% / $VAR, without '..', '**' or a URL scheme")
         return AppLocation("path", path)
-    if not isinstance(raw, dict) or raw.get("kind") not in LOCATION_KINDS:
+    if not isinstance(raw, dict) or not isinstance(raw.get("kind"), str) or raw["kind"] not in LOCATION_KINDS:
         raise DeclarationError(f"{where}: {label} must be a path or a mapping with kind one of {sorted(LOCATION_KINDS)}")
     kind = raw["kind"]
     spec = LOCATION_KINDS[kind]

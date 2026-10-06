@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 
 const MAX_SEED_BYTES = 1024 * 1024;
 const SENT_POLL_LIMIT = 2000;
+const STALE_LOCK_MS = 10_000;
 
 function nonempty(value) {
   return typeof value === "string" && value.trim() ? value : null;
@@ -103,6 +104,16 @@ export class PollSeedStore {
         return fs.openSync(lock, "wx", 0o600);
       } catch (err) {
         if (err?.code !== "EEXIST") throw err;
+        // A save holds the lock for milliseconds, so an old lock belongs to a killed writer.
+        try {
+          if (Date.now() - fs.statSync(lock).mtimeMs > STALE_LOCK_MS) {
+            fs.rmSync(lock, { force: true });
+            continue;
+          }
+        } catch (statErr) {
+          if (statErr?.code !== "ENOENT") throw statErr;
+          continue;
+        }
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
       }
     }

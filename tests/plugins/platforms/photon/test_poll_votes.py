@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
+import time
 
 
 _MODULE = Path("plugins/platforms/photon/sidecar/poll-votes.mjs").resolve().as_uri()
@@ -198,6 +200,27 @@ def test_poll_seeds_survive_restart_bounded_and_atomic(tmp_path: Path) -> None:
         .map(([id,option])=>[id,option.title]),one:store.get('one')??null}}));
     """, tmp_path)
     assert reloaded == {"title": "Poll", "ids": [["c", "Route"]], "one": None}
+
+
+def test_stale_writer_lock_from_killed_sidecar_is_replaced(tmp_path: Path) -> None:
+    state = tmp_path / "state" / "poll-seeds.json"
+    state.parent.mkdir()
+    lock = state.parent / "poll-seeds.json.lock"
+    lock.write_text("", encoding="utf-8")
+    old = time.time() - 60
+    os.utime(lock, (old, old))
+    _, stderr = _seed_node(f"""
+      const store=new PollSeedStore({json.dumps(str(state))});
+      store.remember('p','Q',[{{text:'A',optionIdentifier:'a'}}]);
+      console.log(JSON.stringify(null));
+    """, tmp_path)
+    assert "could not save poll seeds" not in stderr
+    assert not lock.exists()
+    reloaded, _ = _seed_node(f"""
+      const store=new PollSeedStore({json.dumps(str(state))}).load();
+      console.log(JSON.stringify(store.has('p')));
+    """, tmp_path)
+    assert reloaded is True
 
 
 def test_poll_seed_file_errors_do_not_break_the_sidecar(tmp_path: Path) -> None:

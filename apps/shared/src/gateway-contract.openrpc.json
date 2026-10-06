@@ -8404,7 +8404,7 @@
       },
       "CompletionItem": {
         "additionalProperties": false,
-        "description": "One popover row; ``kind`` rides only on slash completions (command vs skill).",
+        "description": "One popover row; ``kind`` rides on slash completions (command vs skill) and `@symbol:` rows (``symbol``).",
         "properties": {
           "text": {
             "title": "Text",

@@ -22,7 +22,7 @@ from .registry import method
 
 
 class CompletionItem(Result):
-    """One popover row; ``kind`` rides only on slash completions (command vs skill)."""
+    """One popover row; ``kind`` rides on slash completions (command vs skill) and `@symbol:` rows (``symbol``)."""
 
     text: str
     display: str = ""

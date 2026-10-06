@@ -1874,7 +1874,7 @@ export interface CompletePathParams {
 export interface CompletionItemsResult {
   items?: CompletionItem[]
 }
-/** One popover row; ``kind`` rides only on slash completions (command vs skill). */
+/** One popover row; ``kind`` rides on slash completions (command vs skill) and `@symbol:` rows (``symbol``). */
 export interface CompletionItem {
   text: string
   display?: string

@@ -438,7 +438,9 @@ def run_with_challenge(exchange: Callable[[], T]) -> T:
         return exchange()
     except AnonChallengeRequired as exc:
         first = exc
-    if _background.get():
+    # A messaging gateway has nobody at its console to clear a check, and its token reads can run
+    # on the event loop: it never waits either.
+    if _background.get() or client_surface() == "gateway":
         _presenter(_set_pending(first.challenge))
         raise _still_pending(first)
     with _work_lock():

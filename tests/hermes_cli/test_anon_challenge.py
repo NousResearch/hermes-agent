@@ -218,6 +218,20 @@ class TestWhoWaits:
         assert "/api/anonymous/challenge/status" not in [p for _, p in nas.calls]
         assert anon_challenge.pending_challenge()["url"] == nas.challenge_url
 
+    def test_the_messaging_gateway_never_waits_on_a_challenge(self, nas, presented, monkeypatch):
+        """Nobody sits at a gateway's console, and its token reads can run on the event loop."""
+        import gateway.status as status
+        assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
+        monkeypatch.setattr(status, "owns_gateway_runtime_lock", lambda: True)
+        monkeypatch.setattr(anon_challenge, "CHALLENGE_WAIT_SECONDS", 0.05)
+        nas.challenge_required = True
+        nas.challenge_never_clears = True
+        from hermes_cli.auth_nous import resolve_nous_runtime_credentials
+        with pytest.raises(anon_auth.AuthError) as exc:
+            resolve_nous_runtime_credentials()
+        assert exc.value.code == anon_auth.ANON_CHALLENGE_REQUIRED and exc.value.retryable is True
+        assert "/api/anonymous/challenge/status" not in [p for _, p in nas.calls]
+
     def test_a_background_caller_never_prints_or_opens_a_browser(self, monkeypatch, capsys):
         import webbrowser
         monkeypatch.setattr(webbrowser, "open", lambda _url: pytest.fail("opened a browser in the background"))

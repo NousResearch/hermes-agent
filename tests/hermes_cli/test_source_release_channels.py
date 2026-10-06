@@ -142,7 +142,7 @@ def test_truncated_source_release_response_is_unavailable_on_public_path(monkeyp
     assert resolve_source_release("stable") == (None, None)
 
 
-def test_retirement_refuses_newer_source_version_and_stamp_commit(tmp_path):
+def test_retirement_refuses_newer_source_version(tmp_path):
     from hermes_cli.source_releases import _retirement_commit_proof
 
     request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
@@ -152,17 +152,32 @@ def test_retirement_refuses_newer_source_version_and_stamp_commit(tmp_path):
     with pytest.raises(ValueError, match="newer source version"):
         _retirement_commit_proof(request, terminal, None, tmp_path, True)
 
-    # With the version floor satisfied, the stamp decides: a commit outside
-    # the qualified build and the destination head is newer source.
-    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.0.0"\n', encoding="utf-8")
-    terminal["head"]["commit"] = "b" * 40
+
+def test_retirement_no_git_older_stamped_install_is_admitted_unverified(tmp_path):
+    from hermes_cli.source_releases import _retirement_commit_proof
+
+    # Production channel heads carry buildId/sequence/manifestKey/sha256 and
+    # no commit field, so the destination head offers no commit to compare.
+    request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.9.0"\n', encoding="utf-8")
     stamp = tmp_path / "install-stamp.json"
+    # The version floor proves this install older than the qualified build;
+    # a stamp that names neither the target nor the destination head is
+    # unproven, not proven-newer, so the retirement stays admissible with
+    # unverified ancestry instead of stranding the install.
     stamp.write_text(json.dumps({"commit": "c" * 40}), encoding="utf-8")
-    with pytest.raises(ValueError, match="newer source commit"):
-        _retirement_commit_proof(request, terminal, None, tmp_path, True)
-    # Equal to the destination head is admitted.
+    assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is False
+
+    # A stamp naming the pinned target is proven.
+    stamp.write_text(json.dumps({"commit": "a" * 40}), encoding="utf-8")
+    assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is True
+
+    # When a channel head does publish a commit field, a stamp equal to the
+    # destination head is proven too.
+    terminal["head"]["commit"] = "b" * 40
     stamp.write_text(json.dumps({"commit": "b" * 40}), encoding="utf-8")
-    assert _retirement_commit_proof(request, terminal, None, tmp_path, True)
+    assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is True
 
 
 def test_retirement_no_git_without_stamp_stays_permissive(tmp_path):
@@ -366,16 +381,19 @@ def test_retirement_passive_check_never_fetches(tmp_path, monkeypatch):
     assert any("rev-list" in argv for argv in seen)
 
 
-def test_retirement_downgrade_fails_closed_without_git(tmp_path):
+def test_retirement_stamp_outside_admitted_identities_is_unverified(tmp_path):
     from hermes_cli.source_releases import _retirement_commit_proof
 
     request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
     terminal = {"name": "stable", "head": {"sequence": 1}}
-    # No Git, but the stamp names a commit outside the admitted identities.
+    # No version file and no Git: nothing proves ordering in either
+    # direction, and the stamp names a commit outside the admitted
+    # identities. A stamp alone cannot prove the install newer, so the
+    # retirement stays admissible with unverified ancestry instead of
+    # stranding the ZIP/desktop mode.
     (tmp_path / "install-stamp.json").write_text(
         json.dumps({"commit": "c" * 40}), encoding="utf-8")
-    with pytest.raises(ValueError, match="newer source commit"):
-        _retirement_commit_proof(request, terminal, None, tmp_path, True)
+    assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is False
 
 
 @pytest.mark.parametrize("channel", ["stable", "canary"])

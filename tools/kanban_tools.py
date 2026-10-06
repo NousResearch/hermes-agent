@@ -20,11 +20,12 @@ from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
-    KANBAN_ATTACH_SCHEMA,
+    KANBAN_ARCHIVE_SCHEMA, KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
-    KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SCHEDULE_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_LIST_SCHEMA, KANBAN_PROMOTE_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA,
+    KANBAN_REQUEST_REVIEW_SCHEMA, KANBAN_SCHEDULE_SCHEMA, KANBAN_SHOW_SCHEMA,
+    KANBAN_UNBLOCK_SCHEMA, KANBAN_UNLINK_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ def _check_kanban_mode() -> bool:
 
 @no_cache_check_fn
 def _check_kanban_orchestrator_mode() -> bool:
-    """Board-routing tools (kanban_list, kanban_unblock): hidden from task workers."""
+    """Board-routing tools (kanban_list/unblock/archive/promote/unlink): hidden from task workers."""
     return _visible(to_env_worker=False)
 
 
@@ -1288,10 +1289,88 @@ def _handle_link(args: dict, **kw) -> str:
                    **({"gated_by": parent_id} if gated else {}))
 
 
+def _orchestrator_mutation(tool_name: str) -> None:
+    _reject_delegated_child_mutation(tool_name)
+    _require_orchestrator_tool(tool_name)
+
+
+@_kanban_handler("kanban_archive")
+def _handle_archive(args: dict, **kw) -> str:
+    """Archive a withdrawn/obsolete card, recording why as a comment. Refused
+    while a live worker still executes it (archiving would kill that process)."""
+    _orchestrator_mutation("kanban_archive")
+    tid = str(_require_text(args, "task_id")).strip()
+    reason = _redact(_require_text(
+        args, "reason", "reason is required — say why the card is being archived")).strip()
+    with _board(args.get("board")) as (kb, conn):
+        row = conn.execute(
+            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+            (tid,)).fetchone()
+        _check(row, f"unknown task {tid}")
+        _check(row["status"] != "archived", f"{tid} is already archived. Nothing changed.")
+        _check(not kb._claim_is_live(row),
+               f"kanban_archive refused: {tid} is running under a live worker claim. "
+               f"Nothing changed. Wait for the worker to finish or block, or an operator "
+               f"can run `hermes kanban archive {tid}`.")
+        _check(kb.archive_task(conn, tid),
+               f"could not archive {tid} (status changed concurrently). Nothing changed.")
+        kb.add_comment(conn, tid, _persisted_identity(), f"Archived: {reason}")
+        return _ok(task_id=tid, status=kb.get_task(conn, tid).status)
+
+
+_PROMOTE_TARGETS = ("todo", "ready")
+
+
+@_kanban_handler("kanban_promote")
+def _handle_promote(args: dict, **kw) -> str:
+    """Release a ``triage`` card. ``to='todo'`` is the parent-gated path (the
+    re-gate moves it on to ready when no parent is open); ``to='ready'`` is
+    refused while any parent is open — gating is never bypassed."""
+    _orchestrator_mutation("kanban_promote")
+    tid = str(_require_text(args, "task_id")).strip()
+    to = str(args.get("to") or "todo").strip()
+    _check(to in _PROMOTE_TARGETS, f"to must be one of {list(_PROMOTE_TARGETS)} (got {to!r})")
+    actor = _persisted_identity()
+    with _board(args.get("board")) as (kb, conn):
+        task = kb.get_task(conn, tid)
+        _check(task, f"unknown task {tid}")
+        _check(task.status == "triage",
+               f"{tid} is {task.status!r}; kanban_promote only applies to 'triage' cards. "
+               f"Nothing changed.")
+        if to == "ready":
+            open_parents = kb.unsatisfied_parents(conn, tid)
+            _check(not open_parents,
+                   f"cannot promote {tid} to ready: unsatisfied parent dependencies: "
+                   + ", ".join(f"{pid} ({status})" for pid, status in open_parents)
+                   + ". Nothing changed; promote to todo to wait on them.")
+        _check(kb.specify_triage_task(conn, tid, author=actor),
+               f"could not promote {tid} (left triage concurrently). Nothing changed.")
+        if to == "ready" and kb.get_task(conn, tid).status == "todo":
+            ok, err = kb.promote_task(conn, tid, actor=actor)
+            _check(ok, f"{tid} moved to todo but not ready: {err}")
+        return _ok(task_id=tid, status=kb.get_task(conn, tid).status)
+
+
+@_kanban_handler("kanban_unlink")
+def _handle_unlink(args: dict, **kw) -> str:
+    """Drop a parent→child dependency edge; the child is re-gated at once."""
+    _orchestrator_mutation("kanban_unlink")
+    parent_id = str(args.get("parent_id") or "").strip()
+    child_id = str(args.get("child_id") or "").strip()
+    _check(parent_id and child_id, "both parent_id and child_id are required")
+    with _board(args.get("board")) as (kb, conn):
+        _check(kb.unlink_tasks(conn, parent_id, child_id, actor=_persisted_identity()),
+               f"no link {parent_id} -> {child_id}. Nothing changed.")
+        child = kb.get_task(conn, child_id)
+        return _ok(parent_id=parent_id, child_id=child_id,
+                   status=child.status if child else None)
+
+
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
-# kanban_list / kanban_unblock route the board and are hidden from task workers.
-_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+# Board-routing tools: hidden from (and refused for) dispatcher-spawned task workers.
+_ORCHESTRATOR_TOOLS = frozenset({
+    "kanban_list", "kanban_unblock", "kanban_archive", "kanban_promote", "kanban_unlink"})
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
@@ -1307,7 +1386,10 @@ _TOOLS = (
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
-    ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
+    ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"),
+    ("kanban_unlink", KANBAN_UNLINK_SCHEMA, _handle_unlink, "✂"),
+    ("kanban_promote", KANBAN_PROMOTE_SCHEMA, _handle_promote, "⏫"),
+    ("kanban_archive", KANBAN_ARCHIVE_SCHEMA, _handle_archive, "🗄"))
 
 for _name, _sch, _handler, _emoji in _TOOLS:
     _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode

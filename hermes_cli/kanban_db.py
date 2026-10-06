@@ -1778,14 +1778,20 @@ def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
     return False
 
 
-def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
+def unlink_tasks(
+    conn: sqlite3.Connection, parent_id: str, child_id: str, *, actor: Optional[str] = None,
+) -> bool:
+    """Drop a dependency edge; ``actor`` (the acting profile) lands in the event."""
     with write_txn(conn):
         cur = conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?", (parent_id, child_id),
         )
         removed = cur.rowcount > 0
         if removed:
-            _append_event(conn, child_id, "unlinked", {"parent": parent_id, "child": child_id})
+            payload = {"parent": parent_id, "child": child_id}
+            if actor:
+                payload["actor"] = actor
+            _append_event(conn, child_id, "unlinked", payload)
     if removed:
         # Re-gate the child now (as complete_task/unblock_task do) instead of
         # leaving it in todo until the next tick.

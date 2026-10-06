@@ -560,3 +560,50 @@ KANBAN_LINK_SCHEMA = _schema(
     },
     ["parent_id", "child_id"],
 )
+
+KANBAN_UNLINK_SCHEMA = _schema(
+    "kanban_unlink",
+    (
+        "Remove a parent→child dependency edge. The child is re-gated "
+        "immediately: it moves to 'ready' once no open parent remains. The "
+        "event records the acting profile. Orchestrator-only — "
+        "dispatcher-spawned task workers never see this tool."
+    ),
+    {
+        "parent_id": _prop("string", "Parent task id of the edge to remove."),
+        "child_id": _prop("string", "Child task id of the edge to remove."),
+    },
+    ["parent_id", "child_id"],
+)
+
+KANBAN_PROMOTE_SCHEMA = _schema(
+    "kanban_promote",
+    (
+        "Release a card from 'triage'. to='todo' (default) is parent-gated: "
+        "it moves on to 'ready' by itself once every parent is done. "
+        "to='ready' is refused while any parent is still open. Refused for "
+        "any card not in 'triage'. Orchestrator-only — dispatcher-spawned "
+        "task workers never see this tool."
+    ),
+    {
+        "task_id": _prop("string", "Triage task id to release."),
+        "to": {"type": "string", "enum": ["todo", "ready"],
+               "description": "Target status: 'todo' (default, parent-gated) or 'ready'."},
+    },
+    ["task_id"],
+)
+
+KANBAN_ARCHIVE_SCHEMA = _schema(
+    "kanban_archive",
+    (
+        "Archive a withdrawn or obsolete card; the reason is recorded as a "
+        "comment on it. Archived parents no longer gate their children. "
+        "Refused while the card is running under a live worker claim. "
+        "Orchestrator-only — dispatcher-spawned task workers never see this tool."
+    ),
+    {
+        "task_id": _prop("string", "Task id to archive."),
+        "reason": _prop("string", "Why the card is archived (shown on the card)."),
+    },
+    ["task_id", "reason"],
+)

@@ -450,6 +450,11 @@ class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
     # One email carries the whole body, so cron delivery hands over the full payload untruncated.
     splits_long_messages = True
+    # Re-exposed as a class attribute: generic consumers (base.py's effective-limit helper, the
+    # streaming fallback, the turn runner) read the per-body budget off the ADAPTER via
+    # getattr(adapter, "MAX_MESSAGE_LENGTH", 4096); left module-level only, that getattr missed and
+    # email replies were pre-split into 4k pieces before send() ever ran.
+    MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
 
     # Per-account seen-UID snapshot surviving adapter recreation: the reconnect watcher builds a FRESH
     # adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen and skip
@@ -850,8 +855,28 @@ class EmailAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Send an email reply to the given address."""
-        return await self._run_send(self._send_email, (chat_id, content, reply_to), "[Email] Send failed to %s: %s", chat_id)
+        """Send an email reply, splitting bodies over MAX_MESSAGE_LENGTH into sequential emails.
+
+        Only the FIRST part threads onto ``reply_to``; later parts chain off the previous part's
+        Message-ID so a long digest reads in order regardless of reply_to_mode. The returned result
+        always carries the first part's Message-ID, so a failure partway through still names what
+        was already delivered instead of reading as "nothing was sent" (which would get the whole
+        body re-sent on retry).
+        """
+        parts = self.truncate_message(content, self.MAX_MESSAGE_LENGTH)
+        result = await self._run_send(self._send_email, (chat_id, parts[0], reply_to),
+                                      "[Email] Send failed to %s: %s", chat_id)
+        if not result.success:
+            return result
+        prev_id = result.message_id
+        for index, part in enumerate(parts[1:], start=2):
+            follow = await self._run_send(self._send_email, (chat_id, part, prev_id),
+                                          "[Email] Send failed to %s: %s", chat_id)
+            if not follow.success:
+                return SendResult(success=False, message_id=result.message_id,
+                                  error=f"part {index}/{len(parts)} failed: {follow.error}")
+            prev_id = follow.message_id
+        return result
 
     def _message_id_domain(self) -> str:
         """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""

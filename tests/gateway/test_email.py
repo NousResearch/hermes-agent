@@ -13,6 +13,7 @@ Covers:
 """
 
 import os
+import smtplib
 import unittest
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -605,6 +606,86 @@ class TestSendMethods(unittest.TestCase):
         finally:
             os.unlink(tmp_path)
 
+
+    def test_effective_message_limit_reads_email_budget_not_the_default(self):
+        """Generic consumers read the per-body budget off the ADAPTER, so it must be a class attr.
+
+        ``base.py``'s effective-limit helper, the streaming fallback and the turn runner all do
+        ``getattr(adapter, "MAX_MESSAGE_LENGTH", 4096)``. With the constant only at module level the
+        getattr missed and email replies were pre-split into 4k pieces before ``send()`` ever ran.
+        """
+        from plugins.platforms.email.adapter import MAX_MESSAGE_LENGTH
+        adapter = self._make_adapter()
+        self.assertEqual(getattr(adapter, "MAX_MESSAGE_LENGTH", 4096), MAX_MESSAGE_LENGTH)
+        self.assertNotEqual(MAX_MESSAGE_LENGTH, 4096)
+        self.assertEqual(adapter.max_message_length_for_chat("user@test.com"), MAX_MESSAGE_LENGTH)
+
+    def test_body_within_limit_sends_a_single_undecorated_email(self):
+        """Common path: a short body is unaffected by the splitting machinery."""
+        import asyncio
+        adapter = self._make_adapter()
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            result = asyncio.run(adapter.send("user@test.com", "short reply", reply_to="<orig@test.com>"))
+
+        self.assertTrue(result.success)
+        mock_server.send_message.assert_called_once()
+        sent_msg = mock_server.send_message.call_args[0][0]
+        body = sent_msg.get_payload()[0].get_payload(decode=True).decode()
+        self.assertEqual(body, "short reply")
+        self.assertNotIn("(1/1)", body)
+        self.assertEqual(sent_msg["In-Reply-To"], "<orig@test.com>")
+        self.assertEqual(result.message_id, sent_msg["Message-ID"])
+
+    def test_body_over_max_message_length_splits_into_threaded_emails(self):
+        """A body past MAX_MESSAGE_LENGTH splits into parts that chain by Message-ID.
+
+        The first part threads onto the caller's reply_to; each later part threads off the
+        PREVIOUS part's own Message-ID, independent of reply_to_mode, so a long digest reads
+        in order.
+        """
+        import asyncio
+        adapter = self._make_adapter()
+        content = "x" * (adapter.MAX_MESSAGE_LENGTH * 2 + 100)
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            result = asyncio.run(adapter.send("user@test.com", content, reply_to="<orig@test.com>"))
+
+        self.assertTrue(result.success)
+        sent_msgs = [call[0][0] for call in mock_server.send_message.call_args_list]
+        self.assertEqual(len(sent_msgs), 3)
+        bodies = [m.get_payload()[0].get_payload(decode=True).decode() for m in sent_msgs]
+        self.assertTrue(all(len(b) <= adapter.MAX_MESSAGE_LENGTH for b in bodies))
+        message_ids = [m["Message-ID"] for m in sent_msgs]
+        self.assertEqual(sent_msgs[0]["In-Reply-To"], "<orig@test.com>")
+        self.assertEqual(sent_msgs[1]["In-Reply-To"], message_ids[0])
+        self.assertEqual(sent_msgs[2]["In-Reply-To"], message_ids[1])
+        self.assertEqual(result.message_id, message_ids[0])
+
+    def test_failure_partway_through_a_split_keeps_the_delivered_message_id(self):
+        """A part failing mid-sequence reports failure but still names what was delivered.
+
+        Returning a null id would read as "nothing was sent" and a caller retry would
+        re-deliver the parts that already landed.
+        """
+        import asyncio
+        adapter = self._make_adapter()
+        content = "x" * (adapter.MAX_MESSAGE_LENGTH * 2 + 100)
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_server.send_message.side_effect = [None, smtplib.SMTPDataError(552, b"message too large")]
+            mock_smtp.return_value = mock_server
+            result = asyncio.run(adapter.send("user@test.com", content, reply_to="<orig@test.com>"))
+
+        self.assertFalse(result.success)
+        self.assertEqual(mock_server.send_message.call_count, 2)  # stops at the failure, 3rd part never attempted
+        first_msg = mock_server.send_message.call_args_list[0][0][0]
+        self.assertEqual(result.message_id, first_msg["Message-ID"])
+        self.assertIn("part 2/3", result.error or "")
 
 
 class TestConnectDisconnect(unittest.TestCase):

@@ -27,6 +27,28 @@ import { SUBAGENT_EVENT_TYPES, toTodoPayload } from '../utils'
 
 import type { GatewayEventContext } from './types'
 
+function shouldUpdateComputerUseState(
+  eventType: string,
+  payloadName: unknown,
+  phase: string | undefined,
+  toolId: string | undefined,
+  currentToolId: string | undefined
+): boolean {
+  if (eventType === 'tool.start') {
+    return payloadName === 'computer_use'
+  }
+  if (eventType !== 'tool.progress') {
+    return false
+  }
+  if (phase !== 'running' && phase !== 'drafting') {
+    return false
+  }
+  if (payloadName && payloadName !== 'computer_use') {
+    return false
+  }
+  return !toolId || !currentToolId || toolId === currentToolId
+}
+
 /** tool.generating / tool.start / tool.complete / subagent.*. */
 export function handleToolEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
@@ -90,14 +112,15 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       clearComputerUseState(sessionId)
     }
 
-    const isComputerUseStart = eventType === 'tool.start' && payload?.name === 'computer_use'
-    const isComputerUseProgress =
-      eventType === 'tool.progress' &&
-      (currentCU?.phase === 'running' || currentCU?.phase === 'drafting') &&
-      (!payload?.name || payload?.name === 'computer_use') &&
-      (!toolId || !currentCU?.toolId || toolId === currentCU.toolId)
+    const isComputerUseEvent = shouldUpdateComputerUseState(
+      eventType,
+      payload?.name,
+      currentCU?.phase,
+      toolId,
+      currentCU?.toolId
+    )
 
-    if (isComputerUseStart || isComputerUseProgress) {
+    if (isComputerUseEvent) {
       setComputerUseRunning(sessionId, extractComputerUseArgs(payload), eventType === 'tool.progress')
     }
 

@@ -240,3 +240,166 @@ def test_a_reader_exit_during_a_failed_scope_stop_is_not_reported_as_killed(monk
     assert result["process_running"] is False
     assert (session.completion_reason, session.exit_code) == ("exited", 0)
     assert session.id in registry._finished  # keeps its unit, so a later kill retries the stop
+
+
+class _SandboxEnv:
+    """Non-local backend double: answers the poller's log-delta, liveness and exit-code reads,
+    running ``hooks[step]`` first so a test can land a kill at an exact point."""
+
+    def __init__(self, *, delta="", alive=False, hooks=None):
+        self.delta, self.alive, self.hooks = delta, alive, hooks or {}
+
+    def execute(self, command, **_kwargs):
+        if command.startswith("kill -0"):
+            step, out = "check", "0\n" if self.alive else "1\n"
+        elif command.startswith("kill "):
+            return {"output": ""}
+        elif command.startswith("cat "):
+            step, out = "exit", "0\n"
+        else:
+            step, out = "delta", f"{len(self.delta.encode())} 0\n{self.delta}"
+        hook = self.hooks.pop(step, None)
+        if hook:
+            hook()
+        return {"output": out}
+
+
+def _sandbox_session(registry, monkeypatch, env) -> ProcessSession:
+    session = _session("proc_sandbox", pid=4242, pid_scope="sandbox", env_ref=env, notify_on_complete=True)
+    registry._running[session.id] = session
+    monkeypatch.setattr(module.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(registry, "_write_checkpoint", lambda *_a, **_k: None)
+    monkeypatch.setattr(registry, "_post_kill_survivors", lambda _session: [])
+    return session
+
+
+def _poll_sandbox(registry, session, env):
+    registry._env_poller_loop(session, env, "/tmp/bg.log", "/tmp/bg.pid", "/tmp/bg.exit")
+
+
+def test_a_sandbox_exit_read_after_a_kill_keeps_the_kill(monkeypatch):
+    registry = ProcessRegistry()
+    killed = []
+    env = _SandboxEnv(hooks={"exit": lambda: killed.append(registry.kill_process("proc_sandbox"))})
+    session = _sandbox_session(registry, monkeypatch, env)
+
+    _poll_sandbox(registry, session, env)
+
+    assert killed[0]["status"] == "killed"
+    assert (session.exit_code, session.completion_reason, session.termination_source) == (
+        -15, "killed", "process.kill")
+
+
+def test_a_sandbox_lost_after_a_kill_keeps_the_kill(monkeypatch):
+    registry = ProcessRegistry()
+
+    def kill_then_lose_the_backend():
+        registry.kill_process("proc_sandbox")
+        raise RuntimeError("sandbox reaped")
+
+    env = _SandboxEnv(alive=True, hooks={"check": kill_then_lose_the_backend})
+    session = _sandbox_session(registry, monkeypatch, env)
+
+    _poll_sandbox(registry, session, env)
+
+    assert (session.exit_code, session.completion_reason, session.termination_source) == (
+        -15, "killed", "process.kill")
+
+
+def test_a_lost_sandbox_without_a_kill_is_reported_lost(monkeypatch):
+    registry = ProcessRegistry()
+
+    def lose_the_backend():
+        raise RuntimeError("sandbox reaped")
+
+    env = _SandboxEnv(hooks={"check": lose_the_backend})
+    session = _sandbox_session(registry, monkeypatch, env)
+
+    _poll_sandbox(registry, session, env)
+
+    assert (session.exit_code, session.completion_reason, session.termination_source) == (
+        -1, "lost", "backend_lost")
+    assert session.id in registry._finished
+    assert session._completion_event.is_set()
+
+
+def test_sandbox_output_fetched_before_a_kill_is_not_added_after_it(monkeypatch):
+    """The kill published its snapshot; a delta the poller already had in hand must not grow
+    the session's output past what the caller and the completion were given."""
+    registry = ProcessRegistry()
+    killed = []
+    env = _SandboxEnv(delta="FINAL", alive=True,
+                      hooks={"delta": lambda: killed.append(registry.kill_process("proc_sandbox"))})
+    session = _sandbox_session(registry, monkeypatch, env)
+    session.append_output("partial")
+
+    _poll_sandbox(registry, session, env)
+
+    assert killed[0]["output"] == "partial"
+    assert session.output_buffer == "partial"
+
+
+def test_a_log_rotation_seen_after_a_kill_does_not_clear_its_output(monkeypatch):
+    registry = ProcessRegistry()
+    env = _SandboxEnv(delta="partial", alive=True)
+    session = _sandbox_session(registry, monkeypatch, env)
+    execute = env.execute
+
+    def rotated_on_the_second_read(command, **kwargs):
+        if command.startswith("O=7;"):  # second log read: the log shrank, so the offset restarts
+            registry.kill_process("proc_sandbox")
+            return {"output": "3 0\nnew"}
+        return execute(command, **kwargs)
+
+    monkeypatch.setattr(env, "execute", rotated_on_the_second_read)
+    _poll_sandbox(registry, session, env)
+
+    assert session.output_buffer == "partial"
+
+
+def _scoped_session(registry, monkeypatch, sid, stops, **fields) -> ProcessSession:
+    """A session with its own systemd scope; ``stops`` lists each stop's outcome in turn."""
+    session = _session(sid, systemd_unit=f"hermes-worker-{sid}.scope", **fields)
+    registry._running[session.id] = session
+    monkeypatch.setattr(registry, "_write_checkpoint", lambda *_a, **_k: None)
+    monkeypatch.setattr(module, "_stop_systemd_unit", lambda _unit: stops.pop(0))
+    return session
+
+
+def test_a_recovered_pid_that_dies_mid_kill_reports_the_failed_scope_stop(monkeypatch):
+    """``get`` sees the recovered PID alive, ``_signal_kill`` sees it gone: the scope stop it
+    then runs can still fail, and that must not be reported as a clean exit."""
+    registry = ProcessRegistry()
+    session = _scoped_session(registry, monkeypatch, "proc_recovered", [False],
+                              pid=4242, detached=True, pid_scope="host")
+    fates = iter(["running", "gone"])
+    monkeypatch.setattr(registry, "_detached_host_fate", lambda *_args: next(fates))
+
+    result = registry.kill_process(session.id)
+
+    assert result["status"] == "already_exited"
+    assert result["scope_stop_failed"] == session.systemd_unit
+    assert session.id in registry._finished  # keeps its unit for a retry
+
+
+def test_bulk_cleanup_does_not_count_a_failed_scope_stop_and_retries_it(monkeypatch):
+    """The root exits after ``kill_all`` picked the session, and the scope stop fails."""
+    registry = ProcessRegistry()
+    stops = [False, False, True]
+    session = _scoped_session(registry, monkeypatch, "proc_bulk_scope", stops)
+    kill_process = registry.kill_process
+
+    def root_exits_first(sid, **kwargs):
+        if not session.exited:
+            registry._finish_exited(session, 0)
+        return kill_process(sid, **kwargs)
+
+    monkeypatch.setattr(registry, "kill_process", root_exits_first)
+
+    assert registry.kill_all() == 0
+    assert session.id in registry._finished
+    assert registry.kill_all() == 0, "the scope still did not stop"
+    assert stops == [True], "the finished session's scope stop was not retried"
+    assert registry.kill_all() == 1
+    assert registry.kill_all() == 0
+    assert stops == [], "a stopped scope was retried"

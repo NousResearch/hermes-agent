@@ -1308,13 +1308,18 @@ def _handle_archive(args: dict, **kw) -> str:
             (tid,)).fetchone()
         _check(row, f"unknown task {tid}")
         _check(row["status"] != "archived", f"{tid} is already archived. Nothing changed.")
-        _check(not kb._claim_is_live(row),
-               f"kanban_archive refused: {tid} is running under a live worker claim. "
-               f"Nothing changed. Wait for the worker to finish or block, or an operator "
-               f"can run `hermes kanban archive {tid}`.")
-        _check(kb.archive_task(conn, tid),
-               f"could not archive {tid} (status changed concurrently). Nothing changed.")
-        kb.add_comment(conn, tid, _persisted_identity(), f"Archived: {reason}")
+        # Live-claim refusal and reason comment are enforced inside archive_task's
+        # txn, so a claim landing after the read above is still refused and a
+        # committed archive always carries its reason.
+        try:
+            archived = kb.archive_task(conn, tid, refuse_live_claim=True,
+                                       reason=reason, actor=_persisted_identity())
+        except kb.LiveClaimError:
+            raise _Reject(
+                f"kanban_archive refused: {tid} is running under a live worker claim. "
+                f"Nothing changed. Wait for the worker to finish or block, or an operator "
+                f"can run `hermes kanban archive {tid}`.") from None
+        _check(archived, f"could not archive {tid} (status changed concurrently). Nothing changed.")
         return _ok(task_id=tid, status=kb.get_task(conn, tid).status)
 
 

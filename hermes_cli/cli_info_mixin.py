@@ -98,9 +98,12 @@ def _usage_model_label(agent) -> str:
     so existing output is unchanged; only a real mismatch adds the ``->member (provider)`` suffix.
 
     Reads both names from ``agent.served_model.result_model_fields`` — the same helper the gateway
-    footer and CLI status bar read — so the three surfaces cannot disagree about which model
-    answered. That helper also reports Hermes' own primary -> active fallback as (requested=primary,
-    served=active), which is why the requested name comes from it rather than from ``agent.model``.
+    footer is fed from — but NOT the CLI status bar: ``_get_status_bar_snapshot`` reads
+    ``agent.model`` directly, and the footer consumes the per-turn dict snapshotted by
+    ``turn_finalizer`` while this reads a live agent outside a turn. The three surfaces can
+    therefore differ; they agree only while a turn is current. That helper also reports Hermes'
+    own primary -> active fallback as (requested=primary, served=active), which is why the
+    requested name comes from it rather than from ``agent.model``.
     """
     requested = str(getattr(agent, "model", "") or "")
     served = None

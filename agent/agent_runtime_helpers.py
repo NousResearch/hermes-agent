@@ -2058,6 +2058,11 @@ _SWITCH_SNAPSHOT_FIELDS = (
     "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
     "_credential_pool", "_credential_pool_entry_id",
     "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected",
+    # Written only by the OpenAI-wire capture hook (served_model.py), so a non-OpenAI
+    # destination never refreshes it and the PREVIOUS route's model would be read as
+    # this turn's by result_model_fields(). Snapshotted so a rolled-back switch keeps
+    # the old value that still matches the still-live old client.
+    "last_served_model",
 )
 _MISSING = object()
 
@@ -2199,6 +2204,15 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     agent._config_context_length = None
     agent.model = new_model
     agent.provider = agent.requested_provider = new_provider
+    # Drop the served-model captured by the previous route. Only create_openai_client()
+    # installs the capture hook (agent_runtime_helpers.py), so a moa / bedrock /
+    # anthropic_messages destination never rewrites this field and the old route's model
+    # would survive the switch — /usage would then attribute a turn that never happened
+    # to it, and the truthy value would also mask a real fallback in
+    # result_model_fields(). Cleared here (not on the individual branches) so an
+    # OpenAI-wire destination starts from None too and only a response it actually
+    # served can repopulate it; a failed rebuild rolls this back via the snapshot.
+    agent.last_served_model = None
     # Re-read reasoning_echo so the flag reflects the new primary model (see _reasoning_echo_opt_in).
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
     # Empty base_url while the provider changes means upstream resolution failed; falling back to

@@ -43,6 +43,7 @@ monorepo/                   (git root, cwd = packages/webapp/)
         └── AGENTS.md      ← Loaded last (most specific, takes precedence)
 ```
 
+<!-- no-tmp: ok — explains why /tmp is never trusted -->
 Outside a git repository, only the working directory itself is checked — parents are never consulted, so an `AGENTS.md` planted in `/tmp` or `$HOME` can't leak into unrelated sessions.
 
 ### Progressive Subdirectory Discovery
@@ -97,7 +98,7 @@ This is a Next.js 14 web application with a Python FastAPI backend.
 
 ## SOUL.md
 
-`SOUL.md` controls the agent's personality, tone, and communication style. See the [Personality](/user-guide/features/personality) page for full details.
+`SOUL.md` controls the agent's personality, tone, and communication style. See the [Personality](./personality.md) page for full details.
 
 **Location:**
 

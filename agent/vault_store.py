@@ -281,7 +281,14 @@ class VaultStore:
             raise VaultError(
                 "vault file could not be decrypted (key mismatch or corruption)"
             ) from exc
-        data = json.loads(raw.decode("utf-8"))
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise VaultError(
+                "vault file is corrupted (invalid JSON)"
+            ) from exc
+        if not isinstance(data, dict):
+            raise VaultError("vault file is corrupted (unexpected shape)")
         items = data.get("items", [])
         return items if isinstance(items, list) else []
 

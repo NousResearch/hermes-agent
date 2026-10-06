@@ -9,7 +9,7 @@ the real output directory — "cron output" alone sent operators hunting.
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from hermes_constants import display_hermes_home
 
@@ -59,11 +59,16 @@ _PROVIDER_FAILURE_ACTION: dict[str, str] = {
         "`hermes cron edit {job_id} --provider <name>`."
     ),
     "auth": (
-        "Sign in again with /login (or `hermes auth add <provider>` in a terminal), or pin a "
+        "Sign in again with /login (or `{relogin}` in a terminal), or pin a "
         "working provider with `hermes cron edit {job_id} --provider <name>`, then "
         "`hermes cron run {job_id}` to retry."
     ),
     "model_not_found": "Pick another model with `hermes cron edit {job_id} --model <name>`.",
+    "upstream_blocked": (
+        "A firewall in front of the provider blocked the request (not your key): set a User-Agent "
+        "via `extra_headers` on the provider's custom_providers entry, or pin another provider with "
+        "`hermes cron edit {job_id} --provider <name>`."
+    ),
     "context_overflow": "Shorten the job's prompt with `hermes cron edit {job_id} --prompt <text>`.",
 }
 _PROVIDER_FAILURE_ACTION["auth_permanent"] = _PROVIDER_FAILURE_ACTION["auth"]
@@ -73,13 +78,18 @@ _PROVIDER_FAILURE_ACTION["content_policy_blocked"] = (
     "Reword the job's prompt with `hermes cron edit {job_id} --prompt <text>`, or pick another "
     "model with `hermes cron edit {job_id} --model <name>`."
 )
+_PROVIDER_FAILURE_ACTION["provider_policy_blocked"] = (
+    "Retrying won't help: check the account's status and data/privacy settings with the provider, "
+    "or pin another model with `hermes cron edit {job_id} --model <name>`."
+)
 _DEFAULT_FAILURE_ACTION = "Run it again with `hermes cron run {job_id}`, or edit it with `hermes cron edit {job_id}`."
 
 
 def provider_failure_notice(
-    job_name: str, job_id: str, reason: str, *, backup_provider_phrase: str,
+    job_name: str, job_id: str, reason: str, *, backup_provider_phrase: str, provider: Any = None,
 ) -> Optional[str]:
-    """The notice for a provider-shaped ``reason``, or None when the reason is not one."""
+    """The notice for a provider-shaped ``reason``, or None when the reason is not one.
+    ``provider`` is the job's pinned slug (if any) so the auth action names its exact sign-in."""
     cause = _provider_failure_cause(reason)
     if cause is None:
         return None
@@ -89,7 +99,10 @@ def provider_failure_notice(
             f"`hermes cron run {job_id}` tries now."
         )
     else:
-        action = _PROVIDER_FAILURE_ACTION.get(reason, _DEFAULT_FAILURE_ACTION).format(job_id=job_id)
+        from agent.turn_failure_copy import relogin_command_hint
+
+        action = _PROVIDER_FAILURE_ACTION.get(reason, _DEFAULT_FAILURE_ACTION).format(
+            job_id=job_id, relogin=relogin_command_hint(provider))
     return (
         f"⚠️ Cron '{job_name}' failed: {cause}. {action} "
         f"Run log: `hermes cron runs {job_id}`."

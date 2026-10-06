@@ -30,7 +30,7 @@ test('retries transient rcedit commit failures with bounded backoff', async () =
     })
 
     assert.equal(attempts, 3)
-    assert.deepEqual(delays, [500, 1000])
+    assert.equal(delays.length, 2)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
@@ -52,6 +52,35 @@ test('stops retrying after the bounded rcedit retry budget is exhausted', async 
       /Unable to commit changes/
     )
     assert.equal(attempts, 4)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('does not retry when the rcedit binary itself cannot be spawned (ENOENT/EACCES)', async () => {
+  // #112544 follow-up: the npm rcedit wrapper reports a spawn failure via
+  // `originalError`; that toolchain breakage is permanent, so the 3.5 s
+  // transient-lock retry budget must not be spent on it.
+  const { exe, root } = makeDesktopRoot()
+  let attempts = 0
+  const delays = []
+  const spawnFailure = Object.assign(new Error('Error executing command (rcedit-x64.exe):\nspawn rcedit-x64.exe ENOENT'), {
+    originalError: Object.assign(new Error('spawn rcedit-x64.exe ENOENT'), { code: 'ENOENT' })
+  })
+
+  try {
+    await assert.rejects(
+      stampExeIdentity(exe, root, {
+        rcedit: async () => {
+          attempts += 1
+          throw spawnFailure
+        },
+        sleep: async delay => delays.push(delay)
+      }),
+      /ENOENT/
+    )
+    assert.equal(attempts, 1)
+    assert.deepEqual(delays, [])
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

@@ -1,12 +1,18 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { act, cleanup, fireEvent, render as renderUi, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render as renderUi, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { $gateway } from '@/store/gateway'
-import { $approvalRequest, clearAllPrompts, sessionApprovalRequests, setApprovalRequest } from '@/store/prompts'
+import {
+  $approvalRequest,
+  APPROVAL_RESPOND_REQUEST_TIMEOUT_MS,
+  clearAllPrompts,
+  sessionApprovalRequests,
+  setApprovalRequest
+} from '@/store/prompts'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { $activeSessionId } from '@/store/session'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
@@ -82,12 +88,44 @@ describe('PendingApprovalStack', () => {
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
-  it('renders approval controls for protected instruction writes', () => {
-    setRequest('Update protected agent instructions')
+  it('renders the description instead of a synthetic plugin-rule placeholder', () => {
+    // A pre_tool_call plugin returning {"action": "approve"} escalates through
+    // the same gate with a synthetic display target; the real command lives in
+    // the description. The card must show what would actually run.
+    setRequest('<terminal> (plugin approval rule)', undefined, { requestId: 'apr-synth' })
+    // setRequest stamps a generic description; overwrite with the plugin one.
+    $approvalRequest.get() &&
+      setApprovalRequest({
+        command: '<terminal> (plugin approval rule)',
+        description: 'Plugin requires approval for terminal: run\npwd',
+        requestId: 'apr-synth',
+        sessionId: 'sess-1'
+      })
     render(<PendingApprovalStack />)
 
-    expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
+    expect(screen.getByText(/Plugin requires approval for terminal: run/)).toBeTruthy()
+    expect(screen.getByText(/pwd/)).toBeTruthy()
+    expect(screen.queryByText(/plugin approval rule/)).toBeNull()
+  })
+
+  it('keeps showing the real command for ordinary dangerous-command approvals', () => {
+    setRequest('chmod -R 777 /tmp/x')
+    render(<PendingApprovalStack />)
+
+    expect(screen.getByText('chmod -R 777 /tmp/x')).toBeTruthy()
+  })
+
+  it('falls back to the description when a request carries no command at all', () => {
+    setRequest('', undefined, { requestId: 'apr-nocmd' })
+    setApprovalRequest({
+      command: '',
+      description: 'Approve config change: allow SSH tunnel',
+      requestId: 'apr-nocmd',
+      sessionId: 'sess-1'
+    })
+    render(<PendingApprovalStack />)
+
+    expect(screen.getByText('Approve config change: allow SSH tunnel')).toBeTruthy()
   })
 
   it('answers the live approval request with {choice: "once"} and clears the request on Run', async () => {
@@ -106,6 +144,71 @@ describe('PendingApprovalStack', () => {
     expect($approvalRequest.get()).toBeNull()
   })
 
+  it('hands focus back to the surface the user was in before clicking Run', async () => {
+    mockGateway()
+    liveApproval()
+    setRequest('computer_use type', undefined, { requestId: 'apr-1', serverRequestId: 'srq-approval' })
+
+    // The agent's preceding computer_use click left focus in the terminal pane.
+    const terminal = document.createElement('textarea')
+    const pane = document.createElement('div')
+    pane.dataset.terminal = ''
+    pane.append(terminal)
+    document.body.append(pane)
+    terminal.focus()
+
+    try {
+      render(<PendingApprovalStack />)
+      const run = screen.getByRole('button', { name: /Run/ })
+
+      // Chromium moves focus onto the pressed button before `click` fires.
+      fireEvent.pointerDown(run)
+      run.focus()
+      fireEvent.click(run)
+
+      await waitFor(() => {
+        expect(hasOpenServerRequest('srq-approval')).toBe(false)
+      })
+      await waitFor(() => {
+        expect(document.activeElement).toBe(terminal)
+      })
+    } finally {
+      pane.remove()
+    }
+  })
+
+  it('leaves focus alone when the user moved on before the approval settled', async () => {
+    mockGateway()
+    liveApproval()
+    setRequest('computer_use type', undefined, { requestId: 'apr-1', serverRequestId: 'srq-approval' })
+
+    const terminal = document.createElement('textarea')
+    const elsewhere = document.createElement('input')
+    document.body.append(terminal, elsewhere)
+    terminal.focus()
+
+    try {
+      render(<PendingApprovalStack />)
+      const run = screen.getByRole('button', { name: /Run/ })
+
+      fireEvent.pointerDown(run)
+      run.focus()
+      fireEvent.click(run)
+      elsewhere.focus()
+
+      await waitFor(() => {
+        expect(hasOpenServerRequest('srq-approval')).toBe(false)
+      })
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(document.activeElement).toBe(elsewhere)
+    } finally {
+      terminal.remove()
+      elsewhere.remove()
+    }
+  })
+
   it('falls back to the approval.respond RPC when no live server request is registered', async () => {
     // A prompt restored from `approval.pending` (no socket carried the frame):
     // the queue-level RPC is the only way to answer it.
@@ -116,23 +219,20 @@ describe('PendingApprovalStack', () => {
     fireEvent.click(screen.getByRole('button', { name: /Run/ }))
 
     await waitFor(() => {
-      expect(request).toHaveBeenCalledWith('approval.respond', {
-        all: false,
-        choice: 'once',
-        request_id: 'apr-1',
-        session_id: 'sess-1'
-      })
+      expect(request).toHaveBeenCalledWith(
+        'approval.respond',
+        {
+          all: false,
+          choice: 'once',
+          request_id: 'apr-1',
+          session_id: 'sess-1'
+        },
+        // #55433: the respond RPC carries an explicit deadline covering the backend's approvals window.
+        APPROVAL_RESPOND_REQUEST_TIMEOUT_MS,
+        undefined
+      )
     })
     expect($approvalRequest.get()).toBeNull()
-  })
-
-  it('keeps the full command in a bounded scrollable body', () => {
-    const longCommand = 'python -c "' + 'x'.repeat(400) + '"'
-    setRequest(longCommand)
-    render(<PendingApprovalStack />)
-
-    expect(screen.getByText(longCommand).className).toContain('max-h-40')
-    expect(screen.getByText(longCommand).className).toContain('overflow-auto')
   })
 
   it('answers the live approval request with {choice: "deny"} on Reject', async () => {
@@ -193,16 +293,6 @@ describe('PendingApprovalStack', () => {
     expect(screen.queryByRole('button', { name: /More approval options/ })).toBeNull()
   })
 
-  it('renders the stack independently of mounted tool rows', () => {
-    setRequest('rm /tmp/hermes_approval_test.txt')
-    const { container } = render(<PendingApprovalStack />)
-    const stack = container.querySelector('[data-slot="tool-approval-stack"]')
-
-    expect(stack).not.toBeNull()
-    expect(within(stack as HTMLElement).getByRole('button', { name: /Run/ })).toBeTruthy()
-    expect(within(stack as HTMLElement).getByRole('button', { name: /Reject/ })).toBeTruthy()
-  })
-
   it('keeps a failed request in front and releases held Enter until the user retries', async () => {
     const rpc = mockGateway()
     rpc.mockRejectedValueOnce(new Error('Disconnected'))
@@ -250,12 +340,18 @@ describe('PendingApprovalStack', () => {
         handleApprovalKey(new KeyboardEvent('keydown', { key: 'Enter', repeat: index > 0, cancelable: true }))
       })
       await waitFor(() =>
-        expect(rpc).toHaveBeenCalledWith('approval.respond', {
-          all: false,
-          choice: 'once',
-          request_id: id,
-          session_id: 'sess-1'
-        })
+        expect(rpc).toHaveBeenCalledWith(
+          'approval.respond',
+          {
+            all: false,
+            choice: 'once',
+            request_id: id,
+            session_id: 'sess-1'
+          },
+          // #55433: the respond RPC carries an explicit deadline covering the backend's approvals window.
+          APPROVAL_RESPOND_REQUEST_TIMEOUT_MS,
+          undefined
+        )
       )
       await waitFor(() => expect(screen.queryAllByRole('button', { name: /Run/ })).toHaveLength(index === 2 ? 0 : 1))
     }

@@ -496,11 +496,3 @@ def _render_summary_markdown(payload: TeamsMeetingSummaryPayload) -> str:
         lines += ["", f"## {heading}", body or ("No summary available." if heading == "Summary" else "- None")]
     lines += ["", f"Confidence: {payload.confidence or 'unknown'}", payload.confidence_notes or ""]
     return "\n".join(lines).strip()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

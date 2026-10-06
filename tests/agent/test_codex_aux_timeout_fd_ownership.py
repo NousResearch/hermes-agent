@@ -71,15 +71,18 @@ class TestCodexAuxiliaryTimeoutFdOwnership:
         shutdown(); the real close() must land on the owning thread in the
         adapter's ``finally``."""
 
-        def _one_keepalive_then_block():
-            # Let the owner process one keepalive, then keep it inside the
-            # stream past the watchdog window.  The Timer is consequently
-            # the only deadline observer that can win this timeout.
-            yield SimpleNamespace(type="response.in_progress")
-            time.sleep(1.0)
+        interrupted = threading.Event()
+        def _stalled():
+            assert interrupted.wait(10), "watchdog did not interrupt the stalled transport"
             yield SimpleNamespace(type="response.in_progress")
 
-        adapter, events = _adapter_with_recording_client(_one_keepalive_then_block())
+        adapter, events = _adapter_with_recording_client(_stalled())
+        socket = adapter._client._client._transport._pool._connections[0].get_extra_info("socket")
+        original_shutdown = socket.shutdown
+        def shutdown(how):
+            original_shutdown(how)
+            interrupted.set()
+        socket.shutdown = shutdown
         owner_tid = threading.get_ident()
 
         def _consume(stream, *, model, on_event):
@@ -114,6 +117,71 @@ class TestCodexAuxiliaryTimeoutFdOwnership:
         assert not stranger_closes, f"stranger-thread FD release: {stranger_closes}"
         # The owning thread released the FDs on unwind.
         assert ("client.close", owner_tid) in events, events
+
+    def test_timer_thread_never_closes_a_real_sdk_stream(self):
+        """An SDK stream's ``close()`` on an unfinished response ends in ``sock.close()``.
+        From the watchdog Timer that strands the FD under the owner's ``SSL_read``: the next
+        ``open()`` reuses the number and OpenSSL writes a TLS alert into that file (two SQLite
+        headers were clobbered this way on 2026-09-30, #130115). The Timer may only shut the
+        stream's socket down; the stream is closed by the owner."""
+
+        events = []
+        woken = threading.Event()
+
+        class _StreamSock:
+            def settimeout(self, value):
+                pass
+
+            def shutdown(self, how):
+                events.append(("stream.sock.shutdown", threading.get_ident()))
+                woken.set()
+
+            def close(self):
+                events.append(("stream.sock.close", threading.get_ident()))
+
+        stream_sock = _StreamSock()
+
+        class _SdkStream:
+            """Shaped like ``openai.Stream``: ``.response.extensions['network_stream']``."""
+
+            def __init__(self):
+                network_stream = SimpleNamespace(
+                    get_extra_info=lambda name: stream_sock if name == "socket" else None)
+                self.response = SimpleNamespace(extensions={"network_stream": network_stream})
+
+            def __iter__(self):
+                assert woken.wait(10), "watchdog did not wake the stalled stream"
+                yield SimpleNamespace(type="response.in_progress")
+
+            def close(self):
+                events.append(("stream.close", threading.get_ident()))
+                stream_sock.close()
+
+        adapter, client_events = _adapter_with_recording_client(_SdkStream())
+        owner_tid = threading.get_ident()
+
+        def _consume(stream, *, model, on_event):
+            del model
+            for event in stream:
+                on_event(event)
+            return SimpleNamespace(output=[], usage=None)
+
+        with (
+            patch("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
+            patch("agent.auxiliary_client._evict_cached_client_instance"),
+            patch("agent.codex_runtime._consume_codex_event_stream", _consume),
+            pytest.raises(TimeoutError),
+        ):
+            adapter.create(
+                messages=[{"role": "user", "content": "summarize"}],
+                timeout=300,
+            )
+
+        stranger = [(a, tid) for a, tid in events if tid != owner_tid]
+        assert stranger and all(a == "stream.sock.shutdown" for a, _ in stranger), f"stranger-thread FD release: {stranger}"
+        # The owner released the stream (and with it the socket) on unwind.
+        assert ("stream.close", owner_tid) in events, events
+        assert ("client.close", owner_tid) in client_events, client_events
 
     def test_owner_thread_deadline_hit_closes_directly(self):
         """When the OWNING thread detects the deadline in _check_cancelled,

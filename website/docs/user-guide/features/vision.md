@@ -10,7 +10,7 @@ sidebar_position: 7
 Hermes Agent supports **multimodal vision** — you can paste images from your clipboard directly into the CLI and ask the agent to analyze, describe, or work with them. Images are sent to the model as base64-encoded content blocks, so any vision-capable model can process them.
 
 :::tip
-Portal subscribers get vision-capable models (Claude, GPT-5, Gemini) in the same catalog — no extra credentials needed. See [Nous Portal](/integrations/nous-portal).
+Portal subscribers get vision-capable models (Claude, GPT-5, Gemini) in the same catalog — no extra credentials needed. See [Nous Portal](../../integrations/nous-portal.md).
 :::
 
 ## How It Works
@@ -205,10 +205,37 @@ When a user attaches an image — from the CLI clipboard, the gateway (Telegram/
 
 You don't configure this — Hermes looks up your current model's capability in the provider metadata and picks the right path automatically. The practical effect: you can switch between vision and non-vision models mid-session and image handling "just works" without changing your workflow. Text-only models get coherent context about the image rather than a broken multimodal payload they'd have to reject.
 
-Which auxiliary model handles the text-description path is configurable under `auxiliary.vision` — see [Auxiliary Models](/user-guide/configuration#auxiliary-models).
+To override the automatic choice, set `agent.image_input_mode` in `config.yaml`:
+
+| Value | Behavior |
+|-------|----------|
+| `auto` (default) | Native pixels when the model reports vision support, `vision_analyze` description otherwise. Configuring an explicit `auxiliary.vision` backend (a `provider` other than `auto`, or a `model` / `base_url`) also selects the description path, even for a vision-capable main model. |
+| `native` | Always attach pixels, even when the catalog says the model is text-only. |
+| `text` | Always route images through the `vision_analyze` describer, never attach pixels to the main request. |
+
+This is the knob to reach for when a backend accepts text but rejects native image input (for example an `openai-codex` account whose backend answers image requests with `server_error`): keep your main model and point `auxiliary.vision` at a different vision-capable provider and model (with `auxiliary.vision.provider: auto` the describer would auto-detect the same main model again). That alone switches images to the description path in `auto` mode; `agent.image_input_mode: text` makes the same choice explicit.
+
+Which auxiliary model handles the text-description path is configurable under `auxiliary.vision` — see [Auxiliary Models](../configuration.md#auxiliary-models).
 
 ### `vision_analyze` has the same dual behavior
 
-The `vision_analyze` tool itself follows the same routing. When the active main model is vision-capable **and** its provider supports image content inside tool results (currently the Anthropic, OpenAI, Azure-OpenAI, and Gemini 3.x stacks), `vision_analyze` short-circuits the auxiliary describer and returns the raw image pixels as a multimodal tool-result envelope. The main model sees the image natively on its next turn — no aux call, no text-summary information loss, no extra latency.
+The `vision_analyze` tool itself follows the same routing. When the active main model is vision-capable **and** its provider supports image content inside tool results (currently the Anthropic, OpenAI, Azure-OpenAI, and Gemini 3.x stacks), `vision_analyze` short-circuits the auxiliary describer and returns the raw image pixels as a multimodal tool-result envelope. The main model sees the image natively on its next turn — no aux call, no text-summary information loss, no extra latency. One exception: an image that is already attached natively to the current user message is not re-embedded — `vision_analyze` on that same path returns a short text result saying the image is already in context (pass a `region` to zoom into part of it, which does embed the crop).
 
 For text-only main models (or providers whose tool-result channel doesn't carry images), `vision_analyze` falls back to the legacy path: it asks the configured auxiliary vision model to describe the image and returns the description as plain text. Either way the calling tool signature is the same — the tool decides which path to take at runtime based on the active model.
+
+### SVG and other non-raster images on Responses backends
+
+Responses-style backends (for example `openai-codex`) accept only inline JPEG, PNG, GIF and WebP; any other `data:image/*` part makes them reject the **whole** request, and because the part stays in history every later turn fails the same way. Hermes handles this at the send layer: an inline **SVG** is rasterized to PNG when a rasterizer is installed (`cairosvg`, `svglib`+`reportlab`, `rsvg-convert`, or `inkscape` — the same soft dependencies `vision_analyze` uses), so the model still sees the drawing. Without a rasterizer, an SVG — and any other unsupported inline format such as BMP or TIFF — is replaced by a short text placeholder (`[image omitted: image/svg+xml is not a supported image format]`) while the valid images in the same message are still sent.
+
+### Native embeds ride the session: `vision.embed_target_bytes` and `vision.max_calls_per_image`
+
+A native `vision_analyze` result bakes the image into the tool result, and that result is re-sent on every later API call of the session. Two `config.yaml` keys bound the recurring cost:
+
+```yaml
+vision:
+  embed_target_bytes: 262144   # per-embed byte budget; clamped 64 KiB..4 MiB (default 256 KB)
+  max_calls_per_image: 3       # unset = 3 inside delegated subagents, unlimited for the main agent
+```
+
+- **`embed_target_bytes`** — images above the budget (or wider than 1568 px) are downscaled to a JPEG that fits. 256 KB keeps ordinary screenshots cheap; dense phone screenshots of tables can come out unreadable at that size, so raise it (say `1048576`) when the model keeps calling figures "unreadable". Browser screenshots delivered natively use the same budget.
+- **`max_calls_per_image`** — how often the *same* image (region crops of it included; local paths compare by resolved path) may be embedded per session. Once the cap is hit the tool returns `"vision_analyze refused: this image has already been loaded into context N time(s) …"` instead of another embed, so the model answers from what it already sees. Left unset, only delegated `delegate_task` subagents are capped (at 3): they run unattended and cannot be steered mid-loop from the CLI, and a re-load loop there once burned 158 calls on five files. Set a number to cap every session, or `0` for unlimited everywhere.

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
 from agent.secret_scope import get_secret_str
@@ -36,6 +36,34 @@ def _normalize_base_url_for_match(value) -> str:
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _key_env_secret(entry: Dict[str, Any], label: str) -> str:
+    """The credential named by ``key_env`` / ``api_key_env`` on a config block, or "".
+
+    A declared variable that resolves to nothing is logged: every custom rung substitutes
+    ``no-key-required`` for an empty key (keyless local servers), so a misnamed or unexported
+    variable otherwise surfaces only as the provider's 401/403 (#67453). A block with no key_env at
+    all stays silent — that IS the keyless-server configuration.
+    """
+    key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
+    if not key_env:
+        return ""
+    value = get_secret_str(key_env, "").strip()
+    if not value:
+        logger.warning("%s: key_env %s is set but the variable is empty/unset — the request will carry the "
+                       "placeholder no-key-required and the endpoint will reject it", label, key_env)
+    return value
+
+
+def _model_cfg_key_env_for(model_cfg: Dict[str, Any], base_url: str) -> str:
+    """``model.key_env`` for a bare ``provider: custom`` runtime, only when ``base_url`` IS the
+    configured ``model.base_url`` — the key was declared for that endpoint, never for a direct alias
+    or CUSTOM_BASE_URL pointing elsewhere."""
+    cfg_base_url = _clean(model_cfg.get("base_url")).rstrip("/")
+    if not cfg_base_url or cfg_base_url != _clean(base_url).rstrip("/"):
+        return ""
+    return _key_env_secret(model_cfg, "model")
 
 
 def _entry_url(entry: Dict[str, Any]) -> str:
@@ -116,15 +144,15 @@ def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any]) ->
         # ``providers.<name>.enabled: false`` entries stay in config but are invisible here.
         if not isinstance(entry, dict) or not is_provider_enabled(entry):
             continue
-        # API key from the env var named by key_env, else the inline api_key. Read BEFORE the
-        # alias match (scope-aware ``get_secret_str`` fails closed identically for every entry).
-        key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
-        api_key = get_secret_str(key_env, "").strip() if key_env else ""
         if requested_norm not in custom_provider_aliases(str(entry.get("name", "") or ep_name), str(ep_name)):
             continue
         base_url = _entry_url(entry)
         if not base_url:
             continue
+        # Resolve credentials only after identity and endpoint validation. Merely scanning an
+        # unrelated entry must not read its profile-scoped secret.
+        key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
+        api_key = get_secret_str(key_env, "").strip() if key_env else ""
         result: Dict[str, Any] = {"name": entry.get("name", ep_name), "base_url": base_url.strip(),
                                   "api_key": api_key or _clean(entry.get("api_key", "")), "model": entry.get("default_model", "")}
         # Command that PRINTS a short-lived credential; wrapped in a per-request token provider.
@@ -186,6 +214,22 @@ def has_named_custom_provider(requested_provider: str) -> bool:
         return _rp()._get_named_custom_provider(requested_provider) is not None
     except Exception:
         return False
+
+
+def codex_model_provider_id(requested_provider: str) -> Optional[str]:
+    """Codex ``[model_providers.<id>]`` key for a configured named custom provider — its ``custom:``
+    identity without the prefix (the ``providers:`` config key; legacy ``custom_providers:`` entries
+    use their normalized display name). None for bare ``custom``, aliases that resolve to custom
+    (ollama, vllm, …) and unknown names: codex has no stable id to look up for those (#75186)."""
+    if _normalize_custom_provider_name(requested_provider or "") in {"", "custom"}:
+        return None
+    try:
+        entry = _rp()._get_named_custom_provider(requested_provider)
+    except Exception:
+        return None
+    if not entry:
+        return None
+    return custom_provider_slug(str(entry.get("name") or ""), str(entry.get("provider_key") or "")).split(":", 1)[1] or None
 
 
 # ── identity recovery (bare "custom" -> durable ``custom:<name>``) ─────────────────────────
@@ -388,7 +432,7 @@ def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optiona
     rp = _rp()
     try:
         from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
-        endpoint = resolve_llamacpp_endpoint()
+        endpoint = resolve_llamacpp_endpoint(config=rp.load_config())
     except Exception:  # noqa: BLE001 — resolution is best-effort
         endpoint = None
     if endpoint:
@@ -414,6 +458,29 @@ def _custom_runtime(rp, base_url: str, api_key: Any, api_mode: Optional[str], **
                        api_key or "no-key-required", **extra)
 
 
+# Aliases for direct REST APIs not modeled in PROVIDER_REGISTRY, so ``provider: openai`` (aux slots,
+# background review, curator, MoA slots, the main model) resolves to a working ``custom`` endpoint
+# instead of "Unknown provider" and a silent fall-back to the main model (#116055).
+_DIRECT_API_BASE_URLS: Dict[str, str] = {"openai": "https://api.openai.com/v1"}
+
+
+def expand_direct_api_alias(provider: Optional[str], existing_base: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """``provider: openai`` → custom + the user's OpenAI endpoint, api.openai.com/v1 only as the last resort.
+
+    The ONE normalization both aux paths (``agent.auxiliary_client`` and ``resolve_runtime_provider``)
+    apply, so the same ``auxiliary.<task>.provider`` value routes identically everywhere. A
+    ``providers.openai`` entry keeps the provider name so the named-custom branch applies its base_url
+    and key; otherwise ``OPENAI_BASE_URL`` (a proxy/gateway the OPENAI_API_KEY was issued for) wins over
+    the public endpoint — sending the proxy key to api.openai.com 401s and then quarantines a valid key.
+    """
+    if not provider:
+        return provider, existing_base
+    target_base = _DIRECT_API_BASE_URLS.get(provider.strip().lower())
+    if target_base is None or _rp()._get_named_custom_provider(provider) is not None:
+        return provider, existing_base
+    return "custom", (existing_base or "").strip() or get_secret_str("OPENAI_BASE_URL", "").strip().rstrip("/") or target_base
+
+
 def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Optional[str],
                                   explicit_base_url: str) -> Dict[str, Any]:
     """Bare ``custom`` + explicit base_url (e.g. a ``model_aliases:`` direct alias)."""
@@ -427,7 +494,9 @@ def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Opt
         return pool_result
     # OLLAMA_API_KEY gets its own gate here: without it a `model_aliases:` entry pointing at
     # Ollama Cloud resolved no key at all.
-    candidates = [(explicit_api_key or "").strip(), *rp._host_gated_env_key_candidates(base_url, ollama=True)]
+    # ``model.key_env`` only when this alias endpoint IS the configured model.base_url (#67453).
+    candidates = [(explicit_api_key or "").strip(), _model_cfg_key_env_for(rp._get_model_config(), base_url),
+                  *rp._host_gated_env_key_candidates(base_url, ollama=True)]
     api_key = next((c for c in candidates if rp.has_usable_secret(c)), "")
     return _custom_runtime(rp, base_url, api_key, None, source="direct-alias", requested_provider=requested_provider)
 
@@ -464,13 +533,16 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     # treated identically here, so a YAML `provider: ollama` with a LAN/WireGuard `base_url` doesn't
     # silently fall through to OpenRouter.
     requested_norm = (requested_provider or "").strip().lower()
+    custom_provider = None
     if requested_norm in _LLAMACPP_ALIASES and not explicit_base_url:
-        return _resolve_llamacpp_runtime(requested_provider, explicit_api_key)
+        custom_provider = rp._get_named_custom_provider(requested_provider)
+        if not custom_provider:
+            return _resolve_llamacpp_runtime(requested_provider, explicit_api_key)
     if requested_norm and requested_norm != "custom" and rp._resolves_to_custom(requested_norm):
         requested_norm = "custom"
     if requested_norm == "custom" and explicit_base_url:
         return _resolve_direct_alias_runtime(requested_provider, explicit_api_key, explicit_base_url)
-    custom_provider = rp._get_named_custom_provider(requested_provider)
+    custom_provider = custom_provider or rp._get_named_custom_provider(requested_provider)
     if not custom_provider:
         return None
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
@@ -488,7 +560,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     candidates = [
         explicit_key,
         _clean(custom_provider.get("api_key", "")),
-        get_secret_str(_clean(custom_provider.get("key_env", "")), "").strip(),
+        _key_env_secret(custom_provider, f"custom provider '{custom_provider.get('name', requested_provider)}'"),
         *rp._host_gated_env_key_candidates(base_url, ollama=False),
     ]
     api_key: Any = next((c for c in candidates if rp.has_usable_secret(c)), "")

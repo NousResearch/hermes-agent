@@ -206,4 +206,47 @@ describe('list post-settle restore vs composer-only resize', () => {
       )
     )
   })
+
+  it('a genuine scroll cancels a settled bottom restore, so a later resize tick cannot yank the view back', async () => {
+    const { container } = render(<ScrollHarness messages={sessionMessages('b')} sessionKey="b" />)
+    const vp = viewportEl(container)
+
+    await settleScroll()
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H)
+
+    // Not a wheel/pointer/key gesture: a rail jump or find-in-page reveal only fires `scroll`.
+    act(() => {
+      vp.scrollTop = 1000
+      vp.dispatchEvent(new Event('scroll'))
+    })
+
+    viewportScrollHeight = SCROLL_H + 600
+    fireContentResizes()
+
+    expect(vp.scrollTop).toBe(1000)
+  })
+
+  it('a settled bottom target ignores a composer-only resize but still follows transcript growth', async () => {
+    const { container } = render(<ScrollHarness messages={sessionMessages('c')} sessionKey="c" />)
+    const vp = viewportEl(container)
+
+    await settleScroll()
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H)
+
+    // The view sits off the bottom without any cancel gesture having fired.
+    vp.scrollTop = 1000
+
+    viewportScrollHeight = SCROLL_H + 80
+    viewportClientHeight = CLIENT_H - 80
+    clearanceHeight = 200
+    fireContentResizes()
+
+    expect(vp.scrollTop).toBe(1000)
+
+    // CONTROL: real transcript growth re-pins the bottom target.
+    viewportScrollHeight = SCROLL_H + 80 + 600
+    fireContentResizes()
+
+    expect(vp.scrollTop).toBe(viewportScrollHeight - viewportClientHeight)
+  })
 })

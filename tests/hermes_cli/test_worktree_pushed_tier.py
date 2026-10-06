@@ -12,6 +12,7 @@ no network and no mocks.
 import os
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -268,12 +269,12 @@ class TestCronWorktreeMaintenance:
             lambda: [{"workdir": str(repo)}],
         )
         repos = sched._worktree_maintenance_repos()
-        assert str(repo) not in repos
+        assert repo not in [Path(p) for p in repos]
 
         # Adding .worktrees/ makes it eligible.
         (repo / ".worktrees").mkdir()
         repos = sched._worktree_maintenance_repos()
-        assert str(repo) in repos
+        assert repo in [Path(p) for p in repos]
 
     def test_maintenance_prunes_via_real_pruner(self, repo_with_bare_origin, monkeypatch):
         import cron.scheduler as sched

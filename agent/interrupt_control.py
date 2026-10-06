@@ -32,6 +32,12 @@ def interrupt_issuer(agent) -> Optional[str]:
     return str(reason).strip().replace(" ", "_")
 
 
+def interrupted_during_api_call_reason(agent) -> str:
+    """Turn exit reason for an API call cut short by an interrupt (``turn_explainers`` matches the prefix)."""
+    issuer = interrupt_issuer(agent)
+    return f"interrupted_during_api_call({issuer})" if issuer else "interrupted_during_api_call"
+
+
 def _fence_cancel_before_commit(fence, *, when_in_flight: bool, failure_log: str) -> None:
     """Call ``type(fence).cancel_before_commit(fence)`` when ``commit_in_flight`` matches.
 
@@ -212,9 +218,15 @@ class InterruptControlMixin:
         override interrupt(message=None) without hard_cancel."""
         InterruptControlMixin.interrupt(self, message, hard_cancel=True, tool_reason=tool_reason)
 
-    def clear_interrupt(self, *, preserve_redirect: bool = False) -> bool:
+    def clear_interrupt(self, *, preserve_redirect: bool = False, hard_cancel: bool = False) -> bool:
         """Clear the interrupt request and per-thread tool signal. ``preserve_redirect`` is only for the
-        conversation loop rebuilding the same logical turn after cancelling a model request."""
+        conversation loop rebuilding the same logical turn after cancelling a model request.
+        ``hard_cancel`` also drops an unconsumed pending steer: the aborted turn's next tool iteration
+        will no longer happen, and re-injecting the note into the post-stop turn would surprise the
+        user. Every other caller (redirect rebuild, error recovery, turn-boundary hygiene) continues
+        this session, so the already-accepted steer must survive: it stays buffered for the existing
+        drains — the pre-API inject, the post-batch append, or the finalizer's leftover handoff —
+        instead of silently vanishing after the surface was told it was delivered."""
         with _ic_lock(self, "_pending_redirect_lock"):
             if preserve_redirect and not _ic_slot(self, "_pending_redirect_lock", "_pending_redirect"):
                 return False
@@ -227,9 +239,12 @@ class InterruptControlMixin:
         if self._execution_thread_id is not None:
             _set_interrupt(False, self._execution_thread_id)
         _ic_signal_tool_workers(self, False)
-        # A hard interrupt supersedes any pending /steer — its target iteration will no longer happen.
-        with _ic_lock(self, "_pending_steer_lock"):
-            self._pending_steer = None
+        if hard_cancel:
+            # Hard stop only (see docstring). The comment that used to run unconditionally here
+            # claimed a hard interrupt supersedes the steer — but nothing gated this wipe on
+            # hard_cancel, so a soft clear dropped a live user message with no trace.
+            with _ic_lock(self, "_pending_steer_lock"):
+                self._pending_steer = None
         return True
 
     def steer(self, text: str) -> bool:

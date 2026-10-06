@@ -2,7 +2,6 @@
 platform home channel ("telegram"), origin (back to where the job was created), or local (files)."""
 
 import logging
-import os
 import re
 from pathlib import Path
 from datetime import datetime
@@ -35,6 +34,15 @@ def _is_silence_narration(content: Optional[str]) -> bool:
     """True when ``content`` is *only* a silence-narration token (length-guarded)."""
     stripped = content.strip() if content else ""
     return bool(stripped) and len(stripped) <= 64 and bool(_SILENCE_NARRATION.match(stripped))
+
+
+class PartialDeliveryError(RuntimeError):
+    """A split send failed after earlier chunks were delivered (``raw_response["partial_overflow"]``).
+    Callers must not fall back to re-sending the whole payload: the recipient already has the head."""
+
+    def __init__(self, message: str, result: Any):
+        super().__init__(message)
+        self.result = result
 
 
 @dataclass(frozen=True)
@@ -221,10 +229,8 @@ class DeliveryRouter:
         return path
 
     def _filter_silence_narration_enabled(self) -> bool:
-        """``HERMES_FILTER_SILENCE_NARRATION`` env overrides the ``gateway.filter_silence_narration`` flag."""
-        env = os.getenv("HERMES_FILTER_SILENCE_NARRATION")
-        return (bool(getattr(self.config, "filter_silence_narration", True)) if env is None
-                else env.strip().lower() in ("1", "true", "yes", "on"))
+        """filter silence narration based on gateway config without checking process env"""
+        return bool(getattr(self.config, "filter_silence_narration", True))
 
     def _cap_oversized_output(self, adapter: Any, content: str, job_id: str) -> str:
         """Audit-save oversized cron output; truncate it for non-chunking adapters. Above MAX_PLATFORM_OUTPUT
@@ -252,9 +258,19 @@ class DeliveryRouter:
         return content[:max(0, MAX_PLATFORM_OUTPUT - len(footer))] + footer
 
     async def _deliver_to_platform(self, target: DeliveryTarget, content: str,
-                                   metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Deliver content to a messaging platform."""
-        transport = resolve_delivery_transport(target.platform, self.config, self.adapters)
+                                   metadata: Optional[Dict[str, Any]],
+                                   transport: Optional[DeliveryTransport] = None,
+                                   ) -> Dict[str, Any]:
+        """Deliver content to a messaging platform.
+
+        ``transport`` carries an already-authorized transport past resolution:
+        the cron live lane resolved and authorized it per target (including the
+        SharedRouteAdapters satellite grant), and re-resolving from the plain
+        adapters dict cannot re-derive that grant under satellite config
+        (#115656). Omitted (None) preserves resolution for every other caller.
+        """
+        if transport is None:
+            transport = resolve_delivery_transport(target.platform, self.config, self.adapters)
         if transport is None:
             raise ValueError(f"No adapter configured for {target.platform.value}")
         if not target.chat_id:
@@ -311,5 +327,8 @@ class DeliveryRouter:
             send_metadata["thread_id"] = await _ensure_named_dm_topic(adapter, target.chat_id, named_topic, refresh=True)
             send_metadata["telegram_dm_topic_created_for_send"] = True
         if error is not None:
+            from gateway.platforms.base import BasePlatformAdapter
+            if BasePlatformAdapter._is_partial_delivery(result):
+                raise PartialDeliveryError(error, result)
             raise RuntimeError(error or f"{target.platform.value} delivery failed")
         return result

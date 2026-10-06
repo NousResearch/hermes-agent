@@ -1005,7 +1005,7 @@ def main():
 
     # Collect or load timings
     if args.from_json:
-        with open(args.from_json, encoding="utf-8") as f:
+        with open(args.from_json, encoding="utf-8-sig") as f:
             timings = json.load(f)
     else:
         repo = expect_env("GITHUB_REPOSITORY")
@@ -1041,7 +1041,7 @@ def main():
     # Load baseline
     baseline = None
     if os.path.exists(args.baseline):
-        with open(args.baseline, encoding="utf-8") as f:
+        with open(args.baseline, encoding="utf-8-sig") as f:
             baseline = json.load(f)
         print(f"Loaded baseline from {args.baseline}")
     else:

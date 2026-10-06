@@ -87,6 +87,21 @@ class TestResolveWorktreeBase:
         assert resolved == remote_head
         assert resolved != stale_local_head
 
+    def test_resolves_remote_tip_on_tag_pinned_narrow_clone(self, remote_and_clone, tmp_path):
+        """`--single-branch --branch <tag>` maps remote.origin.fetch to the tag only, so a
+        by-name fetch writes FETCH_HEAD and never creates origin/main (#125686)."""
+        clone, remote_head, _ = remote_and_clone
+        _run(["git", "tag", "v0"], clone)  # the clone's stale HEAD; origin/main is past it
+        _run(["git", "push", "origin", "v0"], clone)
+        remote = _run(["git", "remote", "get-url", "origin"], clone).stdout.strip()
+        narrow = tmp_path / "narrow"
+        _run(["git", "clone", "-q", "--single-branch", "--branch", "v0", remote, str(narrow)], tmp_path)
+
+        base_ref, label = worktree_ops._resolve_worktree_base(str(narrow))
+
+        assert (base_ref, label) == ("origin/main", "origin/main (fetched)")
+        assert _run(["git", "rev-parse", base_ref], narrow).stdout.strip() == remote_head
+
     def test_falls_back_to_head_without_remote(self, tmp_path):
         repo = tmp_path / "no-remote"
         repo.mkdir()

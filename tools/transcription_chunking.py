@@ -14,6 +14,7 @@ import logging
 import math
 import os
 import re
+import subprocess
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -82,7 +83,7 @@ def _silence_midpoints(ffmpeg: str, path: str) -> List[float]:
     try:
         result = _run_quiet([ffmpeg, "-hide_banner", "-nostats", "-i", path,
                              "-af", "silencedetect=noise=-35dB:d=0.4", "-f", "null", "-"], timeout=300)
-    except Exception as exc:  # noqa: BLE001 - silence-aware cuts are an optimisation
+    except (OSError, subprocess.SubprocessError) as exc:  # silence-aware cuts are an optimisation
         logger.debug("silencedetect failed for %s: %s", path, exc)
         return []
     starts = [float(v) for v in re.findall(r"silence_start: (-?[\d.]+)", result.stderr)]

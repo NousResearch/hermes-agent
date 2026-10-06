@@ -1197,9 +1197,7 @@ DEFAULT_CONFIG = {
             "language": "",  # auto-detect; set "en", "es", ... to force
         },
         "xai": {
-            # grok-voice-transcribe-2.0 | grok-voice-transcribe-1.0. An empty value lets
-            # STT_XAI_MODEL (or the resolver's 2.0 default) choose the multipart model.
-            "model": "",
+            "model": "",  # "" = STT_XAI_MODEL or grok-voice-transcribe-2.0; or grok-voice-transcribe-1.0
             "language": "",  # auto-detect; set "en", "es", ... to force
         },
         "elevenlabs": {

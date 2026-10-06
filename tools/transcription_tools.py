@@ -25,7 +25,7 @@ from utils import is_truthy_value
 from tools.transcription_common import (
     BUILTIN_STT_PROVIDERS, CLOUD_STT_PROVIDERS, DEFAULT_ELEVENLABS_STT_MODEL,
     DEFAULT_GROQ_STT_MODEL, DEFAULT_LOCAL_MODEL, DEFAULT_MISTRAL_STT_MODEL, DEFAULT_PROVIDER,
-    DEFAULT_STT_MODEL, DEFAULT_XAI_STT_MODEL, LOCAL_STT_COMMAND_ENV, LOCAL_STT_LANGUAGE_ENV,
+    DEFAULT_STT_MODEL, LOCAL_STT_COMMAND_ENV, LOCAL_STT_LANGUAGE_ENV,
     normalize_xai_stt_model, _error_result, _get_stt_section, _ok_result)
 from tools.transcription_audio import (
     _convert_caf_to_wav, _prepare_audio_for_transcription, _trim_silence_for_cloud_stt,
@@ -481,7 +481,7 @@ _BUILTIN_MODEL_KEYS = {
     "groq": ("groq", "model", DEFAULT_GROQ_STT_MODEL, True),
     "openai": ("openai", "model", DEFAULT_STT_MODEL, False),
     "mistral": ("mistral", "model", DEFAULT_MISTRAL_STT_MODEL, False),
-    "xai": ("xai", "model", DEFAULT_XAI_STT_MODEL, True),
+    "xai": ("xai", "model", "", True),  # blank -> normalize_xai_stt_model resolves env/default
     "elevenlabs": ("elevenlabs", "model_id", DEFAULT_ELEVENLABS_STT_MODEL, False),
     "deepinfra": ("deepinfra", "model", "", True)}
 

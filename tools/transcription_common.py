@@ -25,7 +25,7 @@ DEFAULT_STT_TIMEOUT = 60.0
 # /v1/stt's server default moved from grok-voice-transcribe-1.0 to 2.0 between Sep 17 and
 # Sep 21 2026 and 1.0 is slated for retirement; naming the model keeps the wire deterministic
 # and lets STT_XAI_MODEL / stt.xai.model pin 1.0 for a rollback.
-DEFAULT_XAI_STT_MODEL = os.getenv("STT_XAI_MODEL", "grok-voice-transcribe-2.0")
+XAI_STT_MODEL_ENV = "STT_XAI_MODEL"
 LEGACY_XAI_STT_MODEL = "grok-stt"
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
@@ -86,10 +86,11 @@ class STTResponseError(ValueError):
 
 
 def normalize_xai_stt_model(model: Any) -> str:
-    """Return a valid xAI STT model, including compatibility for Hermes' old alias."""
+    """Return a valid xAI STT model: blank or Hermes' old ``grok-stt`` alias -> ``STT_XAI_MODEL`` (read
+    per call, so a profile's env applies), else the catalog default."""
     value = str(model or "").strip()
     if not value or value == LEGACY_XAI_STT_MODEL:
-        return DEFAULT_XAI_STT_MODEL
+        return os.getenv(XAI_STT_MODEL_ENV, "").strip() or STT_MODEL_CATALOG["xai"][0]
     return value
 
 

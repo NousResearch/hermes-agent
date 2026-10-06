@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, SecretStr, StrictBool, field_validator
+from pydantic import BaseModel, Field, SecretStr, StrictBool, field_validator
 
 
 class ConfigUpdate(BaseModel):
@@ -42,6 +42,9 @@ class CustomEndpointModelDetail(BaseModel):
     id: str
     canonical_model: Optional[str] = None
     reasoning_effort: Optional[str] = None
+
+class MemoryProviderActionRequest(BaseModel):
+    payload: Dict[str, Any] = Field(default_factory=dict)
 
 class CustomEndpointUpdate(BaseModel):
     id: str = ""
@@ -540,4 +543,3 @@ class _PluginProvidersPutBody(BaseModel):
 
 class _PluginVisibilityBody(BaseModel):
     hidden: bool
-

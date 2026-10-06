@@ -14,26 +14,35 @@ import { controlVariants } from '@/components/ui/control'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 
+export interface SearchableSelectOption {
+  label: string
+  value: string
+}
+
+type SearchableSelectOptionInput = SearchableSelectOption | string
+
 /**
  * cmdk filter score for one option. Case-insensitive substring match, with
  * the final path segment (after the last "/") ranked above matches anywhere
  * else so "york" ranks "America/New_York" over "America/New_York/Special".
  * Exported for tests.
  */
-export function rankSearchOption(option: string, search: string): number {
+export function rankSearchOption(option: string, search: string, keywords: string[] = []): number {
   const lower = search.toLowerCase()
-  const itemLower = option.toLowerCase()
-  const slash = itemLower.lastIndexOf('/')
+  let score = 0
 
-  if (slash !== -1 && itemLower.slice(slash + 1).includes(lower)) {
-    return 2
+  for (const candidate of [option, ...keywords]) {
+    const itemLower = candidate.toLowerCase()
+    const slash = itemLower.lastIndexOf('/')
+
+    if (slash !== -1 && itemLower.slice(slash + 1).includes(lower)) {
+      score = Math.max(score, 2)
+    } else if (itemLower.includes(lower)) {
+      score = Math.max(score, 1)
+    }
   }
 
-  if (itemLower.includes(lower)) {
-    return 1
-  }
-
-  return 0
+  return score
 }
 
 /**
@@ -52,16 +61,24 @@ export function SearchableSelect({
   options,
   placeholder = 'Search…',
   emptyMessage = 'No results found.',
-  clearLabel
+  clearLabel,
+  disabled = false,
+  id,
+  invalid = false,
+  required = false
 }: {
   value: string
   onChange: (value: string) => void
-  options: string[]
+  options: SearchableSelectOptionInput[]
   placeholder?: string
   emptyMessage?: string
   /** When set, prepends a "clear" item that sets the value to ''.
    *  Matches the existing <Select> pattern of EMPTY_SELECT_VALUE + "(none)". */
   clearLabel?: string
+  disabled?: boolean
+  id?: string
+  invalid?: boolean
+  required?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -74,7 +91,12 @@ export function SearchableSelect({
     [onChange]
   )
 
-  const displayValue = value !== '' && value !== undefined ? value : placeholder
+  const normalizedOptions = options.map(option =>
+    typeof option === 'string' ? { label: option, value: option } : option
+  )
+
+  const selectedOption = normalizedOptions.find(option => option.value === value)
+  const displayValue = value !== '' && value !== undefined ? (selectedOption?.label ?? value) : placeholder
 
   return (
     <Popover onOpenChange={setOpen} open={open}>
@@ -82,6 +104,8 @@ export function SearchableSelect({
         <button
           aria-expanded={open}
           aria-haspopup="listbox"
+          aria-invalid={invalid || undefined}
+          aria-required={required || undefined}
           className={cn(
             controlVariants(),
             'flex items-center justify-between gap-2 whitespace-nowrap',
@@ -94,6 +118,8 @@ export function SearchableSelect({
             !value && 'text-muted-foreground'
           )}
           data-slot="searchable-select-trigger"
+          disabled={disabled}
+          id={id}
           ref={triggerRef}
           role="combobox"
           type="button"
@@ -109,7 +135,7 @@ export function SearchableSelect({
       <PopoverContent align="start" className="min-w-(--radix-popover-trigger-width)" variant="menu">
         <Command filter={rankSearchOption} variant="menu">
           <CommandInput autoFocus placeholder={placeholder} />
-          <CommandList>
+          <CommandList className="max-h-64 overscroll-contain">
             <CommandEmpty>{emptyMessage}</CommandEmpty>
             <CommandGroup>
               {clearLabel && (
@@ -118,10 +144,15 @@ export function SearchableSelect({
                   <CommandItemCheck checked={value === ''} />
                 </CommandItem>
               )}
-              {options.map(option => (
-                <CommandItem key={option} onSelect={() => handleSelect(option)} value={option}>
-                  <span className="truncate">{option}</span>
-                  <CommandItemCheck checked={option === value} />
+              {normalizedOptions.map(option => (
+                <CommandItem
+                  key={option.value}
+                  keywords={[option.label]}
+                  onSelect={() => handleSelect(option.value)}
+                  value={option.value}
+                >
+                  <span className="truncate">{option.label}</span>
+                  <CommandItemCheck checked={option.value === value} />
                 </CommandItem>
               ))}
             </CommandGroup>

@@ -27,7 +27,7 @@ sys.modules.setdefault("telegram", _tg)
 sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
-from agent.i18n import t
+from agent.i18n import SUPPORTED_LANGUAGES, t
 from gateway.platforms.base import SessionSource
 from gateway.platforms.event import MessageEvent, MessageType
 
@@ -65,9 +65,12 @@ def _make_runner():
 
 
 @pytest.mark.parametrize("key", DEFERRAL_KEYS)
-def test_deferral_replies_name_the_stop_command(key):
-    """Each acknowledgement a deferred follow-up produces must name /stop (#133817)."""
-    assert "/stop" in t(f"gateway.busy.{key}")
+@pytest.mark.parametrize("lang", SUPPORTED_LANGUAGES)
+def test_deferral_replies_name_the_stop_command(key, lang):
+    """Each acknowledgement a deferred follow-up produces must name /stop in every shipped
+    catalog (#133817) — ``t()`` falls back to ``en`` only when a key is *missing*, so the
+    contract has to hold per language or translated users lose the escape hatch."""
+    assert "/stop" in t(f"gateway.busy.{key}", lang=lang)
 
 
 @pytest.mark.parametrize("key", NON_DEFERRAL_KEYS)

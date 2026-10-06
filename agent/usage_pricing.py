@@ -636,6 +636,19 @@ def normalize_usage(
     reasoning_tokens = _first_nonzero(
         u, ("output_tokens_details", "reasoning_tokens"), ("completion_tokens_details", "reasoning_tokens")
     )
+    # Canonical semantics: reasoning is a breakdown OF output_tokens (OpenAI documents the details field
+    # that way, and the Gemini adapter folds thoughts into completion_tokens to match). Some providers
+    # report it on top instead, so it would be neither counted nor priced (#68081). The raw total says
+    # which: it covers prompt + output + reasoning only when reasoning is additive. Without a total, a
+    # reasoning count larger than the output cannot be a subset of it.
+    if reasoning_tokens:
+        raw_total = _usage_field(u, "total_tokens")
+        additive = (
+            raw_total == prompt_total + output_tokens + reasoning_tokens if raw_total
+            else reasoning_tokens > output_tokens
+        )
+        if additive:
+            output_tokens += reasoning_tokens
 
     # On MiniMax-M3's Anthropic wire, cache_read_input_tokens carries a constant
     # +128 floor and cache_creation is always 0, so cache_read is not a reliable
@@ -698,13 +711,6 @@ def estimate_usage_cost(
     for tokens, rate, rate_above, note in (
         (usage.input_tokens, entry.input_cost_per_million, entry.input_cost_per_million_above, ()),
         (usage.output_tokens, entry.output_cost_per_million, entry.output_cost_per_million_above, ()),
-        # Reasoning tokens are billed by providers as completion tokens (confirmed
-        # against OpenRouter per-call billing, #68081). normalize_usage captures them
-        # as a separate additive bucket disjoint from output_tokens, so without this
-        # they were silently dropped from cost and reasoning-model spend undercounted.
-        # Priced at the output rate so above-tier context rates apply to them too; a
-        # missing output rate with reasoning tokens present reports unknown, not $0.
-        (usage.reasoning_tokens, entry.output_cost_per_million, entry.output_cost_per_million_above, ()),
         (usage.cache_read_tokens, entry.cache_read_cost_per_million, entry.cache_read_cost_per_million_above,
          ("cache-read pricing unavailable for route",)),
         (usage.cache_write_tokens, entry.cache_write_cost_per_million, entry.cache_write_cost_per_million_above,

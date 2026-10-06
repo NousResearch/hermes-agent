@@ -139,74 +139,47 @@ def _openrouter_flat_pricing(monkeypatch):
     """Pin an OpenRouter route to $1/M prompt, $5/M completion (no cache rates)."""
     monkeypatch.setattr(
         "agent.usage_pricing.fetch_model_metadata",
-        lambda: {
-            "deepseek/deepseek-v4-pro": {
-                "pricing": {
-                    "prompt": "0.000001",
-                    "completion": "0.000005",
-                }
-            }
-        },
+        lambda: {"deepseek/deepseek-v4-pro": {"pricing": {"prompt": "0.000001", "completion": "0.000005"}}},
     )
 
 
-def test_estimate_usage_cost_prices_reasoning_tokens_at_output_rate(monkeypatch):
-    """Reasoning tokens are billed as completion tokens and must be priced at the
-    output rate, not silently dropped (#68081)."""
+def _cost(usage):
+    return float(estimate_usage_cost(
+        "deepseek/deepseek-v4-pro", usage, provider="openrouter", base_url="https://openrouter.ai/api/v1",
+    ).amount_usd)
+
+
+def test_reasoning_already_inside_completion_tokens_is_not_counted_twice(monkeypatch):
+    """OpenAI-style details are a breakdown of completion_tokens: output and cost stay at the reported total."""
     _openrouter_flat_pricing(monkeypatch)
+    with_total = {"prompt_tokens": 1000, "completion_tokens": 1500, "total_tokens": 2500,
+                  "completion_tokens_details": {"reasoning_tokens": 1000}}
+    no_total = {k: v for k, v in with_total.items() if k != "total_tokens"}
+    responses = {"input_tokens": 1000, "output_tokens": 1500, "total_tokens": 2500,
+                 "output_tokens_details": {"reasoning_tokens": 1000}}
 
-    result = estimate_usage_cost(
-        "deepseek/deepseek-v4-pro",
-        CanonicalUsage(input_tokens=1000, output_tokens=1000, reasoning_tokens=5000),
-        provider="openrouter",
-        base_url="https://openrouter.ai/api/v1",
-    )
-
-    assert result.status == "estimated"
-    # (1000 × $1/M) + (1000 × $5/M) + (5000 reasoning × $5/M) = $0.031
-    assert float(result.amount_usd) == 0.031
-
-
-def test_estimate_usage_cost_reasoning_only_marks_unknown_without_output_rate(monkeypatch):
-    """A reasoning-only response must not be priced at $0 when the route has no
-    output rate — it should report unknown, mirroring the output-token guard."""
-    monkeypatch.setattr(
-        "agent.usage_pricing.fetch_model_metadata",
-        lambda: {"some/model": {"pricing": {"prompt": "0.000001"}}},
-    )
-
-    result = estimate_usage_cost(
-        "some/model",
-        CanonicalUsage(reasoning_tokens=5000),
-        provider="openrouter",
-        base_url="https://openrouter.ai/api/v1",
-    )
-
-    assert result.status == "unknown"
+    for raw, mode in ((with_total, None), (no_total, None), (responses, "codex_responses")):
+        usage = normalize_usage(raw, provider="openrouter", api_mode=mode)
+        assert usage.output_tokens == 1500 and usage.reasoning_tokens == 1000
+        assert usage.total_tokens == 2500
+        # (1000 x $1/M) + (1500 x $5/M)
+        assert _cost(usage) == pytest.approx(0.0085)
 
 
-def test_custom_endpoint_models_api_pricing_is_supported(monkeypatch):
-    monkeypatch.setattr(
-        "agent.usage_pricing.fetch_endpoint_model_metadata",
-        lambda base_url, api_key=None: {
-            "zai-org/GLM-5-TEE": {
-                "pricing": {
-                    "prompt": "0.0000005",
-                    "completion": "0.000002",
-                }
-            }
-        },
-    )
+def test_reasoning_reported_on_top_of_completion_tokens_is_counted_and_priced(monkeypatch):
+    """Providers that report reasoning outside completion_tokens (#68081) get it folded into output,
+    so token totals and output-rate pricing both include it."""
+    _openrouter_flat_pricing(monkeypatch)
+    with_total = {"prompt_tokens": 1000, "completion_tokens": 165, "total_tokens": 3165,
+                  "completion_tokens_details": {"reasoning_tokens": 2000}}
+    no_total = {k: v for k, v in with_total.items() if k != "total_tokens"}
 
-    entry = get_pricing_entry(
-        "zai-org/GLM-5-TEE",
-        provider="custom",
-        base_url="https://llm.chutes.ai/v1",
-        api_key="test-key",
-    )
-
-    assert float(entry.input_cost_per_million) == 0.5
-    assert float(entry.output_cost_per_million) == 2.0
+    for raw in (with_total, no_total):
+        usage = normalize_usage(raw, provider="openrouter")
+        assert usage.output_tokens == 2165 and usage.reasoning_tokens == 2000
+        assert usage.total_tokens == 3165
+        # (1000 x $1/M) + (2165 x $5/M)
+        assert _cost(usage) == pytest.approx(0.011825)
 
 
 

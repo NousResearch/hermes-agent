@@ -1718,6 +1718,7 @@ def run_conversation(
     from agent.turn_context import export_current_turn_boundary
     from tools.vision_tools_history_budget import native_turn_images
 
+    agent._reopen_steer()
     # Images attached natively to this user turn stay visible to vision_analyze for the turn, so
     # it does not embed the same pixels a second time into the same request (#76411).
     with native_turn_images(user_message):
@@ -1737,6 +1738,14 @@ def run_conversation(
             turn_author=turn_author,
             title_user_message=title_user_message,
         )
+    # A /steer with no tool batch left to drain into (it landed after the final response, or the
+    # turn ended on a path that skips finalize_turn) is handed back as the next user turn; left in
+    # the slot, the next turn's pre-API drain would find it with this turn already persisted. The
+    # drain also closes acceptance, so a steer sent while the surface still shows the turn busy is
+    # rejected (and queued by the surface) instead of acknowledged and stranded.
+    _leftover_steer = agent._close_steer() if isinstance(result, dict) else None
+    if _leftover_steer:
+        result["pending_steer"] = _leftover_steer
     result = export_current_turn_boundary(agent, result, user_message)
     _close_durable_failed_turn(agent, result)
     return result

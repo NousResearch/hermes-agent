@@ -351,6 +351,28 @@ def test_sensitive_env_files_hidden_from_listing(forced_files_client):
     assert ".env.prod" not in names
 
 
+@pytest.mark.require_symlinks
+def test_dangling_symlink_keeps_directory_listing_browsable(forced_files_client):
+    """Regression test for #131659: one dangling symlink/junction in a listed
+    directory must surface as a flagged row, not 500 the whole listing."""
+    client, root = forced_files_client
+
+    root.mkdir(parents=True, exist_ok=True)
+    regular = root / "config.txt"
+    regular.write_text("safe content")
+    # Relative target so the resolved path stays inside the managed root.
+    (root / "broken-link").symlink_to(root / "missing-target")
+
+    listing = client.get("/api/files", params={"path": str(root)})
+    assert listing.status_code == 200
+    entries = {e["name"]: e for e in listing.json()["entries"]}
+    assert "config.txt" in entries
+    broken = entries["broken-link"]
+    assert broken["broken"] is True
+    assert broken["is_directory"] is False
+    assert broken["mtime"] > 0
+
+
 
 
 

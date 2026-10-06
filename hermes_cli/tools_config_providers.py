@@ -125,7 +125,17 @@ _PLUGIN_ROW_BUILDERS = {
     "Video Generation": _plugin_video_gen_providers,
     "Web Search & Extract": _plugin_web_search_providers,
     "Browser Automation": _plugin_browser_providers,
-    "Text-to-Speech": _plugin_tts_providers}
+    "Text-to-Speech": _plugin_tts_providers,
+    "Computer Use (macOS/Windows/Linux)": lambda: _computer_use_provider_rows()}
+
+
+def _computer_use_provider_rows() -> list[dict]:
+    """Rows for installed computer-use providers other than the built-in ``cua`` (hand-written row with its
+    install post-setup). Read from plugin.yaml without importing: an unselected provider stays dormant."""
+    from plugins.computer_use import DEFAULT_BACKEND, discover_computer_use_providers
+
+    return [{"name": name, "badge": "", "tag": desc, "env_vars": [], "computer_use_backend": name}
+            for name, desc in discover_computer_use_providers() if name != DEFAULT_BACKEND]
 
 
 def _visible_providers(

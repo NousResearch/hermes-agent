@@ -6,5 +6,10 @@ import type { OverlayNavGroup, OverlayNavLink } from '../overlays/overlay-split-
 export function SettingsSubpageHeader({ group, child }: { group: OverlayNavGroup; child?: OverlayNavLink }) {
   const { t } = useI18n()
 
-  return <OverlayBreadcrumbHeader child={child} group={group} rootLabel={t.commandCenter.settings} />
+  // A third rail level (a plugin's sub-page under Settings ▸ Plugins).
+  const grandchild = child?.children?.find(link => link.active)
+
+  return (
+    <OverlayBreadcrumbHeader child={child} grandchild={grandchild} group={group} rootLabel={t.commandCenter.settings} />
+  )
 }

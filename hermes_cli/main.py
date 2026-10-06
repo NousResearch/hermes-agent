@@ -105,6 +105,10 @@ _ONESHOT_CLEANUPS = (
     ("tools.browser_tool_lifecycle", "_emergency_cleanup_all_sessions", {}, Exception),
     ("tools.mcp_tool_lifecycle", "shutdown_mcp_servers", {}, BaseException),
     ("agent.auxiliary_client", "shutdown_cached_clients", {}, Exception),
+    # A no-op unless this run booted the managed llama-server (atexit's hook is skipped here).
+    ("hermes_cli.local_runtime.bootstrap", "shutdown_local_runtime", {}, Exception),
+    # The atexit hook that closes the metrics session never runs past os._exit.
+    ("hermes_cli.observability.relay_shared_metrics", "shutdown_runtimes", {}, Exception),
 )
 
 
@@ -342,7 +346,6 @@ from typing import Optional
 
 
 from hermes_cli.subcommands.cron import build_cron_parser
-from hermes_cli.subcommands.sync import build_sync_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
@@ -593,6 +596,7 @@ def _apply_profile_override() -> None:
     _explicit_cli_profile = None
     argv = sys.argv[1:]
     profile_name, consume, profile_index = _scan_profile_flag(argv)
+    from_sticky_profile = False
 
     # HERMES_HOME already set with no explicit flag: trust it only when it
     # points at a specific profile dir ("profiles" as immediate parent). If it
@@ -614,6 +618,7 @@ def _apply_profile_override() -> None:
                 name = active_path.read_text(encoding="utf-8-sig").strip()
                 if name and name != "default":
                     profile_name = name  # consume stays 0: nothing to strip
+                    from_sticky_profile = True
         except (UnicodeDecodeError, OSError):
             pass  # corrupted file, skip
 
@@ -625,8 +630,21 @@ def _apply_profile_override() -> None:
         hermes_home = resolve_profile_env(profile_name)
     except FileNotFoundError as exc:
         hermes_home = _resolve_sudo_user_profile_env(profile_name)
+        error = str(exc)
+        if not hermes_home and from_sticky_profile:
+            from hermes_cli.main_profile_recovery import is_stale_profile_recovery_command
+
+            if is_stale_profile_recovery_command(argv):
+                hermes_home = resolve_profile_env("default")
+                print(
+                    f"Warning: saved profile '{profile_name}' no longer exists; "
+                    "running this recovery command in the default profile.",
+                    file=sys.stderr,
+                )
+            else:
+                error = f"Saved profile '{profile_name}' no longer exists. Switch back with: hermes profile use default"
         if not hermes_home:
-            print(f"Error: {exc}", file=sys.stderr)
+            print(f"Error: {error}", file=sys.stderr)
             sys.exit(1)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -773,6 +791,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_plugin_provider,
     _is_profile_plugin_flow_provider,
 )
+from hermes_cli.model_setup_flows_local import _model_flow_local
 logger = logging.getLogger(__name__)
 from hermes_cli.main_agent_cmds import (
     cmd_acp,
@@ -784,7 +803,6 @@ from hermes_cli.main_agent_cmds import (
 )
 from hermes_cli.main_platform_setup import (
     cmd_slack,
-    cmd_sync,
     cmd_whatsapp,
     cmd_whatsapp_cloud,
 )
@@ -1851,6 +1869,9 @@ def cmd_chat(args):
         os.environ["HERMES_SESSION_SOURCE_EXPLICIT"] = "1"
 
     _pin_kanban_board_env()
+    from hermes_cli.observability.shared_metrics_consent import offer_consent_before_chat
+
+    offer_consent_before_chat(args)
     _confirm_startup_expensive_model_override(args)
 
     passthrough = {k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH}
@@ -2002,6 +2023,7 @@ _PROVIDER_MODEL_FLOWS = {
     "copilot-acp": lambda c, m, a: _model_flow_copilot_acp(c, m),
     "copilot": lambda c, m, a: _model_flow_copilot(c, m),
     "custom": lambda c, m, a: _model_flow_custom(c),
+    "llamacpp": lambda c, m, a: _model_flow_local(c, m),
     "anthropic": lambda c, m, a: _model_flow_anthropic(c, m),
     "kimi-coding": lambda c, m, a: _model_flow_kimi(c, m),
     "stepfun": lambda c, m, a: _model_flow_stepfun(c, m),
@@ -2344,14 +2366,14 @@ def cmd_uninstall(args):
         return
 
     if getattr(args, "gui", False):
-        if not getattr(args, "yes", False):
+        if not getattr(args, "yes", False) and not getattr(args, "dry_run", False):
             _require_tty("uninstall --gui")
         from hermes_cli.uninstall import run_gui_uninstall
 
         run_gui_uninstall(args)
         return
 
-    if not getattr(args, "yes", False):
+    if not getattr(args, "yes", False) and not getattr(args, "dry_run", False):
         _require_tty("uninstall")
     from hermes_cli.uninstall import run_uninstall
 
@@ -2472,6 +2494,10 @@ from hermes_cli.update_receipt import update_receipt_scope
 @update_receipt_scope()
 def cmd_update(args):
     """Update Hermes Agent: hangup protection + update lock around ``_cmd_update_impl``."""
+    # Marks this frame as the CURRENT updater for
+    # _old_updater.in_historical_update(); historical on-disk updaters do not
+    # declare this local, so only they hand off through retired shims.
+    _hermes_current_updater_frame = True
     from hermes_cli.update_owning_install import retarget_to_owning_install
 
     retarget_to_owning_install(PROJECT_ROOT)
@@ -2792,6 +2818,7 @@ def cmd_dashboard(args):
     _ssh_session_token = _read_ssh_session_token_file(_token_file) if _token_file else None
     _mcp_discovery_after_bind = _dashboard_prepare_runtime(args, _headless_backend)
 
+    from hermes_cli.dashboard_procs import BACKEND_LOCK_NAME
     from hermes_cli.web_server import start_server
 
     # Interactive auth setup: if this bind will engage the auth gate but no
@@ -2817,6 +2844,8 @@ def cmd_dashboard(args):
         ssh_session_token=_ssh_session_token,
         ssh_owner_nonce=_ssh_owner_nonce,
         start_mcp_discovery_after_bind=_mcp_discovery_after_bind,
+        # The validated token file lives in desktop-ssh/<ownershipId>/, next to the Desktop's lock.
+        ssh_lock_path=Path(_token_file).parent / BACKEND_LOCK_NAME if _token_file else None,
     )
 
 
@@ -2876,7 +2905,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "prompt-size",
         "resume",
         "send", "sessions", "setup",
-        "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
+        "skin", "skills", "slack", "status", "tools", "uninstall", "update",
         "usage", "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
@@ -3464,7 +3493,6 @@ def _build_cli_parser():
     build_status_parser(subparsers, cmd_status=cmd_status)
     build_pause_parser(subparsers)
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
-    build_sync_parser(subparsers, cmd_sync=cmd_sync)
     build_webhook_parser(subparsers, cmd_webhook=cmd_webhook)
 
     from hermes_cli.subcommands.peer import build_peer_parser

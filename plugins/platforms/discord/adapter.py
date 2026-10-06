@@ -25,7 +25,7 @@ import threading
 import time
 import traceback
 from collections import defaultdict
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
 from urllib.parse import quote, urljoin
 
@@ -78,6 +78,7 @@ class _Snowflake:
 
     def __init__(self, id: int) -> None:  # noqa: A002 - matches discord API
         self.id = id
+
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
@@ -707,14 +708,27 @@ class VoiceReceiver:
     MIN_SPEECH_DURATION = 0.5  # minimum seconds to process (skip noise)
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
+    REKEY_FAILURE_STREAK = 25  # consecutive NaCl failures → re-resolve creds
 
     def __init__(self, voice_client, allowed_user_ids: set = None):
         self._vc = voice_client
         self._allowed_user_ids = allowed_user_ids or set()
         self._running = False
-        self._secret_key: Optional[bytes] = None
-        self._dave_session = None
+
+        # Decryption state, kept as ONE tuple (secret_key, dave_session,
+        # dave_protocol_version, dave_downgraded) so the receive thread
+        # reads a consistent generation in a single reference load while
+        # refreshes happen on other threads — two separate assignments
+        # could pair a new key with an old session for a packet.
+        self._creds: tuple = (b"", None, 0, False)
         self._bot_ssrc: int = 0
+        # Monotonic deadline while DAVE plaintext passthrough is allowed
+        # (mirrors discord.py's set_passthrough_mode windows, see the
+        # voice-ws hook).  Replace-semantics: an upgrade's 10s grace
+        # SHORTENS a residual downgrade window, never extends it.
+        self._dave_passthrough_until: float = 0.0
+
+        # SSRC -> user_id mapping (populated from SPEAKING events)
         self._ssrc_to_user: Dict[int, int] = {}
         self._lock = threading.Lock()
         self._buffers: Dict[int, bytearray] = defaultdict(bytearray)
@@ -726,18 +740,110 @@ class VoiceReceiver:
         # Debug logging counter (instance-level to avoid cross-instance races)
         self._packet_debug_count = 0
 
-    # --- Lifecycle ---
+        # Decode-health counters (logged at teardown) and the NaCl failure
+        # streak used to detect stale credentials after a re-key.
+        self._decode_ok = 0
+        self._decode_failed = 0
+        self._dave_unmapped_dropped = 0
+        self._nacl_fail_streak = 0
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def start(self):
         """Start listening for voice packets."""
         conn = self._vc._connection
-        self._secret_key = bytes(conn.secret_key)
-        self._dave_session = conn.dave_session
-        self._bot_ssrc = conn.ssrc
+        self._resolve_credentials(conn)
+
         self._install_speaking_hook(conn)
         conn.add_socket_listener(self._on_packet)
         self._running = True
         logger.info("VoiceReceiver started (bot_ssrc=%d)", self._bot_ssrc)
+
+    def _resolve_credentials(self, conn) -> None:
+        """Read the current decryption state from the live connection.
+
+        Discord rotates the transport ``secret_key`` on every voice
+        (re)connect (op 4 SESSION_DESCRIPTION), and ``reinit_dave_session``
+        REPLACES ``conn.dave_session`` with a new object when none existed
+        yet — e.g. when DAVE finishes negotiating after this receiver
+        started.  Credentials must therefore be re-resolvable at runtime;
+        a one-time snapshot decrypts nothing after either event, silently.
+
+        ``dave_protocol_version`` rides along because a non-null session is
+        NOT proof frames are encrypted: after a downgrade transition the
+        session object survives with the protocol at 0 and senders emit
+        plaintext.
+        """
+        self._creds = (
+            bytes(conn.secret_key),
+            conn.dave_session,
+            int(getattr(conn, "dave_protocol_version", 0) or 0),
+            bool(getattr(conn, "dave_downgraded", False)),
+        )
+        self._bot_ssrc = conn.ssrc
+        # A receiver can start (or refresh) while a downgrade transition is
+        # already pending — upstream has passthrough enabled for up to 120s
+        # but we never saw the op 21.  Seed the window from the connection's
+        # physical pending-transition state; the entry is popped on execute,
+        # so this cannot re-grant after the transition completes.
+        pending = getattr(conn, "dave_pending_transitions", None) or {}
+        if 0 in pending.values() and time.monotonic() >= self._dave_passthrough_until:
+            self.note_dave_passthrough_window(120.0)
+
+    @property
+    def _secret_key(self) -> bytes:
+        return self._creds[0]
+
+    @property
+    def _dave_session(self):
+        return self._creds[1]
+
+    @property
+    def _dave_protocol_version(self) -> int:
+        return self._creds[2]
+
+    @property
+    def _dave_downgraded(self) -> bool:
+        return self._creds[3]
+
+    def note_dave_passthrough_window(self, seconds: float) -> None:
+        """Open a plaintext-passthrough grace window for unmapped SSRCs.
+
+        Mirrors discord.py's own ``set_passthrough_mode`` calls: a pending
+        downgrade transition allows plaintext for up to 120s, and a
+        confirmed upgrade-after-downgrade allows a 10s grace while senders
+        catch up.  Replace-semantics, matching upstream: each grant resets
+        the deadline, so an upgrade's short grace supersedes a residual
+        downgrade window instead of being swallowed by it.
+        """
+        self._dave_passthrough_until = time.monotonic() + seconds
+
+    def refresh_credentials(self, reason: str) -> None:
+        """Re-resolve decryption state from the live connection.
+
+        Cheap and idempotent (attribute reads plus one small copy), so
+        callers invoke it on every trigger — session description, DAVE
+        epoch prepare, a membership change in the channel, or a decrypt
+        failure streak — without needing to coalesce.
+        """
+        if not self._running:
+            return
+        try:
+            conn = self._vc._connection
+            self._resolve_credentials(conn)
+            self._nacl_fail_streak = 0
+            logger.info(
+                "VoiceReceiver credentials refreshed (%s; bot_ssrc=%d, dave=%s)",
+                reason,
+                self._bot_ssrc,
+                "on" if self._dave_session else "off",
+            )
+        except Exception as e:
+            logger.warning(
+                "VoiceReceiver credential refresh failed (%s): %s", reason, e
+            )
 
     def stop(self):
         """Stop listening and clean up."""
@@ -751,7 +857,13 @@ class VoiceReceiver:
             self._last_packet_time.clear()
             self._decoders.clear()
             self._ssrc_to_user.clear()
-        logger.info("VoiceReceiver stopped")
+        logger.info(
+            "VoiceReceiver stopped (frames ok=%d, decrypt_failed=%d, "
+            "dave_unmapped_dropped=%d)",
+            self._decode_ok,
+            self._decode_failed,
+            self._dave_unmapped_dropped,
+        )
 
     def pause(self):
         self._paused = True
@@ -781,6 +893,47 @@ class VoiceReceiver:
                     receiver_self.map_ssrc(int(ssrc), int(user_id))
             if original_hook:
                 await original_hook(ws, msg)
+            # Re-resolve decryption state after the events that change it.
+            # DiscordVoiceWebSocket.received_message dispatches the op (which
+            # is what updates conn.secret_key / conn.dave_session /
+            # conn.dave_protocol_version) BEFORE calling this hook, so the
+            # refresh reads the new values:
+            #   op 4  SESSION_DESCRIPTION — new transport key, and
+            #         reinit_dave_session() may replace conn.dave_session
+            #   op 24 DAVE_PREPARE_EPOCH  — epoch 1 recreates the MLS group
+            #   op 21 DAVE_PREPARE_TRANSITION with protocol_version 0 —
+            #         discord.py opens a 120s plaintext passthrough window
+            #         (set_passthrough_mode(True, 120)); mirror it so the
+            #         unmapped-SSRC gate doesn't drop legitimate plaintext
+            #   op 22 DAVE_EXECUTE_TRANSITION — the protocol version just
+            #         changed; refresh, plus a 10s grace mirroring the
+            #         upgrade path's set_passthrough_mode(True, 10)
+            if isinstance(msg, dict):
+                op = msg.get("op")
+                if op in (4, 24):
+                    receiver_self.refresh_credentials(f"voice ws op {op}")
+                elif op == 21:
+                    if (msg.get("d") or {}).get("protocol_version") == 0:
+                        # Pending downgrade: upstream enables plaintext
+                        # passthrough for up to 120s (set_passthrough_mode).
+                        receiver_self.note_dave_passthrough_window(120.0)
+                elif op == 22:
+                    # A transition may have executed; refresh and detect the
+                    # upgrade-after-downgrade EDGE (dave_downgraded flipping
+                    # True -> False) — the only case upstream grants the 10s
+                    # passthrough grace.  Same-version transitions and
+                    # unknown/duplicate ids change no state upstream, so no
+                    # edge fires and no window opens.
+                    was_downgraded = receiver_self._dave_downgraded
+                    receiver_self.refresh_credentials("voice ws op 22")
+                    if (
+                        was_downgraded
+                        and not receiver_self._dave_downgraded
+                        and receiver_self._dave_protocol_version > 0
+                    ):
+                        receiver_self.note_dave_passthrough_window(10.0)
+
+        # Set on connection state (for future reconnects)
         conn.hook = wrapped_hook
         try:
             from discord.utils import MISSING
@@ -795,6 +948,12 @@ class VoiceReceiver:
     def _on_packet(self, data: bytes):
         if not self._running or self._paused:
             return
+
+        # One consistent credential generation for this packet — a refresh
+        # on another thread swaps the whole tuple, never half of it.
+        secret_key, dave_session, dave_pver, _dave_downgraded = self._creds
+
+        # Log first few raw packets for debugging
         self._packet_debug_count += 1
         if self._packet_debug_count <= 5:
             logger.debug(
@@ -842,11 +1001,26 @@ class VoiceReceiver:
         encrypted = bytes(payload_with_nonce[:-4])
         try:
             import nacl.secret  # noqa: E402 — delayed import, only in voice path
-            box = nacl.secret.Aead(self._secret_key)
+            box = nacl.secret.Aead(secret_key)
             decrypted = box.decrypt(encrypted, header, bytes(nonce))
+            self._nacl_fail_streak = 0
         except Exception as e:
-            if self._packet_debug_count <= 10:
-                logger.warning("NaCl decrypt failed: %s (hdr=%d, enc=%d)", e, header_size, len(encrypted))
+            self._decode_failed += 1
+            self._nacl_fail_streak += 1
+            # Never go fully dark: after the first 10 warnings, keep emitting
+            # one every 250 failures so a deaf session stays diagnosable.
+            if self._packet_debug_count <= 10 or self._nacl_fail_streak % 250 == 0:
+                logger.warning(
+                    "NaCl decrypt failed: %s (hdr=%d, enc=%d, streak=%d)",
+                    e, header_size, len(encrypted), self._nacl_fail_streak,
+                )
+            # A sustained failure streak means the transport key rotated
+            # under us (voice reconnect / re-key) — re-read it from the live
+            # connection instead of staying deaf on a stale copy.  The
+            # refresh resets the streak, so this retries every
+            # REKEY_FAILURE_STREAK packets while the failure persists.
+            if self._nacl_fail_streak >= self.REKEY_FAILURE_STREAK:
+                self.refresh_credentials("decrypt-failure streak")
             return
         # Skip encrypted extension data to get the actual opus payload
         if ext_data_len and len(decrypted) > ext_data_len:
@@ -869,13 +1043,18 @@ class VoiceReceiver:
             if not decrypted:
                 return
         # --- DAVE E2EE decrypt ---
-        if self._dave_session:
+        if dave_session:
             with self._lock:
                 user_id = self._ssrc_to_user.get(ssrc, 0)
+                if not user_id:
+                    # Rejoin race: SPEAKING may never be resent for a user who
+                    # was already talking — try the sole-member inference
+                    # before giving up on this frame.
+                    user_id = self._infer_user_for_ssrc(ssrc)
             if user_id:
                 try:
                     import davey
-                    decrypted = self._dave_session.decrypt(
+                    decrypted = dave_session.decrypt(
                         user_id, davey.MediaType.audio, decrypted
                     )
                 except Exception as e:
@@ -884,11 +1063,36 @@ class VoiceReceiver:
                         if self._packet_debug_count <= 10:
                             logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
                         return
-            # Unknown SSRC (no SPEAKING yet): skip DAVE, try Opus directly; user_id arrives with SPEAKING.
+            elif (
+                dave_pver > 0
+                and time.monotonic() >= self._dave_passthrough_until
+            ):
+                # E2EE is actively on (protocol > 0, no passthrough window),
+                # so an unmapped SSRC's payload is still ciphertext.  Opus
+                # will happily "decode" it (producing shredded audio and
+                # poisoning decoder state), so drop the frame until a
+                # SPEAKING event maps the SSRC — bounded loss beats corrupt
+                # audio.  A non-null session alone is NOT this predicate: the
+                # session object survives protocol downgrades to 0 and
+                # passthrough transitions, where plaintext is legitimate and
+                # must fall through to opus below.
+                self._dave_unmapped_dropped += 1
+                if (
+                    self._packet_debug_count <= 10
+                    or self._dave_unmapped_dropped % 250 == 1
+                ):
+                    logger.debug(
+                        "Dropping DAVE frame for unmapped ssrc=%d (dropped=%d)",
+                        ssrc, self._dave_unmapped_dropped,
+                    )
+                return
+
+        # --- Opus decode -> PCM ---
         try:
             if ssrc not in self._decoders:
                 self._decoders[ssrc] = discord.opus.Decoder()
             pcm = self._decoders[ssrc].decode(decrypted)
+            self._decode_ok += 1
             with self._lock:
                 self._buffers[ssrc].extend(pcm)
                 self._last_packet_time[ssrc] = time.monotonic()
@@ -967,6 +1171,12 @@ class VoiceReceiver:
                 self._buffers.pop(ssrc, None)
                 self._last_packet_time.pop(ssrc, None)
         return completed
+
+    def discard_pending(self) -> None:
+        """Drop buffered PCM that no poll or flush has emitted yet."""
+        with self._lock:
+            self._buffers.clear()
+            self._last_packet_time.clear()
 
     # --- PCM -> WAV conversion (for Whisper STT) ---
 
@@ -1048,9 +1258,13 @@ def _read_discord_prompt_timeout() -> int:
 
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
+from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
+from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 
-class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
+class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
+                     BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -1080,6 +1294,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
+        self._username_resolved_ids: set = set()  # IDs resolved from username entries (gateway authz union)
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
         # Gate env snapshot captured in connect() inside the owning profile's scope; None until then.
         # None until then; accessors fall back to live scope-aware reads (issue #72348).
@@ -1113,6 +1328,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._voice_fx_cfg: Dict[str, Any] = self._load_voice_fx_config()
         # Threads the bot participated in (no @mention needed there); persisted across restarts.
         self._threads = ThreadParticipationTracker("discord")
+        self._semantic_thread_renames = SemanticThreadRenames()
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
@@ -1375,6 +1591,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 await adapter_self._on_platform_thread_create(thread)
 
             @self._client.event
+            async def on_raw_thread_update(payload: Any) -> None:
+                await adapter_self._on_platform_raw_thread_update(payload)
+
+            @self._client.event
             async def on_thread_update(before, after):
                 await adapter_self._on_platform_thread_update(before, after)
 
@@ -1406,6 +1626,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         else f"moved {before.channel.name} -> {after.channel.name}",
                         guild_id,
                     )
+                    # Any membership change in the bot's channel bumps the
+                    # DAVE (E2EE) epoch — re-resolve the receiver's decryption
+                    # state so it never decodes against a stale session.
+                    vc = adapter_self._voice_clients.get(guild_id)
+                    receiver = adapter_self._voice_receivers.get(guild_id)
+                    if vc is not None and receiver is not None:
+                        bot_channel = getattr(vc, "channel", None)
+                        if bot_channel is not None and (
+                            before.channel == bot_channel
+                            or after.channel == bot_channel
+                        ):
+                            receiver.refresh_credentials("membership change")
+
+            # Register slash commands
             if self._slash_commands:
                 # Registration walks the skill catalog on disk (#110707); keep the loop free.
                 await asyncio.to_thread(self._register_slash_commands)
@@ -2952,7 +3186,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 summary["unchanged"] += 1
                 continue
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
-                await mutate(http.delete_global_command, app_id, current.id)
+                # Upsert alone recreates the command: Discord's create endpoint
+                # overwrites the existing same-name command ("Returns 201 if a
+                # command with the same name does not already exist, or a 200
+                # if it does"). Delete-first strands the command deleted when
+                # the small command-management bucket 429s the upsert mid-sync;
+                # upsert-first keeps the command available even then. The
+                # obsolete-path delete-first below is different: an upsert
+                # pushing the live total over 100 fails with 30032 (breaks ALL
+                # slash commands), so an app at the cap must shrink first.
                 await mutate(http.upsert_global_command, app_id, desired)
                 summary["recreated"] += 1
                 continue
@@ -3743,10 +3985,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if listen_task:
                 listen_task.cancel()
             guild = self._client.get_guild(guild_id) if self._client is not None else None
+            captured_for = self._voice_text_channels.get(guild_id)
             for user_id, pcm_data in pending_inputs:
                 if self._is_allowed_user(str(user_id), guild=guild, is_dm=False):
-                    await self._process_voice_input(guild_id, user_id, pcm_data)
-            # Tear down the mixer (stops the continuous outgoing stream) and any
+                    await self._process_voice_input(guild_id, user_id, pcm_data, captured_for)
+             # Tear down the mixer (stops the continuous outgoing stream) and any
             # in-flight streaming-TTS pump feeding it.
             pump_task = self._stream_tts_tasks.pop(guild_id, None) if getattr(self, "_stream_tts_tasks", None) else None
             if pump_task:
@@ -4173,52 +4416,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         vc = self._voice_clients.get(guild_id)
         return vc is not None and vc.is_connected()
 
-    def get_voice_channel_info(self, guild_id: int) -> Optional[Dict[str, Any]]:
-        """Return voice channel info (name, members, count, speaking user IDs) or None if not connected."""
-        vc = self._voice_clients.get(guild_id)
-        if not vc or not vc.is_connected():
-            return None
-        channel = vc.channel
-        if not channel:
-            return None
-        members_info = []
-        bot_user = self._client.user if self._client else None
-        for m in channel.members:
-            if bot_user and m.id == bot_user.id:
-                continue  # skip the bot itself
-            members_info.append({"user_id": m.id, "display_name": m.display_name, "is_bot": m.bot})
-        speaking_user_ids: set = set()
-        receiver = self._voice_receivers.get(guild_id)
-        if receiver:
-            now = time.monotonic()
-            with receiver._lock:
-                for ssrc, last_t in receiver._last_packet_time.items():
-                    if now - last_t < 2.0:
-                        uid = receiver._ssrc_to_user.get(ssrc)
-                        if uid:
-                            speaking_user_ids.add(uid)
-        for info in members_info:
-            info["is_speaking"] = info["user_id"] in speaking_user_ids
-        return {
-            "channel_name": channel.name, "member_count": len(members_info),
-            "members": members_info, "speaking_count": len(speaking_user_ids),
-        }
-
-    def get_voice_channel_context(self, guild_id: int) -> str:
-        """Return a human-readable voice channel context string for prompt injection."""
-        info = self.get_voice_channel_info(guild_id)
-        if not info:
-            return ""
-        parts = [f"[Voice channel: #{info['channel_name']} — {info['member_count']} participant(s)]"]
-        for m in info["members"]:
-            status = " (speaking)" if m["is_speaking"] else ""
-            parts.append(f"  - {m['display_name']}{status}")
-        return "\n".join(parts)
-
     # --- Voice listening (Phase 2) ---
 
     # UDP keepalive interval; Discord drops the UDP route after ~60s of silence.
     _KEEPALIVE_INTERVAL = 15
+
+    def discard_pending_voice_input(self, guild_id: int) -> None:
+        """Drop speech the receiver holds but has not emitted, before the text binding moves: audio
+        captured for the old conversation must never be stamped with the new one (#130311)."""
+        receiver = self._voice_receivers.get(guild_id)
+        if receiver is not None:
+            receiver.discard_pending()
 
     async def _voice_listen_loop(self, guild_id: int):
         """Periodically check for completed utterances and process them."""
@@ -4239,6 +4447,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     except Exception:
                         pass
                 completed = receiver.check_silence()
+                # Each utterance keeps the binding it was collected under, not one set during an earlier STT.
+                captured_for = self._voice_text_channels.get(guild_id)
                 # Pass guild so role checks stay guild-scoped.
                 _vc_guild = self._client.get_guild(guild_id) if self._client is not None else None
                 for user_id, pcm_data in completed:
@@ -4246,14 +4456,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         continue
                     # User speech is activity too; keeps active listeners connected.
                     self._reset_voice_timeout(guild_id)
-                    await self._process_voice_input(guild_id, user_id, pcm_data)
+                    await self._process_voice_input(guild_id, user_id, pcm_data, captured_for)
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.error("Voice listen loop error: %s", e, exc_info=True)
 
-    async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes):
-        """Convert PCM -> WAV -> STT -> callback."""
+    async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes, captured_for: int | None):
+        """Convert PCM -> WAV -> STT -> callback; dropped if the binding moved off *captured_for* during STT."""
         from tools.voice_mode_transcript import is_whisper_hallucination
         tmp_f = tempfile.NamedTemporaryFile(suffix=".wav", prefix="vc_listen_", delete=False)
         wav_path = tmp_f.name
@@ -4268,6 +4478,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if not transcript or is_whisper_hallucination(transcript):
                 return
             logger.info("Voice input from user %d: %s", user_id, transcript[:100])
+            if getattr(self, "_voice_text_channels", {}).get(guild_id) != captured_for:
+                logger.info("Dropping voice input from user %d: binding moved during transcription", user_id)
+                return
             if self._voice_input_callback:
                 await self._voice_input_callback(
                     guild_id=guild_id, user_id=user_id, transcript=transcript,
@@ -4405,73 +4618,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             "DISCORD_ALLOWED_CHANNELS, or set DISCORD_ALLOW_ALL_USERS=true for open access.",
             self.name,
         )
-
-    # ── Slash command authorization ─────────────────────────────────────
-    # ``_check_slash_authorization`` mirrors the on_message gates one-for-one. No allowlist =>
-    # fail closed unless allow-all; DISCORD_ALLOWED_CHANNELS alone authorizes per validated channel.
-
-    def _evaluate_slash_authorization(
-        self, interaction: "discord.Interaction",
-    ) -> Tuple[bool, Optional[str]]:
-        """Evaluate slash authorization without responding; returns ``(allowed, reason)``.
-        Shared with side-effect-free callers (``/skill`` autocomplete returns [] per keystroke).
-        Fail closed on malformed payloads: with an allowlist, a missing channel id/user REJECTS.
-        """
-        chan_obj = getattr(interaction, "channel", None)
-        in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
-        channel_ids: set = set()
-        channel_keys: set = set()
-        # Channel scope mirrors on_message; DMs use on_message's DM lockdown path instead.
-        if not in_dm:
-            chan_id_raw = getattr(interaction, "channel_id", None) or getattr(chan_obj, "id", None)
-            if chan_id_raw is not None:
-                channel_ids.add(str(chan_id_raw))
-                # Threads: also test the parent channel, as on_message does.
-                if isinstance(chan_obj, discord.Thread):
-                    parent_id = self._get_parent_channel_id(chan_obj)
-                    if parent_id:
-                        channel_ids.add(str(parent_id))
-            # Name-form keys (ID, name, #name, parent) so name-based lists work for slash too.
-            channel_keys = self._discord_channel_keys_from_channel(
-                chan_obj,
-                self._get_parent_channel_id(chan_obj)
-                if isinstance(chan_obj, discord.Thread)
-                else None,
-            )
-            allowed = self._get_allowed_channels()
-            if allowed:
-                if "*" not in allowed:
-                    if not channel_ids:
-                        # Channel policy configured but no resolvable channel id: fail closed.
-                        return (
-                            False, "channel id missing with DISCORD_ALLOWED_CHANNELS configured",
-                        )
-                    if not (channel_keys & allowed):
-                        return (False, "channel not in DISCORD_ALLOWED_CHANNELS")
-            # Ignored beats allowed, including via a thread's parent.
-            ignored = self._get_ignored_channels()
-            if ignored and channel_ids:
-                if "*" in ignored or (channel_keys & ignored):
-                    return (False, "channel in DISCORD_IGNORED_CHANNELS")
-        # ── User / role allowlist (mirrors on_message line 681) ──
-        user = getattr(interaction, "user", None)
-        allowed_users = getattr(self, "_allowed_user_ids", set()) or set()
-        allowed_roles = getattr(self, "_allowed_role_ids", set()) or set()
-        if user is None or getattr(user, "id", None) is None:
-            # No identifiable user: fail closed even with allow-all; downstream handlers need interaction.user.id.
-            if allowed_users or allowed_roles:
-                return (False, "missing interaction.user with allowlist configured")
-            return (False, "missing interaction.user")
-        user_id = str(user.id)
-        # guild + is_dm scope the role check so the cross-guild DM bypass can't land via slash.
-        # See #12136.
-        interaction_guild = getattr(interaction, "guild", None)
-        if not self._is_allowed_user(
-            user_id, author=user, guild=interaction_guild, is_dm=in_dm,
-            channel_ids=channel_keys if not in_dm else None,
-        ):
-            return (False, "user not in DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES")
-        return (True, None)
 
     async def _check_slash_authorization(
         self, interaction: "discord.Interaction", command_text: str,
@@ -4690,7 +4836,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
 
     async def _resolve_allowed_usernames(self) -> None:
-        """Resolve username/display-name entries in DISCORD_ALLOWED_USERS to numeric IDs."""
+        """Resolve username entries in DISCORD_ALLOWED_USERS to numeric IDs.
+
+        Only the account username is matched: it is unique, while a display name or server nickname is
+        chosen by the member and can copy an allowlisted name.
+        """
+        self._username_resolved_ids = set()
         if not self._allowed_user_ids or not self._client:
             return
         numeric_ids = set()
@@ -4706,7 +4857,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not to_resolve:
             return
         print(f"[{self.name}] Resolving {len(to_resolve)} username(s): {', '.join(to_resolve)}")
-        resolved_count = 0
+        display_only = set()
         for guild in self._client.guilds:
             # Fetch full member list (requires members intent)
             try:
@@ -4718,22 +4869,25 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 continue
             for member in members:
                 name_lower = member.name.lower()
-                display_lower = member.display_name.lower()
-                global_lower = (member.global_name or "").lower()
-                matched = name_lower in to_resolve or display_lower in to_resolve or global_lower in to_resolve
-                if matched:
+                if name_lower in to_resolve:
                     uid = str(member.id)
                     numeric_ids.add(uid)
-                    resolved_count += 1
-                    matched_name = name_lower if name_lower in to_resolve else (
-                        display_lower if display_lower in to_resolve else global_lower
-                    )
-                    to_resolve.discard(matched_name)
-                    print(f"[{self.name}] Resolved '{matched_name}' -> {uid} ({member.name}#{member.discriminator})")
+                    self._username_resolved_ids.add(uid)
+                    to_resolve.discard(name_lower)
+                    print(f"[{self.name}] Resolved '{name_lower}' -> {uid} ({member.name}#{member.discriminator})")
+                    continue
+                for shown in (member.display_name, member.global_name):
+                    if shown and shown.lower() in to_resolve:
+                        display_only.add(shown.lower())
             if not to_resolve:
                 break
         if to_resolve:
             print(f"[{self.name}] Could not resolve usernames: {', '.join(to_resolve)}")
+            for entry in sorted(to_resolve & display_only):
+                print(
+                    f"[{self.name}] '{entry}' matches only a display name or server nickname, which any member "
+                    "can set; allowlist that member's username or numeric user ID instead"
+                )
         # Adapter-local: under multiplex_profiles os.environ writes would clobber other profiles.
         # Update the internal set. Keep the resolved IDs adapter-local first: under multiplex_profiles,
         # writing os.environ here would clobber every OTHER profile's DISCORD_ALLOWED_USERS after this
@@ -4746,8 +4900,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not _multiplex_active():
             # Single-profile: legacy env rewrite so gateway env-based auth sees numeric IDs.
             os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
-        if resolved_count:
-            print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {resolved_count} resolved ID(s)")
+        if self._username_resolved_ids:
+            print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {len(self._username_resolved_ids)} resolved ID(s)")
 
     def format_message(self, content: str) -> str:
         """Format for Discord: GFM tables become bullet lists (Discord doesn't render pipe tables)."""
@@ -5082,8 +5236,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             thread_id = str(interaction.channel_id)
         else:
             chat_type = "group"
+        # Named as a message here is: the pinned session-context prompt renders and keys on it.
         chat_name = ""
-        if not is_dm and hasattr(interaction.channel, "name"):
+        if is_dm:
+            chat_name = interaction.user.name
+        elif is_thread:
+            chat_name = self._format_thread_chat_name(interaction.channel)
+        elif hasattr(interaction.channel, "name"):
             chat_name = interaction.channel.name
             if hasattr(interaction.channel, "guild") and interaction.channel.guild:
                 chat_name = f"{interaction.channel.guild.name} / #{chat_name}"
@@ -5094,17 +5253,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # them — without them a guild- or channel-routed profile never matches a native slash command
         # (#69178).
         parent_id = (self._get_parent_channel_id(interaction.channel) if is_thread else None) or ""
+        # Without the role grant the gateway refuses a role-only member the slash gate admitted.
         source = self.build_source(
             chat_id=str(interaction.channel_id), chat_name=chat_name, chat_type=chat_type,
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
             thread_id=thread_id, chat_topic=chat_topic,
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=parent_id or None,
+            role_authorized=self._slash_role_grant(interaction),
         )
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
         return MessageEvent(
             text=text, message_type=msg_type, source=source, raw_message=interaction,
             channel_prompt=self._resolve_channel_prompt(channel_id, parent_id or None),
+            # Bound skills load only when a session starts, and "/skill x" or "/queue" can start one.
+            auto_skill=self._resolve_channel_skills(channel_id, parent_id or None),
         )
 
     # --- Thread creation helpers ---
@@ -5139,26 +5302,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             await self._threads.mark_async(thread_id)
         starter = (message or "").strip()
         if starter and thread_id:
-            await self._dispatch_thread_session(interaction, thread_id, thread_name, starter)
+            await self._dispatch_thread_session(interaction, result["thread"], starter)
 
-    async def _dispatch_thread_session(
-        self, interaction: discord.Interaction, thread_id: str, thread_name: str, text: str,
-    ) -> None:
+    async def _dispatch_thread_session(self, interaction: discord.Interaction, thread: Any, text: str) -> None:
         """Build a MessageEvent pointing at a thread and send it through handle_message."""
-        guild_name = ""
-        if hasattr(interaction, "guild") and interaction.guild:
-            guild_name = interaction.guild.name
-        chat_name = f"{guild_name} / {thread_name}" if guild_name else thread_name
-        # Inherit forum topic when the thread was created inside a forum channel.
-        _chan = getattr(interaction, "channel", None)
-        chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
-        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
-        _parent_id = str(getattr(_parent_channel, "id", "") or "")
+        # Name, topic and parent come from the thread, as for a message posted in it (same pinned prompt).
+        thread_id = str(thread.id)
+        _parent_id = self._get_parent_channel_id(thread) or ""
         source = self.build_source(
-            chat_id=thread_id, chat_name=chat_name, chat_type="thread",
+            chat_id=thread_id, chat_name=self._format_thread_chat_name(thread), chat_type="thread",
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
-            thread_id=thread_id, chat_topic=chat_topic,
+            thread_id=thread_id, chat_topic=self._get_effective_topic(thread, is_thread=True),
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=_parent_id or None,
+            role_authorized=self._slash_role_grant(interaction),
         )
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
@@ -5319,9 +5475,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def resolved_allowlist_user_ids(self) -> set:
         """Numeric IDs from connect-time username resolution.
         The env mirror of ``_allowed_user_ids`` doesn't survive the per-turn .env hot-reload, so the
-        gateway authz layer unions these in. Numeric only: passing "*" through would widen access."""
-        allowed = getattr(self, "_allowed_user_ids", None) or set()
-        return {str(uid) for uid in allowed if str(uid).isdigit()}
+        gateway authz layer unions these in. Only IDs resolved from username entries: numeric entries
+        are read live from the reloaded env, so one removed there (``hermes pairing revoke``, a hand
+        edit) must not stay authorized from this connect-time snapshot until restart."""
+        return set(self._username_resolved_ids)
 
     def _discord_allow_all_users(self) -> bool:
         """Per-profile DISCORD_ALLOW_ALL_USERS flag."""
@@ -5701,7 +5858,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     @staticmethod
     def _thread_created(thread: Any, name: str) -> Dict[str, Any]:
-        return {"success": True, "thread_id": str(thread.id), "thread_name": getattr(thread, "name", None) or name}
+        return {"success": True, "thread_id": str(thread.id), "thread_name": getattr(thread, "name", None) or name,
+                "thread": thread}
 
     # ------------------------------------------------------------------
     # Auto-thread helpers
@@ -5805,8 +5963,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         edit = getattr(thread, "edit", None)
         if edit is None:
             return False
+        # Only the title lane's guarded rename is Hermes's own title (see adapter_thread_titles).
+        attempt = (
+            self._semantic_thread_renames.attempt(str(thread_id_int), only_if_current_name, cleaned)
+            if only_if_current_name is not None else nullcontext()
+        )
         try:
-            await edit(name=cleaned, reason="Hermes semantic session title")
+            with attempt:
+                await edit(name=cleaned, reason="Hermes semantic session title")
             logger.info(
                 "[%s] Renamed Discord thread %s from %r to %r",
                 self.name, thread_id, current_name, cleaned,
@@ -6147,21 +6311,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 topic = getattr(parent, "topic", None)
         return topic
 
-    def _format_thread_chat_name(self, thread: Any) -> str:
-        """Build a readable chat name for thread-like Discord channels, including forum context when available."""
-        thread_name = getattr(thread, "name", None) or str(getattr(thread, "id", "thread"))
-        parent = getattr(thread, "parent", None)
-        guild = getattr(thread, "guild", None) or getattr(parent, "guild", None)
-        guild_name = getattr(guild, "name", None)
-        parent_name = getattr(parent, "name", None)
-        if self._is_forum_parent(parent) and guild_name and parent_name:
-            return f"{guild_name} / {parent_name} / {thread_name}"
-        if parent_name and guild_name:
-            return f"{guild_name} / #{parent_name} / {thread_name}"
-        if parent_name:
-            return f"{parent_name} / {thread_name}"
-        return thread_name
-
     # ------------------------------------------------------------------
     # Attachment download helpers
     # Prefer the authenticated bot session (``att.read()``): CDN URLs increasingly 403 without
@@ -6491,8 +6640,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             chat_name = getattr(message.channel, "name", str(message.channel.id))
             if hasattr(message.channel, "guild") and message.channel.guild:
                 chat_name = f"{message.channel.guild.name} / #{chat_name}"
-        # Channel topic (TextChannels only); forum-parented threads inherit the parent topic.
-        chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
+        # The session channel's topic, as the auto-thread's next message reads it; forum threads inherit it.
+        chat_topic = self._get_effective_topic(effective_channel, is_thread=is_thread)
         guild = getattr(message, "guild", None)
         source = self.build_source(
             chat_id=str(effective_channel.id),
@@ -7575,126 +7724,6 @@ async def _standalone_send(
 # ── Plugin entry point ────────────────────────────────────────────────────────
 
 
-def _clean_discord_user_ids(raw: str) -> list:
-    """Strip common Discord mention prefixes from a comma-separated ID string."""
-    cleaned = []
-    for uid in raw.replace(" ", "").split(","):
-        uid = uid.strip()
-        if uid.startswith("<@") and uid.endswith(">"):
-            uid = uid.lstrip("<@!").rstrip(">")
-        if uid.lower().startswith("user:"):
-            uid = uid[5:]
-        if uid:
-            cleaned.append(uid)
-    return cleaned
-
-
-def _discord_token_shape_error(token: str) -> Optional[str]:
-    """Reject a Discord bot token that is really the numeric application ID.
-
-    Users routinely paste the application ID from the Developer Portal's General
-    Information page instead of the bot token (Bot page); the gateway then fails
-    at runtime with an opaque 401. A real bot token is dot-separated base64 and
-    never purely numeric, so this is a safe, narrow shape check (port of
-    openclaw/openclaw#140531).
-    """
-    if token and token.strip().isdigit():
-        return ("That looks like a numeric application ID, not a bot token. "
-                "Paste the bot token from the Discord Developer Portal (Bot page), "
-                "not the application ID (General Information page).")
-    return None
-
-
-def _prompt_discord_bot_token(prompt) -> str:
-    """Prompt for the bot token, re-prompting once when the answer is a numeric app ID."""
-    from hermes_cli.cli_output import print_error
-    token = ""
-    for _attempt in range(2):
-        token = prompt("Discord bot token", password=True)
-        if not token:
-            return ""
-        error = _discord_token_shape_error(token)
-        if error is None:
-            return token
-        print_error(error)
-    # Second consecutive numeric answer: trust the user, keep the value.
-    return token
-
-
-def interactive_setup() -> None:
-    """Guide the user through Discord bot setup: token, allowlist, home channel (lazy CLI imports)."""
-    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
-    from hermes_cli.cli_output import (
-        prompt, prompt_yes_no, print_header, print_info, print_success,
-    )
-    from hermes_cli.setup_platforms import declines_reconfigure
-    def _info_lines(*lines: str) -> None:
-        for line in lines:
-            print_info(line)
-
-    def _save_allowlist(allowed_users: str) -> None:
-        save_env_value("DISCORD_ALLOWED_USERS", ",".join(_clean_discord_user_ids(allowed_users)))
-        print_success("Discord allowlist configured")
-
-    print_header("Discord")
-    if declines_reconfigure("Discord", "Reconfigure Discord?", "DISCORD_BOT_TOKEN"):
-        if not get_env_value("DISCORD_ALLOWED_USERS"):
-            print_info(
-                "⚠️  Discord has no user allowlist. With the fail-closed default, "
-                "messages are denied unless you configure allowed users, roles, "
-                "or channels, or set DISCORD_ALLOW_ALL_USERS=true."
-            )
-            if prompt_yes_no("Add allowed users now?", True):
-                print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
-                allowed_users = prompt("Allowed user IDs (comma-separated)")
-                if allowed_users:
-                    _save_allowlist(allowed_users)
-        return
-    _info_lines(
-        "Create a bot at https://discord.com/developers/applications",
-        "On Bot → Privileged Gateway Intents, enable:",
-        "  - Message Content Intent (required — without it Discord rejects the connection)",
-        "  - Server Members Intent (required if you use usernames or role allowlists)",
-        "Save Changes in the Developer Portal before starting the gateway.",
-        "Docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/discord",
-    )
-    token = _prompt_discord_bot_token(prompt)
-    if not token:
-        return
-    save_env_value("DISCORD_BOT_TOKEN", token)
-    print_success("Discord token saved")
-    print()
-    _info_lines(
-        "🔒 Security: Restrict who can use your bot", "   To find your Discord user ID:",
-        "   1. Enable Developer Mode in Discord settings", "   2. Right-click your name → Copy ID",
-    )
-    print()
-    print_info("   You can also use Discord usernames (resolved on gateway start).")
-    print()
-    allowed_users = prompt("Allowed user IDs or usernames (comma-separated, leave empty for open access)")
-    if allowed_users:
-        _save_allowlist(allowed_users)
-    else:
-        print_info(
-            "⚠️  No allowlist set. Discord will deny messages until you set "
-            "DISCORD_ALLOWED_USERS, DISCORD_ALLOWED_ROLES, DISCORD_ALLOWED_CHANNELS, "
-            "or DISCORD_ALLOW_ALL_USERS=true for open access."
-        )
-    print()
-    _info_lines(
-        "📬 Home Channel: where Hermes delivers cron job results,",
-        "   cross-platform messages, and notifications.",
-        "   To get a channel ID: right-click a channel → Copy Channel ID",
-        "   (requires Developer Mode in Discord settings)",
-        "   You can also set this later by typing /set-home in a Discord channel.",
-    )
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)").strip()
-    if home_channel:
-        save_env_value("DISCORD_HOME_CHANNEL", home_channel)
-    elif remove_env_value("DISCORD_HOME_CHANNEL"):
-        print_info("Home channel cleared.")
-
-
 _YAML_BOOL_ENV_KEYS = (
     ("require_mention", "DISCORD_REQUIRE_MENTION"),
     ("thread_require_mention", "DISCORD_THREAD_REQUIRE_MENTION"),
@@ -7814,6 +7843,8 @@ _is_connected = _env_is_connected("DISCORD_BOT_TOKEN")
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from plugins.platforms.discord.onboarding import interactive_setup
+
     ctx.register_platform(
         name="discord",
         label="Discord",

@@ -120,8 +120,9 @@ def _admit_prompt_turn(
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
+    held_lease = session.get("active_session_lease")
     # When the session already holds its lease this is a cheap dict check. See #94778.
-    if (ownership_refusal := _ensure_active_session_slot(sid, session)) is not None:
+    if not session.get("_closing") and (ownership_refusal := _ensure_active_session_slot(sid, session)) is not None:
         logger.info(
             "Refusing turn for session %s at _run_prompt_submit: %s",
             session.get("session_key") or sid,
@@ -137,6 +138,11 @@ def _admit_prompt_turn(
             and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
             session["running"] = False
             session.pop("_submit_user_row", None)
+            if session.get("_closing") and session.get("active_session_lease") is not held_lease:
+                # Close stops waiting for this thread after a grace and then finalizes. A lease this
+                # admission claimed after that finalize has no other code path that releases it; one
+                # the session already held stays for close's own handoff (_settle_isolated_turn_before_close).
+                _release_active_session_slot(session)
             return None
         images = list(session.get("attached_images", []) if image_paths is None else image_paths)
         if image_paths is None:
@@ -445,6 +451,8 @@ def _run_post_turn_followups(
         with _session_turn_admission(session) as admitted:
             if not admitted or session.get("running"):
                 return  # user already sent something — their turn wins
+            if session.get("_turn_cancel_requested"):
+                return  # the user pressed Stop; the goal resumes after their next prompt
             session["running"] = True
         _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
     # Safety net for completion events that arrived mid-turn.  Ownership is positive-proof
@@ -452,7 +460,7 @@ def _run_post_turn_followups(
     # not consume session A's event.  Unclaimable events are requeued for the poller.
     try:
         from tools.process_registry import process_registry
-        # _finish_turn has released the worker's runtime scope. Queue ownership,
+        # _release_turn_scopes / _post_turn_housekeeping have released the worker's runtime scopes. Queue ownership,
         # notification policy and nested dispatch still belong to this session.
         with _session_profile_runtime_scope(session):
             drained = process_registry.drain_notifications(
@@ -505,24 +513,30 @@ def _adopt_out_of_band_turns(session: dict) -> None:
     this turn's own user row, which ``_persist_submit_user_row`` already wrote (#111868). When a foreign
     row is a compaction summary the other surface rewrote the transcript under us, so the in-memory history
     is stale from the root and is re-hydrated from the DB the way ``session.resume`` does. Nothing stamped
-    yet (seeded branch before its first turn) means nothing to adopt; a cold resume arrives stamped."""
+    yet (seeded branch before its first turn) means nothing to adopt; a cold resume arrives stamped — but a
+    record whose list was rebuilt from provider-format messages carries no stamp at all, so the row-id
+    boundary cannot key on anything and the store-ahead fallback takes over (#81951)."""
     with session["history_lock"]:
         history, version = list(session.get("history") or ()), int(session.get("history_version", 0))
     seen = max((rid for m in history if isinstance(m, dict) and (rid := _message_row_id(m)) is not None),
                default=None)
-    if seen is None:
-        return
     ceiling = _message_row_id(session.get("_submit_user_row") or {})
 
     def _below_ceiling(rid) -> bool:
         return isinstance(rid, int) and (ceiling is None or rid < ceiling)
+    if seen is None:
+        _adopt_store_tail_without_row_ids(session, history, version, _below_ceiling)
+        return
 
     def _foreign(rid) -> bool:
         return _below_ceiling(rid) and rid > seen
     # Keyset probe first: the common turn has nothing to adopt and must not pay a full transcript decode.
+    # Address the live session, not session_key: a rotation moves the tip mid-session, so the parent
+    # holds none of the foreign rows (Telegram reply, cron) this function exists to adopt and the model
+    # silently never sees them (#123545).
     with _session_db(session) as db:
         try:
-            newer = db.get_messages(session["session_key"], after_id=seen) if db is not None else []
+            newer = db.get_messages(_submit_row_target_key(session), after_id=seen) if db is not None else []
         except Exception:
             logger.debug("out-of-band history probe failed; turn runs on the in-memory history", exc_info=True)
             return
@@ -539,6 +553,55 @@ def _adopt_out_of_band_turns(session: dict) -> None:
         if int(session.get("history_version", 0)) != version:
             return  # /compress, a rewind or a pivot marker landed meanwhile; the next turn re-derives
         session["history"] = tail if rewritten else history + tail
+        session["history_version"] = version + 1
+
+
+def _adopt_store_tail_without_row_ids(session: dict, history: list, version: int, below_ceiling) -> None:
+    """Catch a live record up with the store when its in-memory messages carry NO durable ``_row_id``.
+
+    ``_adopt_out_of_band_turns`` keys off the highest ``_row_id`` in memory; a record whose list was
+    rebuilt from provider-format messages (the unstamped shape ``_resolve_truncate_row_id`` heals for
+    rewind — #82959) carries none. A writer in ANOTHER process (the messaging gateway appending to the
+    same session while the desktop's serve record holds it) was then silently dropped and the next
+    provider request truncated to the early snapshot while the UI showed the full transcript (#81951).
+
+    With no row ids there is no boundary to key on, so adoption is gated on proof instead: the durable
+    lineage (below this turn's own user row, which ``_persist_submit_user_row`` already wrote and the turn
+    appends itself) must be STRICTLY longer and its head must equal the in-memory view entry for entry.
+    A diverged view (prefix mismatch, e.g. a rewind that has not landed locally), a store that is not
+    ahead (an unflushed local tail is the fresher record) and an empty in-memory history (no head to
+    prove against) are left alone.
+
+    A compaction by another surface is the one rewrite that is NOT an append: the store then holds a
+    ``_compressed_summary`` row the in-memory view has never seen, so the view is stale from the root and
+    is re-hydrated from the DB like the stamped path does — a positional check alone would keep it because
+    the compacted store is shorter.
+    """
+    rows = [m for m in _load_durable_truncation_history(session, repair_alternation=True) or []
+            if below_ceiling(_message_row_id(m))]
+    if not history:
+        return
+    known = {m.get("content") for m in history if isinstance(m, dict) and m.get("_compressed_summary")}
+    if any(m.get("_compressed_summary") and m.get("content") not in known for m in rows):
+        tail = canonicalize_replay_history(rows)
+        with session["history_lock"]:
+            if tail and int(session.get("history_version", 0)) == version:
+                session["history"] = tail
+                session["history_version"] = version + 1
+        return
+    if len(rows) <= len(history):
+        return
+    if not all(isinstance(mem, dict) and mem.get("role") == stored.get("role")
+               and mem.get("content") == stored.get("content")
+               for mem, stored in zip(history, rows)):
+        return
+    tail = canonicalize_replay_history(rows[len(history):])
+    if not tail:
+        return
+    with session["history_lock"]:
+        if int(session.get("history_version", 0)) != version:
+            return  # a local rewrite landed meanwhile; the next turn re-derives
+        session["history"] = history + tail
         session["history_version"] = version + 1
 
 
@@ -884,6 +947,9 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     was_delivered = getattr(agent, "_interim_text_was_delivered", None)
     if result.get("response_previewed") or (callable(was_delivered) and was_delivered(raw) is True):
         payload["response_previewed"] = True
+    # Only the agent's reuse site sets this; never inferred from equal text (a model may say the same words twice).
+    if raw and result.get("response_reused"):
+        payload["response_reused"] = True
     # transform_llm_output may rewrite the final after streaming: the renderer must treat
     # this payload as the authoritative replacement even without a prefix relationship.
     if result.get("response_transformed"):
@@ -964,21 +1030,14 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
         _emit("error", sid, {"message": str(e)})
 
 
-def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
-    """Finally-path of the turn: release everything, then the "tui turn finished" bookend."""
+def _release_turn_scopes(sid: str, session: dict, st: _TurnRun) -> None:
+    """Finally-path, before settlement: drop snapshots, end turn audio, undo a one-turn model, reset scopes (not home)."""
     # Drop both pre-turn history snapshots before asking glibc to return pages (a test
     # inspects these two locals by name).
     history, run_kwargs = st.history, st.run_kwargs
     history.clear()
     if isinstance(run_kwargs, dict):
         run_kwargs.clear()
-    try:  # while the profile HERMES_HOME override is still active (session's own config)
-        from hermes_cli.mem_trim import trim_memory
-        # The finishing session is still marked running here; every OTHER session must be idle (#58576).
-        if _sessions_quiescent(exclude=sid):
-            trim_memory(reason="tui turn completion")
-    except Exception:
-        logger.debug("post-turn memory trim failed", exc_info=True)
     if st.thinking_started:
         with contextlib.suppress(Exception):
             from tools.voice_mode import stop_thinking_sound
@@ -998,14 +1057,25 @@ def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
         if scopes.approval is not None:
             from tools.approval_context import reset_current_session_key
             reset_current_session_key(scopes.approval)
-    if scopes.home is not None:
-        reset_hermes_home_override(scopes.home)
     if scopes.secret is not None:
         reset_secret_scope(scopes.secret)
     if scopes.terminal is not None:
         from tools.terminal_scope import reset_terminal_scope
         reset_terminal_scope(scopes.terminal)
     _clear_session_context(scopes.session_tokens)
+
+
+def _post_turn_housekeeping(sid: str, session: dict, st: _TurnRun) -> None:
+    """Best-effort tail AFTER the turn settled: a slow trim must not hold the bookend (#131740)."""
+    try:  # while the profile HERMES_HOME override is still active (session's own config)
+        from hermes_cli.mem_trim import trim_memory
+        # Every OTHER session must be idle (#58576).
+        if _sessions_quiescent(exclude=sid):
+            trim_memory(reason="tui turn completion")
+    except Exception:
+        logger.debug("post-turn memory trim failed", exc_info=True)
+    if st.scopes.home is not None:
+        reset_hermes_home_override(st.scopes.home)
 
 
 # Bounded so a contended state.db cannot hold ``_sessions_lock``; a skipped heal is retried on the next prompt.
@@ -1119,39 +1189,42 @@ def _run_prompt_submit(
         except Exception as e:
             _recover_turn_exception(sid, session, st, e)
         finally:
-            _finish_turn(sid, session, st)
-            _current_runtime_session_record.reset(runtime_session_token)
-            reset_transport(transport_token)
-            # A stale interim closure must not fire during a later turn.
-            st.agent.interim_assistant_callback = None
-            with session["history_lock"]:
-                session["running"] = False
-                session["last_active"] = time.time()
-                if not st.error_retained:
-                    _clear_inflight_turn(session)
-                _release_hosted_room_turn_slot(session)
-            # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
-            # agent.session_id is re-read because compression may have rotated it (an
-            # accepted/finished pair whose id changed IS a rotation trace).
-            if isinstance(st.result, dict):
-                status = _result_status(st.result)
-            else:
-                status = "error" if st.error_retained else "complete"
-            logger.info(
-                "tui turn finished: ui_session=%s session_key=%s agent_session_id=%s status=%s "
-                "error_retained=%s duration=%.1fs%s",
-                sid, session.get("session_key") or "", getattr(st.agent, "session_id", "") or "",
-                status, st.error_retained, time.monotonic() - _turn_started_monotonic,
-                st.error_detail)
-            # Backstop for turns that never reached a terminal frame.
-            if st.receipt_committed:
-                _retire_turn_marker(session, st.marker_key)
+            _release_turn_scopes(sid, session, st)
+            try:  # a raising settle step must not skip the trim / HERMES_HOME reset
+                _current_runtime_session_record.reset(runtime_session_token)
+                reset_transport(transport_token)
+                # A stale interim closure must not fire during a later turn.
+                st.agent.interim_assistant_callback = None
                 with session["history_lock"]:
-                    if session.get("_active_turn_marker_key") == st.marker_key:
-                        session.pop("_active_turn_marker_key", None)
-                    session.pop("_hosted_room_task", None)
-            session.pop("_auto_continue_scheduled", None)
-            _emit_settled_session_info(sid, session, st.agent)
+                    session["running"] = False
+                    session["last_active"] = time.time()
+                    if not st.error_retained:
+                        _clear_inflight_turn(session)
+                    _release_hosted_room_turn_slot(session)
+                # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
+                # agent.session_id is re-read because compression may have rotated it (an
+                # accepted/finished pair whose id changed IS a rotation trace).
+                if isinstance(st.result, dict):
+                    status = _result_status(st.result)
+                else:
+                    status = "error" if st.error_retained else "complete"
+                logger.info(
+                    "tui turn finished: ui_session=%s session_key=%s agent_session_id=%s status=%s "
+                    "error_retained=%s duration=%.1fs%s",
+                    sid, session.get("session_key") or "", getattr(st.agent, "session_id", "") or "",
+                    status, st.error_retained, time.monotonic() - _turn_started_monotonic,
+                    st.error_detail)
+                # Backstop for turns that never reached a terminal frame.
+                if st.receipt_committed:
+                    _retire_turn_marker(session, st.marker_key)
+                    with session["history_lock"]:
+                        if session.get("_active_turn_marker_key") == st.marker_key:
+                            session.pop("_active_turn_marker_key", None)
+                        session.pop("_hosted_room_task", None)
+                session.pop("_auto_continue_scheduled", None)
+                _emit_settled_session_info(sid, session, st.agent)
+            finally:
+                _post_turn_housekeeping(sid, session, st)
         return st.result, goal_followup
     def run():
         from agent.notification_presentation import notification_turn

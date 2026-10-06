@@ -164,7 +164,7 @@ class TurnRunner:
             or event_type != "tool.started"
             # The adapter's send_clarify IS the user-facing rendering (interactive buttons or the
             # numbered-text fallback), so a progress bubble is pure duplication — and in verbose mode it
-            # dumps the raw tool-call args JSON ({"question": ..., "choices": [...]}) into the chat. Because
+            # dumps the raw tool-call args JSON into the chat. Because
             # the progress queue drains on a background task, that raw JSON typically lands right underneath
             # the rendered prompt (#52374).
             or tool_name == "clarify"
@@ -869,8 +869,8 @@ class TurnRunner:
                 "Gateway auto-title failure suppressed (not user-visible): %s: %s", task, exc,
             )
             session_id = getattr(agent, "session_id", None)
-            source = ctx.source
             runner = self._runner
+            source = runner._recover_discord_auto_thread_source(ctx.source, ctx.session_key)
             # Both lanes spend a rate-limited platform call per title, so they use the model's title
             # only (TitleCallback); renaming twice burns Discord's 2-per-10-min budget on a throwaway.
             # Relay Discord predicate is shape-only: whether the connector auto-threaded our reply is
@@ -1364,46 +1364,35 @@ class TurnRunner:
             logger.warning("%s boundary timed out or failed: %s", reason, err)
             return False
 
-    def _clarify_callback_sync(self, question: str, choices, multi_select: bool = False,
-                               questions=None) -> str:
-        """Present a clarify prompt and block on a response (clarify_tool's synchronous contract):
-        schedule send_clarify on the gateway loop, block on the primitive's threading.Event with a
-        timeout. Returns the response string, or a sentinel when none arrived.
-
-        ``questions`` (clarify_tool's batch form) is answered here, one card per question, because
-        this surface knows whether an answer arrived: the loop that would otherwise call this
-        callback once per question can only recognize "no answer" from the returned sentinel text,
-        and treated that text as the question's answer.
-        """
-        if questions:
-            return self._clarify_batch_sync(questions)
-        response, _answered = self._ask_clarify_question(question, choices, multi_select)
-        return response
-
-    def _clarify_batch_sync(self, questions) -> str:
-        """Answer a batch: one card per question, stop at the first the user never answers.
-        Returns the JSON shape clarify_tool's batch path reads. The stream/typing re-arm waits for
-        the last question — between two cards it only opens a bubble the next boundary closes."""
+    def _clarify_callback_sync(self, questions) -> dict:
+        """Answer the clarify tool's questions (clarify_tool's synchronous contract): one card per
+        question, stop at the first the user never answers. The stream/typing re-arm waits for the
+        last question — between two cards it only opens a bubble the next boundary closes."""
+        from gateway.run_turn_runner_clarify_delivery import UNDELIVERED, UNDELIVERED_DECLINED, UNDELIVERED_NO_SURFACE
+        from tools.clarify_gateway import CANCELLED, SKIPPED
         answers: Dict[str, Any] = {}
-        payload: Dict[str, Any] = {"answers": answers, "timed_out": False}
+        reply: Dict[str, Any] = {"answers": answers, "outcome": "submitted"}
         last = len(questions) - 1
         for index, entry in enumerate(questions):
+            question = f"{entry['question']}\n{t('gateway.clarify.skip_hint')}"
             raw, answered = self._ask_clarify_question(
-                entry.get("question", ""), entry.get("choices"), bool(entry.get("multi_select")),
-                rearm=index == last)
+                question, entry["choices"], bool(entry["multi_select"]), rearm=index == last)
+            if raw == CANCELLED:
+                reply["outcome"] = "cancelled"
+                break
             if not answered:
                 # The surface's own no-answer text ("could not be delivered", "did not respond
                 # within Nm") rides along as ``notice``: blank answers alone read as user
                 # inactivity, which is the misreport #112684 describes for an undelivered card.
-                payload.update(timed_out=True, notice=raw)
+                undelivered = raw in (UNDELIVERED, UNDELIVERED_DECLINED, UNDELIVERED_NO_SURFACE)
+                reply.update(outcome="undelivered" if undelivered else "timed_out", notice=raw)
                 break
-            answers[entry.get("qid") or f"q{index}"] = raw
-        return json.dumps(payload, ensure_ascii=False)
+            answers[entry["qid"]] = None if raw == SKIPPED else raw
+        return reply
 
     def _ask_clarify_question(self, question, choices, multi_select, rearm: bool = True) -> tuple[str, bool]:
         """One card: register, send, wait, then retire it (no answer) or re-arm (answer).
-        Returns ``(response, answered)``; the caller decides what "no answer" means — a sentinel
-        for a single question, the batch's ``timed_out`` flag."""
+        Returns ``(response, answered)``; the caller decides what "no answer" means."""
         from gateway.run_turn_runner_clarify_delivery import (
             UNDELIVERED_NO_SURFACE, _clarify_send_then_wait, text_fallback_coro)
         from tools import clarify_gateway as clarify_mod
@@ -1566,7 +1555,8 @@ class TurnRunner:
         # in Slack threads and reserved by Matrix clients.
         msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
         try:
-            # Mark as approval prompt so WeCom routes through the control lane.
+            # Mark as approval prompt: WeCom routes it through the control lane and Telegram pushes it
+            # in "important" mode (#132516). Never ``notify`` — A2A reads that as the turn-final reply.
             metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
@@ -1729,6 +1719,8 @@ class TurnRunner:
                 # Sent on every transport: a provider gating durable writes needs the bot flag in a DM too.
                 kwargs["turn_author"] = {"id": ctx.source.user_id or None, "name": ctx.source.user_name or None,
                                          "is_bot": bool(getattr(ctx.source, "is_bot", False))}
+            if ctx.title_user_message is not None:
+                kwargs["title_user_message"] = ctx.title_user_message
             if persist_user_message_override is not None:
                 kwargs["persist_user_message"] = persist_user_message_override
             elif observed_group_context:

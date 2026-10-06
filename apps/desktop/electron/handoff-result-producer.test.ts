@@ -77,6 +77,14 @@ test.skipIf(process.platform === 'win32').each(['legacy', 'protocol-2'])(
       output += chunk
     })
     const exited = once(child, 'exit')
+    // The hand-off hands the marker to a custodian that outlives it, so an old Desktop never
+    // reads a dead owner; the log names that custodian together with this hand-off's pid.
+    const custodian = () => {
+      const named = /custodian pid (\d+) \(hand-off pid (\d+)\)/.exec(output)
+
+      return named && Number(named[2]) === child.pid ? Number(named[1]) : null
+    }
+
     const observed: { startedAt: number | null; runId?: string | null }[] = []
     const probe = liveMarkerProbe({ hermesHome: home, reclaim: null, onLiveMarker: marker => observed.push(marker) })
 
@@ -87,7 +95,7 @@ test.skipIf(process.platform === 'win32').each(['legacy', 'protocol-2'])(
         await probe()
         const marker = parseUpdateMarker(fs.readFileSync(markerPath(home), 'utf8'))
 
-        if (marker?.pid === child.pid && marker.startedAt! > startedAt) {
+        if (marker?.pid !== undefined && marker.pid === custodian() && marker.startedAt! > startedAt) {
           break
         }
 
@@ -95,7 +103,8 @@ test.skipIf(process.platform === 'win32').each(['legacy', 'protocol-2'])(
       }
 
       const refreshed = parseUpdateMarker(fs.readFileSync(markerPath(home), 'utf8'))!
-      assert.equal(refreshed.pid, child.pid, output)
+      assert.notEqual(custodian(), null, output)
+      assert.equal(refreshed.pid, custodian(), output)
       assert.ok(refreshed.startedAt! > startedAt, 'the actual refresher must advance line 2')
       await probe()
       // No remembered first observation: this is a Desktop opened AFTER the refresh.

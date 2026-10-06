@@ -3296,6 +3296,7 @@ export interface SessionBranchParams {
   profile?: string | null
   name?: string | null
   count?: number | null
+  branch_mode?: string | null
   idempotency_key?: string | null
 }
 export interface SessionBranchResult {
@@ -3311,6 +3312,7 @@ export interface SessionBranchWholeParams {
   session_id: string
   profile?: string | null
   name?: string | null
+  branch_mode?: string | null
   idempotency_key?: string | null
 }
 export interface SessionBranchWholeResult {

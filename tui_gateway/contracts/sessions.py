@@ -397,6 +397,7 @@ method("session.close", params=SessionCloseParams, result=SessionCloseResult,
 class SessionBranchParams(SessionParams):
     name: str | None = None
     count: int | None = None  # keep only the first N rows of the source history
+    branch_mode: str | None = None  # spine (default) | full — optional per-call override of session.branch_mode
     # #65410: the desktop's mid-chat branch retry reuses the SAME key so a
     # lost-response retry returns the SAME child instead of a duplicate.
     idempotency_key: str | None = None
@@ -418,6 +419,9 @@ method("session.branch", params=SessionBranchParams, result=SessionBranchResult,
 
 class SessionBranchWholeParams(SessionParams):
     name: str | None = None
+    # Keep whole-history Desktop branches on the same full/spine contract as
+    # session.branch; the renderer sends this when the user selected full mode.
+    branch_mode: str | None = None
     # #65410: same retry contract as session.branch.
     idempotency_key: str | None = None
 

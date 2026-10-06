@@ -32,3 +32,15 @@ def test_spawn_tree_load_rejects_non_dict_snapshot(tmp_path, monkeypatch):
 
     envelope = srv._methods["spawn_tree.load"](1, {"path": str(bad)})
     assert "error" in envelope
+    assert envelope["error"]["code"] == 5000
+    assert envelope["error"]["message"] == "spawn_tree.load failed: snapshot is not a JSON object"
+
+
+def test_spawn_tree_load_returns_object_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    snapshot = srv._spawn_tree_session_dir("sess-z") / "good.json"
+    payload = {"session_id": "sess-z", "label": "ok", "subagents": [{"id": "child"}]}
+    snapshot.write_text(json.dumps(payload), encoding="utf-8")
+
+    envelope = srv._methods["spawn_tree.load"](1, {"path": str(snapshot)})
+    assert envelope["result"] == payload

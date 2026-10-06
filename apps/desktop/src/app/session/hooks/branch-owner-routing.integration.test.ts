@@ -68,6 +68,7 @@ class FakeHermesGateway {
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   HermesGateway: FakeHermesGateway,
+  getHermesConfig: vi.fn(async () => ({})),
   setApiRequestConnection: vi.fn()
 }))
 

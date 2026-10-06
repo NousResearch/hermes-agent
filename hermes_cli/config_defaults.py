@@ -61,6 +61,10 @@ DEFAULT_CONFIG = {
         # $HERMES_HOME/terminal-sessions/<terminal-id>, so bare -c/--continue resumes THIS
         # terminal's session (tmux/kitty/wezterm pane, tty). false = resume globally most-recent.
         "terminal_continue": True,
+        # "spine" preserves legacy text-only branches. "full" additionally
+        # retains paired tool calls and results so a child can reuse the
+        # parent's prompt-cache prefix. Invalid values fail open to "spine".
+        "branch_mode": "spine",
     },
     # Where the TUI/desktop gateway stages session file attachments (uploads, pasted
     # text). "hermes-home" (default) keeps <profile home>/attachments — the dir

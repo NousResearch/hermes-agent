@@ -41,8 +41,10 @@
 
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
+import path from 'node:path'
 
 import { type CreateTimeProbe, inspectUpdateMarker, markerPath } from './update-marker'
+import type { UpdateMarker } from './update-marker-judge'
 import type { MarkerHelperVerdict } from './updater/marker-helper'
 
 export const HELD_REPROBE_MS = 5_000
@@ -298,6 +300,31 @@ function logOverrideOnce(entry: AskedEntry, state: HeldState, log: ((line: strin
   )
 }
 
+/**
+ * A v1 marker (no `ct:`, no delegate) reads live on a bare alive pid for up to
+ * V1_MAX_AGE_S, so a recycled pid (Windows, #122206) parks boot ~20 min. A
+ * failed receipt that finished after the marker started says that update is
+ * over. Only v1: a v2 owner's creation time already tells a reused pid apart,
+ * and a retry's marker starts after the old receipt, so a retry still waits
+ * (V2: `latest.json` keeps reading `failed` until the retry finalizes).
+ */
+async function failedAfterV1Start(hermesHome: string, marker: UpdateMarker | null): Promise<boolean> {
+  if (!marker || marker.ct !== null || marker.delegate !== null) {
+    return false
+  }
+
+  try {
+    const text = await fs.promises.readFile(path.join(hermesHome, 'logs', 'update_receipts', 'latest.json'), 'utf8')
+    const receipt = JSON.parse(text.replace(/^\uFEFF/, ''))
+    const finishedS = Date.parse(receipt?.finished_at) / 1000
+
+    // Line 2 is whole seconds: a receipt from the marker's own start second is ambiguous, so it waits.
+    return receipt?.outcome === 'failed' && finishedS >= marker.startedAt + 1
+  } catch {
+    return false
+  }
+}
+
 /** `hasLiveMarker` for one gate wait (create it per wait, never module-wide). */
 export function liveMarkerProbe({
   hermesHome,
@@ -311,11 +338,21 @@ export function liveMarkerProbe({
   reprobeMs = HELD_REPROBE_MS
 }: LiveMarkerProbeOptions): () => Promise<boolean> {
   const asked = new Map<string, AskedEntry>()
+  let finishedLogged = false
 
   return async () => {
     const inspection = await inspectUpdateMarker(hermesHome, { createTime, now })
 
     if (inspection.state === 'live') {
+      if (await failedAfterV1Start(hermesHome, inspection.marker)) {
+        if (!finishedLogged) {
+          finishedLogged = true
+          log?.('[updates] latest update receipt records a failure after this v1 marker started; not parking the boot on it')
+        }
+
+        return false
+      }
+
       onLiveMarker?.({ startedAt: inspection.marker?.startedAt ?? null })
 
       return true

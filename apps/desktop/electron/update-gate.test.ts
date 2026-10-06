@@ -201,12 +201,3 @@ test('a live marker keeps parking past the deadline until its owner finishes', a
   assert.equal(outcome, 'finished')
   assert.equal(ticks, 50, 'parked ten times past the deadline')
 })
-
-// A failed receipt never outranks a live marker (desktop V2): latest.json is
-// written only at finalize, so a retry after a failed update still reads
-// "failed" while the new update runs.
-test('a failed receipt does not open the gate while a live marker exists', async () => {
-  const withFailedReceipt = { ...deps(true, false), hasFailedReceipt: () => true }
-
-  assert.equal(await updateGateReason(withFailedReceipt), 'marker')
-})

@@ -11,7 +11,7 @@ import path from 'path'
 
 import { afterEach, describe, test } from 'vitest'
 
-import { markerPath } from './update-marker'
+import { formatCreateTime, markerPath, processCreateTimeSync } from './update-marker'
 import {
   allowStartOverHold,
   HELD_REPROBE_MS,
@@ -342,6 +342,52 @@ test("a pool/profile hold reaches the screen when the primary shows none; the pr
   assert.equal(board.shown()?.holdId, 'p', 'clearing the primary leaves the pool hold on screen')
   board.clear('pool:work')
   assert.equal(board.shown(), null)
+})
+
+// Review K132345 (#122206 fast exit): until the lock PR lands, `hermes update`
+// writes v1 markers, which read live on a bare alive (possibly recycled) pid for
+// 20 minutes. A failed receipt finished after the marker started ends the wait.
+describe('a live v1 marker and the latest failed receipt', () => {
+  function receipt(home: string, outcome: string, finishedS: number) {
+    fs.mkdirSync(path.join(home, 'logs', 'update_receipts'), { recursive: true })
+    fs.writeFileSync(
+      path.join(home, 'logs', 'update_receipts', 'latest.json'),
+      JSON.stringify({ outcome, finished_at: new Date(finishedS * 1000).toISOString().replace('Z', '+00:00') })
+    )
+  }
+
+  test('a failure recorded after the marker started opens the gate and leaves the marker', async () => {
+    const home = tmpHome('gate-v1-failed')
+    const owner = await liveOwner()
+    const body = `${owner.pid}\n${minutesAgo(10)}\n`
+    fs.writeFileSync(markerPath(home), body)
+    receipt(home, 'failed', minutesAgo(1))
+    const logs: string[] = []
+
+    assert.equal(await liveMarkerProbe({ hermesHome: home, reclaim: null, log: l => logs.push(l) })(), false)
+    assert.equal(fs.readFileSync(markerPath(home), 'utf8'), body)
+    assert.equal(logs.length, 1)
+  })
+
+  test('a retry (marker newer than the failure), a success, or a v2 owner still waits', async () => {
+    const home = tmpHome('gate-v1-retry')
+    const owner = await liveOwner()
+    const probe = () => liveMarkerProbe({ hermesHome: home, reclaim: null })()
+
+    fs.writeFileSync(markerPath(home), `${owner.pid}\n${minutesAgo(1)}\n`)
+    receipt(home, 'failed', minutesAgo(10))
+    assert.equal(await probe(), true, 'the retry started after the old failure: it is the running update')
+
+    fs.writeFileSync(markerPath(home), `${owner.pid}\n${minutesAgo(10)}\n`)
+    receipt(home, 'success', minutesAgo(1))
+    assert.equal(await probe(), true, 'only a failure ends the wait')
+
+    const ct = processCreateTimeSync(owner.pid)
+    assert.ok(ct !== null)
+    fs.writeFileSync(markerPath(home), `${owner.pid}\n${minutesAgo(10)}\nct:${formatCreateTime(ct)}\n`)
+    receipt(home, 'failed', minutesAgo(1))
+    assert.equal(await probe(), true, 'a v2 owner whose creation time matches is the running update')
+  })
 })
 
 test('without a protocol-2 script the gate judges dead = not running and deletes nothing', async () => {

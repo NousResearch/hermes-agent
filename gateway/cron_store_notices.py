@@ -63,32 +63,24 @@ def _log_notice_failure(done, event: str, store: str) -> None:
         logger.warning("Cron store %s notice for %s failed", event, store, exc_info=True)
 
 
-def _profile_home(profile):
-    from hermes_constants import get_routing_process_hermes_home
-    if profile is None:
-        return get_routing_process_hermes_home()
-    from hermes_cli.profiles import get_profile_dir
-    return get_profile_dir(profile)
-
-
 async def send_cron_store_notice(runner, event: str, record) -> None:
     """Post one ``unwritable``/``recovered`` notice to the home channels of the store's profile."""
     from gateway.run import _async_profile_runtime_scope
     from gateway.warning_notifications import present_notification
-    from hermes_constants import hermes_home_key
+    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
 
     fields = record.notice_fields()
     key = "gateway.cron_store.unwritable" if event == "unwritable" else "gateway.cron_store.recovered"
     message = t(key, **fields)
     store_home = hermes_home_key(Path(record.store).parent)
+    served_homes = getattr(runner, "_served_profile_homes", None) or {}
     logger.info("Broadcasting cron store %s notice for %s", event, record.store)
     for profile, platform, _cfg, home, transport in list(runner._served_home_channel_transports()):
-        profile_home = _profile_home(profile)
-        if hermes_home_key(profile_home) != store_home:
+        served_home = served_homes.get(profile) if profile is not None else None
+        if hermes_home_key(served_home or get_routing_process_hermes_home()) != store_home:
             continue
         # The opt-out is the owning profile's; the launch profile needs no extra scope.
-        scope = (_async_profile_runtime_scope(Path(profile_home)) if profile is not None
-                 else contextlib.nullcontext())
+        scope = _async_profile_runtime_scope(Path(served_home)) if served_home else contextlib.nullcontext()
         async with scope:
             await present_notification(
                 lambda: runner._send_home_channel_message(

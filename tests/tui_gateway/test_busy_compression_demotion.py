@@ -218,6 +218,8 @@ def test_submit_during_manual_compress_is_queued_and_reply_persists(monkeypatch)
     assert entered.wait(5)
     server._interrupt_session_turn("sid", session)  # Stop mid-compaction must not release the busy claim
     assert session["running"] is True
+    second = server._methods["session.compress"]("r3", {"session_id": "sid"})  # the locked claim maps to busy
+    assert second["error"]["code"] == 4009
     resp = server._handle_busy_submit("r2", "sid", session, "question", "ws-1")
     gate.set()
     rpc.join(5)

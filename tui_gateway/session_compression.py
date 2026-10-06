@@ -219,6 +219,10 @@ class CompressionLockHeld(Exception):
         super().__init__(f"Compression lock held: {holder or 'unknown'}")
 
 
+class CompressionBusy(Exception):
+    """Raised by _manual_compress_turn when a turn already holds the session; callers map it to their busy reply."""
+
+
 @contextlib.contextmanager
 def _manual_compress_turn(sid: str, session: dict):
     """Hold the session busy (``running``) for a whole manual compaction: snapshot, LLM summary, commit
@@ -227,7 +231,7 @@ def _manual_compress_turn(sid: str, session: dict):
     about to bump, which dropped the turn's reply (#133504). The queued prompt drains on release."""
     with session["history_lock"]:
         if session.get("running"):
-            raise RuntimeError(busy_message("compress"))
+            raise CompressionBusy(busy_message("compress"))
         session["running"] = session["_manual_compress_active"] = True
     try:
         yield

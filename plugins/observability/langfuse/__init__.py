@@ -289,6 +289,22 @@ def _build_client() -> Optional[Langfuse]:
         return None
 
 
+def _stable_session_key(session_id: str) -> str:
+    """Resolve the stable per-conversation gateway session key for Langfuse session
+    grouping. Hermes binds ``HERMES_SESSION_KEY`` (``agent:main:<platform>:<chat_type>
+    [:<scope>][:<chat_id>][:<thread>][:<user>]``) as a contextvar for the whole turn and
+    exposes it via ``get_current_session_key()``; the ``session_id`` hook kwarg holds the
+    rotating internal DB id (re-keyed on compression/split), which fragments a Langfuse
+    session every time the conversation is compacted. Prefer the stable key; fall back to
+    the hook's ``session_id`` so non-gateway surfaces (CLI, cron, tests) keep working."""
+    try:
+        from tools.approval_context import get_current_session_key
+        stable = (get_current_session_key(default="") or "").strip()
+    except Exception:  # pragma: no cover - fail-open, never block a turn
+        stable = ""
+    return stable or session_id or ""
+
+
 def _trace_key(task_id: str, session_id: str, *, turn_id: str = "", api_request_id: str = "") -> str:
     """In-process trace scope key for one agent turn. ``turn_id`` wins over
     ``api_request_id`` so the turn-level post_llm_call hook (no api_request_id)
@@ -574,8 +590,11 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
         "platform": platform, "provider": provider, "model": model, "api_mode": api_mode,
         "capture_mode": _capture_mode(),
     }
+    # Langfuse session id must be the STABLE per-conversation key (survives
+    # compression/split); session_id here is the rotating internal DB id.
+    langfuse_session_id = _stable_session_key(session_id)
     # session_id must be in trace_context for Langfuse session grouping.
-    trace_ctx: Dict[str, Any] = {"trace_id": trace_id, **({"session_id": session_id} if session_id else {})}
+    trace_ctx: Dict[str, Any] = {"trace_id": trace_id, **({"session_id": langfuse_session_id} if langfuse_session_id else {})}
 
     def open_root():
         ctx = client.start_as_current_observation(trace_context=trace_ctx, name="Hermes turn", as_type="chain",
@@ -585,7 +604,7 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     root_ctx = root_span = None
     if propagate_attributes is not None:
         try:
-            with propagate_attributes(session_id=session_id or task_key, trace_name="Hermes turn",
+            with propagate_attributes(session_id=langfuse_session_id or task_key, trace_name="Hermes turn",
                                       tags=["hermes", "langfuse"]):
                 root_ctx, root_span = open_root()
         except Exception:

@@ -686,6 +686,31 @@ def test_previous_generation_site_packages_stays_owned(child_env, monkeypatch):
     assert scrubbed["PYTHONPATH"] == str(stranger_site)
 
 
+def test_selected_generation_store_entry_stays_owned_foreign_interpreter(child_env, monkeypatch):
+    """#133670: the gateway's interpreter can belong to an unrelated venv (an in-tree
+    ``venv`` python) while ``activate_dependencies`` stamped the install's SELECTED
+    generation into PYTHONPATH — modern layout, where ``pm-runtime/generations/<hash>``
+    itself is the venv. ``site.getsitepackages()`` then names only the running
+    interpreter's venv and never the generation, so the 3.14 store entry would leak in
+    front of a child 3.12 venv's own packages. Residence under the install's dependency
+    store proves ownership; the user's site-packages stay."""
+    state = child_env / "state"
+    gen_site = state / "pm-runtime" / "generations" / "abc123" / (
+        "Lib/site-packages" if os.name == "nt" else "lib/python3.14/site-packages")
+    gen_site.mkdir(parents=True)
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: state)
+    own_site = child_env / "in-tree-venv" / "lib" / "python3.11" / "site-packages"
+    own_site.mkdir(parents=True)
+    monkeypatch.setattr(local, "_in_venv", True)
+    monkeypatch.setattr(local, "_hermes_site_packages", [own_site])
+    monkeypatch.setattr(local, "_hermes_repo_root_aliases", ())
+    user_site = child_env / "user-venv" / "lib" / "python3.12" / "site-packages"
+    user_site.mkdir(parents=True)
+    env = {"PYTHONPATH": os.pathsep.join(map(str, [own_site, gen_site, user_site]))}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env["PYTHONPATH"].split(os.pathsep) == [str(user_site)]
+
+
 @pytest.mark.parametrize("existing,expected", [
     (["/usr/bin", "/bin"], ["/opt/hermes/bin", "/usr/bin", "/bin"]),
     (["/usr/bin", "/opt/hermes/bin"], ["/usr/bin", "/opt/hermes/bin"]),

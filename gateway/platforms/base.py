@@ -4228,11 +4228,18 @@ class BasePlatformAdapter(ABC):
         def _as_image(path: str) -> bool:
             return Path(path).suffix.lower() in _IMAGE_EXTS and not force_document_attachments
         _image_paths = [p for p, is_voice in media_files if not is_voice and _as_image(p)]
-        _image_paths += [p for p in local_files if _as_image(p)]
+        _local_images = [p for p in local_files if _as_image(p)]
+        _image_paths += _local_images
+        if _local_images:
+            # Same intent/confirmation pair as the non-image local files below: most adapters
+            # override ``send_multiple_images``, so nothing else marks a batch that hung.
+            logger.info("[%s] Delivering %d local image attachment(s)", self.name, len(_local_images))
         if _image_paths:
-            await self._send_image_batch(
+            batch_ok = await self._send_image_batch(
                 event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay,
                 record_delivery)
+            if batch_ok and _local_images:
+                logger.info("[%s] Delivered %d local image attachment(s)", self.name, len(_local_images))
         chat_id = event.source.chat_id
 
         async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> SendResult:
@@ -4278,18 +4285,19 @@ class BasePlatformAdapter(ABC):
 
     async def _send_image_batch(
         self, event: MessageEvent, images: list, metadata: Dict[str, Any], human_delay: float,
-        record_delivery: Callable) -> None:
+        record_delivery: Callable) -> bool:
         """Batch-send images; a failure is logged (never raised) so other attachments still go.
         The batch result feeds ``record_delivery`` so media-only turns report their real
-        outcome instead of FAILURE."""
+        outcome instead of FAILURE. Returns True when the batch reported success."""
         try:
             result = await self.send_multiple_images(
                 chat_id=event.source.chat_id, images=images, metadata=metadata, human_delay=human_delay)
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
             record_delivery(SendResult(success=False, error=str(batch_err)))
-            return
+            return False
         record_delivery(result)
+        return bool(getattr(result, "success", False))
 
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any], *,

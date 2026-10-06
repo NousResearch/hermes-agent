@@ -247,13 +247,15 @@ def _spool_sort_key(payload: Dict[str, Any], name: str) -> tuple:
 
 def is_row_rejection(exc: BaseException) -> bool:
     """True when the database refused this row's own values, so no retry can succeed: a value sqlite
-    cannot bind, or a malformed field that fails before the write. Lock, I/O, corruption and routing
-    failures stay retryable, and so do constraint failures, which can be session-wide."""
-    if isinstance(exc, sqlite3.InterfaceError):
-        return True
-    if isinstance(exc, sqlite3.ProgrammingError):
-        return "binding parameter" in str(exc).lower()
-    return isinstance(exc, (TypeError, ValueError, AttributeError))
+    cannot bind (an unsupported type, or an int outside 64 bits), or a malformed field that fails
+    before the write. Lock, I/O, corruption and routing failures stay retryable, and so do constraint
+    failures, which can be session-wide. Only a binding message counts among sqlite errors:
+    ``InterfaceError("no more rows available")`` is WAL contention that ``SessionDB`` retries and
+    re-raises unchanged once its patience runs out."""
+    if isinstance(exc, sqlite3.Error):
+        return (isinstance(exc, (sqlite3.InterfaceError, sqlite3.ProgrammingError))
+                and "binding parameter" in str(exc).lower())
+    return isinstance(exc, (TypeError, ValueError, AttributeError, OverflowError))
 
 
 def _quarantine_spool_file(path: Path, session_id: str, exc: BaseException) -> None:

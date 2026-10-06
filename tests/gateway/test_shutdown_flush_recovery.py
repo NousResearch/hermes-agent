@@ -20,6 +20,7 @@ from gateway.shutdown_flush import (
     TRANSCRIPT_CAP_DROP_REASON,
     _order_flush_files,
     drain_transcript_spool,
+    is_row_rejection,
     recover_gateway_pending,
     recover_pending_to_db,
 )
@@ -273,13 +274,16 @@ def test_a_poisoned_spool_row_does_not_stop_later_live_rows(flush_dir, tmp_path,
                      {"role": "tool", "content": "result", "tool_call_id": {"bad": 1}}, ts=100, seq=0)
         _write_spool(flush_dir, "pending-aaa.json", "sess-1",
                      {"role": "user", "content": "older"}, ts=100, seq=1)
+        # sqlite cannot bind an int past 64 bits, even into a TEXT column.
+        _write_spool(flush_dir, "pending-ccc.json", "sess-1",
+                     {"role": "tool", "content": "big id", "tool_call_id": 2**100}, ts=100, seq=2)
         boot_db(db)
         store = make_store(db)
 
-        assert _boot(store) == 2
+        assert _boot(store) == 3
         store.append_to_transcript("sess-1", {"role": "user", "content": "live"})
 
-        assert [m["content"] for m in db.get_messages("sess-1")] == ["result", "older", "live"]
+        assert [m["content"] for m in db.get_messages("sess-1")] == ["result", "older", "big id", "live"]
         assert not list(flush_dir.iterdir())
         assert not store._dirty_transcripts
     finally:
@@ -314,6 +318,41 @@ def test_a_row_the_database_rejects_is_quarantined_not_retried(flush_dir, make_s
     assert _contents(mock_db) == ["poison at boot", "after", "poison live", "after live", "live"]
     assert sorted(p.name for p in flush_dir.iterdir()) == [
         f"pending-aaa.json{QUARANTINE_SUFFIX}", f"pending-ccc.json{QUARANTINE_SUFFIX}"]
+    assert not store._dirty_transcripts
+
+
+def test_only_errors_about_the_rows_own_values_are_rejections():
+    """A rejection is quarantined for good, so it must be an error no retry can clear."""
+    assert is_row_rejection(sqlite3.ProgrammingError("Error binding parameter 4: type 'dict' is not supported"))
+    assert is_row_rejection(sqlite3.InterfaceError("Error binding parameter 3 - probably unsupported type"))
+    assert is_row_rejection(OverflowError("Python int too large to convert to SQLite INTEGER"))
+    assert not is_row_rejection(sqlite3.InterfaceError("no more rows available"))
+    assert not is_row_rejection(sqlite3.OperationalError("database is locked"))
+    assert not is_row_rejection(sqlite3.IntegrityError("FOREIGN KEY constraint failed"))
+    assert not is_row_rejection(sqlite3.DatabaseError("database disk image is malformed"))
+
+
+def test_transient_no_more_rows_error_keeps_the_row_for_retry(flush_dir, make_store, boot_db):
+    """SessionDB retries 'no more rows available' as WAL contention and re-raises it unchanged once
+    its patience runs out. The row itself is valid, so at boot and in the live drain it must stay on
+    disk and be written once the contention clears, not be quarantined."""
+    transient = sqlite3.InterfaceError("no more rows available")
+    path = _write_spool(flush_dir, "pending-aaa.json", "sess-1",
+                        {"role": "user", "content": "old"}, ts=100, seq=0)
+    mock_db = MagicMock()
+    mock_db.append_message.side_effect = [transient, transient, 1, 1, 1]
+    boot_db(mock_db)
+    store = make_store(mock_db)
+
+    assert _boot(store) == 0
+    assert path.exists()
+    store.append_to_transcript("sess-1", {"role": "user", "content": "live"})
+    assert _contents(mock_db) == ["old", "old"]
+    assert path.exists()
+
+    store.append_to_transcript("sess-1", {"role": "user", "content": "live-2"})
+    assert _contents(mock_db) == ["old", "old", "old", "live", "live-2"]
+    assert not list(flush_dir.iterdir())
     assert not store._dirty_transcripts
 
 

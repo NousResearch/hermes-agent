@@ -48,8 +48,10 @@ _BOUND_TEXT_KEYS = ("role", "tool_name", "tool_call_id", "reasoning", "reasoning
 
 
 def _bindable_text(value: Any) -> Any:
-    """*value* when sqlite can bind it as is, else its JSON text (``str`` if that fails too)."""
-    if value is None or isinstance(value, (str, int, float)):
+    """*value* when sqlite can bind it as is, else its JSON text (``str`` if that fails too). An int
+    outside sqlite's signed 64-bit range raises OverflowError even for a TEXT column."""
+    if value is None or isinstance(value, (str, float)) or (
+            isinstance(value, int) and -2**63 <= value < 2**63):
         return value
     try:
         return json.dumps(value, default=str)

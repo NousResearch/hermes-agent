@@ -702,7 +702,7 @@ class _KanbanNotification:
             try:
                 await self.runner._deliver_kanban_artifacts(
                     adapter=adapter, chat_id=sub["chat_id"], metadata=metadata,
-                    event_payload=getattr(ev, "payload", None), task=self.task,
+                    event_payload=getattr(ev, "payload", None), task=self.task, board=self.board_slug,
                 )
             except Exception as art_exc:
                 logger.debug("kanban notifier: artifact delivery for %s failed: %s", self.task_id, art_exc)

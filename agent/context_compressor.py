@@ -32,7 +32,7 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
-from agent.context_compressor_prellm import FALLBACK_PROBE_AT_MODEL_CONFIG_KEY, PreLlmSkipMixin
+from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
@@ -2429,10 +2429,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         self._load_fallback_compression_streak()
         self._load_ineffective_compression_count()
         self._load_anti_thrash_recovery_deadline()
-        self._load_durable(
-            "_fallback_probe_at", "get_session_model_config_value", "summary-model probe deadline",
-            float, 0.0, FALLBACK_PROBE_AT_MODEL_CONFIG_KEY, 0.0,
-        )
+        self._load_fallback_probe_at()
         self._load_consecutive_overload_aborts()
         self._load_proactive_prune_rearm_tokens()
 

@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 # threshold (and a prior ineffectiveness strike exists); dropping alone suffices.
 # See #60451.
 _FEASIBILITY_SKIP_MIDDLE_FRACTION = 0.10
-FALLBACK_PROBE_AT_MODEL_CONFIG_KEY = "_fallback_probe_at"
+_FALLBACK_PROBE_AT_MODEL_CONFIG_KEY = "_fallback_probe_at"
 
 
 class PreLlmSkipMixin:
@@ -27,7 +27,13 @@ class PreLlmSkipMixin:
             return
         self._fallback_probe_at = at
         self._durable_write(
-            "patch_session_model_config", "summary-model probe deadline", {FALLBACK_PROBE_AT_MODEL_CONFIG_KEY: at or None},
+            "patch_session_model_config", "summary-model probe deadline", {_FALLBACK_PROBE_AT_MODEL_CONFIG_KEY: at or None},
+        )
+
+    def _load_fallback_probe_at(self) -> None:
+        self._load_durable(
+            "_fallback_probe_at", "get_session_model_config_value", "summary-model probe deadline",
+            float, 0.0, _FALLBACK_PROBE_AT_MODEL_CONFIG_KEY, 0.0,
         )
 
     def _fallback_streak_skip(self, telemetry: Dict[str, Any]) -> bool:

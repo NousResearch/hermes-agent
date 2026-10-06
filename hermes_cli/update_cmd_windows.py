@@ -949,15 +949,22 @@ def _pause_windows_gateways_for_update() -> dict | None:
         return _cold_start_pause_token(adopted, claims)
     unmapped_pids = [pid for pid in running_pids if pid not in profile_processes and pid not in service_gateway_pids]
     from gateway.status import get_process_start_time
-    from hermes_cli.dashboard_procs import _hermes_home_for_pid
+    from hermes_cli.update_fleet_scope import gateway_pid_home
     born = {int(pid): get_process_start_time(int(pid)) for pid in running_pids}  # the processes discovered
     # Snapshot unmapped gateways' argv *before* anything stops so resume (or a later launch) can replay it.
     # Unmapped = no profile->PID-file mapping (e.g. Scheduled Task ``pythonw.exe -m ...``). Two homes can
-    # run identical selectorless argv, so the home and birth identify the runtime the replay must restore.
+    # run identical selectorless argv, so the home and birth identify the runtime the replay must restore:
+    # read with discovery's own resolver (environment, else the exact-birth ledger witness), and a home
+    # that no longer proves refuses the pause before any stop. ``home: null`` would read as a pre-home
+    # record, whose argv-only match lets another home's gateway retire this debt.
+    homes = {int(pid): gateway_pid_home(int(pid)) for pid in unmapped_pids}
+    if None in homes.values():
+        raise RuntimeError("Could not prove the Hermes home of unmapped gateway PID(s) "
+                           + ", ".join(str(p) for p, h in homes.items() if h is None) + "; nothing was stopped")
     unmapped = [
         {"pid": int(pid), "argv": _try_call(lambda p=int(pid): _capture_gateway_argv(p),
                                             "Could not capture argv for unmapped gateway %s: %s", int(pid)),
-         "home": _hermes_home_for_pid(int(pid)), "ct": born[int(pid)]}
+         "home": homes[int(pid)], "ct": born[int(pid)]}
         for pid in unmapped_pids
     ]
     intended = {
@@ -1400,18 +1407,21 @@ def _unmapped_ready_filter(entry: dict, taken: set):
     same arguments after the (normalized) interpreter on the entry's home, born after the process it
     replaces, not one another entry already vouched for. Two homes can run identical selectorless argv,
     so argv alone would let home B's gateway retire home A's debt (a service gateway on another home
-    included; on A's home only one gateway can run). An entry recorded before ``home`` was captured
-    keeps the argv-only match: nothing else identifies it."""
+    included; on A's home only one gateway can run). Only an entry recorded before ``home`` was
+    captured (no key: a pre-durable-pause updater's token) keeps the argv-only match; a recorded
+    ``home`` that is empty proves no runtime and is never matched."""
     import psutil
     from gateway.status import _looks_like_gateway_process, _same_hermes_home, get_process_start_time
-    from hermes_cli.dashboard_procs import _hermes_home_for_pid
+    from hermes_cli.update_fleet_scope import gateway_pid_home
     tail, old = list(entry.get("argv") or [])[1:], int(entry.get("pid") or 0)
     home, old_ct = entry.get("home"), entry.get("ct")
 
     def same_runtime(pid: int) -> bool:
-        if not home:
+        if "home" not in entry:
             return True
-        live_home, ct = _hermes_home_for_pid(pid), get_process_start_time(pid)
+        if not home:
+            return False
+        live_home, ct = gateway_pid_home(pid), get_process_start_time(pid)
         return live_home is not None and _same_hermes_home(live_home, home) and (old_ct is None or ct is None or ct > old_ct)
 
     def matches(pid: int) -> bool:

@@ -535,7 +535,7 @@ hermes pm install chromium
 | `pm doctor` | Check installed tool identities, files, and digests against the lock. |
 | `pm repair` | Rebuild the recorded Python dependency set in a new generation, validate it, then select it. Does not update pins, features, or plugin configuration. |
 | `pm status` | Print the latest sync/update receipt as JSON, or report that no receipt exists. |
-| `pm gc` | Remove unreferenced tool-store entries, eligible download partials, and unused lease-managed Python generations. |
+| `pm gc` | Remove unreferenced tool-store entries, eligible download partials, unused lease-managed Python generations, and the `installs/INSTALL_KEY/` state of checkouts that no longer exist (a deleted worktree or clone; skipped while its install lock or a generation lease is still held). The worktree pruner that runs at startup reclaims those orphaned state dirs too. |
 
 `pm env` excludes inherited process variables, including credentials. Its
 output can still reveal local installation paths; review it before sharing.

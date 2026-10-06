@@ -996,6 +996,19 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
 
     _prune_orphaned_branches(repo_root, protect=kept_branches)
 
+    # Trees removed by any path (this pass, `git worktree remove` by hand, a campaign's own
+    # cleanup) leave their ~200 MB dependency state under <home>/installs/ forever; reclaim it.
+    # Startup maintenance must never block a launch; the traceback goes to the debug log.
+    try:
+        from pm.environments import installs_root
+        from pm.install_states import collect_orphan_install_states
+
+        reclaimed = collect_orphan_install_states(installs_root())
+        if reclaimed:
+            logger.info("Reclaimed %d dependency state dir(s) of deleted checkouts", len(reclaimed))
+    except Exception:
+        logger.debug("Orphan install-state reclaim failed", exc_info=True)
+
     # The conservative startup pass accumulates trees it can never reclaim; say so once per launch.
     try:
         from hermes_cli.worktree_gc import worktrees_summary

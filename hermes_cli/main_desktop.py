@@ -1563,6 +1563,24 @@ def _diagnose_esbuild_ignore_scripts(output: Optional[str]) -> None:
     print("    or stage the binary directly: `node node_modules/esbuild/install.js` in apps/desktop.")
 
 
+def _desktop_builder_version_args() -> list[str]:
+    """electron-builder extraMetadata.version for a local ``hermes desktop`` pack.
+
+    ``apps/desktop/package.json`` keeps ``0.0.0`` so release/channel builds can
+    inject their own identity. Local packs used to inherit that placeholder, so
+    macOS ``CFBundleShortVersionString`` was ``0.0.0`` and Spotlight/updaters
+    reported the same. The release bundle path already passes this flag
+    (``scripts/bundles/desktop.py``); source packs must match.
+    """
+    from hermes_cli.update_channel import STABLE_TAG_RE
+    from hermes_cli.version_info import get_version_info
+
+    version = get_version_info().base_version
+    if version == "0.0.0" or not STABLE_TAG_RE.fullmatch(f"v{version}"):
+        return []
+    return [f"-c.extraMetadata.version={version}"]
+
+
 def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict,
                            icons: Path | None = None) -> Optional[Path]:
     """Build prepared desktop sources, then publish the verified staged app."""
@@ -1603,7 +1621,8 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
         run_contained(build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
         if staging_dir is not None:
             run_contained([npm, "run", "builder", "--", "--dir", "--publish", "never",
-                           f"-c.directories.output={staging_dir}"], "Packaging the desktop app",
+                           f"-c.directories.output={staging_dir}",
+                           *_desktop_builder_version_args()], "Packaging the desktop app",
                           cwd=desktop_dir, env=build_env)
         packaged_executable = (
             _promote_staged_desktop_app(desktop_dir, staging_dir) if staging_dir is not None else None

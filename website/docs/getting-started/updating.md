@@ -176,6 +176,24 @@ hermes update --check --branch experimental   # preview behindness only
 
 If your local checkout is on a different branch, Hermes auto-stashes any uncommitted work, switches HEAD to the target branch, and then pulls. Branches that don't exist locally are auto-tracked from `origin/<name>` (`git checkout -B <name> origin/<name>`). Branches that don't exist anywhere fail cleanly — your stashed changes are restored before exit so you're never stranded in a weird state. The `main`-only fork-upstream sync logic is automatically skipped on non-`main` branches.
 
+### Fetch fails with `ssh: connect to host github.com port 22`
+
+Some networks (corporate, hotel or mobile) drop outbound SSH on port 22, so a checkout whose
+`origin` is `git@github.com:...` times out on every fetch. GitHub also answers SSH on port 443 at
+`ssh.github.com` with the same key. Add this to `~/.ssh/config`, keeping any `IdentityFile` lines
+you already have for GitHub:
+
+```
+Host github.com
+  HostName ssh.github.com
+  Port 443
+  User git
+```
+
+Check it with `ssh -T -p 443 git@ssh.github.com`, then run `hermes update` again. Alternatively,
+switch the checkout to HTTPS:
+`git remote set-url origin https://github.com/NousResearch/hermes-agent.git`.
+
 ### Checkout parked on a feature branch
 
 If the source checkout was left sitting on a feature branch (by tooling, a worktree experiment, or a manual checkout), `hermes update` switches it back to the update target automatically whenever the working tree is clean:

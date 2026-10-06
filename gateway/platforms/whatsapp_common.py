@@ -244,11 +244,12 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             return True
         # Without the bot's identity (or the quoted author) we cannot rule out an address.
         # A bare question may be aimed at the bot even in a free-response group.
-        if (not self._bot_ids_from_message(data)
-                or (data.get("hasQuotedMessage") and not data.get("quotedParticipant"))
-                or "?" in body):
+        if not self._bot_ids_from_message(data) or (data.get("hasQuotedMessage") and not data.get("quotedParticipant")):
             return None
-        return False
+        # Mentioning or quoting someone else (bot ruled out above) is addressed elsewhere, question or not.
+        if data.get("mentionedIds") or data.get("quotedParticipant"):
+            return False
+        return None if "?" in body else False
 
     def _clean_bot_mention_text(self, text: str, data: Dict[str, Any]) -> str:
         if not text:

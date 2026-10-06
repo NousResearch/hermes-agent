@@ -275,6 +275,8 @@ async def test_group_reply_expectation_from_bridge_addressing_and_ambiguity():
         (_group_message("/status"), True),
         (_group_message("the cake is a lie"), False),
         (_group_message("Can you help me?"), None),
+        (_group_message("@447700900123 can you help?", mentionedIds=["447700900123@s.whatsapp.net"]), False),
+        (_group_message("agreed?", quotedParticipant="447700900123@s.whatsapp.net", hasQuotedMessage=True), False),
         (_group_message("reply", hasQuotedMessage=True, quotedParticipant=""), None),
         (_group_message("side chatter", botIds=[]), None),
         ({**_dm_message("question"), "chatId": "123@s.whatsapp.net"}, True),

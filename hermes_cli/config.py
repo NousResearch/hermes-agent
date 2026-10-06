@@ -589,7 +589,10 @@ def ensure_hermes_home():
 
 # ---- Config loading/saving ----
 
-from hermes_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS  # noqa: E402,F401
+# OPTIONAL_ENV_VARS, CORE_DECLARED_ENV_NAMES and BUNDLED_PLATFORM_SECRET_ENVS are served by the module
+# __getattr__ at the end of this file: completing them discovers provider plugins, so it waits for the
+# first read instead of running on import.
+from hermes_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS as _BASE_OPTIONAL_ENV_VARS  # noqa: E402,F401
 from hermes_cli.config_providers import (  # noqa: E402,F401  (re-exported; callers/tests use hermes_cli.config.<name>)
     _API_MODE_ALIASES, _CAMEL_ALIASES, _KNOWN_PROVIDER_KEYS, _PROVIDER_NORMALIZE_WARNED,
     _canonical_api_mode, _coerce_ssl_verify, _custom_provider_entry_to_provider_config,
@@ -637,7 +640,7 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     """Check which environment variables are missing."""
     groups = [(REQUIRED_ENV_VARS, True)]
     if not required_only:
-        groups.append((OPTIONAL_ENV_VARS, False))
+        groups.append((_optional_env_vars(), False))
     return [
         {"name": var_name, **info, "is_required": is_required}
         for table, is_required in groups
@@ -1431,10 +1434,11 @@ def _offer_new_optional_env_vars(current_ver: int, latest_ver: int, results: Dic
     new_var_names: set = set()
     for ver in range(current_ver + 1, latest_ver + 1):
         new_var_names.update(ENV_VARS_BY_VERSION.get(ver, []))
+    optional = _optional_env_vars()
     new_and_unset = [
-        (name, OPTIONAL_ENV_VARS[name])
+        (name, optional[name])
         for name in sorted(new_var_names)
-        if not get_env_value(name) and name in OPTIONAL_ENV_VARS]
+        if not get_env_value(name) and name in optional]
     if not new_and_unset or not _offer_list(
         f"\n  {len(new_and_unset)} new optional key(s) in this update:",
         [f"{name} — {info.get('description', '')}" for name, info in new_and_unset],
@@ -2864,7 +2868,7 @@ def reload_env() -> int:
         if os.environ.get(key) != value:
             os.environ[key] = value
             count += 1
-    for key in (set(OPTIONAL_ENV_VARS) | _EXTRA_ENV_KEYS) - set(env_vars):
+    for key in (set(_optional_env_vars()) | _EXTRA_ENV_KEYS) - set(env_vars):
         if key in os.environ:
             del os.environ[key]
             count += 1
@@ -3946,7 +3950,7 @@ def _cmd_config_check(args):
 
     groups = (
         ("Required", REQUIRED_ENV_VARS, lambda n, i: color(f"    ✗ {n} (missing)", Colors.RED)),
-        ("Optional", OPTIONAL_ENV_VARS,
+        ("Optional", _optional_env_vars(),
          lambda n, i: color(f"    ○ {n}{_tools_suffix(i, ' → {}')}", Colors.DIM)))
     for title, table, missing_line in groups:
         print()
@@ -4009,7 +4013,7 @@ def config_command(args):
     sys.exit(1)
 
 
-# ---- OPTIONAL_ENV_VARS injection from provider profiles and platform plugins (once, at import) ----
+# ---- OPTIONAL_ENV_VARS injection from provider profiles and platform plugins (once, on first read) ----
 
 def _inject_profile_env_vars() -> None:
     """Expose env_vars of every ``auth_type="api_key"`` provider in providers/ via OPTIONAL_ENV_VARS
@@ -4033,9 +4037,6 @@ def _inject_profile_env_vars() -> None:
                     "advanced": True}
     except Exception:
         pass
-
-
-_inject_profile_env_vars()
 
 
 PlatformManifestSource = Literal["all", "bundled", "user"]
@@ -4157,10 +4158,12 @@ def _platform_manifest_env_entries(manifest: dict, *, optional: bool = True):
 def _manifest_secret_envs(manifests) -> frozenset[str]:
     """Upper-cased secret messaging env names the given manifests declare, minus core-declared
     names: a manifest never reclassifies a core variable such as OPENAI_API_KEY."""
+    _complete_env_registry()
+    core = globals().get("CORE_DECLARED_ENV_NAMES") or frozenset(_BASE_OPTIONAL_ENV_VARS)  # partial if re-entrant
     names = {name.upper() for _dir, manifest in manifests
              for name, is_secret, meta in _platform_manifest_env_entries(manifest)
              if is_secret and (meta.get("category") or "messaging") == "messaging"}
-    return frozenset(names - {n.upper() for n in CORE_DECLARED_ENV_NAMES})
+    return frozenset(names - {n.upper() for n in core})
 
 
 def platform_manifest_secret_envs(home: Optional[Path] = None, source: PlatformManifestSource = "user", *,
@@ -4168,8 +4171,10 @@ def platform_manifest_secret_envs(home: Optional[Path] = None, source: PlatformM
     """Secret env names declared by one source's platform plugin manifests: ``"user"`` reads only
     ``home``'s user-installed plugins, which belong to that profile alone; ``"bundled"`` returns
     the set read once at import (re-read strictly if that read hit an I/O error)."""
-    if source == "bundled" and BUNDLED_PLATFORM_SECRET_ENVS is not None:
-        return BUNDLED_PLATFORM_SECRET_ENVS
+    _complete_env_registry()
+    bundled = globals().get("BUNDLED_PLATFORM_SECRET_ENVS")
+    if source == "bundled" and bundled is not None:
+        return bundled
     return _manifest_secret_envs(_platform_plugin_manifests(home, source, strict=strict))
 
 
@@ -4214,8 +4219,46 @@ def _inject_platform_plugin_env_vars() -> "frozenset[str] | None":
     return _manifest_secret_envs(bundled) if bundled is not None else None
 
 
-# Names declared in core, before any platform manifest is read. A manifest never reclassifies
-# one: the config form keeps the core entry, and the child-env scrub keeps a plugin that lists
-# OPENAI_API_KEY from turning a provider key into an adapter secret.
-CORE_DECLARED_ENV_NAMES: frozenset[str] = frozenset(OPTIONAL_ENV_VARS)
-BUNDLED_PLATFORM_SECRET_ENVS: "frozenset[str] | None" = _inject_platform_plugin_env_vars()
+_LAZY_ENV_REGISTRY_NAMES = frozenset({"OPTIONAL_ENV_VARS", "CORE_DECLARED_ENV_NAMES", "BUNDLED_PLATFORM_SECRET_ENVS"})
+_env_registry_lock = threading.RLock()
+_env_registry_completing = False
+
+
+def _complete_env_registry() -> None:
+    """Fill OPTIONAL_ENV_VARS from provider profiles and platform manifests, once per process.
+
+    Provider profiles come from importing every provider plugin, which interpreters without the
+    app's dependencies (PM's runtime reading one config key) must not pay for, so this runs on the
+    first read of a registry name rather than at import. A re-entrant read (a plugin touching config
+    mid-discovery) sees the partial table, as it did when this ran at import.
+    """
+    global _env_registry_completing, OPTIONAL_ENV_VARS, CORE_DECLARED_ENV_NAMES, BUNDLED_PLATFORM_SECRET_ENVS
+    if "BUNDLED_PLATFORM_SECRET_ENVS" in globals():
+        return
+    with _env_registry_lock:
+        if "BUNDLED_PLATFORM_SECRET_ENVS" in globals() or _env_registry_completing:
+            return
+        _env_registry_completing = True
+        try:
+            OPTIONAL_ENV_VARS = _BASE_OPTIONAL_ENV_VARS
+            _inject_profile_env_vars()
+            # Names declared in core, before any platform manifest is read. A manifest never
+            # reclassifies one: the config form keeps the core entry, and the child-env scrub keeps a
+            # plugin that lists OPENAI_API_KEY from turning a provider key into an adapter secret.
+            CORE_DECLARED_ENV_NAMES = frozenset(OPTIONAL_ENV_VARS)
+            BUNDLED_PLATFORM_SECRET_ENVS = _inject_platform_plugin_env_vars()
+        finally:
+            _env_registry_completing = False
+
+
+def _optional_env_vars() -> Dict[str, Dict[str, Any]]:
+    _complete_env_registry()
+    return globals().get("OPTIONAL_ENV_VARS", _BASE_OPTIONAL_ENV_VARS)
+
+
+def __getattr__(name: str) -> Any:
+    if name in _LAZY_ENV_REGISTRY_NAMES:
+        _complete_env_registry()
+        if name in globals():
+            return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

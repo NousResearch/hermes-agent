@@ -157,6 +157,71 @@ def test_archive_unknown_and_already_archived(board):
     assert kb.list_comments(conn, tid) == []
 
 
+def test_archive_refuses_claim_landing_after_handler_read(board, monkeypatch):
+    """A worker claims between the handler's read and the archive txn: still
+    refused atomically, and no worker termination is attempted."""
+    kb, conn = board
+    tid = kb.create_task(conn, title="race", assignee="w")
+    terminations = []
+    monkeypatch.setattr(kb, "_worker_alive", lambda *a, **k: True)
+    monkeypatch.setattr(kb, "_terminate_reclaimed_worker",
+                        lambda *a, **k: terminations.append(a) or {})
+    real_archive = kb.archive_task
+
+    def claim_then_archive(c, task_id, **kw):
+        assert kb.claim_task(conn, tid)
+        conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (os.getpid(), tid))
+        conn.commit()
+        return real_archive(c, task_id, **kw)
+
+    monkeypatch.setattr(kb, "archive_task", claim_then_archive)
+    out = _call("kanban_archive", {"task_id": tid, "reason": "withdrawn"})
+    assert "live worker claim" in out["error"]
+    assert kb.get_task(conn, tid).status == "running"
+    assert terminations == []
+    assert kb.list_comments(conn, tid) == []
+    assert not _events(kb, conn, tid, "archived")
+
+
+def test_archive_reason_is_atomic_with_transition(board, monkeypatch):
+    """If recording the reason fails, the archive rolls back: no committed
+    archive without its reason, and the error says nothing changed."""
+    kb, conn = board
+    tid = kb.create_task(conn, title="audit", assignee="w")
+
+    def boom(*a, **k):
+        raise OSError("injected comment-store failure")
+
+    monkeypatch.setattr(kb, "add_comment", boom)
+    out = _call("kanban_archive", {"task_id": tid, "reason": "required audit reason"})
+    assert "error" in out
+    assert kb.get_task(conn, tid).status != "archived"
+    assert not _events(kb, conn, tid, "archived")
+
+
+def test_archive_event_carries_reason_and_actor(board):
+    kb, conn = board
+    tid = kb.create_task(conn, title="t", assignee="w")
+    assert _call("kanban_archive", {"task_id": tid, "reason": "dup of t_y"})["ok"] is True
+    (ev,) = _events(kb, conn, tid, "archived")
+    assert ev.payload == {"reason": "dup of t_y", "actor": "orchestrator"}
+
+
+def test_archive_task_default_behaviour_unchanged(board, monkeypatch):
+    """CLI/dashboard callers (no new kwargs) still archive a live-claimed card."""
+    kb, conn = board
+    tid = kb.create_task(conn, title="t", assignee="w")
+    kb.claim_task(conn, tid)
+    conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (os.getpid(), tid))
+    conn.commit()
+    monkeypatch.setattr(kb, "_worker_alive", lambda *a, **k: True)
+    monkeypatch.setattr(kb, "_terminate_reclaimed_worker", lambda *a, **k: {"probe": True})
+    assert kb.archive_task(conn, tid) is True
+    assert kb.get_task(conn, tid).status == "archived"
+    (ev,) = _events(kb, conn, tid, "archived")
+    assert ev.payload is None
+
+
 # --- kanban_promote ---------------------------------------------------------
 
 def test_promote_triage_to_todo_lands_ready_when_parent_free(board):

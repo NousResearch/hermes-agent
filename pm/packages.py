@@ -452,9 +452,18 @@ class Venv(StatePackage):
 @register
 class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
     """nodejs.org tarballs for glibc/mac/win, unofficial-builds for musl;
-    the Termux main-repo nodejs .deb for bionic (same major line, termux-built)."""
+    the Termux main-repo nodejs .deb for bionic (same major line, termux-built).
+
+    A declinable default: hosts that already maintain Node via nvm/fnm/system
+    packages opt out with ``install.sh --skip-node`` / ``install.ps1 -SkipNode``
+    / ``hermes pm install --without node``. The declined host then resolves
+    node-ecosystem commands through its own PATH (engines-checked) instead of
+    the managed entry.
+    """
 
     name = "node"
+    optional = True
+    default = True
     binary_rel = {"win32": "node.exe", "posix": "bin/node"}
     # The staged .deb's main binary: DebPackage.verify checks it.
     main_bin_rel = "bin/node"
@@ -549,6 +558,11 @@ def npm_env(cache_dir: Path, base_env: Optional[dict] = None) -> dict[str, str]:
 class Npm(BinaryPackage):
     name = "npm"
     deps = ("node",)
+    optional = True
+    # Declined together with node: a host that brings its own Node runs its
+    # own npm too, so ``--skip-node`` / ``--without node`` leaves both managed
+    # entries out and resolves through the host PATH (see pm/defaults.py).
+    default = True
     binary_rel = {"win32": "npm.cmd", "posix": "bin/npm"}
     flatten = False
     probe_version = False

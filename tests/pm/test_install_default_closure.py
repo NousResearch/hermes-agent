@@ -132,7 +132,11 @@ def test_termux_has_no_pm_browser_default():
 
     names = pm.cli._lockfile().names()
     assert "agent-browser" in default_packages(names, target="linux-x64", declined_names=frozenset())
-    assert default_packages(names, target="linux-arm64-bionic", declined_names=frozenset()) == []
+    assert "agent-browser" not in default_packages(names, target="linux-arm64-bionic", declined_names=frozenset())
+    assert "cua-driver" not in default_packages(names, target="linux-arm64-bionic", declined_names=frozenset())
+    # The Node ecosystem ships everywhere Termux builds (host-independent
+    # managed runtime); only the browser/computer-use defaults are gap-closed.
+    assert {"node", "npm"} <= set(default_packages(names, target="linux-arm64-bionic", declined_names=frozenset()))
 
 
 def test_without_refuses_a_required_package(install_spy, capsys):

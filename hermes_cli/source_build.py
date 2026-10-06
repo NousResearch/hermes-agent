@@ -9,6 +9,22 @@ import sys
 
 def source_product_current(project_root: Path, product: str, out: Path) -> bool:
     """Read the compiler's receipt without acquiring tools or dependencies."""
+    from hermes_constants import is_node_host_mode
+
+    if is_node_host_mode():
+        node = shutil.which("node")
+        if node is None:
+            return False  # Host mode without a host node: rebuild, don't trust the receipt.
+        try:
+            result = subprocess.run(
+                [node, str(project_root / "scripts/build/freshness.mjs"),
+                 "--source", str(project_root), "--product", product, "--out", str(out)],
+                cwd=project_root, env=dict(os.environ), capture_output=True, text=True,
+                encoding="utf-8", errors="replace", check=True,
+            )
+            return result.stdout.strip() == "true"
+        except (OSError, subprocess.SubprocessError):
+            return False
     from pm import env_for, installed_package
 
     installed = installed_package("node")
@@ -27,10 +43,9 @@ def source_product_current(project_root: Path, product: str, out: Path) -> bool:
 
 
 def source_build_env(base_env: dict | None = None, *, explicit: bool = False) -> dict[str, str]:
-    from pm import ensure
     from pm.environments import project_python, running_from_selected_environment
     from pm.paths import repo_root
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home, is_node_host_mode, verify_host_node
 
     # The historical update runs on store Python with the selected environment
     # activated in-process. Icon generation starts an isolated child, which needs
@@ -43,6 +58,14 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False) ->
     npmrc = get_hermes_home() / "npmrc"
     if npmrc.is_file():
         env.setdefault("NPM_CONFIG_USERCONFIG", str(npmrc))
+    if is_node_host_mode():
+        ok, detail = verify_host_node()
+        if not ok:
+            from pm.package import InstallError
+            raise InstallError("node", f"host Node unusable: {detail}",
+                               "install a supported host Node or run `hermes pm install node`")
+        return env
+    from pm import ensure
     return ensure("npm", base_env=env, explicit=explicit).env
 
 

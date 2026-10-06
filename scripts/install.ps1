@@ -14,6 +14,11 @@
 #   -SkipComputerUse      do not install the computer-use driver (cua-driver);
 #                         remembered the same way, undone by
 #                         `hermes pm install cua-driver`
+#   -SkipNode             do not install the managed Node runtime (node + npm);
+#                         for hosts that already maintain Node via nvm/fnm/system
+#                         packages (verified against package.json engines, then
+#                         resolved through PATH); remembered the same way, undone
+#                         by `hermes pm install node`
 #   -Verbose              stream every child command's output (the default
 #                         with redirected output and in CI)
 [CmdletBinding(PositionalBinding=$false)]
@@ -36,6 +41,10 @@ param(
     # `hermes pm install agent-browser` opts back in.
     [switch]$SkipBrowser,
     [switch]$SkipComputerUse,
+    # Same opt-out as install.sh --skip-node: PM records it (node + npm, one
+    # ecosystem), so later installs and `hermes update` keep the managed entry
+    # off until `hermes pm install node` opts back in.
+    [switch]$SkipNode,
     # Print the paths this install would use, as JSON on stdout, and exit
     # without touching anything. The first question on any "installer says a
     # path doesn't exist" report is which paths it actually resolved --
@@ -1005,6 +1014,7 @@ function Invoke-BootstrapPm {
         $pmArgs = @('install')
         if ($SkipBrowser) { $pmArgs += @('--without', 'agent-browser') }
         if ($SkipComputerUse) { $pmArgs += @('--without', 'cua-driver') }
+        if ($SkipNode) { $pmArgs += @('--without', 'node') }
         Invoke-Logged "Installing dependencies (hash-verified via uv.lock)" { & $bootPy -m pm.cli @pmArgs }
         if ($LASTEXITCODE) { Fail "dependency install failed" }
     } finally {

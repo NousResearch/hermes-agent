@@ -398,8 +398,26 @@ def _check_lightpanda() -> None:
 def _check_node_and_browser(should_fix: bool, f: Finding) -> None:
     """Node.js, agent-browser resolution, Playwright Chromium, Lightpanda engine."""
     # Only PM's Node counts; Termux's APT distribution is the one that relies on `pkg install nodejs`.
-    if _pm_tool_path("node") or (_is_termux() and _safe_which("node")):
+    try:
+        from hermes_constants import is_node_host_mode, verify_host_node
+        host_mode = is_node_host_mode()
+    except Exception:
+        host_mode = False
+    if host_mode:
+        try:
+            ok, detail = verify_host_node()
+        except Exception as exc:
+            ok, detail = False, str(exc)
+        if ok:
+            check_ok("Node.js", f"(host; {detail})")
+        else:
+            check_warn("Host Node.js unusable", f"({detail})")
+            check_info("Fix: install a supported host Node (nvm/fnm/system package) or "
+                       "restore the managed runtime with `hermes pm install node`")
+            f.issues.append(f"Host Node.js unusable: {detail}")
+    elif _pm_tool_path("node") or (_is_termux() and _safe_which("node")):
         check_ok("Node.js")
+        _warn_when_managed_node_shadows_host()
     elif _is_termux():
         _termux_browser_hints("Node.js not found (browser tools are optional in the tested Termux path)",
                               "Install Node.js on Termux with: pkg install nodejs", node_installed=False)
@@ -408,6 +426,51 @@ def _check_node_and_browser(should_fix: bool, f: Finding) -> None:
     if _check_agent_browser(should_fix) and not _is_termux():
         _check_chromium()
     _check_lightpanda()
+
+
+def _host_node_on_path_excluding_managed() -> str | None:
+    """Host ``node`` with managed store dirs removed from the search PATH."""
+    import os
+
+    try:
+        managed = _pm_tool_path("node")
+        managed_dirs = {str(Path(managed).parent)} if managed else set()
+        npm_managed = _pm_tool_path("npm")
+        if npm_managed:
+            managed_dirs.add(str(Path(npm_managed).parent))
+    except Exception:
+        managed_dirs = set()
+    path_key = next((k for k in os.environ if k.upper() == "PATH"), "PATH")
+    entries = [e for e in os.environ.get(path_key, "").split(os.pathsep) if e and e not in managed_dirs]
+    # Also drop any entry under the PM store root (facts-recorded dirs may differ in spelling).
+    try:
+        from pm.paths import store_root as _store_root
+        store = str(_store_root())
+        entries = [e for e in entries if not e.startswith(store)]
+    except Exception:
+        pass
+    for entry in entries:
+        candidate = Path(entry) / ("node.exe" if os.name == "nt" else "node")
+        try:
+            if candidate.is_file():
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
+def _warn_when_managed_node_shadows_host() -> None:
+    """Warn when a host Node coexists with the managed one (two-Node confusion)."""
+    try:
+        host = _host_node_on_path_excluding_managed()
+    except Exception:
+        host = None
+    if not host:
+        return
+    check_warn("managed Node shadows host Node", f"(host node at {host})")
+    check_info("`npm install -g` from a Hermes shell targets the managed prefix, not your host globals; "
+               "if you maintain Node via nvm/fnm/system packages, use `install.sh --skip-node` / "
+               "`install.ps1 -SkipNode` / `hermes pm install --without node` to run on your host Node")
 
 
 def _plural(n: int) -> str:

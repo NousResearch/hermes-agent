@@ -30,7 +30,11 @@ def test_musl_userland_gets_a_satisfiable_native_musl_closure(monkeypatch, tmp_p
     assert target == "linux-x64-musl"
 
     lock = Lockfile(REPO_ROOT / "pm" / "lock.json")
-    closure = walk(source_install_packages(all_packages()))
+    from pm.defaults import default_packages
+    roots = source_install_packages(all_packages())
+    roots += [n for n in default_packages(lock.names(), target=target, declined_names=frozenset())
+              if n not in roots]
+    closure = walk(roots)
     assert {"python", "uv", "node"} <= {package.name for package in closure}
     for package in closure:
         assert package.missing_reason(target) is None, package.name

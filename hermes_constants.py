@@ -443,6 +443,132 @@ def _candidate_node_command_names(command: str) -> list[str]:
     # Prefer npm.cmd: PowerShell may block npm.ps1 by policy; CreateProcess cannot launch a bare .ps1.
     return _WINDOWS_NODE_SHIMS.get(base.lower(), [f"{base}.cmd", f"{base}.exe", base])
 
+
+def is_node_host_mode() -> bool:
+    """True when the user declined the managed Node runtime (``--skip-node``).
+
+    Host mode resolves node-ecosystem commands through the host PATH instead
+    of the managed store entry, even when managed bytes are still on disk.
+    Never raises: an unreadable declined record means managed mode.
+    """
+    try:
+        from pm.defaults import declined as _declined
+        return "node" in _declined()
+    except Exception:
+        return False
+
+
+def _host_which(command: str) -> str | None:
+    """Host-PATH lookup for a node-ecosystem command, never the managed entry."""
+    base = str(command)
+    if any(sep in base for sep in ("/", "\\")):
+        if sys.platform == "win32":
+            return base if Path(base).is_file() else None
+        return shutil.which(base)
+    for suffix in (".cmd", ".exe", ".ps1"):
+        if base.lower().endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    if sys.platform != "win32":
+        return shutil.which(base)
+    directories = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
+    for name in _candidate_node_command_names(base):
+        for directory in directories:
+            candidate = Path(directory) / name
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def _read_package_engines() -> dict[str, str]:
+    """``engines`` from the checkout's root package.json; ``{}`` when unreadable."""
+    try:
+        import json
+        root = Path(__file__).resolve().parent
+        manifest = json.loads((root / "package.json").read_text(encoding="utf-8-sig"))
+        engines = manifest.get("engines") if isinstance(manifest, dict) else None
+        return {k: str(v) for k, v in engines.items()} if isinstance(engines, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _parse_version_triple(version: str) -> tuple[int, int, int]:
+    cleaned = version.strip().removeprefix("v").split("-", 1)[0].split("+", 1)[0]
+    nums: list[int] = []
+    for part in cleaned.split(".")[:3]:
+        digits = "".join(ch for ch in part if ch.isdigit())
+        try:
+            nums.append(int(digits) if digits else 0)
+        except ValueError:
+            nums.append(0)
+    while len(nums) < 3:
+        nums.append(0)
+    return nums[0], nums[1], nums[2]
+
+
+def _satisfies_clause(version: str, clause: str) -> bool:
+    clause = clause.strip()
+    if clause.startswith("^"):
+        want = _parse_version_triple(clause[1:].strip())
+        have = _parse_version_triple(version)
+        return have[0] == want[0] and have >= want
+    for op in (">=", "<=", "<", ">", "="):
+        if clause.startswith(op):
+            bound = clause[len(op):].strip()
+            break
+    else:
+        op, bound = "=", clause
+    have, want = _parse_version_triple(version), _parse_version_triple(bound)
+    if op == ">=":
+        return have >= want
+    if op == "<=":
+        return have <= want
+    if op == "<":
+        return have < want
+    if op == ">":
+        return have > want
+    return have == want
+
+
+def _satisfies_range(version: str, spec: str) -> bool:
+    for alternative in str(spec).split("||"):
+        clauses = [c for c in alternative.strip().split() if c]
+        if clauses and all(_satisfies_clause(version, c) for c in clauses):
+            return True
+    return False
+
+
+def verify_host_node() -> tuple[bool, str]:
+    """Check the host ``node``/``npm`` against the checkout's ``engines``.
+
+    Returns ``(ok, detail)`` where detail names the versions (or the reason).
+    Never raises: a missing binary or failed probe is ``(False, reason)``.
+    """
+    node = _host_which("node")
+    npm = _host_which("npm")
+    if not node:
+        return False, "host node not found on PATH (nvm/fnm/system package)"
+    if not npm:
+        return False, f"host node found at {node} but host npm not found on PATH"
+    engines = _read_package_engines()
+    node_range, npm_range = engines.get("node", ""), engines.get("npm", "")
+    node_proc = _run_version_probe([node, "--version"])
+    if node_proc is None or node_proc.returncode != 0:
+        return False, f"host node at {node} did not answer --version"
+    node_version = (node_proc.stdout or b"").decode(errors="replace").strip() if isinstance(node_proc.stdout, bytes) else str(node_proc.stdout or "").strip()
+    npm_proc = _run_version_probe([npm, "--version"])
+    if npm_proc is None or npm_proc.returncode != 0:
+        return False, f"host npm at {npm} did not answer --version"
+    npm_version = (npm_proc.stdout or b"").decode(errors="replace").strip() if isinstance(npm_proc.stdout, bytes) else str(npm_proc.stdout or "").strip()
+    problems: list[str] = []
+    if node_range and not _satisfies_range(node_version.removeprefix("v"), node_range):
+        problems.append(f"host node {node_version} does not satisfy engines.node {node_range!r}")
+    if npm_range and not _satisfies_range(npm_version.removeprefix("v"), npm_range):
+        problems.append(f"host npm {npm_version} does not satisfy engines.npm {npm_range!r}")
+    if problems:
+        return False, "; ".join(problems)
+    return True, f"host node {node_version} at {node}, host npm {npm_version} at {npm}"
+
 def _run_version_probe(argv: list[str], **kwargs):
     """Run a hidden ``--version`` probe; ``None`` when it cannot run."""
     import subprocess
@@ -487,12 +613,15 @@ def hermes_managed_node_tree_present(home: Path | None = None) -> bool:
 
 
 def find_node_executable(command: str) -> str | None:
-    """Read PM's selected Node/npm/npx; ``None`` when PM has not installed it.
+    """Read PM's selected Node/npm/npx, or the host PATH when declined.
 
-    Never falls back to the user's PATH copy (callers ``pm.ensure`` on ``None``):
-    mixing toolchains breaks native-addon ABIs and npm caches. Explicit
-    executable paths remain caller-owned. Discovery never installs, probes,
-    repairs, or activates the retired ``HERMES_HOME/node`` layout.
+    Host mode (``--skip-node`` / ``--without node``) resolves node-ecosystem
+    commands through the host PATH instead of the managed entry, even when
+    managed bytes are still on disk. Managed mode never falls back to the
+    user's PATH copy (callers ``pm.ensure`` on ``None``): mixing toolchains
+    breaks native-addon ABIs and npm caches. Explicit executable paths remain
+    caller-owned. Discovery never installs, probes, repairs, or activates the
+    retired ``HERMES_HOME/node`` layout.
     """
     command = str(command)
     if any(sep in command for sep in ("/", "\\")):
@@ -504,6 +633,10 @@ def find_node_executable(command: str) -> str | None:
         base = base.removesuffix(suffix)
     package_name = {"node": "node", "npm": "npm", "npx": "npm"}.get(base)
     if package_name is not None:
+        if is_node_host_mode():
+            if base == "npx":
+                return _host_which("npx") or _host_which("npm")
+            return _host_which(base)
         from pm import installed_package
 
         installed = installed_package(package_name)
@@ -528,7 +661,15 @@ def find_node_executable(command: str) -> str | None:
 
 
 def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
-    """Compose installed PM npm and its Node dependency without provisioning."""
+    """Compose installed PM npm and its Node dependency without provisioning.
+
+    Host mode (managed Node declined) returns the caller's environment
+    unchanged: node-ecosystem commands resolve through the host PATH.
+    """
+    if is_node_host_mode():
+        if env is not None:
+            return dict(env)
+        return dict(os.environ)
     from pm import env_for
 
     return env_for("npm", base_env=env)

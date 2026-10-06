@@ -125,19 +125,19 @@ export type TranslucencyValues = Omit<TranslucencyState, 'mode'>
 export type Appearance = 'light' | 'dark'
 
 /**
- * Glass starts at 29% tint, confined to the sidebar in both appearances.
+ * Glass starts at 0% tint (off by default), confined to the sidebar in both appearances.
  * Fade stays off so the content column and text remain fully opaque.
  * Frost keeps its platform/appearance tuning: macOS uses header/titlebar,
  * while Windows uses under-window, the live acrylic backdrop.
  */
 const DEFAULT_VALUES: Record<'mac' | 'windows', Record<Appearance, TranslucencyValues>> = {
   mac: {
-    light: { intensity: 29, fade: 0, material: 'header', scope: DEFAULT_GLASS_SCOPE },
-    dark: { intensity: 29, fade: 0, material: 'titlebar', scope: DEFAULT_GLASS_SCOPE }
+    light: { intensity: 0, fade: 0, material: 'header', scope: DEFAULT_GLASS_SCOPE },
+    dark: { intensity: 0, fade: 0, material: 'titlebar', scope: DEFAULT_GLASS_SCOPE }
   },
   windows: {
-    light: { intensity: 29, fade: 0, material: 'under-window', scope: DEFAULT_GLASS_SCOPE },
-    dark: { intensity: 29, fade: 0, material: 'under-window', scope: DEFAULT_GLASS_SCOPE }
+    light: { intensity: 0, fade: 0, material: 'under-window', scope: DEFAULT_GLASS_SCOPE },
+    dark: { intensity: 0, fade: 0, material: 'under-window', scope: DEFAULT_GLASS_SCOPE }
   }
 }
 

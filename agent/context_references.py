@@ -102,6 +102,10 @@ _TEXT_EXTENSIONS = (".py", ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".j
 # verbatim. They get the same on-disk pointer XLSX/ZIP already get (#134201). A ranged ref
 # (`@file:...:1-5`) still streams just that window.
 _DATA_FILE_EXTENSIONS = (".csv", ".tsv", ".jsonl", ".ndjson", ".log")
+# Absolute per-file inline ceiling under the 50%-of-context budget: on a 1M-token window
+# that ratio alone admits a 500K-token text file with no warning, so the per-file budget
+# is min(50% of context, this cap) (#134201).
+_MAX_INLINE_TOKENS_PER_FILE = 20_000
 # Bound the work one message can force: each expanded ref reads at most a bounded prefix /
 # window, and at most this many refs are expanded per message.
 _MAX_EXPANDED_REFERENCES = 16
@@ -216,9 +220,13 @@ async def preprocess_context_references_async(
     # are assembled in ref order; the token-budget check runs once afterwards.
     hard_limit = max(1, int(context_length * 0.50))
     soft_limit = max(1, int(context_length * 0.25))
+    # The aggregate refusal/warning below keeps the 50%/25% ratios; only the per-file
+    # budget takes the absolute cap, so a huge window cannot silently inline a
+    # multi-hundred-KB text file (#134201).
+    per_file_limit = min(hard_limit, _MAX_INLINE_TOKENS_PER_FILE)
     tasks = (
         _expand_reference(ref, cwd_path, url_fetcher=url_fetcher, allowed_root=allowed_root_path,
-                          max_inline_tokens=hard_limit)
+                          max_inline_tokens=per_file_limit)
         for ref in refs[:_MAX_EXPANDED_REFERENCES]
     )
     expanded = await asyncio.gather(*tasks)

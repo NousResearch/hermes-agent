@@ -792,3 +792,32 @@ async def test_composer_paste_outside_workspace_is_attached_but_sibling_dir_is_n
     assert "PASTED-BODY-MARKER" in result.message
     assert "LOOKALIKE-SECRET" not in result.message
     assert "outside the allowed workspace" in "\n".join(result.warnings)
+
+
+def test_text_file_inline_budget_is_absolute_on_large_windows(tmp_path: Path):
+    """#134201: the per-file inline budget is min(50% of context, 20K tokens) — on a
+    1M-token window the 50% ratio alone admits a 500K-token file with no warning."""
+    from agent.context_references import preprocess_context_references
+
+    payload = tmp_path / "large.txt"
+    payload.write_text("FULL-CONTENT-MARKER\n" + ("x" * 200_000), encoding="utf-8")
+    result = preprocess_context_references(
+        f"Inspect @file:{payload.name}", cwd=tmp_path, context_length=1_000_000,
+    )
+    assert result.expanded
+    assert not result.blocked
+    assert "too large to inline safely" in result.message
+    assert str(payload) in result.message
+    assert "FULL-CONTENT-MARKER" not in result.message
+
+
+def test_small_text_file_still_inlined_on_large_window(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    payload = tmp_path / "note.txt"
+    payload.write_text("TINY-NOTE-BODY\n", encoding="utf-8")
+    result = preprocess_context_references(
+        f"Inspect @file:{payload.name}", cwd=tmp_path, context_length=1_000_000,
+    )
+    assert "TINY-NOTE-BODY" in result.message
+    assert "too large to inline safely" not in result.message

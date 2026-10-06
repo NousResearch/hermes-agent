@@ -87,6 +87,50 @@ class TestUpdateStatusRootLog:
         assert own["exit_code"] == 0
         assert own["action_id"] == b_id
 
+    @pytest.mark.parametrize("log_shape,b_outcome", [
+        ("short", "success"), ("long", "success"), ("rotated", "success"), ("long", "failed"), ("long", None)])
+    def test_restarted_dashboard_keeps_its_action_identity_past_the_log_tail(
+            self, monkeypatch, tmp_path, log_shape, b_outcome):
+        # The status route reads at most 2,000 log lines: build output (or rotation) pushing the
+        # start header out must not turn B's own success into exit null ("Action failed (exit ?)"),
+        # nor let profile A's newer latest receipt answer for B.
+        from hermes_cli import update_receipt
+
+        root, b_id, a_id = tmp_path / "root", "b" * 32, "a" * 32
+        (root / "logs").mkdir(parents=True)
+        b_logs = tmp_path / "b-logs"
+        monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", b_logs)
+        for registry in ("_ACTION_PROCS", "_ACTION_RESULTS", "_ACTION_COMMANDS", "_ACTION_IDS"):
+            monkeypatch.setattr(_web_server_gateway, registry, {})
+        monkeypatch.setattr(_web_server_gateway.subprocess, "Popen", lambda *a, **kw: types.SimpleNamespace(pid=7))
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "b"))
+        _web_server_gateway._spawn_hermes_action(["update"], "hermes-update", env_overrides={"HERMES_ACTION_ID": b_id})
+        for profile, action_id, outcome in (("b", b_id, b_outcome), ("a", a_id, "success")):
+            if outcome:
+                monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / profile))
+                monkeypatch.setenv("HERMES_ACTION_ID", action_id)
+                update_receipt.begin_update_receipt()
+                update_receipt.finalize_update_receipt(outcome)
+        monkeypatch.delenv("HERMES_ACTION_ID")
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "b"))
+        log = b_logs / "hermes-update.log"
+        if log_shape == "long":
+            with log.open("a", encoding="utf-8") as handle:
+                handle.write("build output\n" * 2001)
+        elif log_shape == "rotated":
+            log.unlink()
+        if b_outcome == "success":
+            (root / "logs" / "update.log").write_text(f"=== hermes-update completed {b_id} ===\n", encoding="utf-8")
+        _web_server_gateway._ACTION_PROCS.clear()  # dashboard restarted: in-memory registries lost
+        _web_server_gateway._ACTION_IDS.clear()
+
+        data = self.client.get("/api/actions/hermes-update/status?lines=2000").json()
+
+        assert data["running"] is False
+        assert data["exit_code"] == (0 if b_outcome == "success" else None)
+        assert data.get("action_id") == (b_id if b_outcome == "success" else None)
+        assert data["receipt"]["action_id"] == (b_id if b_outcome else a_id)
+
     @pytest.mark.parametrize("b_outcome", [None, "failed", "success"])
     def test_root_latest_receipt_of_another_profile_never_certifies_this_action(self, monkeypatch, tmp_path, b_outcome):
         # The receipt store is root-wide too: A's later success in latest.json must not become B's

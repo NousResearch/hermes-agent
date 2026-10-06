@@ -462,6 +462,11 @@ def _spawn_hermes_action(
     action_id = (env_overrides or {}).get("HERMES_ACTION_ID")
     stamp = time.strftime('%Y-%m-%d %H:%M:%S') + (f" {action_id}" if action_id else "")
     log_file.write(f"\n=== {name} started {stamp} ===\n".encode())
+    if action_id:
+        # ...and a sidecar keeps it once build output pushes the header past the status route's
+        # bounded tail, or the log rotates: a restarted dashboard still knows which action it ran.
+        from hermes_cli.runtime_state import _atomic_bytes
+        _atomic_bytes(_ACTION_LOG_DIR / f"{name}.action_id", action_id.encode("ascii"))
 
     from hermes_cli._launchers import runtime_command
     cmd = runtime_command(PROJECT_ROOT, subcommand)

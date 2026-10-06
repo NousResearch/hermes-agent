@@ -147,6 +147,16 @@ def _latest_spawned_update_action_id(lines: List[str]) -> Optional[str]:
     return None
 
 
+def _persisted_action_id(log_dir: Path, name: str) -> Optional[str]:
+    """Action id of the latest spawn of ``name`` from its sidecar (survives the log's tail
+    bound and rotation). A visible start header wins: a dashboard predating the sidecar wrote
+    only the header, and the newest header IS the latest spawn."""
+    with contextlib.suppress(OSError, UnicodeDecodeError):
+        value = (log_dir / f"{name}.action_id").read_text(encoding="utf-8-sig").strip()
+        return value if re.fullmatch(r"[0-9a-f]{32}", value) else None
+    return None
+
+
 @router.post("/api/gateway/restart")
 async def restart_gateway(profile: Optional[str] = None):
     """Kick off a ``hermes gateway restart`` in the background."""
@@ -374,7 +384,7 @@ async def get_action_status(name: str, lines: int = 200):
         durable_update_action_id = _durable_completed_update_action_id(
             _tail_lines(get_default_hermes_root() / "logs" / "update.log", 2000))
         spawned_action_id = (_latest_spawned_update_action_id(_tail_lines(log_dir / log_file_name, 2000))
-                             or _ACTION_IDS.get(name))
+                             or _persisted_action_id(log_dir, name) or _ACTION_IDS.get(name))
         if durable_update_action_id != spawned_action_id:
             # The root log is shared by every profile: another profile's (or an older) run's
             # completion never certifies the action this dashboard started.

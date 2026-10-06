@@ -1140,10 +1140,12 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     except Exception:
         agent._tool_snapshot_generation = 0
     import model_tools
-    agent.tools = model_tools.get_tool_definitions(
-        enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
-        quiet_mode=agent.quiet_mode,
-    )
+    from tools.delegate_tool_config import _snapshot_sequential_policy
+    with _snapshot_sequential_policy(agent):
+        agent.tools = model_tools.get_tool_definitions(
+            enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+            quiet_mode=agent.quiet_mode,
+        )
     # A finite -q run has no later session to learn for: no skill authoring tool (agent/oneshot_footprint.py).
     from agent.oneshot_footprint import prune_oneshot_tools
     agent.tools = prune_oneshot_tools(agent.tools or [])

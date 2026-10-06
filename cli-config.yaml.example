@@ -1804,6 +1804,8 @@ code_execution:
 # The delegate_task tool spawns child agents with isolated context.
 # Supports single tasks and batch mode (default 3 parallel, configurable).
 delegation:
+  # sequential: false                       # true: run children one at a time and wait before the parent resumes.
+                                             # Overrides background/independent completion dispatch for this call.
   max_iterations: 250                         # Max tool-calling turns per child (default: 250)
   # max_concurrent_children: 10               # Max parallel child agents per batch (default: 10, floor: 1, no ceiling).
                                               # WARNING: values above 10 multiply API cost linearly.

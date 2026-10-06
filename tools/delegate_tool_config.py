@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 from utils import base_url_hostname, is_truthy_value
 from hermes_cli.fallback_config import scoped_fallback_chain
@@ -21,6 +23,7 @@ _HIGH_CONCURRENCY_WARNED = False
 MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); deeper needs max_spawn_depth
 _MIN_SPAWN_DEPTH = 1  # floor for the configurable cap; MAX_DEPTH stays the default
 _LEGACY_MAX_ASYNC_WARNED = False
+_SEQUENTIAL_SCHEMA_POLICY: ContextVar[Optional[bool]] = ContextVar("delegation_sequential_schema_policy", default=None)
 # No default wall-clock cap on children: legitimate heavy work (deep reviews, research fan-outs, slow reasoning
 # models) was being killed mid-task. Stuck-child detection is the heartbeat staleness monitor;
 # delegation.child_timeout_seconds opts back in.
@@ -106,6 +109,28 @@ def _get_max_concurrent_children() -> int:
             "independently. High values multiply cost linearly.", result,
         )
     return result
+
+def _get_sequential(parent_agent=None) -> bool:
+    """Use the parent's advertised policy; direct callers use the scoped config."""
+    captured = getattr(parent_agent, "_delegation_sequential", None)
+    if isinstance(captured, bool):
+        return captured
+    schema_policy = _SEQUENTIAL_SCHEMA_POLICY.get()
+    if schema_policy is not None:
+        return schema_policy
+    return is_truthy_value(_cfg().get("sequential", False))
+
+
+@contextmanager
+def _snapshot_sequential_policy(agent):
+    """Freeze dispatch and schema together, including later schema rebuilds."""
+    agent._delegation_sequential = _get_sequential(agent)
+    token = _SEQUENTIAL_SCHEMA_POLICY.set(agent._delegation_sequential)
+    try:
+        yield
+    finally:
+        _SEQUENTIAL_SCHEMA_POLICY.reset(token)
+
 
 def _get_independent_completions() -> bool:
     """delegation.independent_completions (bool, default False): split a background call into per-task / per-group

@@ -19,8 +19,7 @@ _NEMOTRON_PARSER_MODEL_MARKER = "nemotron-3.5-lightning"
 def answer_in_reasoning_capability(agent: Any) -> bool:
     """True when the live route may return a clean-stop reasoning payload as the answer.
 
-    Trusted: an explicit ``answer_in_reasoning`` bool in ``runtime_capabilities``, a
-    custom_providers per-model ``answer_in_reasoning`` opt-in or provider-level
+    Trusted: a custom_providers per-model ``answer_in_reasoning`` opt-in or provider-level
     ``capabilities: {answer_in_reasoning: ...}`` block on the live route, or the local
     Nemotron-3.5-Lightning parser route from #109205. OpenRouter and non-chat-completions
     transports are never trusted.
@@ -34,16 +33,8 @@ def answer_in_reasoning_capability(agent: Any) -> bool:
     if api_mode and api_mode != "chat_completions":
         return False
 
-    runtime_capabilities = getattr(agent, "runtime_capabilities", None)
-    if isinstance(runtime_capabilities, dict):
-        configured = runtime_capabilities.get(_ANSWER_IN_REASONING_CAPABILITY)
-        if isinstance(configured, bool):
-            return configured
-
     # Returns None on unreadable config, so no guard is needed here.
-    from hermes_cli.config import get_custom_provider_model_capability
-
-    from hermes_cli.config_providers import _entries_for_route
+    from hermes_cli.config import _entries_for_route, get_custom_provider_model_capability
 
     model = str(getattr(agent, "model", "") or "")
     custom_providers = getattr(agent, "_custom_providers", None)

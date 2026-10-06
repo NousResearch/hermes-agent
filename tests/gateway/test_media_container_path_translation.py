@@ -238,3 +238,46 @@ async def test_failed_send_is_not_confirmed(sandbox, caplog):
 
     assert any("Delivering 1 local file attachment(s)" in m for m in messages)
     assert not any("Delivered local file" in m for m in messages)
+
+
+def _image_delivery_adapter(reply: str, *, success: bool = True) -> _RecordingAdapter:
+    """Most platform adapters override ``send_multiple_images`` (Slack, Discord, Telegram), so the
+    base implementation's per-image "Sending image" line is not there to rely on."""
+    adapter = _prose_delivery_adapter(reply)
+    adapter.image_batches = []
+
+    async def send_multiple_images(chat_id, images, metadata=None, human_delay=0.0):
+        adapter.image_batches.append([url for url, _alt in images])
+        return SendResult(success=success, error=None if success else "upload refused")
+
+    adapter.send_multiple_images = send_multiple_images
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_prose_image_logs_intent_then_confirmation(sandbox, caplog):
+    chart = sandbox / "chart.png"
+    chart.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+    adapter = _image_delivery_adapter("Saved the chart to /workspace/chart.png for you.")
+
+    messages = await _deliver(adapter, caplog)
+
+    assert len(adapter.image_batches) == 1, "a bare image path goes through the image batch"
+    assert adapter.documents == []
+    intent = [i for i, m in enumerate(messages) if "Delivering 1 local image attachment(s)" in m]
+    done = [i for i, m in enumerate(messages) if "Delivered 1 local image attachment(s)" in m]
+    assert intent, "the image half of the prose route must log its intent too"
+    assert done, "a successful image batch must be confirmed, or a hung upload leaves no trace"
+    assert intent[0] < done[0]
+
+
+@pytest.mark.asyncio
+async def test_failed_image_batch_is_not_confirmed(sandbox, caplog):
+    chart = sandbox / "chart.png"
+    chart.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+    adapter = _image_delivery_adapter("Saved the chart to /workspace/chart.png for you.", success=False)
+
+    messages = await _deliver(adapter, caplog)
+
+    assert any("Delivering 1 local image attachment(s)" in m for m in messages)
+    assert not any("local image attachment(s)" in m and "Delivered" in m for m in messages)

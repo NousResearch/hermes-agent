@@ -1010,7 +1010,7 @@ export const zh = defineLocale({
         autoTts: '朗读回复',
         voiceChatMode: '语音聊天模式',
         gptLive: {
-          voice: 'GPT-Live 音色',
+          subscriptionVoice: 'GPT-Live 音色', voice: 'GPT-Live 音色',
           instructions: 'GPT-Live 人设'
         }
       },
@@ -1188,7 +1188,7 @@ export const zh = defineLocale({
         voiceChatMode:
           'chained：语音转文字 → Hermes → 文字转语音，使用下方的提供商。gpt-live：一个全双工的 OpenAI 语音模型（gpt-live-1）负责听和说，并把每个实际请求交给 Hermes——由你选择的任意模型带着完整工具集作答。需要 OpenAI API 密钥；语音层按每分钟 $0.05 计费。',
         gptLive: {
-          voice: 'GPT-Live 模式使用的音色，可填写自定义音色 ID。',
+          subscriptionVoice: 'ChatGPT/Codex 订阅模式使用的音色。', voice: '按 API 计费的 GPT-Live 模式使用的音色，可填写自定义音色 ID。',
           instructions: '附加到实时语音人设的句子（语气、语速、语言）。Hermes 保留自己的系统提示词。'
         }
       },

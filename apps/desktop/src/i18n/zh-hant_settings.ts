@@ -472,7 +472,7 @@ export const zhHantSettings = {
         autoTts: '朗讀回覆',
         voiceChatMode: '語音聊天模式',
         gptLive: {
-          voice: 'GPT-Live 音色',
+          subscriptionVoice: 'GPT-Live 音色', voice: 'GPT-Live 音色',
           instructions: 'GPT-Live 人設'
         }
       },
@@ -650,7 +650,7 @@ export const zhHantSettings = {
         voiceChatMode:
           'chained：語音轉文字 → Hermes → 文字轉語音，使用下方的提供方。gpt-live：由全雙工 OpenAI 語音模型（gpt-live-1）負責聆聽與說話，並將每個實際請求交給 Hermes——由你選擇的任意模型使用完整工具集作答。需要 OpenAI API 金鑰；語音層每分鐘收費 $0.05。',
         gptLive: {
-          voice: 'GPT-Live 模式使用的音色，可填入自訂音色 ID。',
+          subscriptionVoice: 'ChatGPT/Codex 訂閱模式使用的音色。', voice: '按 API 計費的 GPT-Live 模式使用的音色，可填入自訂音色 ID。',
           instructions: '附加至即時語音人設的句子（語氣、語速、語言）。Hermes 會保留自己的系統提示詞。'
         }
       },

@@ -146,7 +146,8 @@ def test_quota_hold_parks_past_window_survives_stale_rearm_and_clears_on_model_r
     assert j["last_status"] == "error"
     assert len(deliveries) == 1, deliveries
     parked = datetime.fromisoformat(j["next_run_at"])
-    assert parked - now >= timedelta(seconds=123518), "next_run_at must land past the window"
+    # The 34h window is capped at a daily re-probe (#133454): one day out, not the full window.
+    assert timedelta(hours=24) <= parked - now < timedelta(seconds=123518)
     assert j[qh.STATE_KEY] == j["next_run_at"]
     assert "_quota_hold_seconds" not in j
 
@@ -171,3 +172,53 @@ def test_quota_hold_parks_past_window_survives_stale_rearm_and_clears_on_model_r
     j = update_job(job_id, {"schedule": "every 15m"})
     assert qh.STATE_KEY not in j
     assert datetime.fromisoformat(j["next_run_at"]) - now < timedelta(hours=1)
+
+
+def test_monthly_window_parks_one_day_and_notices_the_reprobe(monkeypatch):
+    """A ~30-day ``retry after 2581776s`` parks the job one day out — not a month — and the one
+    alert says the hold re-probes instead of quoting the provider's full window (#133454)."""
+    now = datetime(2026, 10, 5, 19, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(qh, "_hermes_now", lambda: now)
+    job = {
+        "schedule": {"kind": "interval", "every_seconds": 900},
+        "next_run_at": (now + timedelta(seconds=900)).isoformat(),
+    }
+    assert qh.plan_hold(job, hold_seconds=2581776)
+    assert datetime.fromisoformat(job["next_run_at"]) == now + timedelta(
+        hours=24, seconds=qh.HOLD_SLACK_SECONDS
+    )
+    notice = qh.hold_notice(job, 2581776)
+    assert "re-probes" in notice
+    assert "717.2" not in notice, (
+        "the notice must quote the hold, not the monthly window"
+    )
+    # A window inside the cap keeps the original wording.
+    assert "closed for about 3.4h" in qh.hold_notice(job, 3.4 * 3600)
+
+
+def test_repointing_a_held_job_clears_the_hold_and_reanchors(tmp_cron_home):
+    """``cron edit --model/--provider`` on a job parked by a quota window drops the hold and
+    recomputes next_run_at from the schedule — the hold was measured against the OLD provider
+    (#133454). An unrelated edit leaves the park alone."""
+    job = create_job("kanban orchestrator", "every 15m", deliver="local")
+    job_id = job["id"]
+    now = datetime.now(timezone.utc)
+    assert mark_job_run(job_id, False, QUOTA_MSG, quota_hold_seconds=2581776)
+    held = get_job(job_id)
+    assert qh.STATE_KEY in held
+    assert datetime.fromisoformat(held["next_run_at"]) - now >= timedelta(hours=23)
+
+    repointed = update_job(
+        job_id, {"model": "claude-sonnet-5-5", "provider": "anthropic"}
+    )
+    assert qh.STATE_KEY not in repointed
+    assert datetime.fromisoformat(repointed["next_run_at"]) - now < timedelta(
+        minutes=16
+    )
+
+    # An unrelated field edit must not disturb an active park.
+    assert mark_job_run(job_id, False, QUOTA_MSG, quota_hold_seconds=2581776)
+    parked = get_job(job_id)["next_run_at"]
+    renamed = update_job(job_id, {"name": "renamed orchestrator"})
+    assert qh.STATE_KEY in renamed
+    assert renamed["next_run_at"] == parked

@@ -32,7 +32,17 @@ SCHEDULE_EXPR_KEY = "quota_hold_cron_expr"
 # recorded a little wall clock has passed, so land clearly past the boundary.
 HOLD_SLACK_SECONDS = 60
 
+# A monthly cap can answer with ``retry after 2581776s`` (~30 days); parking a job for the full
+# window wedges it through quota resets and plan changes. Park for at most a day, then re-probe
+# (#133454) — one failed probe per day costs nothing against a genuinely monthly window.
+MAX_HOLD_SECONDS = 24 * 3600.0
+
 _RETRY_AFTER_RE = re.compile(r"retry after (\d+)s", re.IGNORECASE)
+
+
+def _effective_hold_seconds(hold_seconds: float) -> float:
+    """The park length: the provider's window, capped at one daily re-probe."""
+    return min(float(hold_seconds), MAX_HOLD_SECONDS)
 
 
 def hold_seconds_from_failure(exc: BaseException) -> Optional[float]:
@@ -123,7 +133,8 @@ def plan_hold(
     if kind not in {"cron", "interval"} or job.get("state") == "paused":
         clear_state(job)
         return False
-    window_end = _window_end(hold_seconds)
+    effective = _effective_hold_seconds(hold_seconds)
+    window_end = _window_end(effective)
     natural_next = _parse_aware(job.get("next_run_at"))
     blocked = natural_next is None or _instant_before(natural_next, window_end)
     recover = (kind == "cron" and not blocked and recover_consumed_fire
@@ -144,9 +155,13 @@ def plan_hold(
     job["next_run_at"] = parked
     job[STATE_KEY] = parked
     logger.warning(
-        "Job '%s': provider usage window closed for %.0fs — holding fires until %s instead of "
-        "failing on every cadence tick",
-        job.get("name", job.get("id", "?")), float(hold_seconds), parked)
+        "Job '%s': provider usage window closed (%.0fs reported) — holding fires for %.0fs until %s "
+        "instead of failing on every cadence tick",
+        job.get("name", job.get("id", "?")),
+        float(hold_seconds),
+        effective,
+        parked,
+    )
     return True
 
 
@@ -154,8 +169,17 @@ def hold_notice(job: Dict[str, Any], hold_seconds: Optional[float]) -> str:
     """Line appended to the ONE failure alert delivered on entering the hold, else ""."""
     if not hold_seconds or (job.get("schedule") or {}).get("kind") not in {"cron", "interval"}:
         return ""
-    window_end = _window_end(hold_seconds)
-    hours = float(hold_seconds) / 3600.0
+    effective = _effective_hold_seconds(hold_seconds)
+    window_end = _window_end(effective)
+    hours = effective / 3600.0
+    if float(hold_seconds) > MAX_HOLD_SECONDS:
+        # Quote the hold, not the provider's full (possibly monthly) window (#133454).
+        return (
+            f"\nThe provider's usage window is closed. This job is held for about {hours:.1f}h "
+            f"(through {safe_strftime(window_end, '%Y-%m-%d %H:%M %Z')}) and then re-probes rather "
+            "than trusting the provider's estimate; no further alerts are sent while the provider "
+            "is unavailable."
+        )
     return (
         f"\nThe provider's usage window is closed for about {hours:.1f}h. This job is held "
         f"through {safe_strftime(window_end, '%Y-%m-%d %H:%M %Z')} and resumes at the first safe "

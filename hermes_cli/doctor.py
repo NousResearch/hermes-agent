@@ -49,6 +49,7 @@ from hermes_cli.doctor_tools import (
     _check_terminal_backend,
     _check_tool_availability,
 )
+from hermes_cli.doctor_pools import _check_credential_pools
 from hermes_cli.doctor_state import (
     _check_checkpoint_store,
     _check_directory_structure,
@@ -117,6 +118,7 @@ DOCTOR_CHECKS = (
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Session Reset (timers removed Sep 7, 2026)', _check_retired_session_reset),
     ('Auth Providers', _check_auth_providers),
+    (None, _check_credential_pools),
     ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_checkpoint_store),
     (None, _check_gateway_supervision), (None, _check_command_installation),
     ('External Tools', _check_git_and_rg), (None, _check_terminal_backend), (None, _check_node_and_browser),

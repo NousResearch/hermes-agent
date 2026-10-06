@@ -445,3 +445,47 @@ def test_midprune_vanished_entry_is_recorded_not_counted(tmp_path: Path) -> None
     assert f"entry {str(entry)!r} vanished" in log, log
     assert f"rescued {str(entry)!r} " not in log, log
     assert "re-scan failed" not in log, log
+
+
+def test_postremoval_unreadable_entry_is_not_counted_as_removed(tmp_path: Path) -> None:
+    """R2/P2 on #134173: after rmtree, the removal-confirmation gate uses
+    os.path.lexists(), which swallows OSError from lstat and returns False — so an
+    entry that stayed (rmtree left residue) but became unreadable is counted and
+    recorded as removed. Only an explicit lstat proves absence: FileNotFoundError
+    confirms gone, a successful stat is residue, any other OSError means the
+    removal state is unknown, so the entry is neither counted nor recorded removed.
+    Red on the previous head: removed == 1 and a false 'removed' record."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "residue-lane"
+    entry.mkdir()
+    payload = entry / "result.txt"
+    payload.write_text("still here", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    for path in (payload, entry):
+        os.utime(path, (ancient, ancient))
+    log_file = tmp_path / "logs" / "scratch-prune.log"
+
+    deny = {"lstat": False}
+
+    def rmtree_leaves_residue(path, *args, **kwargs):
+        # rmtree(ignore_errors=True) is allowed to leave the directory in place.
+        deny["lstat"] = True
+        return None
+
+    real_lstat = os.lstat
+
+    def lstat(path, *args, **kwargs):
+        # Only the post-removal visibility check fails; everything else stat()s.
+        if deny["lstat"] and os.path.abspath(os.fspath(path)) == os.path.abspath(entry):
+            raise PermissionError("post-rmtree visibility denied")
+        return real_lstat(path, *args, **kwargs)
+
+    with patch("hermes_constants_scratch.reap_processes_rooted_in", lambda *a, **k: 0), \
+         patch("hermes_constants_scratch.shutil.rmtree", rmtree_leaves_residue), \
+         patch("hermes_constants_scratch.os.lstat", lstat):
+        assert prune_scratch_dir(scratch) == 0  # unknown, not removed
+    assert entry.exists() and payload.read_text(encoding="utf-8") == "still here"
+    log = log_file.read_text(encoding="utf-8-sig")
+    assert f"removed {str(entry)!r} (" not in log, log
+    assert "could not confirm removal" in log, log
+    assert "could not fully remove" not in log, log

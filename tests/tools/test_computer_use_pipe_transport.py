@@ -61,6 +61,9 @@ def test_decode_message_frame_fragmented_and_multiple():
 
 
 def test_get_computer_use_pipe_path_env(monkeypatch):
+    if sys.platform != "win32":
+        monkeypatch.setattr(sys, "platform", "win32")
+
     monkeypatch.setenv("SKY_CUA_NATIVE_PIPE_DIRECTORY", r"\\.\pipe\custom-zcode-pipe")
     assert get_computer_use_pipe_path() == r"\\.\pipe\custom-zcode-pipe"
 
@@ -77,6 +80,9 @@ def test_get_computer_use_pipe_path_env(monkeypatch):
 
 
 def test_get_computer_use_pipe_path_embedded_daemon(monkeypatch):
+    if sys.platform != "win32":
+        monkeypatch.setattr(sys, "platform", "win32")
+
     daemon = MagicMock(socket_path=r"\\.\pipe\daemon-pipe-123")
     assert get_computer_use_pipe_path(embedded_daemon=daemon) == r"\\.\pipe\daemon-pipe-123"
 
@@ -200,9 +206,6 @@ def test_normalize_response_jsonrpc_error(monkeypatch):
 @pytest.mark.platforms("windows")
 def test_session_id_none_omits_session_id_in_payload(monkeypatch):
     """When session_id is None, call_tool must not inject a stale 'hermes' session id."""
-    if sys.platform != "win32":
-        monkeypatch.setattr(sys, "platform", "win32")
-
     transport = NativePipeComputerUseTransport(pipe_path=r"\\.\pipe\fake", session_id=None)
     assert transport.session_id is None
 
@@ -227,9 +230,6 @@ def test_session_id_none_omits_session_id_in_payload(monkeypatch):
 @pytest.mark.platforms("windows")
 def test_read_all_line_times_out(monkeypatch):
     """Ensure _read_all_line raises TimeoutError if deadline expires."""
-    if sys.platform != "win32":
-        monkeypatch.setattr(sys, "platform", "win32")
-
     transport = NativePipeComputerUseTransport(pipe_path=r"\\.\pipe\fake")
     import ctypes
 

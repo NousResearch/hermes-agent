@@ -262,46 +262,15 @@ def _current_boot_epoch() -> str:
         return ""
 
 
-def _read_process_cmdline(pid: int) -> str:
-    """Command line of ``pid``, or ``""`` when it cannot be read. Never raises."""
-    try:
-        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
-        if raw:
-            return raw.replace(b"\x00", b" ").decode("utf-8", "replace")
-    except OSError:
-        pass
-    try:
-        import psutil
-
-        return " ".join(psutil.Process(int(pid)).cmdline())
-    except Exception:
-        logger.debug("cmdline unreadable for pid %s", pid, exc_info=True)
-        return ""
-
-
-def _cmdline_contradicts_gateway(pid: int) -> bool:
-    """True only when the live command line is readable and cannot be a Hermes gateway.
-
-    Unreadable cmdline, and this process, are not contradictions: a missing ``/proc`` or a
-    test that publishes its own PID must not false-stale a live owner. A recycled PID whose
-    start ticks fall inside the drift tolerance (``mpris-proxy`` after reboot) is.
-    """
-    if pid == os.getpid():
-        return False
-    cmd = _read_process_cmdline(pid).lower()
-    if not cmd:
-        return False
-    return "hermes" not in cmd and "gateway" not in cmd
-
-
 def _record_incarnation_matches(record: HostRecord) -> Optional[bool]:
     """Whether the record still names the same live process incarnation.
 
     New records prefer the canonical start fingerprint: on Linux/WSL it comes from /proc start
     ticks and is immune to wall-clock shifts that move psutil.create_time(). Those ticks are
     NOT unique across reboots — they reset, and an early-boot PID reused within the drift
-    tolerance looks like the dead owner. A published boot epoch, a command line that is not
-    a gateway, or (for legacy records) a create_time gap past reboot scale, is a mismatch.
+    tolerance looks like the dead owner. A published boot epoch, or (for legacy records with
+    no epoch) a create_time gap past reboot scale, is a mismatch. Empty epoch is a no-op so
+    macOS and pre-upgrade records are not false-staled. Do not infer identity from argv.
     Legacy records without a start fingerprint keep the create-time check.
     """
     recorded_epoch = getattr(record, "boot_epoch", "") or ""
@@ -320,8 +289,6 @@ def _record_incarnation_matches(record: HostRecord) -> Optional[bool]:
         matched = None if current is None else start_time_fingerprints_match(record.start_time, current)
     if matched is not True:
         return matched
-    if record.role == ROLE_GATEWAY and _cmdline_contradicts_gateway(record.pid):
-        return False
     if (
         record.role == ROLE_GATEWAY
         and not recorded_epoch

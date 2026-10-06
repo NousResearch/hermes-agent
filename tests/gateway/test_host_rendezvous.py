@@ -136,35 +136,43 @@ def test_live_host_record_survives_wall_clock_create_time_drift(host_dir, monkey
 
 
 @pytest.mark.platforms("posix")
-def test_reused_early_pid_after_reboot_is_not_the_gateway(monkeypatch):
+def test_reused_early_pid_after_reboot_is_not_the_gateway():
     """Boot-relative start ticks reset on reboot and collide within the 2s drift tolerance.
 
-    A legacy record (no bootEpoch) whose live PID is not a Hermes gateway must not keep a
-    supervised unit in the transient-refuse loop. PID 1674 / ticks 827 vs 845 is the shape
-    that wedged systemd against mpris-proxy.
+    A legacy record (no bootEpoch) with a reboot-scale createTime gap must not keep a
+    supervised unit in the transient-refuse loop. The same tick match with a WSL-scale
+    gap (#117505) stays live.
     """
-    record = hr.HostRecord(
-        role=hr.ROLE_GATEWAY,
-        pid=1674,
-        create_time=1_700_000_000.0,
-        start_time=827,
-        host="",
-        port=None,
-        protocol_version=hr.HOST_PROTOCOL_VERSION,
-        token_fingerprint="",
-        profiles=("default",),
-        updated_at="2026-01-01T00:00:00+00:00",
-    )
-    monkeypatch.setattr(hr, "_pid_incarnation_matches", lambda pid, create_time: True)
-    monkeypatch.setattr(hr, "_cmdline_contradicts_gateway", lambda pid: True)
-    from gateway import status
+    from gateway.status import get_process_start_time
 
-    monkeypatch.setattr(status, "get_process_start_time", lambda pid: 845)
-    assert hr.liveness_is_proven(record) is False
-    assert hr.record_is_stale(record) is True
+    child = subprocess.Popen(["sleep", "30"])
+    try:
+        start = get_process_start_time(child.pid)
+        live_create = hr.process_create_time(child.pid)
+        assert start is not None and live_create is not None
+        record = hr.HostRecord(
+            role=hr.ROLE_GATEWAY,
+            pid=child.pid,
+            create_time=float(live_create) - 3600.0,
+            start_time=int(start) + 10,
+            host="",
+            port=None,
+            protocol_version=hr.HOST_PROTOCOL_VERSION,
+            token_fingerprint="",
+            profiles=("default",),
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+        assert hr.liveness_is_proven(record) is False
+        assert hr.record_is_stale(record) is True
+        drifted = dataclasses.replace(record, create_time=float(live_create) - 5.0)
+        assert hr.liveness_is_proven(drifted) is True
+        assert hr.record_is_stale(drifted) is False
+    finally:
+        child.kill()
+        child.wait(timeout=10)
 
 
-@pytest.mark.platforms("posix")
+@pytest.mark.platforms("linux")
 def test_boot_epoch_mismatch_rejects_a_tick_match(host_dir):
     record = hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_dir))
     assert record is not None and record.boot_epoch
@@ -172,6 +180,15 @@ def test_boot_epoch_mismatch_rejects_a_tick_match(host_dir):
     assert hr.liveness_is_proven(record) is True
     assert hr.liveness_is_proven(foreign) is False
     assert hr.record_is_stale(foreign) is True
+
+
+@pytest.mark.platforms("posix")
+def test_empty_boot_epoch_does_not_stale_a_live_owner(host_dir):
+    record = hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_dir))
+    assert record is not None
+    empty = dataclasses.replace(record, boot_epoch="")
+    assert hr.liveness_is_proven(empty) is True
+    assert hr.record_is_stale(empty) is False
 
 
 @pytest.mark.platforms("posix")  # POSIX signal disposition

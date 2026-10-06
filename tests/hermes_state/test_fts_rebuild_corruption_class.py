@@ -61,6 +61,7 @@ def test_one_corrupt_index_does_not_stop_the_remaining_indexes(db, monkeypatch, 
     """Only messages_fts is corrupt; trigram/cjk must still be processed — the loop survives
     a corruption-class failure on one index. The trailing ``(`` keeps the match off
     ``messages_fts_trigram``/``_cjk``. optimize_fts() shares the per-index loop shape."""
+    expected = len(db._present_fts_tables()) - 1
     monkeypatch.setattr(
         db._conn,
         "execute",
@@ -68,4 +69,4 @@ def test_one_corrupt_index_does_not_stop_the_remaining_indexes(db, monkeypatch, 
             db._conn.execute
         ),
     )
-    assert getattr(db, method)() >= 1
+    assert getattr(db, method)() == expected

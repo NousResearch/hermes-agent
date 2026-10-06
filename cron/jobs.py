@@ -32,6 +32,7 @@ from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
 from cron.scheduler_ownership import _claim_owner_is_dead
+from cron import store_health
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -1252,8 +1253,7 @@ def warn_store_unwritable(exc: OSError, consequence: str, site: str, skipped_job
     """Record a failed cron store write (ENOSPC/EROFS/EACCES) in the store's degraded state, which
     warns once per outage. Callers skip the dispatch that needed the write: no job runs without a
     durable advance/fire claim."""
-    from cron.store_health import note_unwritable
-    note_unwritable(_current_cron_store().cron_dir, exc, consequence, site, skipped_jobs)
+    store_health.note_unwritable(_current_cron_store().cron_dir, exc, consequence, site, skipped_jobs)
 
 
 def record_ticker_heartbeat(success: bool = False) -> None:
@@ -1604,8 +1604,7 @@ def _save_jobs_unlocked(
             # Invalidate (never refresh) the stamp: a refresh would let a nested save certify disk
             # against an OUTER caller's stale payload. Later saves take the full merge (fail-safe).
             _record_load_stamp(None)
-            from cron.store_health import note_writable
-            note_writable(jobs_file.parent)
+            store_health.note_writable(jobs_file.parent)
             return
     except BaseException:
         _unlink_quiet(tmp_path)
@@ -3162,9 +3161,8 @@ def _retire_expired_oneshot(d: _DueJob) -> bool:
     if _elapsed_seconds(d.scan.now, d.next_run_dt) <= ONESHOT_GRACE_SECONDS:
         return False
     # Due before/while the store went unwritable: it was skipped, not missed; fire it once on recovery.
-    from cron.store_health import degraded_since
-    since = degraded_since(_current_cron_store().cron_dir)
-    if since is not None and since <= d.next_run_dt.timestamp() + ONESHOT_GRACE_SECONDS:
+    degraded = store_health.degraded_record(_current_cron_store().cron_dir)
+    if degraded is not None and degraded.since <= d.next_run_dt.timestamp() + ONESHOT_GRACE_SECONDS:
         return False
     if not (d.job.get("run_claim") or d.job.get("fire_claim")):
         _write_missed_oneshot_diagnostic(d.job, d.next_run)

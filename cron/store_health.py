@@ -139,31 +139,27 @@ def degraded_records() -> list:
         return list(_degraded.values())
 
 
-def degraded_since(cron_dir: Path) -> Optional[float]:
-    record = _degraded.get(str(cron_dir))
-    return record.since if record is not None else None
-
-
 def dispatch_blocked(due_jobs: list) -> bool:
     """Whether this tick skips advance/claim for ``due_jobs``: the active store is known
     unwritable and the minute-throttled re-probe has not seen it accept a write. Skipped runs are
     recorded; once the probe passes, the dispatch's own save confirms recovery (or re-degrades)."""
     cron_dir = _active_cron_dir()
     record = _degraded.get(str(cron_dir))
-    if record is None:
+    # Entered in load/scan (last_probe None): dispatch has not been tried yet, so let it try.
+    if record is None or record.last_probe is None:
         return False
     now = time.monotonic()
-    if record.last_probe is None:  # entered in load/scan: dispatch has not been tried yet
-        return False
-    error = None
-    if now - record.last_probe < PROBE_INTERVAL_SECONDS or (error := probe_store(cron_dir)) is not None:
-        with _lock:
-            if error is not None:
-                record.last_probe, record.error = now, describe_error(error)
+    throttled = now - record.last_probe < PROBE_INTERVAL_SECONDS
+    error = None if throttled else probe_store(cron_dir)  # file I/O stays outside the lock
+    with _lock:
+        if not throttled:
+            record.last_probe = now
+        if error is not None:
+            record.error = describe_error(error)
+        blocked = throttled or error is not None
+        if blocked:
             record.skipped |= _run_keys(due_jobs)
-        return True
-    record.last_probe = now
-    return False
+    return blocked
 
 
 def probe_report(cron_dir: Path) -> Optional[dict]:

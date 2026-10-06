@@ -235,6 +235,26 @@ def _receipt_dir() -> Path:
     return get_default_hermes_root() / "logs" / "update_receipts"
 
 
+def _receipt_dirs() -> list[Path]:
+    """The root store, then the profile's own when a named profile makes them differ. ``pm/``
+    writes its sync receipts to ``get_hermes_home()`` and receipts from before the root move live
+    there too, so readers take both and writers mirror ``latest.json`` into it (``hermes -p <name>
+    pm status`` reads only that one)."""
+    from hermes_constants import get_hermes_home
+
+    root, profile = _receipt_dir(), get_hermes_home() / "logs" / "update_receipts"
+    return [root] if profile.resolve() == root.resolve() else [root, profile]
+
+
+def _write_latest(payload: bytes) -> None:
+    """Replace ``latest.json`` in every store a reader of this home consults."""
+    from hermes_cli.runtime_state import _atomic_bytes
+
+    for directory in _receipt_dirs():
+        directory.mkdir(parents=True, exist_ok=True)
+        _atomic_bytes(directory / "latest.json", payload)
+
+
 def _run_file(directory: Path, data: dict[str, Any]) -> Path:
     """One archive file per run, named at begin so the running and terminal records coincide."""
     stamp = re.sub(r"[^0-9]", "", str(data.get("started_at") or ""))[:14] or time.strftime("%Y%m%d%H%M%S")
@@ -261,7 +281,7 @@ def _persist_running(data: dict[str, Any]) -> None:
                                "writer_create_time": _process_create_time(os.getpid())},
                               indent=2, default=str) + "\n").encode("utf-8")
         _atomic_bytes(path, payload)
-        _atomic_bytes(directory / "latest.json", payload)
+        _write_latest(payload)
 
 
 def _owner_alive(record: dict[str, Any]) -> bool:
@@ -305,7 +325,7 @@ def reconcile_interrupted_runs() -> list[dict[str, Any]]:
                 payload = (json.dumps(record, indent=2, default=str) + "\n").encode("utf-8")
                 _atomic_bytes(path, payload)
                 if latest.get("update_id") == record.get("update_id"):
-                    _atomic_bytes(directory / "latest.json", payload)
+                    _write_latest(payload)
                 interrupted.append(record)
     for record in interrupted:
         print(f"⚠ The previous update ({record.get('started_at')}) was interrupted before it finished "
@@ -420,7 +440,7 @@ def amend_terminal_followup(update_id: str, step: str, reason: str) -> None:
             payload = (json.dumps(record, indent=2, default=str) + "\n").encode("utf-8")
             _atomic_bytes(path, payload)
             if (read_latest_receipt() or {}).get("update_id") == update_id:
-                _atomic_bytes(directory / "latest.json", payload)
+                _write_latest(payload)
 
 
 def _record(method: str, what: str, *args: Any, **kwargs: Any) -> None:
@@ -554,7 +574,7 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
         payload = (json.dumps(receipt.data, indent=2, default=str) + "\n").encode("utf-8")
         _atomic_bytes(path, payload)
         with suppress(Exception):  # stable pointer for the dashboard/desktop
-            _atomic_bytes(directory / "latest.json", payload)
+            _write_latest(payload)
         _prune_old_receipts(directory)
         _publish_shared_metrics(receipt.data)
         return path
@@ -731,7 +751,7 @@ def settle_latest_receipt_fleet(fleet: list[dict[str, Any]], *, discharges) -> b
         receipt["gateway_restart"] = gateway_restart
         if not discharges(receipt):
             return False
-        path.write_text(json.dumps(receipt, indent=2, default=str), encoding="utf-8")
+        _write_latest((json.dumps(receipt, indent=2, default=str) + "\n").encode("utf-8"))
         return True
     except Exception as exc:
         logger.debug("Could not settle latest update receipt from the live fleet: %s", exc)
@@ -741,9 +761,12 @@ def settle_latest_receipt_fleet(fleet: list[dict[str, Any]], *, discharges) -> b
 def read_latest_receipt() -> Optional[dict[str, Any]]:
     """Read the most recent update receipt, or None. Never raises."""
     with suppress(Exception):
-        path = _receipt_dir() / "latest.json"
-        if not path.is_file():
+        # The newest pointer wins (the root on a tie): the last writer of either store, exactly
+        # as when updater and pm shared one folder.
+        points = [d / "latest.json" for d in _receipt_dirs() if (d / "latest.json").is_file()]
+        if not points:
             return None
+        path = max(points, key=lambda p: p.stat().st_mtime)
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
         return payload if isinstance(payload, dict) else None
     return None
@@ -756,7 +779,8 @@ def read_receipt_for_action(action_id: str) -> Optional[dict[str, Any]]:
     if latest and latest.get("action_id") == action_id:
         return latest
     with suppress(Exception):
-        for path in sorted(_receipt_dir().glob("update_*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        archives = (p for d in _receipt_dirs() for p in d.glob("update_*.json"))
+        for path in sorted(archives, key=lambda p: p.stat().st_mtime, reverse=True):
             with suppress(Exception):
                 payload = json.loads(path.read_text(encoding="utf-8-sig"))
                 if isinstance(payload, dict) and payload.get("action_id") == action_id:

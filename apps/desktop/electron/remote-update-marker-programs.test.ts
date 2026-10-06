@@ -52,7 +52,9 @@ $script:live=@{};foreach($p in $case.live.PSObject.Properties){$script:live[[int
 }
 `
 
-const powershell = ['pwsh', 'powershell'].find(shell => spawnSync(shell, ['-NoProfile', '-Command', 'exit 0']).status === 0)
+const powershell = ['pwsh', 'powershell'].find(
+  shell => spawnSync(shell, ['-NoProfile', '-Command', 'exit 0']).status === 0
+)
 
 test.skipIf(!powershell)('the Windows remote marker judge agrees with every corpus judge case', async () => {
   const corpus = JSON.parse(readFileSync(corpusPath, 'utf8'))
@@ -61,8 +63,20 @@ test.skipIf(!powershell)('the Windows remote marker judge agrees with every corp
 
   try {
     writeFileSync(script, `${WINDOWS_MARKER_JUDGE_PS}\n${PS_DRIVER}`)
-    const { stdout } = await execFile(powershell!, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, corpusPath])
-    const verdicts = Object.fromEntries(stdout.trim().split(/\r?\n/).map(line => line.split('\t')))
+    const { stdout } = await execFile(powershell!, [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      script,
+      corpusPath
+    ])
+    const verdicts = Object.fromEntries(
+      stdout
+        .trim()
+        .split(/\r?\n/)
+        .map(line => line.split('\t'))
+    )
 
     // Only the host shell is "us" to this judge (never a marker owner), so the
     // corpus cases about the reader's own pid do not apply.

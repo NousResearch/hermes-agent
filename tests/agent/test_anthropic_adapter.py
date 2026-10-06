@@ -28,6 +28,9 @@ class TestIsOAuthToken:
     def test_api_key(self):
         assert _is_oauth_token("sk-ant-api03-abcdef1234567890") is False
 
+    def test_user_api_key(self):
+        assert _is_oauth_token("sk-ant-usr-abcdef1234567890") is False
+
 
 def test_missing_sdk_error_reports_why_the_lazy_install_did_not_land(monkeypatch):
     """A completed install that needs a restart must not tell the user to install it again."""

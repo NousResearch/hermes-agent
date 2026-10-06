@@ -379,6 +379,23 @@ _MEMORY_REVIEW_PROMPT = (
     "matching target. If nothing is worth saving, just say 'Nothing to save.' and stop."
 )
 
+
+def memory_review_prompt_for_writer(writer_name: str) -> str:
+    """Instruction for an application-owned typed memory-proposal writer.
+
+    The writer's schema and account context come from the host application;
+    Hermes must neither create local files nor let the reviewer manufacture an
+    account identifier.
+    """
+    return (
+        "Review the conversation above for durable memory worth proposing.\n\n"
+        f"If there is a durable fact, call `{writer_name}` with one typed memory proposal "
+        "that conforms exactly to its tool schema. The application supplies the account-scoped "
+        "tool context: do not provide, infer, or request an account identifier. Do not call the "
+        "native memory tool and do not write local MEMORY.md or USER.md files. If nothing is worth "
+        "proposing, say 'Nothing to save.' and stop."
+    )
+
 # Shared shape contract for anything written into a skill. The failure mode this prevents is the
 # hoarding library: one references/ file per session, incident narration instead of rules, PR numbers
 # and quotes as content, and duplicating what the repo's AGENTS.md / the tool schemas already teach.
@@ -1012,6 +1029,7 @@ def build_cache_parity_fork(
     review_agent._memory_store = agent._memory_store
     review_agent._memory_enabled = agent._memory_enabled
     review_agent._user_profile_enabled = agent._user_profile_enabled
+    setattr(review_agent, "_external_memory_writer_tool_name", getattr(agent, "_external_memory_writer_tool_name", ""))
     review_agent._memory_nudge_interval = review_agent._skill_nudge_interval = 0
     # _skip_mcp_refresh: the between-turns MCP refresh would add late-connecting MCP tools and
     # break tools[] parity. PERSISTENCE ISOLATION (curator-takeover root cause): sharing the
@@ -1111,11 +1129,14 @@ def _review_tool_whitelist(
     """``(whitelist, configured_extra_tools)`` for the review fork — DISPATCH-side only, so the
     advertised ``tools[]`` stays byte-identical to the parent's (prompt-cache parity)."""
     from model_tools import get_tool_definitions
+    external_writer = getattr(review_agent, "_external_memory_writer_tool_name", "")
+    external_writer = external_writer.strip() if isinstance(external_writer, str) else ""
     # Gate the built-in memory tool on BOTH the profile's memory flags and the trigger that fired
     # (#105921): a skill-nudge review never gets the memory tool, so an unattended fork cannot
     # act on the memory tool's "consolidate now" hint and delete entries no one reviewed.
     memory_on = review_agent._memory_enabled or review_agent._user_profile_enabled
-    review_toolsets = ["memory", "skills"] if memory_on and review_memory else ["skills"]
+    use_native_memory = not external_writer and memory_on and review_memory
+    review_toolsets = ["memory", "skills"] if use_native_memory else ["skills"]
     whitelist = {t["function"]["name"] for t in get_tool_definitions(enabled_toolsets=review_toolsets, quiet_mode=True)}
     # Read-only file tools: denying read_file/search_files caused a per-review denial storm that
     # starved the loop (read_file also registers the read with the read-before-write guard).
@@ -1145,6 +1166,10 @@ def _review_tool_whitelist(
             configured_extra_tools = {name.strip() for name in extra_raw if isinstance(name, str) and name.strip()}
     except Exception:
         logger.debug("background_review extra_tools parse failed", exc_info=True)
+    # A configured application-owned writer is an exclusive replacement for
+    # file-backed memory and is only admitted for memory-triggered reviews.
+    if external_writer and review_memory:
+        configured_extra_tools.add(external_writer)
     return whitelist | configured_extra_tools, configured_extra_tools
 
 
@@ -1185,8 +1210,15 @@ def _run_review_fork(
     prompt_extra = f" Exception — these configured tools are also allowed: {extra_list}." if configured_extra_tools else ""
     # Keep the deny/prompt wording in sync with the whitelist: a memory-less review must not
     # tell the model that memory is available, or it will burn iterations on denied calls.
-    memory_phrase_deny = " and memory for notes (add only)" if "memory" in review_whitelist else ""
-    memory_phrase_prompt = "memory and skill " if "memory" in review_whitelist else "skill "
+    external_writer = getattr(st.review_agent, "_external_memory_writer_tool_name", "")
+    external_writer = external_writer.strip() if isinstance(external_writer, str) else ""
+    if "memory" in review_whitelist:
+        memory_phrase_deny, memory_phrase_prompt = " and memory for notes (add only)", "memory and skill "
+    elif external_writer and external_writer in review_whitelist:
+        memory_phrase_deny = f" and {external_writer} for typed proposals"
+        memory_phrase_prompt = f"{external_writer} and skill "
+    else:
+        memory_phrase_deny, memory_phrase_prompt = "", "skill "
     set_thread_tool_whitelist(
         review_whitelist,
         deny_msg_fmt=(
@@ -1342,8 +1374,14 @@ def spawn_background_review_thread(
     if task_cfg is None:
         task_cfg = _background_review_task_config()
     # Per-agent overrides (agent._MEMORY_REVIEW_PROMPT etc.) keep working.
+    external_writer = getattr(agent, "_external_memory_writer_tool_name", "")
+    external_writer = external_writer.strip() if isinstance(external_writer, str) else ""
     name = _PROMPT_NAME_BY_SCOPE[(review_memory, review_skills)]
-    prompt = getattr(agent, name, globals()[name])
+    prompt = (
+        memory_review_prompt_for_writer(external_writer)
+        if review_memory and external_writer
+        else getattr(agent, name, globals()[name])
+    )
     if focus := (focus or "").strip():
         prompt = (
             f"{prompt}\n\nThe user explicitly requested this review with the following "
@@ -1361,4 +1399,5 @@ def spawn_background_review_thread(
 __all__ = [
     "_MEMORY_REVIEW_PROMPT", "_SKILL_REVIEW_PROMPT", "_COMBINED_REVIEW_PROMPT", "load_background_review_settings",
     "spawn_background_review_thread", "summarize_background_review_actions", "build_memory_write_metadata",
+    "memory_review_prompt_for_writer",
 ]

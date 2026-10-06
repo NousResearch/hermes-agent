@@ -379,10 +379,9 @@ async def get_action_status(name: str, lines: int = 200):
     if name == "hermes-update":
         # ``hermes update`` mirrors to the ROOT home's update.log (main_dashboard), never this
         # dashboard's profile home: read it where it is written.
-        from hermes_constants import get_default_hermes_root
+        from hermes_cli.logs import log_file_path
 
-        durable_update_action_id = _durable_completed_update_action_id(
-            _tail_lines(get_default_hermes_root() / "logs" / "update.log", 2000))
+        durable_update_action_id = _durable_completed_update_action_id(_tail_lines(log_file_path("update"), 2000))
         spawned_action_id = (_latest_spawned_update_action_id(_tail_lines(log_dir / log_file_name, 2000))
                              or _persisted_action_id(log_dir, name) or _ACTION_IDS.get(name))
         if durable_update_action_id != spawned_action_id:

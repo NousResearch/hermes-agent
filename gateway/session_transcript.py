@@ -26,12 +26,13 @@ class TranscriptReadError(RuntimeError):
         super().__init__(f"transcript read failed for session {session_id}")
 
 
-def _spool_dropped(session_id: str, message: Dict[str, Any]):
+def _spool_dropped(session_id: str, message: Dict[str, Any], *, session_key=None):
     """Spool one evicted/undeliverable message to disk (same machinery as the shutdown flush, so it
-    is replayed after DB recovery); path or None."""
+    is replayed after DB recovery); path or None. ``session_key`` (owner routing key) is recorded so
+    a multiplexed profile's cap-drop replays into its own store rather than the ambient root."""
     try:
         from gateway.shutdown_flush import spool_dropped_transcript_message
-        return spool_dropped_transcript_message(session_id, message)
+        return spool_dropped_transcript_message(session_id, message, session_key=session_key)
     except Exception:
         return None
 
@@ -135,7 +136,8 @@ class SessionTranscriptMixin:
         # flush_pending_to_file uses at shutdown) so a runtime cap rotation does not silently discard it
         # (#78182); it is replayed on the next successful transcript flush.
         if len(pending) > self._MAX_PENDING_PER_SESSION:
-            spool_path = _spool_dropped(session_id, pending.pop(0))
+            spool_path = _spool_dropped(session_id, pending.pop(0),
+                                        session_key=self._owner_key_for_session_id(session_id))
             if spool_path is not None:
                 self._lazy("_spooled_drop_sessions", set).add(session_id)
                 logger.warning(
@@ -163,7 +165,8 @@ class SessionTranscriptMixin:
             self._dirty_transcripts.pop(queue_session_id, None)
             self._transcript_append_failures.pop(session_id, None)
         for dropped in remaining:
-            if _spool_dropped(session_id, dropped) is None:
+            if _spool_dropped(session_id, dropped,
+                              session_key=self._owner_key_for_session_id(session_id)) is None:
                 logger.warning(
                     "pending fallback failed for replaced state.db transcript on %s", session_id,
                     exc_info=True)
@@ -330,7 +333,8 @@ class SessionTranscriptMixin:
             backlog = list(pending)
         spooled = 0
         for message in backlog:
-            if _spool_dropped(session_id, message) is None:
+            if _spool_dropped(session_id, message,
+                              session_key=self._owner_key_for_session_id(session_id)) is None:
                 break
             spooled += 1
         if spooled:

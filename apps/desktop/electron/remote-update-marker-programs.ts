@@ -1,10 +1,11 @@
 /**
  * The update-marker judge as programs that run ON an SSH remote.
  *
- * Same contract as `update-marker-judge.ts` (`tests/fixtures/update_marker_corpus.json`):
- * an identity (pid, ct) is live when the pid is alive and its creation time is
- * within 2 s of the recorded `ct:`; with no recorded/readable ct it is live only
- * while `now - started_at <= 1200`. Owner or delegate live => LIVE, both dead =>
+ * Same contract as `update-marker-judge.ts` (`tests/fixtures/update_marker_corpus.json`),
+ * with its constants interpolated so no copy can drift: an identity (pid, ct)
+ * is live when the pid is alive and its creation time is within
+ * CREATE_TIME_TOLERANCE_S of the recorded `ct:`; with no recorded/readable ct it
+ * is live only while `now - started_at <= V1_MAX_AGE_S`. Owner or delegate live => LIVE, both dead =>
  * CLEAR, malformed => UNCERTAIN. Only the host's system Python (POSIX) or
  * PowerShell/.NET (Windows relaunch/spawn) runs these: nothing imports the
  * checkout an updater may be replacing.
@@ -12,6 +13,8 @@
  * The Python stays free of double quotes: managed-ssh-update ships it to Windows
  * as a PowerShell native argument, and PowerShell 5.1 does not escape them.
  */
+
+import { CREATE_TIME_TOLERANCE_S, OWN_CT_EPSILON_S, V1_MAX_AGE_S } from './update-marker-judge'
 
 /** Defines `marker_judge(text, env)` (corpus-shaped, injectable facts) and `marker_verdict(raw_bytes_or_None)`. */
 export const REMOTE_MARKER_JUDGE_PY = String.raw`
@@ -29,11 +32,11 @@ def marker_identity_state(pid,ct,started,env):
     if pid==0:return 'dead'
     if pid==env['our_pid']:
         own=env['our_ct']()
-        return 'ours' if ct is not None and own is not None and abs(ct-own)<=0.005 else 'dead'
+        return 'ours' if ct is not None and own is not None and abs(ct-own)<=${OWN_CT_EPSILON_S} else 'dead'
     if not env['alive'](pid):return 'dead'
     actual=None if ct is None else env['ct'](pid)
-    if ct is None or actual is None:return 'unknown' if env['now']-started<=1200 else 'dead'
-    return 'match' if abs(ct-actual)<=2.0 else 'dead'
+    if ct is None or actual is None:return 'unknown' if env['now']-started<=${V1_MAX_AGE_S} else 'dead'
+    return 'match' if abs(ct-actual)<=${CREATE_TIME_TOLERANCE_S} else 'dead'
 
 def marker_judge(text,env):
     if text.startswith('\ufeff'):text=text[1:]
@@ -190,16 +193,23 @@ sys.exit(subprocess.run(['sh','-c',payload,'hermes-update-mutex',str(fd)],pass_f
  * same rule via .NET process facts (Process.StartTime = psutil create_time on
  * Windows; a process we may not query is alive with no ct). Windows runs this
  * instead of the venv python so a probe never holds the runtime's python.exe
- * open while an updater replaces it. Our own pid is never a remote owner.
+ * open while an updater replaces it. The process facts and clock sit in
+ * `Get-MarkerProcessFacts` / `Get-MarkerNow` so the corpus replay can inject them.
  */
 export const WINDOWS_MARKER_JUDGE_PS = [
+  'function Get-MarkerProcessFacts([int]$ownerId){',
+  // Our own pid is never a remote owner.
+  'if($ownerId -eq $PID){return @{Alive=$false}}',
+  'try{$proc=[Diagnostics.Process]::GetProcessById($ownerId)}catch [ArgumentException]{return @{Alive=$false}}',
+  'try{if($proc.HasExited){return @{Alive=$false}};return @{Alive=$true;Ct=([DateTimeOffset]$proc.StartTime).ToUnixTimeMilliseconds()/1000.0}}catch{return @{Alive=$true}}finally{$proc.Dispose()}',
+  '}',
+  'function Get-MarkerNow{[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()}',
   'function Test-MarkerIdentity($ownerId,$ct,$started,$now){',
-  'if($ownerId -eq 0 -or $ownerId -eq $PID -or $ownerId -gt [int]::MaxValue){return $false}',
-  'try{$proc=[Diagnostics.Process]::GetProcessById([int]$ownerId)}catch [ArgumentException]{return $false}',
-  '$actual=$null',
-  'try{if($proc.HasExited){return $false};if($null -ne $ct){$actual=([DateTimeOffset]$proc.StartTime).ToUnixTimeMilliseconds()/1000.0}}catch{}finally{$proc.Dispose()}',
-  'if($null -eq $ct -or $null -eq $actual){return ($now-[double]$started) -le 1200}',
-  'return [Math]::Abs($ct-$actual) -le 2.0',
+  'if($ownerId -eq 0 -or $ownerId -gt [int]::MaxValue){return $false}',
+  '$facts=Get-MarkerProcessFacts $ownerId',
+  'if(-not $facts.Alive){return $false}',
+  `if($null -eq $ct -or $null -eq $facts.Ct){return ($now-[double]$started) -le ${V1_MAX_AGE_S}}`,
+  `return [Math]::Abs($ct-$facts.Ct) -le ${CREATE_TIME_TOLERANCE_S}`,
   '}',
   'function Get-MarkerCt([string]$digits){$value=0.0;if([double]::TryParse($digits,[Globalization.NumberStyles]::AllowDecimalPoint,[Globalization.CultureInfo]::InvariantCulture,[ref]$value)){return $value};return [double]::PositiveInfinity}',
   'function Get-MarkerVerdict([string]$text){',
@@ -209,7 +219,7 @@ export const WINDOWS_MARKER_JUDGE_PS = [
   '$ct=$null;if($lines.Count -gt 2 -and $lines[2] -cmatch "^ct:([0-9]+(\\.[0-9]+)?)$"){$ct=Get-MarkerCt $Matches[1]}',
   '$ids=@(,@($ownerId,$ct))',
   'foreach($line in @($lines | Select-Object -Skip 3)){[uint32]$delegateId=0;if($line -cmatch "^delegate:([0-9]+) ct:([0-9]+(\\.[0-9]+)?)$" -and [uint32]::TryParse($Matches[1],$style,$culture,[ref]$delegateId)){$ids+=,@($delegateId,(Get-MarkerCt $Matches[2]));break}}',
-  '$now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()',
+  '$now=Get-MarkerNow',
   'foreach($id in $ids){if(Test-MarkerIdentity $id[0] $id[1] $started $now){return "LIVE:$($id[0])"}}',
   'return "CLEAR"',
   '}'

@@ -21,6 +21,7 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static instances: FakeTerminal[] = [];
   options: Record<string, unknown>;
   rows = 24;
   cols = 80;
@@ -31,6 +32,7 @@ class FakeTerminal {
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeTerminal.instances.push(this);
   }
 
   attachCustomKeyEventHandler() {
@@ -205,6 +207,7 @@ async function render(ui: ReactNode) {
 
 beforeEach(() => {
   FakeWebSocket.instances = [];
+  FakeTerminal.instances = [];
   maybeReloadForLoopbackWsAuthFailure.mockClear();
   apiMocks.buildWsUrl.mockReset();
   apiMocks.buildWsUrl.mockResolvedValue("ws://localhost/api/pty?channel=chat-1");
@@ -294,6 +297,24 @@ describe("ChatPage", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("keeps macOS Option as a character-composition modifier instead of Meta (#132897)", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    // On German QWERTZ Option+L composes "@" (and other layouts compose
+    // €/´/~ through Option). xterm.js only forwards those composed keypresses
+    // when macOptionIsMeta is false — with it on, the Option chord is turned
+    // into an ESC-prefixed meta sequence and the character is never typed.
+    const term = FakeTerminal.instances.at(-1);
+    expect(term).toBeDefined();
+    expect(term?.options.macOptionIsMeta).toBe(false);
   });
 
   it("defers a reconnect while the chat tab is inactive", async () => {

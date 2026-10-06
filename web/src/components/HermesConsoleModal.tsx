@@ -359,7 +359,11 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
       fontSize: 13,
       lineHeight: 1.25,
       letterSpacing: 0,
-      macOptionIsMeta: true,
+      // Keep Option as the character-composition modifier (xterm.js default,
+      // matching Terminal.app / iTerm2 / VS Code). Option+L composes "@" on
+      // German QWERTZ; macOptionIsMeta would swallow the composed keypress and
+      // ship an ESC-prefixed sequence instead. See #132897.
+      macOptionIsMeta: false,
       scrollback: 3000,
       theme: buildTerminalTheme(
         theme.terminalBackground ?? "#000000",

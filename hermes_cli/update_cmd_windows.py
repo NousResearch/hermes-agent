@@ -5,7 +5,7 @@ Origin helpers are imported lazily per function (no cycle; test patches on the o
 """
 
 import logging
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, redirect_stdout, suppress
 import os
 import re
 import shlex
@@ -1516,6 +1516,14 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
     if not _m()._is_windows():
         token["resume_needed"] = False
         return
+    # Startup recovery runs ahead of an unrelated command whose stdout may be parsed (``--json``):
+    # its notices go to stderr, as ``recover()``'s own do.
+    with redirect_stdout(sys.stderr) if token.get("recovery") else nullcontext():
+        _resume_unless_torn(token)
+
+
+def _resume_unless_torn(token: dict) -> None:
+    """Resume the paused set, or leave it owed when the checkout is not whole."""
     from hermes_cli import update_pause_record as pause_record
     if token.get("pause_id"):
         whole, why = pause_record.tree_is_whole(token)

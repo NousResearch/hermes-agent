@@ -15,7 +15,9 @@ dispatch (no durable advance) without raising or mutating the store.
 
 import errno
 import json
+import asyncio
 import logging
+import os
 import sqlite3
 from datetime import timedelta
 
@@ -219,3 +221,53 @@ def test_unwritable_store_degrades_once_throttles_and_catches_up_once(cron_store
     assert store_health.degraded_record(cron_store / "cron") is None
     once_rows = executions.list_executions(job_id="once")
     assert [r["status"] for r in once_rows].count("failed") == 1
+
+
+@pytest.mark.platforms("posix")  # POSIX mode bits; root ignores them
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses directory modes")
+def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store, monkeypatch, capsys):
+    """`hermes cron status` probes the store itself (a real 0500 dir) and leads with the red
+    headline + fix; the gateway posts ONE home-channel notice on entry and ONE on recovery,
+    each naming the store, the error, since-when and the skipped runs."""
+    from types import SimpleNamespace
+    from gateway.cron_store_notices import install_cron_store_notices
+    from hermes_cli import cron as cron_cli
+
+    save_jobs([_due_job()])
+    cron_dir = cron_store / "cron"
+    monkeypatch.setattr(cron_cli, "_active_cron_provider_name", lambda: "chronos")
+    os.chmod(cron_dir, 0o500)
+    try:
+        cron_cli.cron_status()
+    finally:
+        os.chmod(cron_dir, 0o700)
+    out = capsys.readouterr().out
+    assert out.lstrip().startswith("⚠ Cron store is NOT writable — scheduled jobs are being skipped")
+    assert f"{cron_dir}: EACCES" in out and "1 due run(s) not fired" in out
+    assert f"fix permissions on {cron_dir}" in out
+
+    sent = []
+
+    async def send(platform, home, transport, message, failure_fmt):
+        sent.append(message)
+        return True
+
+    home = SimpleNamespace(chat_id="c1", thread_id=None)
+    runner = SimpleNamespace(_send_home_channel_message=send, _served_home_channel_transports=lambda: iter(
+        [(None, "telegram", None, home, object())]))
+    monkeypatch.setattr("hermes_constants.get_routing_process_hermes_home", lambda: cron_store)
+    loop = asyncio.new_event_loop()
+    try:
+        install_cron_store_notices(runner, loop)
+        enospc = OSError(errno.ENOSPC, "No space left on device")
+        for site in ("scan", "advance", "claim"):  # one outage, many failing sites
+            cronjobs.warn_store_unwritable(enospc, "x", site, [_due_job()])
+        save_jobs([_due_job()])
+        save_jobs([_due_job()])
+        loop.run_until_complete(asyncio.sleep(0.05))
+    finally:
+        loop.close()
+    assert len(sent) == 2
+    assert str(cron_dir) in sent[0] and "ENOSPC: No space left on device" in sent[0] and "since " in sent[0]
+    assert f"fix permissions on {cron_dir}" in sent[0]
+    assert "writable again; 1 skipped run(s), catching up once per job" in sent[1]

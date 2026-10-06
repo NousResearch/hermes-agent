@@ -47,7 +47,7 @@ export async function refreshFreeTierStatus(requestGateway: FreeTierRequester): 
     $freeTierStatus.set(status)
     // A client that connected after the `free_tier.challenge` event still has
     // a window to open; the run is de-duplicated per URL.
-    void runFreeTierChallenge(status.challenge, result => requestGateway('free_tier.challenge_result', result))
+    void runFreeTierChallenge(status.challenge, requestGateway)
 
     return status
   } catch {

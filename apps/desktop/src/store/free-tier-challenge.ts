@@ -1,4 +1,4 @@
-import type { FreeTierChallengePayload } from '@hermes/shared'
+import type { FreeTierChallengePayload, FreeTierChallengeResultParams } from '@hermes/shared'
 
 /**
  * The free tier's browser challenge, renderer half: a relay. The backend
@@ -10,14 +10,12 @@ import type { FreeTierChallengePayload } from '@hermes/shared'
  * The event and a status read can both name the same attempt.
  */
 
-export type FreeTierChallengeOutcome = 'done' | 'failed' | 'closed' | 'timeout' | 'refused' | 'error' | 'unsupported'
+export type FreeTierChallengeOutcome = FreeTierChallengeResultParams['outcome']
+
+/** Sends ``free_tier.challenge_result`` to the backend that announced the challenge. */
+export type ChallengeRequester = (method: 'free_tier.challenge_result', params: Record<string, unknown>) => Promise<unknown>
 
 const inFlight = new Map<string, Promise<FreeTierChallengeOutcome>>()
-type ChallengeReporter = (result: {
-  url: string
-  attempt: number
-  outcome: FreeTierChallengeOutcome
-}) => Promise<unknown>
 
 function isBrowserChallenge(value: unknown): value is FreeTierChallengePayload {
   if (typeof value !== 'object' || value === null) {
@@ -31,7 +29,7 @@ function isBrowserChallenge(value: unknown): value is FreeTierChallengePayload {
 
 export function runFreeTierChallenge(
   challenge: unknown,
-  report?: ChallengeReporter
+  requestGateway?: ChallengeRequester
 ): Promise<FreeTierChallengeOutcome> | null {
   if (!isBrowserChallenge(challenge)) {
     return null
@@ -52,7 +50,7 @@ export function runFreeTierChallenge(
   // never grants a credential, so a failed report is not worth surfacing.
   const reported = async (outcome: FreeTierChallengeOutcome) => {
     try {
-      await report?.({ url: challenge.url, attempt, outcome })
+      await requestGateway?.('free_tier.challenge_result', { url: challenge.url, attempt, outcome })
     } catch {
       // see above
     }

@@ -63,9 +63,7 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     const connectionId = event.connectionId ?? activeGatewayConnectionId()
     const profile = event.profile ?? deps.activeGatewayProfile
 
-    void runFreeTierChallenge(payload, result =>
-      requestGatewayForAgent(connectionId, profile, 'free_tier.challenge_result', result)
-    )
+    void runFreeTierChallenge(payload, (method, params) => requestGatewayForAgent(connectionId, profile, method, params))
 
     return true
   }

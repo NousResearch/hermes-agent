@@ -1,5 +1,7 @@
 import type { BrowserWindow, BrowserWindowConstructorOptions, Session } from 'electron'
 
+import { createWindowOpenHandler } from './window-open-policy'
+
 /**
  * The free tier's browser challenge, desktop half.
  *
@@ -33,6 +35,8 @@ import type { BrowserWindow, BrowserWindowConstructorOptions, Session } from 'el
 
 export type ChallengePhase = 'working' | 'interactive' | 'done' | 'failed'
 
+// The contract's ``free_tier.challenge_result`` outcomes minus the renderer-only 'unsupported';
+// the renderer reports these through that type, so a drift fails its typecheck.
 export type ChallengeOutcome = 'done' | 'failed' | 'closed' | 'timeout' | 'refused' | 'error'
 
 export interface ChallengeRequest {
@@ -255,7 +259,9 @@ export function createChallengeWindows({
       const contents = win.webContents
 
       contents.setAudioMuted(true)
-      contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+      contents.setWindowOpenHandler(
+        createWindowOpenHandler(origin => rememberLog(`[free-tier] challenge popup denied: ${origin}`))
+      )
 
       // The page may move within the portal (a fragment, a reload); it may not
       // take this window anywhere else — by script (`will-navigate`) or by a

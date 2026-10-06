@@ -1608,3 +1608,21 @@ class TestMacOSTCCGrants:
         out = capsys.readouterr().out
         assert "could not read code-signing requirement" in out
         assert "stable" not in out
+
+
+@pytest.mark.parametrize("probe_error,free,expected,issue", [
+    (None, 50 << 30, "store is writable", None),
+    (OSError(28, "No space left on device"), 50 << 30, "NOT writable (ENOSPC", "is not writable"),
+    (None, 10 << 20, "free — cron jobs stop when it fills", "Free disk space"),
+])
+def test_cron_store_check_reports_writability_and_low_space(
+        monkeypatch, tmp_path, capsys, probe_error, free, expected, issue):
+    from cron import store_health
+
+    (tmp_path / "cron").mkdir()
+    monkeypatch.setattr(doctor, "HERMES_HOME", tmp_path)
+    monkeypatch.setattr(store_health, "probe_store", lambda _d: probe_error)
+    monkeypatch.setattr(store_health, "free_bytes", lambda _d: free)
+    finding = doctor_state._check_cron_store(False)
+    assert expected in capsys.readouterr().out
+    assert [i for i in finding.issues if issue in i] == finding.issues != [] if issue else not finding.issues

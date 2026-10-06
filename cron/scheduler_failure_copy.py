@@ -158,4 +158,11 @@ def delivery_process_context() -> str:
     """
     from gateway.code_skew import boot_code_sha
 
-    return f"[emitter pid={os.getpid()} loaded_revision={boot_code_sha() or 'unknown'}]"
+    # A long-lived process can hold mixed old/new modules: the revision probe itself
+    # may fail to import. The tag must still deliver — keep the PID, mark the
+    # revision unknown. A notice that dies here tells the operator nothing.
+    try:
+        revision = boot_code_sha() or "unknown"
+    except Exception:
+        revision = "unknown"
+    return f"[emitter pid={os.getpid()} loaded_revision={revision}]"

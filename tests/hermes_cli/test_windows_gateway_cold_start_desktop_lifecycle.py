@@ -112,9 +112,18 @@ def _running_beta_pause_fixture(monkeypatch, tmp_path):
     monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda name: homes[name])
     # Resume side.
     monkeypatch.setattr(cli_main, "_refresh_windows_gateway_launchers", lambda: None)
-    monkeypatch.setattr(hermes_gateway, "launch_detached_profile_gateway_restart", lambda p, o: True)
+    relaunched: set = set()
+    monkeypatch.setattr(hermes_gateway, "launch_detached_profile_gateway_restart",
+                        lambda p, o: relaunched.add(p) or True)
     ready_probes: list = []
     monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda *a, **k: ready_probes.append(k) or [4242])
+    # The relaunch verifier polls this probe: a home answers only once its profile was relaunched
+    # (a fresh PID), so a not-yet-started profile still reads as down and is cold-started.
+    by_home = {str(h): n for n, h in homes.items()}
+    monkeypatch.setattr(gateway_windows, "_live_gateway_pids",
+                        lambda home=None, pid_filter=None, **_k: (pid_filter or list)(
+                            [888] if by_home.get(str(home)) in relaunched else []))
+    monkeypatch.setattr(update_cmd_windows, "_READY_CONFIRM_S", 0.0)
     homes["_ready_probes"] = ready_probes
     return homes
 

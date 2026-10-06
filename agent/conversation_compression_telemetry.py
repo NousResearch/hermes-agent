@@ -28,12 +28,15 @@ _GENERIC_ABORT_VERDICTS = frozenset({"no_progress", "summary_generation_aborted"
 
 def _emit_compression_attempt_telemetry(
     agent: Any, *, started_at: float, commit_status: str, split_status: str, failure_class: str | None = None,
-    commit_started_at: float | None = None,
+    commit_started_at: float | None = None, include_last_telemetry: bool = True,
 ) -> None:
-    """Emit one content-free JSON log line for a compression attempt."""
+    """Emit one content-free JSON log line for a compression attempt.
+
+    ``include_last_telemetry=False`` is for emits that fire without an attempt having begun
+    (pool-saturation refusals): they must not hydrate from the previous attempt's numbers."""
     try:
         compressor = agent.context_compressor
-        telemetry = getattr(compressor, "_last_compression_telemetry", None)
+        telemetry = getattr(compressor, "_last_compression_telemetry", None) if include_last_telemetry else None
         if not isinstance(telemetry, dict):
             telemetry = {}
         payload = dict(telemetry)

@@ -1,0 +1,45 @@
+// Settings > Custom Endpoints overlay; fr.ts composes it as `settings.customEndpoints`.
+import type { CustomEndpointsTranslations } from './types_custom_endpoints'
+export const frCustomEndpoints: CustomEndpointsTranslations = {
+  active: 'Actif',
+  apiKeySet: 'Clé API définie',
+  use: 'Utiliser',
+  editTitle: 'Modifier le point de terminaison',
+  addTitle: 'Ajouter un point de terminaison',
+  fields: {
+    name: 'Nom',
+    providerId: 'ID du fournisseur',
+    endpointUrl: 'URL du point de terminaison',
+    defaultModel: 'Modèle par défaut',
+    context: 'Contexte',
+    apiKey: 'Clé API',
+    apiKeyNewPlaceholder: 'Laissez vide pour conserver la clé actuelle',
+    apiKeyPlaceholder: 'Facultatif',
+    apiKeyNoKeySaved: 'Aucune clé enregistrée pour ce endpoint (facultatif)',
+    useNewChats: 'Utiliser pour les nouvelles conversations',
+    discoverModels: 'Découvrir les modèles'
+  },
+  test: 'Tester',
+  save: 'Enregistrer',
+  newEndpoint: 'Nouveau point de terminaison',
+  apiMode: 'Mode API',
+  autoDetect: 'Détection automatique',
+  couldNotLoad: 'Impossible de charger les points de terminaison personnalisés',
+  endpointSaved: 'Point de terminaison personnalisé enregistré.',
+  saveFailed: 'Échec de l’enregistrement',
+  endpointReachable: 'Le point de terminaison est joignable.',
+  endpointReachableTransport: transport => `Le point de terminaison est joignable (route ${transport} servie).`,
+  endpointReachableModels: (reachable, count) =>
+    `${reachable} ${count} modèle${count > 1 ? 's' : ''} trouvé${count > 1 ? 's' : ''}.`,
+  endpointValidationFailed: 'La validation du point de terminaison a échoué.',
+  validationFailed: 'Échec de la validation',
+  activationFailed: 'Échec de l’activation',
+  deleteConfirm: name => `Supprimer ${name} ?`,
+  deleteFailed: 'Échec de la suppression',
+  title: 'Points de terminaison personnalisés',
+  deleteEndpoint: 'Supprimer le point de terminaison',
+  emptyDescription: 'Ajoutez ci-dessous un point de terminaison compatible OpenAI.',
+  emptyTitle: 'Aucun point de terminaison personnalisé',
+  namePlaceholder: 'Proxy Axet',
+  contextPlaceholder: 'Auto'
+}

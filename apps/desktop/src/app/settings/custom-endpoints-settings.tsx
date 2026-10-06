@@ -13,6 +13,7 @@ import {
   validateCustomEndpoint
 } from '@/hermes'
 import { useI18n } from '@/i18n'
+import type { CustomEndpointsCopy } from '@/i18n/types_custom_endpoints'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -88,14 +89,14 @@ function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
 /** Placeholder for the API Key field. The field is always blank for a saved
  *  endpoint (the key lives in .env, never round-trips to the UI), so the
  *  placeholder is the only place that says whether a key is on file. */
-function apiKeyPlaceholder(form: EndpointForm): string {
+function apiKeyPlaceholder(form: EndpointForm, ce: CustomEndpointsCopy): string {
   if (!form.id) {
-    return 'Optional'
+    return ce.fields.apiKeyPlaceholder
   }
 
   return form.savedKeyPreview
-    ? `Leave blank to keep the saved key (${form.savedKeyPreview})`
-    : 'No key saved for this endpoint (optional)'
+    ? `${ce.fields.apiKeyNewPlaceholder} (${form.savedKeyPreview})`
+    : ce.fields.apiKeyNoKeySaved
 }
 
 function toPayload(
@@ -495,7 +496,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
               {ce.fields.apiKey}
               <Input
                 onChange={event => setForm(current => ({ ...current, apiKey: event.target.value }))}
-                placeholder={apiKeyPlaceholder(form)}
+                placeholder={apiKeyPlaceholder(form, ce)}
                 type="password"
                 value={form.apiKey}
               />

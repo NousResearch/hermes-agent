@@ -10,6 +10,7 @@ import re
 import asyncio
 import time
 import urllib.parse
+from agent.secret_scope import UnscopedSecretError
 from fastapi import APIRouter
 from hermes_cli.web_routers._common import (
     REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
@@ -434,7 +435,8 @@ class _EndpointCredentials:
         if val is None and self._own_process:
             try:
                 val = get_env_value(name)
-            except Exception:  # fail-closed scope error under multiplexing: own files only
+            except UnscopedSecretError:  # scope-error surface of get_secret: fail-closed means the lookup misses, not the request dies
+                _log.debug("own-profile env fallback failed for %s", name, exc_info=True)
                 val = None
         return str(val or "").strip() or None
 
@@ -455,11 +457,18 @@ class _EndpointCredentials:
         return (self._expand(inline).strip() or None) if inline else None
 
     def raw_entry(self, endpoint_id: str) -> Optional[Dict[str, Any]]:
-        """The on-disk block behind an endpoint id: ``providers.<id>``, else the ``model`` block
+        """The on-disk block behind an endpoint id: ``providers.<id>``, else the
+        legacy ``custom_providers`` list entry slugging to it (the list route renders
+        those rows too, so Test must find their key), else the ``model`` block
         for the synthesized ``direct-config`` row (``provider: custom`` with no providers entry)."""
         _stored, entry = find_provider_entry(self._raw.get("providers"), endpoint_id)
         if isinstance(entry, dict):
             return entry
+        for legacy in self._raw.get("custom_providers") or []:
+            if not isinstance(legacy, dict) or legacy.get("provider_key"):
+                continue
+            if _custom_endpoint_id(str(legacy.get("name") or "")) == endpoint_id:
+                return legacy
         model_cfg = self._raw.get("model")
         if (
             endpoint_id == "custom"

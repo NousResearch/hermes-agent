@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { type I18nContextValue, I18nProvider, useI18n } from '@/i18n'
-import { MemoryRouter } from 'react-router'
 import { stubResizeObserver } from '@/test/jsdom'
 import type { CustomEndpoint, CustomEndpointsResponse } from '@/types/hermes'
 
@@ -312,7 +312,7 @@ describe('CustomEndpointsSettings API key', () => {
 
     await renderSettings()
 
-    expect((screen.getByPlaceholderText('Leave blank to keep the saved key (sk-s...kI0c)') as HTMLInputElement).value).toBe('')
+    expect((screen.getByPlaceholderText('Leave blank to keep current key (sk-s...kI0c)') as HTMLInputElement).value).toBe('')
     expect(screen.getByText('sk-s...kI0c')).toBeTruthy()
   })
 
@@ -366,7 +366,7 @@ describe('CustomEndpointsSettings API key', () => {
       expect.objectContaining({ api_key: 'sk-typed-key' }),
       'default' // profile-scoped like list (#108785)
     )
-    await screen.findByPlaceholderText('Leave blank to keep the saved key (sk-s...kI0c)')
-    expect((screen.getByPlaceholderText('Leave blank to keep the saved key (sk-s...kI0c)') as HTMLInputElement).value).toBe('')
+    await screen.findByPlaceholderText('Leave blank to keep current key (sk-s...kI0c)')
+    expect((screen.getByPlaceholderText('Leave blank to keep current key (sk-s...kI0c)') as HTMLInputElement).value).toBe('')
   })
 })

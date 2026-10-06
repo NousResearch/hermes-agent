@@ -14,9 +14,9 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-mail-mcp@2.19.16`:
+# On macOS, `npx -y apple-mail-mcp@2.20.1`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.19.16 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.20.1 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 52 tools, every one carrying a description;
 #   - resolves all 18 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
@@ -117,6 +117,32 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # re-tested and confirmed: offset 350,000 went from "no response within 60s"
 # to ~10s, offset 790,000 ~7s, and a full 1,589-page pagination of the
 # 793,614-message mailbox returned every message exactly once.
+#
+# 2.20.1 is re-pinned on the same footing — two defects in the
+# default-enabled attachment tools (sweetrb/apple-mail-mcp#270, @j5pu):
+#   - `list-attachments` reported each attachment's base64-encoded size, not
+#     its file size: over IMAP the size came straight from `BODYSTRUCTURE`,
+#     which counts a part in its transfer encoding, so a 29-byte file listed
+#     as 40 (25 as 36, 14 as 20). Sizes are now the decoded byte count
+#     `fetch-attachment` returns — a `Content-Disposition` `size=` wins when
+#     present, base64 parts are measured exactly from a short tail of each
+#     part in one batched `FETCH`, quoted-printable parts up to 64 KiB are
+#     counted exactly, and anything unmeasurable is an estimate flagged
+#     `sizeApproximate: true`. The AppleScript/MIME fallback sizing (which
+#     ignored `=` padding and used the encoded length for quoted-printable)
+#     is exact too.
+#   - `fetch-attachment` over IMAP checked its 25 MiB limit against that
+#     encoded size, so base64 attachments of roughly 19–25 MiB were refused
+#     before download despite being under the limit. The pre-check now uses
+#     the decoded size; the streaming cut-off is unchanged.
+# Riding along from the range since 2.19.19: 2.19.20 raises the bundled
+# `fast-uri` floor for GHSA-58mr-gqgx-xq4g (high; reachable via ajv's
+# JSON-schema validation, as with 2.17.6 above) and 2.19.22 the bundled
+# `ip-address` floor for GHSA-j6r3-76f7-8jcv / GHSA-h3mg-xc3c-68pw (medium).
+# 2.19.21 (`nodemailer` GHSA-6vj9-mwq6-2f5v, direct-SMTP send path) and
+# 2.20.0 (`attachments` on reply/forward, `inReplyTo`/`references` on
+# send-email/create-draft, Gmail AppleScript reply/forward id fix) land only
+# on send/mutation tools that are disabled below.
 # No new tools since 2.19.16: still 52 tools, all 18 default_enabled entries
 # resolve.
 transport:
@@ -124,7 +150,7 @@ transport:
   command: "npx"
   args:
     - "-y"
-    - "apple-mail-mcp@2.19.19"
+    - "apple-mail-mcp@2.20.1"
 
 # Drives Apple Mail locally via AppleScript; no credentials.
 auth:

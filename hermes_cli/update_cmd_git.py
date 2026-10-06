@@ -412,7 +412,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
         # The fetch above already brought upstream/main: a local fast-forward (no network, so no
         # credential helper is started under the checkout lock fd a mutator inherits) to the
         # very commit counted above.
-        with (checkout_move or (lambda _target: nullcontext()))(upstream):
+        with (checkout_move or _no_move)(upstream):
             run_git(git_cmd, ["merge", "--ff-only", upstream], cwd=cwd, check=True, **_no_prompt_git_kwargs())
     except subprocess.CalledProcessError:
         print("  ✗ Failed to pull from upstream. You may need to resolve conflicts manually.")
@@ -569,7 +569,12 @@ def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
     return owners
 
 
-def _discard_lockfile_churn(git_cmd, repo_root):
+def _no_move(*_targets, **_bound):
+    """The ``checkout_move`` of a run with no paused gateways: the step runs unbound."""
+    return nullcontext({})
+
+
+def _discard_lockfile_churn(git_cmd, repo_root, *, checkout_move=None):
     """Restore ``package-lock.json`` files npm rewrote non-deterministically, so the update sees a clean tree
     instead of autostashing every run. A lockfile is kept when a manifest it records is dirty: for the root
     lock that is the root or ANY workspace ``package.json`` (reverting it under a dirty ``apps/desktop``
@@ -595,11 +600,12 @@ def _discard_lockfile_churn(git_cmd, repo_root):
                 dirty.append(path)
         if not dirty:
             return
-        _git_run(git_cmd, ["checkout", "--", *dirty], repo_root)
+        with (checkout_move or _no_move)(paths=dirty):
+            _git_run(git_cmd, ["checkout", "--", *dirty], repo_root)
         print(f"→ Discarded npm lockfile churn ({len(dirty)} file(s))")
 
 
-def _normalize_managed_eol(git_cmd, repo_root):
+def _normalize_managed_eol(git_cmd, repo_root, *, checkout_move=None):
     """Take a managed checkout off ``core.autocrlf=true`` without leaving it dirty.
 
     Git for Windows sets ``autocrlf=true`` system-wide, turning LF files CRLF and breaking ``git checkout``
@@ -644,8 +650,9 @@ def _normalize_managed_eol(git_cmd, repo_root):
             return
         if eol_only:
             # Pathspec via stdin: thousands of paths exceed the Windows argv limit.
-            _probe_run("checkout", "--pathspec-from-file=-", "--pathspec-file-nul", "--",
-                       input="\0".join(sorted(eol_only)), check=False)
+            with (checkout_move or _no_move)(paths=sorted(eol_only)):
+                _probe_run("checkout", "--pathspec-from-file=-", "--pathspec-file-nul", "--",
+                           input="\0".join(sorted(eol_only)), check=False)
             if _eol_only():  # still dirty: pinning would only surface churn we failed to clear
                 return
             print(f"→ Normalized line-ending churn ({len(eol_only)} file(s))")

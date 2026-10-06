@@ -10,7 +10,7 @@ import asyncio
 import threading
 import time
 from contextlib import suppress
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -1113,3 +1113,99 @@ async def test_processing_reservation_distinguishes_new_input_from_pending_repla
         release.set()
         await asyncio.gather(*adapter._background_tasks)
         await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handler_available", [True, False])
+async def test_dispatch_uses_the_handler_installed_after_the_start_hook(
+    monkeypatch, handler_available
+):
+    from gateway.platforms.base_pending import pending_dispatch_record
+
+    _runner, adapter = _priority_runner(monkeypatch, "queue")
+    adapter.gateway_runner = _runner
+    event = MessageEvent(text="input", source=_source(), message_id="input-1")
+    key = adapter._event_session_key(event)
+    entered, resume = asyncio.Event(), asyncio.Event()
+    observed = []
+
+    async def start(input_event):
+        await LifecycleLogAdapter.on_processing_start(adapter, input_event)
+        entered.set()
+        await resume.wait()
+
+    async def initial_handler(input_event):
+        pytest.fail("Dispatch selected the handler before the start hook returned")
+
+    async def replacement_handler(input_event):
+        record = pending_dispatch_record(adapter, key, input_event)
+        assert record is not None
+        observed.append(("handler", record.accepted, input_event._turn_marker_handoff))
+        return "reply"
+
+    async def notify_error(input_event, error):
+        record = pending_dispatch_record(adapter, key, input_event)
+        assert record is not None
+        observed.append(("error", type(error), str(error), record.accepted))
+
+    monkeypatch.setattr(adapter, "on_processing_start", start)
+    monkeypatch.setattr(adapter, "_notify_turn_error", notify_error)
+    adapter.set_message_handler(initial_handler)
+    await adapter.handle_message(event)
+    await asyncio.wait_for(entered.wait(), 2)
+    adapter._message_handler = replacement_handler if handler_available else None
+    resume.set()
+    await asyncio.wait_for(asyncio.gather(*adapter._background_tasks), 2)
+
+    actual = (
+        observed,
+        adapter.log,
+        event._turn_marker_handoff,
+        pending_dispatch_record(adapter, key, event),
+        key in adapter._active_sessions,
+    )
+    expected = (
+        (
+            [("handler", False, True)],
+            [
+                ("start", "input-1"),
+                ("send", "reply"),
+                ("complete", "input-1", ProcessingOutcome.SUCCESS),
+            ],
+            False,
+            None,
+            False,
+        )
+        if handler_available
+        else (
+            [("error", RuntimeError, "No gateway message handler is installed", False)],
+            [("start", "input-1"), ("complete", "input-1", ProcessingOutcome.FAILURE)],
+            False,
+            None,
+            False,
+        )
+    )
+    assert actual == expected
+
+
+def test_turn_marker_handoff_is_local_to_the_dispatched_event():
+    event = MessageEvent(text="input", source=_source(), message_id="input-1")
+    assert event._turn_marker_handoff is False
+    event._turn_marker_handoff = True
+    copied = replace(event)
+    marker_field = next(
+        item for item in fields(event) if item.name == "_turn_marker_handoff"
+    )
+    assert (
+        event._turn_marker_handoff,
+        copied._turn_marker_handoff,
+        marker_field.init,
+        marker_field.repr,
+        marker_field.compare,
+    ) == (
+        True,
+        False,
+        False,
+        False,
+        False,
+    )

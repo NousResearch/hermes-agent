@@ -3444,7 +3444,10 @@ class BasePlatformAdapter(BaseApprovalPromptMixin, BaseLifecycleMixin, BaseProce
         Returns the outcome for ``on_inline_processing_complete``. The caller runs that hook after
         its own work, so a failing acknowledgement cannot stop /stop from cancelling the turn."""
         thread_meta = _thread_metadata_for_event(event)
-        response = await self._message_handler(event)
+        handler = self._message_handler
+        if handler is None:
+            raise RuntimeError("No gateway message handler is installed")
+        response = await handler(event)
         text, eph_ttl = self._unwrap_ephemeral(response)
         if not text:
             return ProcessingOutcome.SUCCESS

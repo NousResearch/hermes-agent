@@ -194,6 +194,80 @@ fallback_providers:
     model: gpt-5.4
 ```
 
+### Dynamic Heuristic Fallback
+
+Rather than hardcoding static models that may become unavailable or whose free tiers fluctuate, Hermes supports **dynamic heuristic criteria**. Dynamic heuristics resolve matching models on the fly by evaluating available models from provider catalogs (Nous Research Portal, OpenRouter) and metadata registries.
+
+#### Enabling Heuristics
+
+To preserve predictable, deterministic chains by default, **fallback heuristics are disabled by default (`fallback_heuristics: false`)**.
+
+Enable heuristics globally via CLI or configuration:
+
+```bash
+# Enable via CLI
+hermes fallback heuristics on
+
+# Check status
+hermes fallback heuristics status
+```
+
+Or in `~/.hermes/config.yaml`:
+```yaml
+fallback_heuristics: true
+```
+
+You can also enable heuristics on a specific entry without enabling them globally:
+```yaml
+fallback_providers:
+  - heuristic: "largest_parameter_count_free"
+    heuristic_enabled: true
+```
+
+#### Supported Criteria
+
+| Heuristic / Sort Key | Description |
+|----------------------|-------------|
+| `largest_parameter_count` (alias: `largest`) | Selects model with the largest parameter count (e.g. 70B, 120B, 405B) |
+| `greatest_context` | Selects model with the largest context window (e.g. 1M, 200k, 128k) |
+| `smallest` | Selects smallest/fastest model (e.g. 0.5B, 3B, 8B) |
+| `latest` | Selects newest model by release date or version |
+| `latest_flash` | Selects newest flash-tier model |
+
+#### Additional Parameters
+
+* **`provider` / `model_provider`**: Target provider. Defaults to `nous` (Nous Research Portal), which hosts verified free models. Also supports `openrouter`.
+* **`free` / `free_only`**: Filter to free models (costs 0 credits, default: `true`).
+* **`require_tools`**: Filter to models supporting function/tool calling (default: `true`).
+* **`vendor`**: Filter by lab/creator (e.g. `google`, `meta-llama`, `qwen`).
+* **`filter`**: Substring, keyword, or glob pattern to match against model name/slug.
+* **`reasoning_effort`**: Thinking effort on fallback model (`default`, `none`, `low`, `medium`, `high`). Defaults to `default` (upstream model's native default).
+* **`max_candidates`**: Number of top matching models to queue into the fallback chain (default: `3`).
+
+#### Heuristic Examples
+
+```yaml
+fallback_heuristics: true
+
+fallback_providers:
+  # Fallback to largest free model on Nous Research Portal (default provider)
+  - criteria:
+      sort_by: "largest_parameter_count"
+      free: true
+      require_tools: true
+      max_candidates: 3
+
+  # Shorthand string syntax
+  - heuristic: "greatest_context_free"
+
+  # Target OpenRouter with specific vendor
+  - model_provider: "openrouter"
+    criteria:
+      sort_by: "latest_flash"
+      vendor: "google"
+      free: true
+```
+
 ### Where Fallback Works
 
 | Context | Fallback Supported |

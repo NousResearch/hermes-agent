@@ -587,6 +587,7 @@ test.runIf(process.platform !== 'win32')(
       // record_user_action turns a success into partial/exit 1: its exact manual instruction is shown,
       // and the rerun advice is never offered for a parked stash.
       const instruction = 'Run `git stash apply stash@{0}` in /opt/hermes to restore your local changes.'
+
       const partial = await run([], {
         exitCode: 1,
         outcome: 'partial',

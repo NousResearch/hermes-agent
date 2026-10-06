@@ -775,7 +775,13 @@ function failBackendApply(
   const owed = owedMessage(status?.receipt, actionId)
   const message = owed ? `${translateNow('updates.applyStatus.failed')} ${owed}` : fallback.shown
 
-  $backendUpdateApply.set({ ...$backendUpdateApply.get(), applying: false, stage: 'error', error: 'apply-failed', message })
+  $backendUpdateApply.set({
+    ...$backendUpdateApply.get(),
+    applying: false,
+    stage: 'error',
+    error: 'apply-failed',
+    message
+  })
 
   return { ok: false, error: 'apply-failed', message: owed ? message : fallback.result }
 }

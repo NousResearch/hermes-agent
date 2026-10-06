@@ -367,6 +367,52 @@ describe('computer_use gateway event lifecycle', () => {
     expect($computerUseBySession.get()[SID]?.phase).toBe('running')
   })
 
+  it('ignores stale named tool.progress before the stale completion guard runs', () => {
+    mountStream()
+
+    emit('tool.start', {
+      args: { action: 'click', app: 'Calculator', element: 1 },
+      name: 'computer_use',
+      tool_id: 'call-a'
+    })
+    emit('tool.start', {
+      args: { action: 'type', app: 'Notepad', text: 'hello' },
+      name: 'computer_use',
+      tool_id: 'call-b'
+    })
+
+    expect($computerUseBySession.get()[SID]).toMatchObject({
+      app: 'Notepad',
+      phase: 'running',
+      toolId: 'call-b'
+    })
+
+    // A late named progress frame must not replace B's identity.
+    emit('tool.progress', {
+      args: { action: 'click', app: 'Calculator', element: 1 },
+      name: 'computer_use',
+      tool_id: 'call-a'
+    })
+    expect($computerUseBySession.get()[SID]).toMatchObject({
+      app: 'Notepad',
+      phase: 'running',
+      toolId: 'call-b'
+    })
+
+    // The already-covered completion guard now still compares against B.
+    emit('tool.complete', {
+      duration_s: 0.1,
+      name: 'computer_use',
+      result: 'Clicked element 1',
+      tool_id: 'call-a'
+    })
+    expect($computerUseBySession.get()[SID]).toMatchObject({
+      app: 'Notepad',
+      phase: 'running',
+      toolId: 'call-b'
+    })
+  })
+
   it('prevents stale tool.complete from completing a newer active call (Call A start -> Call B start -> Call A complete -> Call B remains running)', () => {
     mountStream()
 

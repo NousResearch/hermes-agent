@@ -214,9 +214,9 @@ def _is_unavailable_log_stream(exc: BaseException | None) -> bool:
 
 # Third-party loggers that are noisy at DEBUG/INFO level.
 _NOISY_LOGGERS = (
-    "openai", "openai._base_client", "httpx", "httpcore", "asyncio", "hpack", "hpack.hpack",
-    "grpc", "modal", "urllib3", "urllib3.connectionpool", "websockets", "charset_normalizer",
-    "markdown_it",
+    "openai", "openai._base_client", "httpx", "httpx2", "httpcore", "asyncio", "hpack",
+    "hpack.hpack", "grpc", "modal", "urllib3", "urllib3.connectionpool", "websockets",
+    "charset_normalizer", "markdown_it",
 )
 
 

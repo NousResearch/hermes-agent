@@ -585,6 +585,40 @@ class TestRedactingFormatter:
         assert "abc123def456" not in result
         assert "sk-pro" in result
 
+    @staticmethod
+    def _record(message: str) -> logging.LogRecord:
+        return logging.LogRecord(
+            name="test", level=logging.INFO, pathname="", lineno=0,
+            msg=message, args=(), exc_info=None,
+        )
+
+    def test_log_path_masks_sensitive_url_query_params(self):
+        # issue #133713: a remote MCP URL with token auth must not reach disk verbatim
+        formatter = RedactingFormatter("%(message)s")
+        result = formatter.format(
+            self._record(
+                'HTTP Request: POST https://mcp.example.com/mcp?token=SECRETVALUE "HTTP/1.1 200 OK"'
+            )
+        )
+        assert "SECRETVALUE" not in result
+        assert "token=***" in result
+        assert "https://mcp.example.com/mcp" in result
+
+    def test_log_path_masks_url_userinfo(self):
+        formatter = RedactingFormatter("%(message)s")
+        result = formatter.format(
+            self._record("connect failed: https://user:hunter2@mcp.example.com/mcp")
+        )
+        assert "hunter2" not in result
+        assert "//***:***@mcp.example.com" in result
+
+    def test_log_path_keeps_public_query_params_and_url_free_lines(self):
+        formatter = RedactingFormatter("%(message)s")
+        url_line = "GET https://example.com/list?page=2&sort=name done"
+        assert formatter.format(self._record(url_line)) == url_line
+        plain = "state codes like A=1;B=2 survive when no URL is present"
+        assert formatter.format(self._record(plain)) == plain
+
 
 class TestPrintenvSimulation:
     """Simulate what happens when the agent runs `env` or `printenv`."""

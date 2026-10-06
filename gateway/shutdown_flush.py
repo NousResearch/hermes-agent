@@ -226,7 +226,7 @@ def _sort_number(value: Any) -> float:
     return number if math.isfinite(number) else 0.0
 
 
-def _order_flush_files(paths) -> list[tuple[Path, Optional[Dict[str, Any]]]]:
+def _order_flush_files(paths) -> list[Path]:
     """Order recovery payloads by drop order — ``(ts, seq, filename)``.
 
     Recovery used to walk ``sorted(glob("*.json"))``, but spool files are
@@ -241,9 +241,9 @@ def _order_flush_files(paths) -> list[tuple[Path, Optional[Dict[str, Any]]]]:
     :func:`drain_transcript_spool`'s ``sorted(entries, key=lambda e: e[:3])``
     and the live drain and the cross-restart drain agree on replay order.
 
-    Returns ``(path, payload)`` pairs in replay order.  A file whose payload
-    cannot be parsed sorts last, by name, and is returned with ``None`` so
-    the caller reports it through its own error handling.
+    Returns paths in replay order, retaining only ordering metadata, not decoded
+    payloads. Unparseable files sort last by name. The caller re-reads each
+    payload for replay and reports failures through its own error handling.
     """
     entries = []
     for path in paths:
@@ -253,7 +253,7 @@ def _order_flush_files(paths) -> list[tuple[Path, Optional[Dict[str, Any]]]]:
         except (OSError, ValueError, RecursionError):
             payload = None
         if not isinstance(payload, dict):
-            entries.append(((1, 0.0, 0.0, path.name), path, None))
+            entries.append(((1, 0.0, 0.0, path.name), path))
             continue
         entries.append((
             (
@@ -266,10 +266,9 @@ def _order_flush_files(paths) -> list[tuple[Path, Optional[Dict[str, Any]]]]:
                 path.name,
             ),
             path,
-            payload,
         ))
     entries.sort(key=lambda entry: entry[0])
-    return [(path, payload) for _key, path, payload in entries]
+    return [path for _key, path in entries]
 
 
 def recover_pending_to_db(session_db=None, *, session_resolver=None,
@@ -298,15 +297,12 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None,
     # per-session property, so one unhealthy session must not hold back the others.
     blocked_sessions: Dict[str, int] = {}
     try:
-        for path, payload in flush_files:
+        for path in flush_files:
             # One unparseable payload or rejected append must only skip THIS file: the file is
             # never unlinked, so aborting the pass would re-poison every later boot.
             # utf-8-sig: our BOM-tolerant read fix for flush files.
             try:
-                if payload is None:
-                    # Unparseable on the ordering pass: re-read so the failure is raised and
-                    # reported here exactly as it was before.
-                    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
                 # Agent-history snapshots use a different schema (reason +
                 # messages list) and are meant for manual operator recovery,
                 # not automatic DB insertion. Skip them silently.

@@ -173,13 +173,14 @@ def _orphan(tmp_path: Path, profiles: dict) -> None:
     owner.wait(timeout=10)
 
 
-# The Windows resume cannot run here: the stand-in for it prints the set it was handed and
-# (mode "hang") parks like a resume waiting on relaunch verification.
+# The Windows resume cannot run here: the stand-in for it prints the set it was handed (on the real
+# stdout: recovery points sys.stdout at stderr) and (mode "hang") parks like a resume waiting on
+# relaunch verification.
 _RECOVER = """
     import sys, time
     import hermes_cli.update_cmd_windows as w
     def resume(token):
-        print("resume", sorted(token.get("profiles") or {}), flush=True)
+        print("resume", sorted(token.get("profiles") or {}), file=sys.__stdout__, flush=True)  # recovery sends stdout to stderr
         if sys.argv[1] == "hang":
             time.sleep(120)
         token["resume_needed"] = False
@@ -319,7 +320,7 @@ _AT_LINE = """
 _RESUMES = """
     import hermes_cli.update_cmd_windows as w
     def resume(token):
-        print("resume", sorted(token.get("profiles") or {}), flush=True)
+        print("resume", sorted(token.get("profiles") or {}), file=sys.__stdout__, flush=True)  # recovery sends stdout to stderr
         token["resume_needed"] = False
     w._resume_windows_gateways_after_update = resume
     r.recover(["status"])

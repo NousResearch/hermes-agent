@@ -47,7 +47,7 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, redirect_stdout, suppress
 from pathlib import Path
 
 RECORD_STEM = ".hermes-update-paused-gateways"
@@ -902,7 +902,9 @@ def _resume_fenced(claim_path: Path, body: dict) -> None:
         if _has_work(token):
             print("→ Restarting gateway(s) paused by an interrupted `hermes update`...", file=sys.stderr)
             from hermes_cli.update_cmd_windows import _resume_windows_gateways_after_update
-            _resume_windows_gateways_after_update(token)
+            # Whatever command this launch runs owns stdout (``--json`` output, a Desktop pipe).
+            with redirect_stdout(sys.stderr):
+                _resume_windows_gateways_after_update(token)
         else:
             token["resume_needed"] = False
     except Exception as exc:  # health: allow BLE001 -- recovery boundary: any resume error is reported and the claim handed back (finally), never raised into the launch

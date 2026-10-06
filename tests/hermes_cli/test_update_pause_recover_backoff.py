@@ -22,7 +22,7 @@ def _claims() -> list:
     return pause_record._claims(pause_record.record_path())
 
 
-def test_an_unready_relaunch_stalls_one_launch_per_backoff_window_and_stays_owed(tmp_path, monkeypatch):
+def test_an_unready_relaunch_stalls_one_launch_per_backoff_window_and_stays_owed(tmp_path, monkeypatch, capsys):
     import hermes_cli.update_cmd_windows as w
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     pause_record.write(pause_record.stamp_tree({"resume_needed": True, "profiles": {"alpha": 4194000}}),
@@ -42,6 +42,9 @@ def test_an_unready_relaunch_stalls_one_launch_per_backoff_window_and_stays_owed
     token = pause_record.read(claim)["token"]
     assert token["profiles"] == {"alpha": 4194000}, "the unready gateway's restart debt was dropped"
     assert token["relaunch_retry"]["profile:alpha"]["attempts"] == 1
+    out = capsys.readouterr()
+    assert "waiting for readiness" not in out.out and "waiting for readiness" in out.err, \
+        "recovery wrote into the stdout of an unrelated command"
 
     body = json.loads(claim.read_text(encoding="utf-8"))
     body["token"]["relaunch_retry"]["profile:alpha"]["next_at"] = 0  # the window elapsed

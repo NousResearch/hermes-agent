@@ -147,3 +147,41 @@ class TestWebRouterProvenanceTwin:
         by_name = {s["name"]: s["provenance"] for s in resp.json()}
         assert by_name.get("ext-skill") == "external"
         assert by_name.get("my-local") == "agent"
+
+
+class TestRouterOriginTwin:
+    """#70712: /api/skills must expose the explicit human-facing ``origin`` —
+    a local unclassified skill is 'local' (never 'learned'), a background-review
+    sediment is 'background_review' — while legacy ``provenance`` ownership stays
+    'agent' for older clients. Same TestClient harness as the provenance twin."""
+
+    def _client(self, external_home, monkeypatch):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+        c = TestClient(app)
+        c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        return c
+
+    def test_router_labels_local_vs_background_review(self, external_home, monkeypatch):
+        from tools.skill_usage import record_created
+
+        _write_local_skill(external_home, "manual-skill")
+        _write_local_skill(external_home, "review-sediment")
+        record_created("review-sediment", agent_created=True)
+        client = self._client(external_home, monkeypatch)
+        resp = client.get("/api/skills")
+        assert resp.status_code == 200, resp.text
+        by_name = {s["name"]: s for s in resp.json()}
+        # Legacy ownership: both stay editable 'agent' for older clients.
+        assert by_name["manual-skill"]["provenance"] == "agent"
+        assert by_name["review-sediment"]["provenance"] == "agent"
+        # Explicit origin: only the background-review sediment is 'learned'.
+        assert by_name["manual-skill"]["origin"] == "local"
+        assert by_name["review-sediment"]["origin"] == "background_review"
+        assert by_name["ext-skill"]["origin"] == "external"

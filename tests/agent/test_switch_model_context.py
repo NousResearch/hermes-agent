@@ -193,10 +193,7 @@ def test_switch_model_omitted_base_url_preserves_direct_openai_capability():
         agent.switch_model("gpt-5.6", "openai", api_key="sk-new")
 
     assert agent.base_url == "https://api.openai.com/v1"
-    assert agent.runtime_capabilities == {
-        "native_compaction": True,
-        "answer_in_reasoning": False,
-    }
+    assert agent.runtime_capabilities == {"native_compaction": True}
 
 
 def test_cross_provider_switch_to_default_openai_preserves_native_capability():
@@ -211,10 +208,7 @@ def test_cross_provider_switch_to_default_openai_preserves_native_capability():
         agent.switch_model("gpt-5.6", "openai", api_key="sk-new")
 
     assert agent.base_url == "https://api.openai.com/v1"
-    assert agent.runtime_capabilities == {
-        "native_compaction": True,
-        "answer_in_reasoning": False,
-    }
+    assert agent.runtime_capabilities == {"native_compaction": True}
 
 
 def test_direct_start_model_override_does_not_inherit_profile_context_length():

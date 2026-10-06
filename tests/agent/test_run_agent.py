@@ -3525,7 +3525,6 @@ class TestRunConversation:
         assert result["final_response"] == "reasoning only"
         assert result["api_calls"] == 1
 
-
     def test_truly_empty_response_stops_after_repeated_empty(self, agent):
         """Repeated empty responses stop after one retry and return an explanation."""
         self._setup_agent(agent)

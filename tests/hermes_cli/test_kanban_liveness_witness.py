@@ -203,6 +203,56 @@ def test_orphan_reconcile_defers_an_unprovable_worker_and_records_why(board):
     assert payload["liveness"] == kbd.WORKER_UNKNOWN
 
 
+def test_a_persistently_deferred_orphan_records_once_not_once_per_tick(board):
+    """#123822: the defer path mutates no state, so the card keeps matching its own selection.
+
+    Driving the reconcile loop N times for ONE deferred orphan must leave ONE ``reclaim_deferred``
+    row — the daemon ticks every 60s, so an ungated append grows the log ~1 row/minute forever and
+    nothing collects it (``gc_events`` skips non-terminal cards).
+    """
+    conn = board
+    tid = _claimed_running(conn, started_at="|1790412856")
+    with kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET claim_lock = NULL, claim_expires = NULL WHERE id = ?", (tid,))
+
+    for _ in range(5):
+        assert kbd.reconcile_orphaned_running(conn) == []
+
+    events = [e for e in kb.list_events(conn, tid) if e.kind == "reclaim_deferred"]
+    assert len(events) == 1, f"one deferral episode records once, got {len(events)}"
+    assert kb.get_task(conn, tid).status == "running"
+
+
+def test_a_new_deferral_episode_records_again(board):
+    """The gate is a STATE CHANGE, not a blanket one-shot.
+
+    Once the deferred worker is proven gone the card is reclaimed and re-claimed; orphaning that
+    new attempt again is a NEW episode and must leave a second deferral row — otherwise the guard
+    would have traded log growth for a silent record loss.
+    """
+    conn = board
+    tid = _claimed_running(conn, started_at="|1790412856")
+    with kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET claim_lock = NULL, claim_expires = NULL WHERE id = ?", (tid,))
+    assert kbd.reconcile_orphaned_running(conn) == []  # episode 1: deferred, recorded once
+
+    # The deferred worker is now proven dead: the orphan is reclaimed (run closed, card -> ready).
+    kbd._set_worker_pid(conn, tid, 9_999_999)
+    assert kbd.reconcile_orphaned_running(conn) == [tid]
+    assert kb.get_task(conn, tid).status == "ready"
+
+    # A fresh attempt, orphaned the same way, is a new episode and records afresh.
+    assert kb.claim_task(conn, tid) is not None
+    kbd._set_worker_pid(conn, tid, os.getpid())
+    with kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET claim_lock = NULL, claim_expires = NULL WHERE id = ?", (tid,))
+    assert kbd.reconcile_orphaned_running(conn) == []
+
+    events = [e for e in kb.list_events(conn, tid) if e.kind == "reclaim_deferred"]
+    assert len(events) == 2, f"a new attempt must record afresh, got {len(events)}"
+    assert kb.get_task(conn, tid).status == "running"
+
+
 def test_recovery_reconciliation_needs_a_disowned_premise(board):
     """History a worker recorded is never rewritten; only a proven-infrastructure abandonment
     is reconciled, and the reconciliation attributes nothing to the worker."""

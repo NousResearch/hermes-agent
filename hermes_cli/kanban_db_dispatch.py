@@ -996,6 +996,30 @@ def detect_stale_running(
     return reclaimed
 
 
+def _orphan_deferral_recorded(
+    conn: sqlite3.Connection, task_id: str, run_id: Optional[int], payload: dict,
+) -> bool:
+    """True when this orphan deferral is already on the record for the current episode.
+
+    The defer path of :func:`reconcile_orphaned_running` changes no state, so the card keeps
+    matching its own selection and would append an identical ``reclaim_deferred`` row on every
+    tick — ~1 row/minute for a persistently deferred orphan, and nothing ever collects it
+    (``gc_events`` skips non-terminal tasks). One row per deferral EPISODE is what the record
+    needs. The episode is the card's current attempt when it has one; when ``run_id`` is NULL
+    there is no attempt to key on, so the facts themselves identify it (``now`` excluded — it
+    moves every tick by definition). A new attempt, or a changed worker/liveness fact, is a new
+    episode and records afresh.
+    """
+    prior = _kb._latest_event(conn, task_id, "reclaim_deferred", run_id=run_id)
+    if prior is None:
+        return False
+    if run_id is not None:
+        return True
+    recorded = _kb._json_dict(prior["payload"])
+    keys = ("reason", "liveness", "claim_lock", "claim_expires", "worker_pid")
+    return all(recorded.get(k) == payload.get(k) for k in keys)
+
+
 def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     """Requeue ``running`` cards with broken claim bookkeeping; returns their ids.
 
@@ -1025,22 +1049,24 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
                 "kanban reconcile: task %s has broken claim bookkeeping but "
                 "pid %s is %s on this host — deferring", tid, pid, verdict,
             )
-            # Record the deferral. ``detect_crashed_workers`` refuses to pronounce a reclaimed run
-            # a crash without a reason from DISOWNED_RUN_REASONS, and this event is what makes the
-            # later recovery honest: without it the next sweep would read a live worker's card as
-            # a dead one whose attempt must be written off.
-            with _kb.write_txn(conn):
-                _kb._append_event(
-                    conn, tid, "reclaim_deferred",
-                    {
-                        "reason": "orphaned_running_worker_alive",
-                        "liveness": verdict,
-                        "claim_lock": row["claim_lock"],
-                        "claim_expires": _kb._opt_int(row["claim_expires"]),
-                        "worker_pid": int(pid) if pid else None,
-                        "now": now,
-                    },
-                )
+            # Record the deferral ONCE PER EPISODE. This branch mutates no state, so the card keeps
+            # matching the selection above and would otherwise append an identical row every tick
+            # (#123822: ~1 row/minute for a persistently deferred orphan). The record says the card
+            # is running-but-unreconcilable, not abandoned by its worker; repeating the same facts
+            # every tick says nothing a reader consumes. A new attempt, or a changed
+            # worker/liveness fact, is a new episode and does record.
+            run_id = _kb._current_run_id(conn, tid)
+            payload = {
+                "reason": "orphaned_running_worker_alive",
+                "liveness": verdict,
+                "claim_lock": row["claim_lock"],
+                "claim_expires": _kb._opt_int(row["claim_expires"]),
+                "worker_pid": int(pid) if pid else None,
+                "now": now,
+            }
+            if not _orphan_deferral_recorded(conn, tid, run_id, payload):
+                with _kb.write_txn(conn):
+                    _kb._append_event(conn, tid, "reclaim_deferred", payload, run_id=run_id)
             continue
         with _kb.write_txn(conn):
             cur = conn.execute(

@@ -22384,6 +22384,7 @@ def test_prompt_submit_row_id_real_sessiondb_resolve_without_memory_stamps(
                     "truncate_before_row_id": row_ids[2],
                     "truncate_before_user_ordinal": 1,
                     "confirm_truncate": True,
+                    "confirm_deep_truncate": True,
                 },
             }
         )

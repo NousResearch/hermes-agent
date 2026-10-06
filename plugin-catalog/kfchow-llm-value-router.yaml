@@ -1,0 +1,22 @@
+# Community catalog entry — kfchow-llm-value-router
+#
+# Owner-submitted: the PR author (kfchow-ai) owns and maintains the repo below.
+# Exact-SHA pin (40-hex). No self-updating code: the resolver fetches a public
+# data feed (kfchow.com value leaderboard), never the plugin's own files.
+name: kfchow-llm-value-router
+repo: https://github.com/kfchow-ai/kfchow-llm-value-router
+sha: "ccc8e7c9a79cfe20210552b1084d277d9f847234"
+description: Per-turn LLM model routing resolved from the KFChow AI Lab value leaderboard — on the first provider call of each turn, downgrade routine turns to the provider's free rung or escalate strategic turns to premium. Fail-open, shadow-by-default, credit-aware (probes the paid lane and fails closed before escalating), per-provider rungs, never hardcodes model ids.
+maintainer: KFChow
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+version: "1.0.0"
+platforms: [linux, macos]
+docs_url: https://github.com/kfchow-ai/kfchow-llm-value-router
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware:
+    - llm_request
+  requires_env: []

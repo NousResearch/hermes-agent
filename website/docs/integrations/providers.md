@@ -1229,7 +1229,7 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | Provider | Base URL | Notes |
 |----------|----------|-------|
 | [Together AI](https://together.ai) | `https://api.together.xyz/v1` | Cloud-hosted open models |
-| [CoreWeave Serverless Inference](https://docs.wandb.ai/inference) | `https://api.inference.wandb.ai/v1` | Formerly W&B Inference; see the [setup recipe](#coreweave-serverless-inference) |
+| [CoreWeave Serverless Inference](https://docs.coreweave.com/products/inference/serverless) | `https://api.inference.wandb.ai/v1` | Formerly W&B Inference; see the [setup recipe](#coreweave-serverless-inference) |
 | [Groq](https://groq.com) | `https://api.groq.com/openai/v1` | Ultra-fast inference |
 | [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
@@ -1479,7 +1479,7 @@ Together's `/v1/models` endpoint works, so `hermes model` can auto-discover avai
 
 #### CoreWeave Serverless Inference
 
-[CoreWeave Serverless Inference](https://docs.wandb.ai/inference) (formerly W&B Inference) uses the W&B API endpoint and API keys. Configure it as a named custom provider:
+[CoreWeave Serverless Inference](https://docs.coreweave.com/products/inference/serverless) (formerly W&B Inference) uses `https://api.inference.wandb.ai/v1` and Forge API keys. Configure it as a named custom provider:
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -1499,10 +1499,10 @@ model:
 
 ```bash
 # ~/.hermes/.env
-WANDB_API_KEY=your-wandb-api-key
+WANDB_API_KEY=your-forge-api-key
 ```
 
-Merge these entries into your existing config, then start a new session. Use a model ID from the [current model list](https://docs.wandb.ai/inference/models). `hermes model` can discover models from the endpoint's `/models` API. To switch within a session:
+Merge these entries into your existing config, then start a new session. Use a model ID from the [current model list](https://docs.coreweave.com/products/inference/serverless/models). `hermes model` can discover models from the endpoint's `/models` API. To switch within a session:
 
 ```text
 /model custom:coreweave:zai-org/GLM-5.3-Flash

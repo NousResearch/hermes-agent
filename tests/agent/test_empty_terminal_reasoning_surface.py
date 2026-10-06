@@ -10,6 +10,7 @@ Invariants pinned here:
 - ``finish_reason == "length"`` reasoning is unfinished: never promoted, the
   continuation path still owns it.
 - A truly empty response (no reasoning either) still reaches the ladder terminal.
+- Untrusted-route private reasoning is never promoted nor echoed on exhaustion.
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ from __future__ import annotations
 import sys
 import types
 from types import SimpleNamespace
+
+import pytest
 
 # Stub optional heavy imports so run_agent imports cleanly in isolation.
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
@@ -99,77 +102,7 @@ def _private_reasoning_only_response():
     )
 
 
-def test_answer_in_reasoning_requires_a_trusted_route():
-    """A generic reasoning field is not enough to opt into answer promotion."""
-    from agent.agent_runtime_helpers import answer_in_reasoning_capability
 
-    agent = SimpleNamespace(
-        model="nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
-        base_url="http://127.0.0.1:8000/v1",
-        provider="vllm",
-        api_mode="chat_completions",
-        runtime_capabilities={},
-        _custom_providers=[],
-    )
-    assert answer_in_reasoning_capability(agent) is True
-
-    agent.provider = "openrouter"
-    agent.base_url = "https://openrouter.ai/api/v1"
-    assert answer_in_reasoning_capability(agent) is False
-
-    agent.provider = "vllm"
-    agent.base_url = "http://127.0.0.1:8000/v1"
-    agent.model = "deepseek/deepseek-v4.1"
-    assert answer_in_reasoning_capability(agent) is False
-
-
-def test_answer_in_reasoning_capability_survives_route_map_rebuild():
-    """Route refreshes add the decision without carrying it to another route."""
-    from agent.agent_runtime_helpers import _ensure_answer_in_reasoning_capability
-
-    agent = SimpleNamespace(
-        model="nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
-        base_url="http://127.0.0.1:8000/v1",
-        provider="vllm",
-        api_mode="chat_completions",
-        runtime_capabilities={"native_compaction": False},
-        _custom_providers=[],
-    )
-    _ensure_answer_in_reasoning_capability(agent)
-    assert agent.runtime_capabilities["answer_in_reasoning"] is True
-
-    agent.model = "deepseek/deepseek-v4.1"
-    agent.runtime_capabilities = {"native_compaction": False}
-    _ensure_answer_in_reasoning_capability(agent)
-    assert agent.runtime_capabilities["answer_in_reasoning"] is False
-
-    agent.runtime_capabilities["answer_in_reasoning"] = True
-    _ensure_answer_in_reasoning_capability(agent)
-    assert agent.runtime_capabilities["answer_in_reasoning"] is True
-
-
-def test_constructor_capability_reaches_runtime_map_and_primary_snapshot(tmp_path, monkeypatch):
-    """An explicit startup opt-in must drive the live route and its restore snapshot."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / ".env").write_text("", encoding="utf-8")
-    (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
-    from run_agent import AIAgent
-
-    agent = AIAgent(
-        model="test-model",
-        api_key="sk-dummy",
-        provider="vllm",
-        api_mode="chat_completions",
-        base_url="http://127.0.0.1:8000/v1",
-        capabilities={"answer_in_reasoning": True},
-        quiet_mode=True,
-        skip_context_files=True,
-        skip_memory=True,
-        platform="cli",
-    )
-
-    assert agent.runtime_capabilities["answer_in_reasoning"] is True
-    assert agent._primary_runtime["runtime_capabilities"]["answer_in_reasoning"] is True
 
 
 def test_clean_stop_reasoning_only_returns_on_first_call(tmp_path, monkeypatch):
@@ -243,13 +176,18 @@ def test_length_cut_reasoning_is_not_promoted(tmp_path, monkeypatch):
     assert result["api_calls"] == 2
 
 
-def test_private_reasoning_retries_to_visible_answer(tmp_path, monkeypatch):
-    """A provider's private reasoning stays out of the answer, even when both generic
-    reasoning fields contain the same text."""
+
+@pytest.mark.parametrize("provider, base_url, model, final, calls", [
+    ("openrouter", "https://openrouter.ai/api/v1", "deepseek/deepseek-v4.1", "the visible answer", 2),
+    ("vllm", "http://127.0.0.1:8000/v1", "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+     "private thoughts that must not be shown", 1),
+])
+def test_reasoning_promotion_requires_a_trusted_route(tmp_path, monkeypatch, provider, base_url, model, final, calls):
+    """Private reasoning on an untrusted route retries to the visible answer and never
+    surfaces; the local Nemotron parser route (#109205) still promotes in one call."""
     agent = _build_agent(tmp_path, monkeypatch)
-    agent.runtime_capabilities["answer_in_reasoning"] = False
-    agent.provider = "openrouter"
-    agent.base_url = "https://openrouter.ai/api/v1"
+    agent.runtime_capabilities.pop("answer_in_reasoning")
+    agent.provider, agent.base_url, agent.model = provider, base_url, model
     responses = [
         _private_reasoning_only_response(),
         SimpleNamespace(
@@ -264,15 +202,15 @@ def test_private_reasoning_retries_to_visible_answer(tmp_path, monkeypatch):
                 finish_reason="stop",
             )],
             usage=None,
-            model="deepseek/deepseek-v4.1",
+            model=model,
         ),
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
     result = agent.run_conversation("what is the answer?")
 
-    assert result["final_response"] == "the visible answer"
-    assert result["api_calls"] == 2  # the visible retry follows one thinking-prefill call
+    assert result["final_response"] == final
+    assert result["api_calls"] == calls
     assert all("private thoughts" not in str(message.get("content", "")) for message in result["messages"])
 
 

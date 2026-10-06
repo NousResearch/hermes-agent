@@ -510,6 +510,62 @@ def test_a_group_kill_of_the_caller_keeps_custody_until_a_detached_writer_is_gon
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="POSIX sessions + /proc")
+@pytest.mark.live_system_guard_bypass  # Ctrl-C of the caller's own group is the scenario under test
+@pytest.mark.parametrize(("verbose", "cleanup"), [("1", 2), ("0", 0)], ids=["verbose-slow-cleanup", "captured-instant-exit"])
+def test_a_ctrl_c_keeps_custody_until_a_detached_writer_is_gone(repo, tmp_path, verbose, cleanup):
+    """R4: on Ctrl-C the build runner's ``subprocess.run`` SIGKILLs its own child, which was the
+    launcher holding custody; a command still cleaning up from the interrupt then exited and
+    dropped the last lock fd while a writer in a session of its own went on writing under the
+    next owner. A contender must only acquire once that writer has stopped."""
+    import contextlib
+    import signal
+
+    beat, ready = tmp_path / "beat", tmp_path / "ready"
+    writer = (f"import os, pathlib, time; os.setsid(); os.closerange(3, 4096); p = pathlib.Path({str(beat)!r})\n"  # windows-footgun: ok - Linux-only test
+              "for i in range(300):\n    p.write_text(f'{os.getpid()} {i}'); time.sleep(0.1)")
+    # A build that cleans up for `cleanup` s after SIGINT (2 s: longer than subprocess.run's interrupt wait).
+    command = [sys.executable, "-c", textwrap.dedent(f"""
+        import pathlib, signal, subprocess, sys, time
+        signal.signal(signal.SIGINT, lambda *_: (time.sleep({cleanup}), sys.exit(130)))
+        subprocess.Popen([sys.executable, '-c', {writer!r}], stdin=subprocess.DEVNULL)
+        pathlib.Path({str(ready)!r}).touch()
+        while True: time.sleep(0.1)
+    """)]
+    caller = textwrap.dedent(f"""
+        import os, sys
+        sys.path.insert(0, {str(REPO_ROOT)!r})
+        os.environ["HERMES_VERBOSE"] = {verbose!r}
+        from pathlib import Path
+        from hermes_cli import update_lock as ul
+        from hermes_cli.source_build import run_in_custody
+        repo = Path({str(repo)!r})
+        assert ul.UpdateLock(path=Path({str(tmp_path / "marker")!r}), install_root=repo).acquire()
+        run_in_custody(repo, {command!r}, "probe build", stdin=__import__("subprocess").DEVNULL)
+    """)
+    owner = subprocess.Popen([sys.executable, "-c", caller], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.monotonic() + 20
+    while not (beat.exists() and ready.exists()) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert beat.exists() and ready.exists(), "the build never started"
+    os.killpg(owner.pid, signal.SIGINT)  # windows-footgun: ok - Linux-only test
+    owner.wait(timeout=10)
+    contender = ul.UpdateLock(path=tmp_path / "next-marker", install_root=repo)
+    deadline = time.monotonic() + 30
+    while not contender.acquire():
+        assert time.monotonic() < deadline, "the checkout stayed locked after the interrupted build settled"
+        time.sleep(0.1)
+    try:
+        seen = beat.read_text(encoding="utf-8")
+        time.sleep(1)
+        assert beat.read_text(encoding="utf-8") == seen, "a detached build writer kept writing under the next owner"
+    finally:
+        contender.release()
+        with contextlib.suppress(ProcessLookupError, ValueError):
+            os.kill(int(beat.read_text(encoding="utf-8").split()[0]), signal.SIGKILL)  # windows-footgun: ok - Linux-only test
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="POSIX sessions + /proc")
 @pytest.mark.parametrize("platform", [None, "darwin"], ids=["subreaper", "ps-walk"])
 def test_a_detached_grandchild_outliving_node_dies_before_the_build_returns(repo, tmp_path, platform):
     """N13/L1: a descendant that left node's process group (its own session) and outlives node

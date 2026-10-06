@@ -567,12 +567,11 @@ def _join_launcher_python() -> str:
 # this stdlib parent, which holds the fd until no descendant of the command is left.
 # * The command stays in the CALLER's process group: every group kill that stops a build (a
 #   Ctrl-C'd completion child's ``killpg``, Desktop's ``kill(-pid)``) reaches node and everything
-#   under it that did not start a session of its own. This launcher leaves that group (E): a
-#   SIGKILL of the group would otherwise kill the custodian too, and a descendant in a session of
-#   its own would go on writing with the checkout lock free. It outlives the kill, settles the
-#   tree as below, and only then exits (releasing the fd). A launcher started as its group's
-#   leader (a caller that gave it a session) cannot leave it; that group is then its own.
-# * Linux: the launcher is a child subreaper, so a descendant orphaned by node's exit (or by any
+#   under it that did not start a session of its own. The custodian leaves that group (E): a
+#   SIGKILL of the group would otherwise kill it too, and a descendant in a session of its own
+#   would go on writing with the checkout lock free. It outlives the kill, settles the tree as
+#   below, and only then exits (releasing the fd).
+# * Linux: the custodian is a child subreaper, so a descendant orphaned by node's exit (or by any
 #   intermediate's) is re-parented to it, never to init. Once node exits it SIGKILLs and reaps
 #   its children until none is left; it only signals its own unreaped children, so no pid it
 #   kills can have been reused (never a ``killpg`` of an already reaped leader's group).
@@ -581,10 +580,32 @@ def _join_launcher_python() -> str:
 #   plus what they started. Best effort: a process born and orphaned between two samples escapes.
 # * SIGINT/SIGTERM/SIGHUP are forwarded to node (a node still running 10 s later is killed); the
 #   descendants are then killed as above.
+# * The custodian is NOT the process the runner sees (R4): ``subprocess.run`` SIGKILLs its own
+#   child when Ctrl-C reaches the caller, and no group separation survives a direct kill. The
+#   runner's child only forks the custodian (own group) and relays signals to it and its exit
+#   status back; it leaves the caller's group too, or a terminal's Ctrl-C would reach node twice. Killed, it leaves the custodian to settle: node gets the same 10 s it gets after
+#   a forwarded signal (it is usually still cleaning up from the same Ctrl-C), then the tree is
+#   killed as above and only then is the fd dropped.
 _REAP_TREE = r"""
 import os, signal, subprocess, sys, time
 KILL = signal.SIGKILL  # windows-footgun: ok - POSIX-only launcher
 fds = tuple(int(fd) for fd in sys.argv[1].split(','))
+caller = os.getpgrp()
+if caller != os.getpid():
+    os.setpgid(0, 0)
+stand_in = os.getpid()
+custodian = os.fork()
+if custodian:
+    def relay(signum, frame):
+        try:
+            os.kill(custodian, signum)
+        except OSError:
+            pass
+    for name in ('SIGINT', 'SIGTERM', 'SIGHUP'):
+        signal.signal(getattr(signal, name), relay)
+    code = os.waitstatus_to_exitcode(os.waitpid(custodian, 0)[1])
+    sys.exit(code if code >= 0 else 128 - code)
+os.setpgid(0, 0)
 me = os.getpid()
 reaper = False
 if sys.platform.startswith('linux'):
@@ -645,9 +666,6 @@ def kill(pids):
         except OSError:
             pass
 
-caller = os.getpgrp()
-if caller != me:
-    os.setpgid(0, 0)
 p = subprocess.Popen(sys.argv[2:], pass_fds=fds, process_group=caller)
 got = []
 
@@ -669,7 +687,7 @@ while True:
         pass
     if not reaper:
         sample(p.pid)
-    if got:
+    if got or os.getppid() != stand_in:
         deadline = deadline or time.monotonic() + 10
         if time.monotonic() > deadline:
             p.kill()

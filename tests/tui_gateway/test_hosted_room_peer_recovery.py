@@ -212,6 +212,49 @@ def _driver_room(tmp_path: Path) -> Path:
     return db
 
 
+@pytest.mark.parametrize("elapsed", [5, 61], ids=["before-deadline", "after-deadline"])
+def test_peer_completion_is_observed_after_the_first_recovery_probe(tmp_path, monkeypatch, elapsed):
+    """A peer may finish between probes, before the deferral window expires."""
+    now, completed = [100.0], [False]
+
+    def clock():
+        return now[0]
+
+    db = tmp_path / "state.db"
+    peer = _RecoveringPeerClient()
+    service = _peer_room(db, peer)
+    service.runtime.clock = clock
+    service.runtime.lease_ttl_seconds = 120
+    service.send(room_id="room-1", event_id="user-1",
+                 payload={"text": "@reviewer inspect", "thread_id": "thread-1"})
+    task, = driver.list_tasks(db, room_id="room-1", status="queued")
+    binding = service.bindings()[0]
+    crashed = driver.acquire_lease(db, room_id="room-1", gateway_id=binding.gateway_id,
+        authority_epoch=binding.authority_epoch, process_generation="crashed", ttl_seconds=1, clock=clock)
+    driver.start_task(db, task["identity"], crashed, expected_cancel_generation=0, clock=clock)
+    now[0] += 2
+    lease = service.runtime._ensure_lease(binding)
+    driver.recover_room(db, lease, clock=clock)
+    monkeypatch.setattr(peer, "prepare", lambda **_: peer.session)
+    monkeypatch.setattr(peer, "history", lambda **_: [{
+        "role": "assistant", "task_id": task["identity"].task_id, "execution_generation": 1,
+        "status": "settled", "message_id": "peer-complete", "content": "Recovered review",
+    }] if completed[0] else [])
+    monkeypatch.setattr(peer, "status", lambda **_: {
+        "active": not completed[0], "status": "completed" if completed[0] else "running",
+        "task_id": task["identity"].task_id, "execution_generation": 1,
+    })
+
+    assert service.runtime._reconcile_indeterminate(binding, lease)
+    completed[0] = True
+    now[0] += elapsed
+    service.runtime._reconcile_indeterminate(binding, lease)
+    settled = driver.get_task(db, task["identity"])
+    assert (settled["status"], settled["execution_generation"]) == ("settled", 1)
+    assert settled["result"]["text"] == "Recovered review"
+    assert {entry["dispatch"]["execution_generation"] for entry in peer.recoveries} == {1}
+
+
 def test_contradictory_admission_flags_keep_the_same_attempt_at_lease_expiry(tmp_path: Path):
     db = _driver_room(tmp_path)
     now = [100.0]

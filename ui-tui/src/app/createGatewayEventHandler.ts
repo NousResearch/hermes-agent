@@ -30,7 +30,7 @@ import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 
 import { applyConnectionRequest, applyConnectionUpdate } from './connectionOperationStore.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
-import { createFreeTierChallengePresenter, presentBillingVerification } from './gatewayBrowserLinks.js'
+import { createBillingVerificationPresenter, createFreeTierChallengePresenter } from './gatewayBrowserLinks.js'
 import { applyGoalSnapshot } from './goalStatus.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { getOverlayState, patchOverlayState, SENSITIVE_PROMPTS } from './overlayStore.js'
@@ -466,7 +466,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // paths can't both persist the same prompt twice.
   const persistedAbandonedClarify = new Set<string>()
   const showChallenge = createFreeTierChallengePresenter(sys, openExternalUrl)
-  const showBillingVerification = presentBillingVerification(sys, openExternalUrl)
+  const showBillingVerification = createBillingVerificationPresenter(sys, openExternalUrl)
 
   // When a clarify prompt is dismissed without an answer (the backend request
   // timed out and returned no answer), the live ClarifyPrompt overlay is

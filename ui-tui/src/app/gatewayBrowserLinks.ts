@@ -13,7 +13,7 @@ type OpenUrl = (url: string) => unknown
  * billing.step_up RPC is still polling (and may outlive its 120s timeout), so the link, not the
  * RPC result, is the source of truth.
  */
-export function presentBillingVerification(
+export function createBillingVerificationPresenter(
   sys: Sys,
   openExternalUrl: OpenUrl
 ): (payload: BillingStepUpVerificationPayload | undefined) => void {

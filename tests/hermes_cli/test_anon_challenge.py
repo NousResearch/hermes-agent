@@ -387,6 +387,17 @@ class TestPresenting:
         assert sent == [(anon_challenge.CHALLENGE_EVENT, challenge.as_payload())]
         assert capsys.readouterr().err == ""
 
+    def test_a_stdio_write_failure_falls_back_to_the_terminal(self, monkeypatch):
+        """The stdio channel re-raises host I/O errors; the link must still reach the user."""
+        from tui_gateway import server
+        opened = []
+        monkeypatch.setattr(server, "_stdio_is_rpc_channel", True)
+        monkeypatch.setattr(server, "_broadcast_global_event", lambda *_: (_ for _ in ()).throw(OSError(28, "ENOSPC")))
+        monkeypatch.setattr(anon_challenge, "_present_in_terminal", opened.append)
+        challenge = anon_challenge.BrowserChallenge(f"{PORTAL}/challenge?code=t", True, 600, 2, "m")
+        anon_challenge.present(challenge)
+        assert opened == [challenge]
+
     def test_a_terminal_opens_one_tab_per_ticket_however_many_attempts_resume_it(self, monkeypatch, capsys):
         import webbrowser
         from hermes_cli import auth_device_flow

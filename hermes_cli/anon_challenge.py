@@ -324,8 +324,13 @@ def _announce(challenge: BrowserChallenge) -> bool:
     server = sys.modules.get("tui_gateway.server")
     if server is None:
         return False
-    # The broadcast contains a wedged peer itself (per-transport); anything else is a real bug.
-    server._broadcast_global_event(CHALLENGE_EVENT, challenge.as_payload())
+    try:
+        server._broadcast_global_event(CHALLENGE_EVENT, challenge.as_payload())
+    except (OSError, ValueError) as exc:
+        # The stdio channel re-raises host I/O errors (ENOSPC, a locale that can't encode the
+        # server's copy); the caller falls back to the terminal instead of losing the link.
+        logger.debug("%s not broadcast: %s", CHALLENGE_EVENT, exc)
+        return False
     return True
 
 

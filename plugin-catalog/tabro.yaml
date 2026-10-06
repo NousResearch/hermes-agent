@@ -2,10 +2,7 @@ name: tabro
 repo: https://github.com/ohmyskyhigh/tabro
 sha: 6b0b7e526cb6d85dc3fb3d0eae63d051b5be127a
 subdir: integrations/hermes
-description: >-
-  Chromium profiles (Chrome, Chromium or Edge 153+) and session-owned workspaces
-  through 22 MCP tools, with authenticated HTTP(S)/SOCKS5 proxies. Includes the
-  Windows runtime; set TABRO_BROWSER_PATH to the browser before installation.
+description: "Chromium profiles (Chrome, Chromium or Edge 153+) and session-owned workspaces through 22 MCP tools, with authenticated HTTP(S)/SOCKS5 proxies. Includes the Windows runtime; set TABRO_BROWSER_PATH to the browser before installation. Disclosure — Windows-only; requires TABRO_BROWSER_PATH pointing at Chrome, Chromium or Edge 153+; setup downloads a hash-pinned Node from nodejs.org, installs a Broker, browser extension and native host under %LOCALAPPDATA%\\Tabro (or TABRO_INSTALL_ROOT), registers HKCU Native Messaging hosts (Chrome, Edge, Chromium, AdsPower SunBrowser) and starts a detached background Broker on loopback that outlives Hermes; broker-owned browsers run with a loopback remote-debugging port while open; the model gets raw CDP (script evaluation, screenshots, input, response bodies) on signed-in browser profiles including user-owned ones, can route broker-owned profiles through proxies it names, and exit-IP checks contact api.ipify.org; payload is prebuilt bundled JS plus a native .exe built from in-repo source."
 maintainer: ohmyskyhigh
 tier: community
 category: web

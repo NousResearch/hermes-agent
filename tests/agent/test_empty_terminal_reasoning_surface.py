@@ -27,7 +27,15 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 
-def _build_agent(tmp_path, monkeypatch, capabilities={"answer_in_reasoning": True}):
+# Provider-level ``capabilities:`` opt-ins: the fixture's own route and a second custom provider.
+_OPTED_IN_PROVIDERS = [
+    {"name": "local", "base_url": "https://example.invalid/v1", "capabilities": {"answer_in_reasoning": True}},
+    {"name": "acme", "base_url": "https://llm.example.com/v1", "model": "acme/reasoner",
+     "capabilities": {"answer_in_reasoning": True}},
+]
+
+
+def _build_agent(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
     (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
@@ -41,13 +49,13 @@ def _build_agent(tmp_path, monkeypatch, capabilities={"answer_in_reasoning": Tru
         skip_context_files=True,
         skip_memory=True,
         platform="cli",
-        capabilities=capabilities,
     )
     # Route through the non-streaming _interruptible_api_call path so the
     # monkeypatched fake responses are what the loop consumes.
     agent._disable_streaming = True
-    # By default this fixture is the explicit parser-compatible route (constructor opt-in).
-    # Private reasoning tests drop the opt-in and use an OpenRouter route instead.
+    # The fixture route is opted in through its custom_providers entry (no constructor
+    # ``capabilities=``, as on CLI/TUI). Private reasoning tests move to an untrusted route.
+    agent._custom_providers = _OPTED_IN_PROVIDERS
     return agent
 
 
@@ -173,10 +181,6 @@ def test_length_cut_reasoning_is_not_promoted(tmp_path, monkeypatch):
     assert result["api_calls"] == 2
 
 
-_OPTED_IN_ENTRY = {"name": "acme", "base_url": "https://llm.example.com/v1", "model": "acme/reasoner",
-                   "capabilities": {"answer_in_reasoning": True}}
-
-
 @pytest.mark.parametrize("provider, base_url, model, final, calls", [
     ("openrouter", "https://openrouter.ai/api/v1", "deepseek/deepseek-v4.1", "the visible answer", 2),
     ("vllm", "http://127.0.0.1:8000/v1", "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
@@ -190,9 +194,8 @@ def test_reasoning_promotion_requires_a_trusted_route(tmp_path, monkeypatch, pro
     surfaces; the local Nemotron parser route (#109205) and a provider-level ``capabilities:``
     opt-in promote in one call, re-read on the live route (any model on that provider, never a
     fallback on another base_url), with no constructor ``capabilities=`` (CLI/TUI)."""
-    agent = _build_agent(tmp_path, monkeypatch, capabilities={})
+    agent = _build_agent(tmp_path, monkeypatch)
     agent.provider, agent.base_url, agent.model = provider, base_url, model
-    agent._custom_providers = [_OPTED_IN_ENTRY]
     responses = [
         _private_reasoning_only_response(),
         SimpleNamespace(

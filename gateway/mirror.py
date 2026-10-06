@@ -33,6 +33,39 @@ def _origin_user_id(entry: dict) -> str:
     return str((entry.get("origin") or {}).get("user_id") or "")
 
 
+# Prefix for a mirror that cannot keep the assistant role: it keeps the "this is a delivery,
+# not something the user typed" context that the dropped SQLite mirror metadata would lose.
+_DELIVERY_LABEL = "[Delivered to this chat by the agent]\n"
+
+
+def _alternation_safe_mirror(db, session_id: str, role: str, message_text: Optional[str]) -> tuple:
+    """Return ``(role, text)`` for a mirror that would otherwise repeat the tail's role.
+
+    ``mirror_to_session`` assumes it is called at a turn boundary, which holds for a
+    ``send_message`` call inside the agent's own turn. A send that arrives from outside that
+    turn — ``hermes send`` from a shell, another session, any out-of-band sender — finds the
+    tail already holding the agent's own reply, so an assistant-role mirror makes an
+    assistant→assistant pair that strict-alternation providers reject. ``repair_message_sequence``
+    then merges the pair, and the merged turn no longer distinguishes the reply from the
+    delivery: on a "Note to Self" chat the agent read its own send as the user's message and
+    asked whether the user had sent it.
+
+    cron and webhook deliveries avoid this by mirroring as ``role="user"`` with a labelled
+    prefix (#2313, the failure #2221 documents); their text is not the agent speaking. This
+    does the same only when the role would actually collide, so an in-turn mirror — whose tail
+    is the tool result or the user's turn — keeps the assistant role the docstring documents.
+    """
+    if role != "assistant":
+        return role, message_text
+    tail = db.get_messages(session_id, limit=1, latest=True)
+    if not tail or str(tail[-1].get("role")) != "assistant":
+        return role, message_text
+    logger.info(
+        "Mirror: %s tail is an assistant turn; recording the delivery as user text with a "
+        "label so the transcript stays alternating", session_id)
+    return "user", _DELIVERY_LABEL + (message_text or "")
+
+
 def mirror_to_session(
     platform: str, chat_id: str, message_text: str, source_label: str = "cli", thread_id: Optional[str] = None,
     user_id: Optional[str] = None, role: str = "assistant", session_id: Optional[str] = None,
@@ -127,7 +160,11 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
 
 
 def _append_to_sqlite(session_id: str, message: dict) -> None:
-    """Append a message to the SQLite session database.
+    """Append a message to the SQLite session database, keeping role alternation intact.
+
+    The role goes through :func:`_alternation_safe_mirror` first (see its docstring): a mirror
+    whose role repeats the transcript tail's is recorded as user text with a delivery label,
+    because a same-role pair is what makes the restore pass merge unrelated messages.
 
     Raises on failure: ``mirror_to_session`` reports ``False`` (and warns) only when the
     exception reaches it — swallowing it here made every failed write look mirrored (#10130).
@@ -136,6 +173,8 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
 
     db = acquire()
     try:
-        db.append_message(session_id=session_id, role=message.get("role", "assistant"), content=message.get("content"))
+        role, content = _alternation_safe_mirror(
+            db, session_id, message.get("role", "assistant"), message.get("content"))
+        db.append_message(session_id=session_id, role=role, content=content)
     finally:
         release_or_close(db)

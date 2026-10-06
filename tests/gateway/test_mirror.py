@@ -208,3 +208,80 @@ class TestSessionsIndexProfileScoping:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "elsewhere"))
 
         assert mirror_mod._find_session_id("telegram", "12345") == "sess_patched"
+
+
+class TestAlternationSafety:
+    """An out-of-band mirror must not leave two consecutive same-role turns.
+
+    ``mirror_to_session`` runs at a turn boundary when the agent calls ``send_message``
+    inside its own turn, but a send that arrives from outside that turn (``hermes send``
+    from a shell, another session, any out-of-band sender) has no boundary: the transcript
+    tail is already the agent's own reply, so an assistant-role mirror makes an
+    assistant→assistant pair. ``repair_message_sequence`` then merges the two, and the merged
+    turn no longer says which text was the reply and which was a separate delivery — on a
+    "Note to Self" chat the agent read its own send as the user's message and asked whether
+    the user had sent it.
+
+    cron/webhook avoid this by mirroring as ``role="user"`` with a labelled prefix (#2313,
+    the failure #2221 documents); this covers the interactive path, which has no such guard.
+
+    The append itself is asserted on a stubbed ``SessionDB``: a user-role insert from this
+    module reaches the session display-dedupe path, which the test harness's real-home
+    tripwire refuses (``tests/home_io_guard.py``) for reasons unrelated to mirroring. The
+    write path is already covered by ``TestAppendToSqlite``.
+    """
+
+    @staticmethod
+    def _session_with_tail(session_id, tail_role):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        db.create_session(session_id, source="cli")
+        db.append_message(session_id, tail_role, "a turn that exists already")
+        return db
+
+    def test_colliding_mirror_is_appended_as_labelled_user_text(self):
+        """The tail is the agent's own reply: the delivery must not repeat the role."""
+        from gateway.mirror import _append_to_sqlite
+
+        stub = MagicMock()
+        stub.get_messages.return_value = [{"role": "assistant", "content": "the reply"}]
+
+        with patch("hermes_state_registry.acquire", return_value=stub), \
+             patch("hermes_state_registry.release_or_close"):
+            _append_to_sqlite("sess_alt", {"role": "assistant", "content": "Out-of-band send."})
+
+        role, content = stub.append_message.call_args.kwargs["role"], \
+            stub.append_message.call_args.kwargs["content"]
+        assert role == "user", (
+            "an assistant-role mirror after the agent's own reply makes the assistant→assistant "
+            "pair that repair_message_sequence then merges"
+        )
+        assert content == "[Delivered to this chat by the agent]\nOut-of-band send.", (
+            "the downgraded delivery must say where it came from, or it reads as the user's words"
+        )
+
+    def test_in_turn_mirror_keeps_the_assistant_role(self):
+        """The tail is the user's turn: no collision, so nothing is relabelled."""
+        from gateway.mirror import _append_to_sqlite
+
+        stub = MagicMock()
+        stub.get_messages.return_value = [{"role": "user", "content": "what is the digest?"}]
+
+        with patch("hermes_state_registry.acquire", return_value=stub), \
+             patch("hermes_state_registry.release_or_close"):
+            _append_to_sqlite("sess_in_turn", {"role": "assistant", "content": "Here it is."})
+
+        assert stub.append_message.call_args.kwargs["role"] == "assistant"
+        assert stub.append_message.call_args.kwargs["content"] == "Here it is."
+
+    def test_tail_read_against_a_real_session(self):
+        """The decision reads the stored transcript, not a caller's claim about it."""
+        from gateway.mirror import _alternation_safe_mirror
+
+        db = self._session_with_tail("sess_real", "assistant")
+        assert _alternation_safe_mirror(db, "sess_real", "assistant", "sent") == (
+            "user", "[Delivered to this chat by the agent]\nsent")
+        assert _alternation_safe_mirror(db, "sess_real", "user", "sent") == ("user", "sent"), (
+            "a mirror that already carries the user role is left alone"
+        )

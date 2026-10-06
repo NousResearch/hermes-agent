@@ -333,11 +333,19 @@ def _present_in_terminal(challenge: BrowserChallenge) -> None:
 
 
 def present(challenge: BrowserChallenge) -> None:
-    """Get the URL in front of something that can load it. Seam for tests (``_presenter``)."""
+    """Get the URL in front of something that can load it. Seam for tests (``_presenter``).
+
+    The desktop backend hands every challenge to its hidden window. The stdio TUI gateway (whose
+    stderr the TUI keeps as a log, never shows) hands its client a required one a foreground caller
+    is waiting on: a background read there must not pop a browser any more than in a terminal."""
     if client_surface() == "desktop" and _announce(challenge):
         return
-    if challenge.required and not _background.get():
-        _present_in_terminal(challenge)
+    if not challenge.required or _background.get():
+        return
+    server = sys.modules.get("tui_gateway.server")
+    if server is not None and server._stdio_is_rpc_channel and _announce(challenge):
+        return
+    _present_in_terminal(challenge)
 
 
 _presenter: Callable[[BrowserChallenge], None] = present

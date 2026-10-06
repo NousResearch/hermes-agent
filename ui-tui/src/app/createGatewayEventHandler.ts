@@ -464,6 +464,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // an abandoned-prompt record, so the tool.complete and message.complete
   // paths can't both persist the same prompt twice.
   const persistedAbandonedClarify = new Set<string>()
+  // One browser tab per free-tier challenge ticket, however many attempts resume it.
+  const openedChallengeUrls = new Set<string>()
 
   // When a clarify prompt is dismissed without an answer (the backend request
   // timed out and returned no answer), the live ClarifyPrompt overlay is
@@ -827,6 +829,28 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         return
+      case 'free_tier.challenge': {
+        // The account service wants a browser check before the free-tier token
+        // (hermes_cli/anon_challenge.py). The gateway polls for the result on
+        // its own; this only puts the link where the user is. An optional
+        // check is the desktop's to run hidden, never the user's.
+        const challenge = ev.payload
+
+        if (!challenge?.required || !challenge.url) {
+          return
+        }
+
+        sys(challenge.message)
+        sys(challenge.url)
+
+        if (!openedChallengeUrls.has(challenge.url)) {
+          openedChallengeUrls.add(challenge.url)
+          void openExternalUrl(challenge.url)
+        }
+
+        return
+      }
+
       case 'session.info': {
         let info = ev.payload as SessionInfo | undefined
 

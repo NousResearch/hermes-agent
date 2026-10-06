@@ -2247,6 +2247,34 @@ describe('createGatewayEventHandler', () => {
     })
   })
 
+  describe('free_tier.challenge', () => {
+    beforeEach(() => {
+      openExternalUrlMock.mockClear()
+    })
+
+    it('shows the link and opens one tab per ticket; an optional check opens nothing', () => {
+      const ctx = buildCtx([])
+      const onEvent = createGatewayEventHandler(ctx)
+      const url = 'https://portal.example/challenge?code=t'
+
+      const event = (required: boolean) =>
+        ({
+          payload: { attempt: 0, expires_in: 600, message: 'A quick check first.', required, type: 'browser', url },
+          type: 'free_tier.challenge'
+        }) as any
+
+      onEvent(event(false))
+      expect(openExternalUrlMock).not.toHaveBeenCalled()
+
+      onEvent(event(true))
+      onEvent(event(true))
+
+      const printed = (ctx.system.sys as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0]).join('\n')
+      expect(printed).toContain(url)
+      expect(openExternalUrlMock).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe('session.usage', () => {
     it('merges a live usage tick into uiState (payload.usage shape, see tui_gateway _start_usage_ticker)', () => {
       patchUiState({ sid: 'sess-1' })

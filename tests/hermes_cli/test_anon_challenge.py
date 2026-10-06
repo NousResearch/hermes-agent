@@ -402,6 +402,23 @@ class TestPresenting:
         anon_challenge.present(challenge)
         assert announced == [challenge] and opened == []
 
+    def test_the_stdio_tui_gateway_hands_the_link_to_its_client(self, monkeypatch, capsys):
+        """The TUI keeps its gateway's stderr as a log the user never sees: the challenge goes to the
+        client over the JSON-RPC channel instead of being printed there."""
+        import sys
+        import types
+        sent = []
+        server = types.SimpleNamespace(_stdio_is_rpc_channel=True,
+                                       _broadcast_global_event=lambda event, payload: sent.append((event, payload)))
+        monkeypatch.setitem(sys.modules, "tui_gateway.server", server)
+        challenge = anon_challenge.BrowserChallenge(f"{PORTAL}/challenge?code=t", True, 600, 2, "m")
+        with anon_challenge.background_caller():
+            anon_challenge.present(challenge)
+        assert sent == []                                  # a keepalive tick never pops a browser
+        anon_challenge.present(challenge)
+        assert sent == [(anon_challenge.CHALLENGE_EVENT, challenge.as_payload())]
+        assert capsys.readouterr().err == ""
+
     def test_a_terminal_opens_one_tab_per_ticket_however_many_attempts_resume_it(self, monkeypatch, capsys):
         import webbrowser
         from hermes_cli import auth_device_flow

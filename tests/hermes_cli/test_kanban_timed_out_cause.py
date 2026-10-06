@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -163,3 +164,162 @@ def test_telegram_notice_says_so_when_no_cause_was_recorded():
     msg = _telegram_text(dict(CAUSELESS_PAYLOAD))
     assert "was stopped (cause not recorded)" in msg
     assert "limit" not in msg
+
+
+# ---------------------------------------------------------------------------
+# Review rework: ONE cause decision, read by both surfaces (PR #124629)
+#
+# The review found the two notifiers documenting themselves as mirrors of one cause
+# formatter while their guards differed, so a single payload rendered a cap on one
+# surface and "cause not recorded" on the other. The guards are no longer kept in step
+# by hand: ``gateway.kanban_watchers_common.timed_out_cause`` decides, and both
+# surfaces only render that decision. ``test_both_surfaces_agree_on_every_cause_shape``
+# is the gate over the whole payload space; the named tests below are the four shapes
+# the review (and this rework) found broken, kept because they read as the defect.
+# ---------------------------------------------------------------------------
+
+CAUSE_MATRIX = [
+    ("recorded cap", {"limit_seconds": 900}),
+    ("cap of one whole minute", {"limit_seconds": 60}),
+    ("sub-minute cap", {"limit_seconds": 10}),
+    ("cap from `--max-runtime -5`", {"limit_seconds": -5}),
+    ("cap from `--max-runtime -5m`", {"limit_seconds": -300}),
+    ("negative cap beside a budget", {"limit_seconds": -5, "budget_used": 5, "budget_max": 10}),
+    ("cap of exactly zero", {"limit_seconds": 0}),
+    ("recorded budget", {"budget_used": 200, "budget_max": 200}),
+    ("budget with zero used", {"budget_used": 0, "budget_max": 200}),
+    ("budget of zero against zero", {"budget_used": 0, "budget_max": 0}),
+    ("non-numeric cap", {"limit_seconds": "not-a-number"}),
+    ("non-numeric budget", {"budget_used": "x", "budget_max": 200}),
+    ("no cause fields", {"failures": 1}),
+    ("empty payload", {}),
+]
+
+
+def _cause(payload: dict) -> tuple:
+    from gateway.kanban_watchers_common import timed_out_cause
+
+    return timed_out_cause(payload)
+
+
+@pytest.mark.parametrize("payload", [m[1] for m in CAUSE_MATRIX], ids=[m[0] for m in CAUSE_MATRIX])
+def test_both_surfaces_agree_on_every_cause_shape(payload):
+    """Whatever shape the payload has, each surface renders the ONE recorded cause.
+
+    Asserts the renderings, not the guards: a surface may phrase the cause its own way,
+    but it must name the recorded cap/budget exactly, and must name NO number the payload
+    does not carry. A surface that invents a cause (or a cap) fails here.
+    """
+    from gateway.kanban_watchers_common import TIMED_OUT_BUDGET, TIMED_OUT_CAP
+
+    kind, first, second = _cause(payload)
+    board = _board_text("t_abc123", dict(payload))
+    telegram = _telegram_text(dict(payload))
+
+    assert "timed out" in board
+    if kind == TIMED_OUT_CAP:
+        assert f"max_runtime={first}s" in board
+        minute = re.search(r"ran past its (\d+)-minute limit", telegram)
+        if minute:  # a minute cap may be named only when it IS the recorded cap
+            assert first % 60 == 0 and int(minute.group(1)) == first // 60
+        else:
+            assert "its time limit" in telegram
+        assert "exhausted its turn budget" not in telegram
+    elif kind == TIMED_OUT_BUDGET:
+        named = f"exhausted its turn budget ({first}/{second})"
+        assert named in board
+        assert named in telegram
+    else:
+        assert "cause not recorded" in board
+        assert "cause not recorded" in telegram
+        assert "exhausted its turn budget" not in telegram
+        # No cap is named for a payload that records none - that was the whole defect.
+        assert "limit" not in telegram
+
+
+def test_a_negative_cap_is_never_read_as_a_limit():
+    """Finding 1: ``--max-runtime -5`` was "its 1-minute limit" on Telegram alone."""
+    for payload in ({"limit_seconds": -5}, {"limit_seconds": -300}):
+        assert _cause(payload)[0] == "unrecorded"
+        assert "max_runtime=" not in _board_text("t_abc123", payload)
+        assert "limit" not in _telegram_text(payload)
+
+
+def test_a_zero_iteration_budget_is_the_cause_both_surfaces_name():
+    """Finding 2: ``{budget_used: 0}`` was a budget on the board and nothing on Telegram."""
+    for used, cap in ((0, 200), (0, 0)):
+        payload = {"budget_used": used, "budget_max": cap}
+        named = f"exhausted its turn budget ({used}/{cap})"
+        assert named in _board_text("t_abc123", payload)
+        assert named in _telegram_text(payload)
+
+
+def test_a_non_numeric_cause_field_does_not_break_either_notice():
+    """Finding 3, found in this rework: ``int(_payload(...))`` raised OUT of the notifier.
+
+    A non-numeric ``limit_seconds`` is the shape the board's own suite already pinned
+    (``test_kanban_notify_poller``); the Telegram path had no guard, so one poisoned field
+    aborted the delivery of the whole notice.
+    """
+    for payload in ({"limit_seconds": "not-a-number"}, {"budget_used": "x", "budget_max": 200}):
+        assert "timed out" in _board_text("t_abc123", payload)
+        assert "cause not recorded" in _telegram_text(payload)
+
+
+def test_a_sub_minute_cap_never_names_a_minute_it_did_not_record():
+    """The review's minor: a 10 s cap rendered as "its 1-minute limit"."""
+    assert "max_runtime=10s" in _board_text("t_abc123", {"limit_seconds": 10})
+    msg = _telegram_text({"limit_seconds": 10})
+    assert "minute limit" not in msg
+    assert "its time limit" in msg
+
+
+def test_the_board_formatter_survives_the_server_rebind():
+    """The production wiring, pinned: ``method_ctx.bind_module`` re-creates every function in
+    ``session_notifications`` against server.py's globals, so a name the body resolves from
+    module globals must survive a namespace that holds none of this module's imports.
+
+    The module-level ``contextlib`` this function used to lean on was such a name. Anything
+    imported at module level would be dropped here — ``bind_module`` skips a plain import —
+    which is why the shared decision is imported inside the body of the renderer.
+    """
+    from tui_gateway import session_notifications as sn
+    from tui_gateway.method_ctx import bind_module
+
+    server = SimpleNamespace()
+    # A copy, so this test cannot re-point the module's own dispatch tables.
+    bind_module(dict(vars(sn)), server, skip=("_",))
+
+    assert server._kb_timed_out_cause({"limit_seconds": 900}) == "max_runtime=900s"
+    assert server._kb_timed_out_cause({"budget_used": 0, "budget_max": 200}) == (
+        "exhausted its turn budget (0/200)"
+    )
+    assert server._kb_timed_out_cause({"limit_seconds": -5}) == "cause not recorded"
+
+
+@pytest.mark.parametrize(
+    "val,seconds",
+    [("30s", 30), ("5m", 300), ("2h", 7200), ("1d", 86400), ("90", 90), (30, 30), (None, None), ("", None)],
+)
+def test_parse_duration_still_accepts_every_real_cap(val, seconds):
+    from hermes_cli.kanban import _parse_duration
+
+    assert _parse_duration(val) == seconds
+
+
+@pytest.mark.parametrize("val", ["0", "-5", "-5m", "0s", "0m", "0h"])
+def test_parse_duration_refuses_a_non_positive_cap(val):
+    """The write-time half of finding 1: ``enforce_max_runtime`` measures ``elapsed < limit``,
+    so a zero or negative cap SIGTERMs the worker on its first tick and records a
+    ``limit_seconds`` no notice can name honestly. It never reaches the store."""
+    from hermes_cli.kanban import _parse_duration
+
+    with pytest.raises(ValueError, match="at least 1 second"):
+        _parse_duration(val)
+
+
+def test_parse_duration_still_rejects_a_malformed_cap():
+    from hermes_cli.kanban import _parse_duration
+
+    with pytest.raises(ValueError, match="malformed duration"):
+        _parse_duration("soon")

@@ -321,15 +321,28 @@ def _kb_timed_out_cause(payload: dict) -> str:
     ``budget_used``/``budget_max`` instead and carries no cap at all, so reading the
     absent key as ``0`` printed a zero-second cap that never existed and sent the
     reader hunting for a limit to raise.
+
+    WHICH of the two shapes counts is decided once, in
+    :func:`gateway.kanban_watchers_common.timed_out_cause`, and read here and by the
+    Telegram notice: the two surfaces kept their own guards before and drifted, so one
+    payload could name a cap on one surface and "cause not recorded" on the other. This
+    function only renders the decision.
     """
-    with contextlib.suppress(TypeError, ValueError):
-        limit = int(payload.get("limit_seconds") or 0)
-        if limit > 0:
-            return f"max_runtime={limit}s"
-    used, cap = payload.get("budget_used"), payload.get("budget_max")
-    if used is not None and cap is not None:
-        with contextlib.suppress(TypeError, ValueError):
-            return f"exhausted its turn budget ({int(used)}/{int(cap)})"
+    # Imported inside the body on purpose: ``method_ctx.bind_module`` rebinds every
+    # function here onto server.py's globals and SKIPS plain imports (name ==
+    # ``__name__``), so a module-level import would not be visible to the rebound copy
+    # the gateway actually runs.
+    from gateway.kanban_watchers_common import (
+        TIMED_OUT_BUDGET,
+        TIMED_OUT_CAP,
+        timed_out_cause,
+    )
+
+    kind, first, second = timed_out_cause(payload)
+    if kind == TIMED_OUT_CAP:
+        return f"max_runtime={first}s"
+    if kind == TIMED_OUT_BUDGET:
+        return f"exhausted its turn budget ({first}/{second})"
     return "cause not recorded"
 
 

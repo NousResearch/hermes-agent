@@ -463,22 +463,33 @@ def _fmt_gave_up(ev, n) -> tuple:
 def _fmt_timed_out(ev, n) -> tuple:
     # Name the cause the payload actually records: ``limit_seconds`` belongs to the runtime
     # cap; an iteration-budget exhaustion carries ``budget_used``/``budget_max`` instead.
-    limit = int(_payload(ev, "limit_seconds") or 0)
-    if limit:
-        minutes = max(1, round(limit / 60))
-        span = t("gateway.kanban.ping.limit_minutes", minutes=minutes)
+    # WHICH shape counts is decided once, in ``kanban_watchers_common.timed_out_cause`` --
+    # shared with the desktop notice, which kept its own guard before the two drifted.
+    from gateway.kanban_watchers_common import (
+        TIMED_OUT_BUDGET,
+        TIMED_OUT_CAP,
+        timed_out_cause,
+    )
+
+    kind, first, second = timed_out_cause(getattr(ev, "payload", None) or {})
+    if kind == TIMED_OUT_CAP:
+        # Name a minute cap only when the payload's seconds ARE that many minutes: rounding
+        # a 10 s cap up to "its 1-minute limit" names a limit the payload never recorded.
+        span = (t("gateway.kanban.ping.limit_minutes", minutes=first // 60)
+                if first % 60 == 0 else t("gateway.kanban.ping.limit_generic"))
         return t("gateway.kanban.ping.timed_out", head=n.head, span=span), None, None
-    try:
-        used, cap = int(_payload(ev, "budget_used") or 0), int(_payload(ev, "budget_max") or 0)
-    except (TypeError, ValueError):
-        used = cap = 0
-    if used and cap:
+    if kind == TIMED_OUT_BUDGET:
         return (
-            f"⏱ {n.head} exhausted its turn budget ({used}/{cap}) and was stopped; "
+            f"⏱ {n.head} exhausted its turn budget ({first}/{second}) and was stopped; "
             "it will be retried automatically.", None, None,
         )
-    span = t("gateway.kanban.ping.limit_generic")
-    return t("gateway.kanban.ping.timed_out", head=n.head, span=span), None, None
+    # No cause in the payload: say exactly that, rather than "its time limit" — naming a limit
+    # the payload never recorded is the same defect the desktop notice was fixed for, one
+    # surface over, and it sends the reader hunting for a cap to raise.
+    return (
+        f"⏱ {n.head} was stopped (cause not recorded); "
+        "it will be retried automatically.", None, None,
+    )
 
 
 # archived / unblocked are claimed (so the cursor advances past them) but

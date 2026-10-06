@@ -13,11 +13,11 @@ markers: OpenRouter / Nous Portal / custom relays; native Anthropic Messages con
 and were chosen from per-call cache telemetry (``agent.log`` ``cache=R/T write=W``): consecutive
 calls in one session reuse the whole previous prefix except where these cells say otherwise.
 
-Gap pinned here (run-time xfail, turns into a passing regression test when fixed): a skill turn's
-first user message is split into [marked scaffold, unmarked tail] only while it sits inside the
-last-N marker window (#81867). Once the tool round pushes it out, the same message is re-sent as a
-plain string, so the provider's cached scaffold bytes stop matching and request 3 re-writes the
-whole skill body — the ~20k-token re-write seen on call 2 of skill-invoked sessions.
+Regression pinned here (#133715): a skill turn's first user message must go out as the same
+[scaffold, tail] parts on every request, marked or not. It used to be split only while it sat inside
+the last-N marker window (#81867), then re-sent as a plain string once the tool round pushed it out,
+so request 3 re-wrote the whole skill body — the ~20k-token re-write seen on call 2 of skill-invoked
+sessions.
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ from typing import Any
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG, canon, prefix_breaks
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_hermes_home
 
@@ -107,5 +106,4 @@ def test_skill_turn_keeps_its_scaffold_bytes_across_the_tool_loop(caching_route)
     agent.close()
     main = srv.main_requests()
     assert len(main) == 3
-    with known_failure(r"messages\[1\] \(user\) changed", "#81867 split dropped outside the marker window"):
-        assert not _prefix_breaks(main), f"skill scaffold re-sent with different bytes: {_prefix_breaks(main)}"
+    assert not _prefix_breaks(main), f"skill scaffold re-sent with different bytes: {_prefix_breaks(main)}"

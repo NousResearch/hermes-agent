@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import struct
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -622,6 +623,85 @@ def test_staged_models_requires_every_split_part(tmp_path, monkeypatch):
     (mdir / "Partial-Q4-00001-of-00003.gguf").touch()
 
     assert bs.staged_model_ids() == ["Single-Q4_K_M", "Whole-Q4"]
+
+
+def _minimal_gguf() -> bytes:
+    """A readable GGUF v3 header (qwen3-shaped, one block): enough for ``read_gguf_header()`` and
+    ``profile_from_gguf()``, so a staged file reaches ``plan_presets()`` instead of being skipped
+    as unreadable. A real header matters here — the projector must be excluded by the companion
+    filter, not by an unreadable-file skip that would exclude anything."""
+    tensors = [("token_embd.weight", 512)]
+    tensors += [(f"blk.{i}.{part}.weight", 256)
+                for i in range(2) for part in ("attn_norm", "ffn_norm", "ffn_up", "ffn_down")]
+    metadata = {"general.architecture": "qwen3", "qwen3.block_count": 2,
+                "qwen3.context_length": 65536, "qwen3.attention.head_count": 8,
+                "qwen3.attention.head_count_kv": 2, "qwen3.attention.key_length": 128,
+                "qwen3.attention.value_length": 128}
+    out = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(metadata))
+
+    def _str(s: str) -> bytes:
+        b = s.encode()
+        return struct.pack("<Q", len(b)) + b
+
+    for key, value in metadata.items():
+        out += _str(key) + (struct.pack("<I", 8) + _str(value) if isinstance(value, str)
+                            else struct.pack("<II", 4, value))
+    for name, elems in tensors:
+        out += _str(name) + struct.pack("<IQIQ", 1, elems, 0, 0)
+    return out
+
+
+def test_staged_models_excludes_companion_assets(tmp_path, monkeypatch):
+    """A projector or spec-decode draft is not a model: it has no chat template, so serving it
+    answers 200 with empty content. The picker's row, ``plan_presets()``'s section and the
+    router's model list all come from staged_models(), so one filter here removes the phantom
+    entry everywhere — including the launch-budget share and ``--models-max`` slot it would
+    otherwise consume. Name-based and case-insensitive, because that is how llama.cpp, unsloth
+    and the audio-codec GGUFs name companions."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    import hermes_cli.local_runtime.bootstrap as bs
+
+    mdir = bs.models_dir()
+    mdir.mkdir(parents=True, exist_ok=True)
+    for name in ("mmproj-Qwen3.8-Flash-Next-BF16",     # vision projector
+                 "MMPROJ-Upper-Case-Companion",         # case must not smuggle one through
+                 "mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0",  # audio codec, same prefix
+                 "dspark-DeepSeek-V4-Flash-0731-Q8_0",  # spec-decode draft
+                 "TinyLlama-draft-Q8_0"):               # draft named mid-stem
+        (mdir / f"{name}.gguf").write_bytes(b"GGUF" + b"\x00" * 64)
+    # A companion split across parts is still a companion: none of its parts is servable.
+    for i in (1, 2):
+        (mdir / f"mmproj-Big-Projector-0000{i}-of-00002.gguf").write_bytes(b"GGUF" + b"\x00" * 64)
+    (mdir / "Qwen3.8-27B-UD-Q4_K_M.gguf").write_bytes(b"GGUF" + b"\x00" * 64)
+
+    assert bs.staged_model_ids() == ["Qwen3.8-27B-UD-Q4_K_M"]
+
+
+def test_plan_presets_writes_no_section_for_a_staged_projector(tmp_path, monkeypatch):
+    """The router autoloads every model that has a section, so a phantom entry is not only a row
+    in the picker: the server is told to load a projector and holds a slot doing it. Real GGUF
+    headers, so the filter — not an unreadable file — is what keeps the projector out."""
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_cli.local_runtime.presets import generate_presets
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    import hermes_cli.local_runtime.bootstrap as bs
+
+    mdir = bs.models_dir()
+    mdir.mkdir(parents=True, exist_ok=True)
+    header = _minimal_gguf()  # readable: the filter, not a read failure, is what excludes the projector
+    (mdir / "mmproj-Qwen3.8-Flash-Next-BF16.gguf").write_bytes(header)
+    (mdir / "Qwen3.8-27B-UD-Q4_K_M.gguf").write_bytes(header)
+    budget = HardwareBudget(usable_vram_bytes=64 << 30, total_device_bytes=64 << 30,
+                            ram_available_bytes=256 << 30, uma=False)
+    ini = tmp_path / "presets.ini"
+
+    entries = generate_presets(mdir, budget, ini)
+
+    assert [e.model_id for e in entries] == ["Qwen3.8-27B-UD-Q4_K_M"]
+    written = ini.read_text(encoding="utf-8")
+    assert "mmproj-Qwen3.8-Flash-Next-BF16" not in written
+    assert "[Qwen3.8-27B-UD-Q4_K_M]" in written
 
 
 def test_bootstrap_skips_boot_with_no_staged_models(tmp_path, monkeypatch):

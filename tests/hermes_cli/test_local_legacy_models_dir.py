@@ -26,12 +26,16 @@ def test_legacy_models_move_into_the_machine_dir_without_clobbering(tmp_path, mo
     (play / "models" / "small.gguf").write_bytes(b"small")
     ghost = _profile(tmp_path, "ghost", identity=False)  # marker-less shell: not a profile
     (ghost / "models" / "ghost.gguf").touch()
+    # A projector left in the old models/ dir is a companion, not a model: adopting it into the
+    # served set would only produce an entry that cannot answer a prompt.
+    (work / "models" / "mmproj-Qwen3.8-27B-BF16.gguf").write_bytes(b"proj-27b")
 
     bootstrap.adopt_legacy_models()
 
     assert {p.name for p in bootstrap.staged_models()} == {"shared.gguf", "big-00001-of-00002.gguf", "small.gguf"}
     assert all((new_dir / name).read_bytes() == f"legacy {name}".encode() for name in split)
     assert (bootstrap.assets_dir() / "mmproj.gguf").read_bytes() == b"proj"
+    assert (bootstrap.assets_dir() / "mmproj-Qwen3.8-27B-BF16.gguf").read_bytes() == b"proj-27b"
     assert (new_dir / "shared.gguf").read_bytes() == b"current"  # never clobbered...
     assert (work / "models" / "shared.gguf").read_bytes() == b"legacy shared.gguf"  # ...and not lost
     assert not (play / "models").exists()  # emptied legacy dir is cleaned up

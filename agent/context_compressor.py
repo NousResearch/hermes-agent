@@ -5475,7 +5475,7 @@ Write only the summary body. Do not include any preamble or prefix."""
     ) -> str:
         """Deterministic fallback so the model gets recoverable continuity anchors."""
         if not self.quiet_mode and feasibility_skip:
-            logger.info("Feasibility skip — inserting deterministic fallback context summary")
+            logger.info("Pre-LLM summary skip — inserting deterministic fallback context summary")
         elif not self.quiet_mode:
             logger.warning("Summary generation failed — inserting deterministic fallback context summary")
         self._last_summary_dropped_count = n_dropped
@@ -5718,7 +5718,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._fallback_streak_skip(telemetry)
             or self._feasibility_skip(telemetry, turns_to_summarize, compress_start, compress_end)
         )
-        summary = None  # feasibility skip: no LLM call; Phase 4 inserts the deterministic fallback
+        summary = None  # pre-LLM summary skip (feasibility or benched model): no LLM call; Phase 4 inserts the deterministic fallback
         if not feasibility_skip:
             summary = self._summarize_window(
                 messages, turns_to_summarize, scan, focus_topic, memory_context, bypass_cooldown,

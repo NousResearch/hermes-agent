@@ -85,7 +85,7 @@ test('baked defaults precede imported module initialization and reach children w
     expect(run({})).toEqual({ values: defaults, child: defaults.HERMES_DATA_DIR_SUFFIX })
     expect(run({ HERMES_DATA_DIR_SUFFIX: '-explicit', HERMES_GUEST_ONBOARDING: '' })).toEqual({ values: { ...defaults, HERMES_DATA_DIR_SUFFIX: '-explicit', HERMES_GUEST_ONBOARDING: '' }, child: '-explicit' })
     for (const bad of ['[]', 'null', '{"BAD-NAME":"x"}', '{"HERMES_HOME":1}', '{"HERMES_HOME":"\\u0000"}',
-      '{"NODE_OPTIONS":"--require=evil"}', '{"PATH":null}', '{"HERMES_PYTHON":"/untrusted/python"}']) {
+      '{"NODE_OPTIONS":"--require=evil"}', '{"PATH":null}', '{"HERMES_PYTHON":"/untrusted/python"}', '{"HERMES_SKIP_INTRO":"1"}']) {
       expect(() => environmentDefaultsBanner(bad)).toThrow()
     }
   } finally {

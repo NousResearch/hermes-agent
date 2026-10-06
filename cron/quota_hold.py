@@ -1,4 +1,4 @@
-"""Hold a job's fires while a provider's usage window is known to be closed (#89376).
+"""Hold a job's fires while a provider has requested a retry delay (#89376).
 
 A quota-exhausted provider answers with an explicit ``retry after <N>s`` (Codex 429: the
 ``AuthError`` from ``hermes_cli.auth_codex._codex_quota_exhausted_error``). When the whole
@@ -35,11 +35,34 @@ HOLD_SLACK_SECONDS = 60
 _RETRY_AFTER_RE = re.compile(r"retry after (\d+)s", re.IGNORECASE)
 
 
-def hold_seconds_from_failure(exc: BaseException) -> Optional[float]:
-    """Seconds the provider said it will stay closed, or None when *exc* (or anything in its
-    cause chain) is not a rate-limited ``AuthError`` carrying a wait hint. Anchored on the
-    AuthError itself, never on arbitrary text, so an unrelated "retry after" in an agent's
-    output cannot park a job."""
+def _mishima_busy_wait(cur: BaseException) -> Optional[float]:
+    """An exact pre-admission refusal with a provider-supplied retry delay."""
+    from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
+
+    body = getattr(cur, "body", None)
+    error = body.get("error", body) if isinstance(body, dict) else None
+    message = str(cur)
+    structured = (getattr(cur, "status_code", None) == 429
+                  and isinstance(error, dict) and error.get("code") == "mishima_busy")
+    wrapped = (message.startswith("HTTP 429: Mishima cannot start this request within its ")
+               and " s budget (estimated " in message)
+    if not (structured or wrapped):
+        return None
+    hint = parse_retry_after_seconds(error.get("retry_after")) if structured else None
+    if hint is None:
+        hint = parse_retry_after_seconds(
+            getattr(getattr(cur, "response", None), "headers", None))
+    if hint is None:
+        hint = reset_delay_from_message(message)
+    return float(hint) if hint is not None and float(hint) > 0 else None
+
+
+def hold_seconds_from_failure(exc: BaseException, agent: Any = None) -> Optional[float]:
+    """Return an explicit wait for quota or for a pre-admission Mishima refusal.
+
+    An unrelated 429 or arbitrary ``retry after`` text cannot park a job. Mishima
+    capacity recovery is allowed only before any completed model response or tool call.
+    """
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
 
     seen: set[int] = set()
@@ -52,6 +75,9 @@ def hold_seconds_from_failure(exc: BaseException) -> Optional[float]:
                 m = _RETRY_AFTER_RE.search(str(cur))
                 hint = float(m.group(1)) if m else None
             return float(hint) if hint is not None and float(hint) > 0 else None
+        if int(getattr(agent, "session_api_calls", 0) or 0) == 0:
+            if (hint := _mishima_busy_wait(cur)) is not None:
+                return hint
         cur = cur.__cause__ or cur.__context__
     return None
 
@@ -144,7 +170,7 @@ def plan_hold(
     job["next_run_at"] = parked
     job[STATE_KEY] = parked
     logger.warning(
-        "Job '%s': provider usage window closed for %.0fs — holding fires until %s instead of "
+        "Job '%s': provider requested a %.0fs wait — holding fires until %s instead of "
         "failing on every cadence tick",
         job.get("name", job.get("id", "?")), float(hold_seconds), parked)
     return True
@@ -155,9 +181,10 @@ def hold_notice(job: Dict[str, Any], hold_seconds: Optional[float]) -> str:
     if not hold_seconds or (job.get("schedule") or {}).get("kind") not in {"cron", "interval"}:
         return ""
     window_end = _window_end(hold_seconds)
-    hours = float(hold_seconds) / 3600.0
+    wait = (f"{float(hold_seconds) / 60:.0f} min" if hold_seconds < 3600
+            else f"{float(hold_seconds) / 3600:.1f}h")
     return (
-        f"\nThe provider's usage window is closed for about {hours:.1f}h. This job is held "
+        f"\nThe provider requested a wait of about {wait}. This job is held "
         f"through {safe_strftime(window_end, '%Y-%m-%d %H:%M %Z')} and resumes at the first safe "
         "opportunity afterwards; no further alerts are sent while the provider is unavailable."
     )

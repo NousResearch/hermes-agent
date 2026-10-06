@@ -442,6 +442,12 @@ resets the ladder. One-shot jobs are excluded: their dispatch accounting is
 at-most-times and a consumed dispatch is never resurrected. Retries never
 fire past the schedule's own next occurrence when that comes sooner.
 
+When Murakumo refuses a Mishima request with `mishima_busy` before inference
+starts, and the run has received no model response, the scheduler uses the
+provider's explicit `Retry-After` delay. A sparse recurring cron gets at most
+one recovery fire after that delay; another refusal waits for the normal
+schedule. Other 429s and prompts that cannot fit the model are excluded.
+
 ```yaml
 cron:
   retry_unreachable: false   # default true; disables the automatic re-runs

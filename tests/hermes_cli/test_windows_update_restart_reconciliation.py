@@ -37,6 +37,9 @@ def _stub_post_relaunch_liveness(monkeypatch):
     monkeypatch.setattr(
         gateway_windows, "_wait_for_gateway_ready", lambda **_kw: [4242]
     )
+    # The relaunch verifier polls every target in one loop through the same probe.
+    monkeypatch.setattr(gateway_windows, "_live_gateway_pids", lambda *_a, **_kw: [4242])
+    monkeypatch.setattr("hermes_cli.update_cmd_windows._READY_CONFIRM_S", 0.0)
     monkeypatch.setattr(
         gateway_windows, "_write_start_attestation", lambda *_a, **_kw: None
     )

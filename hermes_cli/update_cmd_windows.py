@@ -1383,7 +1383,6 @@ def _relaunch_paused_gateways(profiles: dict, unmapped: list) -> tuple[dict, lis
 
 
 _RELAUNCH_VERIFY_TIMEOUT_S = 30.0
-_PER_TARGET_FLOOR_S = 6.0
 
 
 def _pending_relaunch_pids(profiles: dict, unmapped: list, pid_exists) -> list[int]:
@@ -1445,6 +1444,53 @@ def _unmapped_ready_filter(entry: dict, taken: set):
     return lambda pids: [pid for pid in _owned_gateway_pids(pids) if matches(int(pid))]
 
 
+_READY_INTERVAL_S = 0.4  # gateway_windows._wait_for_gateway_ready's poll interval and
+_READY_CONFIRM_S = 2.0   # confirmation window: one hit proves a spawn, not a survived startup
+
+
+def _poll_until_ready(targets: list, deadline: float, taken: set) -> dict:
+    """``{key: pids}`` for each ``(key, probe, claim_all)`` target whose gateway stayed visible for
+    a whole confirmation window. All targets share one loop, so N targets cost one window, not N:
+    one fleet process scan per tick (``probe(scan)`` calls ``scan()`` only if it needs the fleet),
+    and each target is credited only on its own hits. *taken* holds, while a target is probed, the
+    PIDs earlier targets vouched for (all of a profile's, the first of an unmapped entry's) so one
+    gateway never retires two debts. A hit provisional at the deadline still finishes its window;
+    a probe that raises leaves its target unready."""
+    from hermes_cli.gateway import find_gateway_pids
+    ready: dict = {}
+    since: dict = {}
+    failed: set = set()
+    while True:
+        now = _time.monotonic()
+        pending = [t for t in targets if t[0] not in ready and t[0] not in failed and (now < deadline or t[0] in since)]
+        if not pending:
+            return ready
+        fleet: list = []
+
+        def scan() -> list:
+            if not fleet:
+                fleet.append(list(find_gateway_pids(all_profiles=True)))
+            return fleet[0]
+        taken.clear()
+        taken.update(pid for pids in ready.values() for pid in pids)
+        for key, probe, claim_all in pending:
+            try:
+                pids = list(probe(scan))
+            except Exception as exc:  # health: allow BLE001 -- one target's probe failure must not stall the others
+                logger.warning("Could not verify Windows gateway %s after update: %s", key, exc)
+                failed.add(key)
+                continue
+            if not pids:
+                since.pop(key, None)
+                continue
+            vouched = pids if claim_all else pids[:1]
+            taken.update(vouched)
+            if now - since.setdefault(key, now) >= _READY_CONFIRM_S:
+                ready[key] = vouched
+        if len(ready) + len(failed) < len(targets):
+            _time.sleep(_READY_INTERVAL_S)
+
+
 def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: list) -> None:
     """Retire each relaunched runtime on ITS OWN readiness: a profile on a stable gateway in its
     profile home, an unmapped entry on a stable gateway running its argv. A watcher only proves a
@@ -1457,27 +1503,16 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
         from hermes_cli import gateway_windows
         from hermes_cli.profiles import get_profile_dir
     deadline = _time.monotonic() + _relaunch_verify_timeout_s(profiles, unmapped, _pid_exists)
-
-    def budget() -> float:
-        return max(deadline - _time.monotonic(), _PER_TARGET_FLOOR_S)
-
-    ready_pids: list[int] = []
-    ready_profiles = []
-    for name, old_pid in sorted(profiles.items()):
-        pids = _try_call(lambda n=name, o=old_pid: gateway_windows._wait_for_gateway_ready(
-            timeout_s=budget(), home=Path(get_profile_dir(n)), pid_filter=lambda ps, o=o: [p for p in ps if int(p) != int(o)]),
-            "Could not verify Windows gateway profile %s after update: %s", name, default=[])
-        if pids:
-            ready_profiles.append(name)
-            ready_pids.extend(pids)
-    ready_unmapped = []
-    for entry in unmapped:
-        pids = _try_call(lambda e=entry: gateway_windows._wait_for_gateway_ready(
-            timeout_s=budget(), all_profiles=True, pid_filter=_unmapped_ready_filter(e, set(ready_pids))),
-            "Could not verify unmapped Windows gateway (pid %s) after update: %s", entry.get("pid"), default=[])
-        if pids:
-            ready_unmapped.append(entry)
-            ready_pids.extend(pids[:1])
+    taken: set = set()
+    # Profiles first: a gateway on a profile's home is that profile's, never an unmapped entry's.
+    targets = [(("profile", name), lambda _scan, h=Path(get_profile_dir(name)), o=int(old_pid): gateway_windows._live_gateway_pids(
+        home=h, pid_filter=lambda ps: [p for p in ps if int(p) != o]), True) for name, old_pid in sorted(profiles.items())]
+    targets += [(("unmapped", i), lambda scan, f=_unmapped_ready_filter(entry, taken): f(scan()), False)
+                for i, entry in enumerate(unmapped)]
+    ready = _poll_until_ready(targets, deadline, taken)
+    ready_profiles = [name for name in sorted(profiles) if ("profile", name) in ready]
+    ready_unmapped = [entry for i, entry in enumerate(unmapped) if ("unmapped", i) in ready]
+    ready_pids = [pid for pids in ready.values() for pid in pids]
     # Fleet reconciliation (#91277) cross-checks every planned runtime against relaunched_profiles:
     # only a verified one is listed, so an unready one still surfaces as unaccounted.
     token["relaunched_profiles"] = ready_profiles

@@ -135,6 +135,45 @@ def test_live_host_record_survives_wall_clock_create_time_drift(host_dir, monkey
     assert hr.record_is_stale(record) is True
 
 
+@pytest.mark.platforms("posix")
+def test_reused_early_pid_after_reboot_is_not_the_gateway(monkeypatch):
+    """Boot-relative start ticks reset on reboot and collide within the 2s drift tolerance.
+
+    A legacy record (no bootEpoch) whose live PID is not a Hermes gateway must not keep a
+    supervised unit in the transient-refuse loop. PID 1674 / ticks 827 vs 845 is the shape
+    that wedged systemd against mpris-proxy.
+    """
+    record = hr.HostRecord(
+        role=hr.ROLE_GATEWAY,
+        pid=1674,
+        create_time=1_700_000_000.0,
+        start_time=827,
+        host="",
+        port=None,
+        protocol_version=hr.HOST_PROTOCOL_VERSION,
+        token_fingerprint="",
+        profiles=("default",),
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    monkeypatch.setattr(hr, "_pid_incarnation_matches", lambda pid, create_time: True)
+    monkeypatch.setattr(hr, "_cmdline_contradicts_gateway", lambda pid: True)
+    from gateway import status
+
+    monkeypatch.setattr(status, "get_process_start_time", lambda pid: 845)
+    assert hr.liveness_is_proven(record) is False
+    assert hr.record_is_stale(record) is True
+
+
+@pytest.mark.platforms("posix")
+def test_boot_epoch_mismatch_rejects_a_tick_match(host_dir):
+    record = hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_dir))
+    assert record is not None and record.boot_epoch
+    foreign = dataclasses.replace(record, boot_epoch=record.boot_epoch + "-other-boot")
+    assert hr.liveness_is_proven(record) is True
+    assert hr.liveness_is_proven(foreign) is False
+    assert hr.record_is_stale(foreign) is True
+
+
 @pytest.mark.platforms("posix")  # POSIX signal disposition
 def test_sigterm_removes_the_record_and_its_live_session_token(host_dir):
     """SIGTERM is the NORMAL stop (systemd stop, docker stop, the update relaunch) and it does not

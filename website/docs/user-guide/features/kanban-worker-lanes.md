@@ -82,7 +82,7 @@ Every claim must end in exactly one of:
 
 The kanban kernel enforces that exactly one of these terminates each run. A worker that calls neither and exits normally is treated as crashed.
 
-**Unresolvable skill names never kill a run.** A name the assignee's profile cannot resolve — a card's own `skills` entry, or a harness-injected review skill — is recorded on the card (`card_skill_unresolved` / `review_skill_skipped`) and treated as advisory: the worker warns and continues instead of dying at INIT with `Unknown skill(s)`, which parked the card after two crashed attempts. Card-named skills stay on the worker's command line (a workspace-tier copy can still load them); injected ones are skipped at spawn.
+**Unresolvable skill names never kill a run.** A name the assignee's profile cannot resolve — a card's own `skills` entry, or a skill the harness injects (`kanban.injected_skills` into every lane's worker, plus `kanban.review_skills` on a review run) — is recorded on the card (`card_skill_unresolved` for a card-declared name, `injected_skill_skipped` for a harness-injected one) and treated as advisory: the worker warns and continues instead of dying at INIT with `Unknown skill(s)`, which parked the card after two crashed attempts. Card-named skills stay on the worker's command line (a workspace-tier copy can still load them); injected ones are skipped at spawn.
 
 ## Outputs and the review handoff
 

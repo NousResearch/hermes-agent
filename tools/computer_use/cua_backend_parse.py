@@ -1,12 +1,19 @@
 """Pure parsing helpers for the cua-driver backend: MCP result flattening, ``list_windows`` /
-``get_window_state`` payload normalisation, key combos. No I/O, no module state — every function
-depends only on its inputs, so the MCP and CLI transports share them safely."""
+``get_window_state`` payload normalisation, key combos. Almost no I/O, no module state — nearly every
+function depends only on its inputs, so the MCP and CLI transports share them safely. The one exception
+is ``_hyprland_toplevels``, a best-effort compositor probe kept next to ``_ingest_windows`` (its only
+caller) rather than in ``cua_backend_capture``, so the probe stays inert (gated on
+``HYPRLAND_INSTANCE_SIGNATURE``) off wlroots sessions."""
 
 from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
+import shutil
+import subprocess
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.computer_use.backend import ActionResult, UIElement, image_dimensions_from_bytes
@@ -222,29 +229,207 @@ def _is_placeholder_id(value: Any) -> bool:
     parsed = _int_or_none(value)
     return parsed is not None and parsed <= 0
 
+# cua-driver labels a wlroots toplevel by appending " [app_id]" to its title,
+# e.g. "Pull requests - Google Chrome [google-chrome]". The compositor's own
+# title carries no such suffix, so strip it before comparing the two.
+_WAYLAND_TITLE_APP_SUFFIX_RE = re.compile(r"\s*\[[^\[\]]*\]\s*$")
+
+
+def _strip_wayland_title_suffix(title: str) -> str:
+    """Drop the ``[app_id]`` label cua-driver appends to wlroots titles."""
+    if not isinstance(title, str):
+        return ""
+    return _WAYLAND_TITLE_APP_SUFFIX_RE.sub("", title).strip()
+
+
+def _hyprland_toplevels() -> List[Dict[str, Any]]:
+    """Best-effort ``hyprctl clients -j`` snapshot. Never raises.
+
+    Returns ``[{"pid": int, "app": str, "title": str}, ...]`` for mapped
+    toplevels, with ``app``/``title`` case-folded for comparison. Returns an
+    empty list off Hyprland, when ``hyprctl`` is absent, or when the payload
+    is unparseable — every caller treats that as "no recovery available".
+
+    The gate on ``HYPRLAND_INSTANCE_SIGNATURE`` keeps this off the X11 and
+    macOS/Windows paths entirely, so the common case pays nothing.
+    """
+    if sys.platform != "linux" or not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        return []
+    binary = shutil.which("hyprctl")
+    if not binary:
+        return []
+    try:
+        proc = subprocess.run(
+            [binary, "clients", "-j"],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return []
+    if proc.returncode != 0:
+        return []
+    try:
+        parsed = json.loads(proc.stdout or "")
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    toplevels: List[Dict[str, Any]] = []
+    for client in parsed:
+        # Compositor output is untrusted input: skip malformed records rather
+        # than aborting the whole recovery on one bad entry.
+        if not isinstance(client, dict) or client.get("mapped") is False:
+            continue
+        pid = _positive_int(client.get("pid"))
+        if pid is None:
+            continue
+        app = client.get("class")
+        title = client.get("title")
+        toplevels.append({
+            "pid": pid,
+            "app": app.strip().lower() if isinstance(app, str) else "",
+            "title": title.strip().lower() if isinstance(title, str) else "",
+        })
+    return toplevels
+
+
+def _resolve_wayland_pid(
+    app_name: str, title: str, toplevels: List[Dict[str, Any]]
+) -> Optional[int]:
+    """Recover the PID that wlroots' foreign-toplevel protocol never exposes.
+
+    ``zwlr_foreign_toplevel_manager_v1`` carries an app-id and a title and
+    nothing else — there is no PID in the protocol — so cua-driver reports
+    ``pid: null`` for *every* window on a wlroots compositor (Hyprland, Sway,
+    river). Because ``get_window_state`` requires an integer pid, those
+    windows would otherwise be dropped by ``_ingest_windows`` and capture
+    would see an empty window list: a 0x0 capture, or ``<no on-screen window
+    matched app=...>`` (#74969).
+
+    Matching is deliberately conservative — **ambiguity resolves to None** so
+    the caller drops the window instead of capturing, clicking, and typing
+    into the wrong one:
+
+      1. Exact title match, unique. Titles are per-window, so this is the only
+         signal that can separate two windows of the same application.
+      2. Exact app-id match where every candidate resolves to a single PID.
+         This covers the common multi-window/one-process case (a browser with
+         several windows) without ever guessing between distinct processes.
+    """
+    if not toplevels:
+        return None
+    want_title = _strip_wayland_title_suffix(title).lower()
+    if want_title:
+        pids = {t["pid"] for t in toplevels if t["title"] == want_title}
+        if len(pids) == 1:
+            return next(iter(pids))
+    want_app = app_name.strip().lower() if isinstance(app_name, str) else ""
+    if want_app:
+        pids = {t["pid"] for t in toplevels if t["app"] == want_app}
+        if len(pids) == 1:
+            return next(iter(pids))
+    return None
+
+
+def _normalize_app_token(value: Any) -> str:
+    """Fold an app id or app name into a comparable token.
+
+    Wayland reports the *app id* (``google-chrome``, ``org.mozilla.firefox``)
+    while callers naturally type the human name (``Google Chrome``). Folding
+    every run of non-alphanumerics to a single space makes the two comparable
+    without loosening the match into a substring test.
+    """
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def _app_name_aliases(value: Any) -> set:
+    """Comparable aliases for an app id / app name.
+
+    Includes the folded form and, for reverse-DNS app ids, the trailing
+    component (``org.mozilla.firefox`` → ``firefox``) — which is the name a
+    caller actually types.
+    """
+    aliases = set()
+    folded = _normalize_app_token(value)
+    if folded:
+        aliases.add(folded)
+    if isinstance(value, str) and "." in value:
+        tail = _normalize_app_token(value.rsplit(".", 1)[-1])
+        if tail:
+            aliases.add(tail)
+    return aliases
+
+
+def _describe_raw_windows(raw_windows: List[Dict[str, Any]]) -> str:
+    """Summarise a raw ``list_windows`` payload for logs.
+
+    Deliberately counts-only: window *titles* routinely carry private content
+    (message previews, document names, URLs), so they never reach the log.
+    App ids are low-sensitivity and are what a maintainer actually needs to
+    tell "driver returned nothing" from "driver returned rows we rejected".
+    """
+    if not raw_windows:
+        return "0 raw entries"
+    entries = [w for w in raw_windows if isinstance(w, dict)]
+    no_pid = sum(1 for w in entries if _positive_int(w.get("pid")) is None)
+    no_wid = sum(1 for w in entries if _positive_int(w.get("window_id")) is None)
+    apps = sorted({
+        str(w.get("app_name") or "?").strip()[:40]
+        for w in entries
+    })
+    return (
+        f"{len(raw_windows)} raw entries ({no_pid} missing pid, "
+        f"{no_wid} missing window_id); app ids: {apps}"
+    )
+
+
 def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Normalise cua-driver ``list_windows`` entries, dropping unusable ones. Every downstream call needs integer
     ``pid`` and ``window_id``; on X11 the PID comes from the optional ``_NET_WM_PID`` property, so root/panel/popup
     windows report ``pid: null`` — skip those instead of aborting the enumeration. ``z_index``: higher = closer to
-    front; Wayland's null (undefined stacking) sorts lowest so real windows stay above the desktop."""
-    windows: List[Dict[str, Any]] = []
+    front; Wayland's null (undefined stacking) sorts lowest so real windows stay above the desktop.
+
+    On **wlroots compositors** (Hyprland, Sway, river) a null pid is not the exception but the rule: the
+    foreign-toplevel protocol carries no PID at all, so *every* window arrived unusable and capture
+    enumerated nothing (#74969). Before dropping a pid-less window we therefore try to recover the pid
+    out-of-band from the compositor via ``_resolve_wayland_pid``; only windows that stay unidentified are
+    dropped, which keeps the X11 behaviour above byte-for-byte (the probe is inert off Hyprland).
+    """
+    normalized: List[Dict[str, Any]] = []
     for w in raw_windows:
         if not isinstance(w, dict):  # untrusted compatibility envelopes
             continue
-        pid_int, window_id_int = _positive_int(w.get("pid")), _positive_int(w.get("window_id"))
-        if pid_int is None or window_id_int is None:
+        window_id_int = _positive_int(w.get("window_id"))
+        if window_id_int is None:
             continue
         z_raw, app_name, title = w.get("z_index"), w.get("app_name", ""), w.get("title", "")
-        windows.append({
+        normalized.append({
             "app_name": app_name if isinstance(app_name, str) else "",
-            "pid": pid_int,
+            # May be None here; the recovery pass below fills it in where it can, and the final filter
+            # drops whatever stays unidentified.
+            "pid": _positive_int(w.get("pid")),
             "window_id": window_id_int,
             # Only explicit False means off-screen; null (Linux 0.6.x) means unknown.
             "off_screen": w.get("is_on_screen") is False,
             "title": title if isinstance(title, str) else "",
             "z_index": z_raw if isinstance(z_raw, (int, float)) and not isinstance(z_raw, bool) else 0,
         })
-    return windows
+
+    if any(w["pid"] is None for w in normalized):
+        # One compositor probe per ingest, not one per window.
+        toplevels = _hyprland_toplevels()
+        if toplevels:
+            for w in normalized:
+                if w["pid"] is None:
+                    w["pid"] = _resolve_wayland_pid(w["app_name"], w["title"], toplevels)
+
+    # Order is preserved: callers sort by z_index afterwards and rely on a stable sort when the
+    # compositor reports no stacking order at all.
+    return [w for w in normalized if w["pid"] is not None]
 
 def _windows_from_tool_result(out: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Return list_windows payloads across cua-driver result shapes: structuredContent.windows, then ``windows`` /

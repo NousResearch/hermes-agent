@@ -17,10 +17,19 @@ export function buildGatewaySessionGroups(
   colors: Record<string, string>
 ): SidebarSessionGroup[] {
   const groups = new Map<string, SidebarSessionGroup>()
+  // A session with no connection_id still belongs to a gateway. Rows minted
+  // before the connection registry existed (or during a gateway-multiplex
+  // window) carry none, and leaving them null floats their profile group out of
+  // every gateway header — folding that header could then never hide it.
+  // Attribute them to the registry's primary connection, falling back to
+  // 'local' (the built-in source). Only null is substituted: an explicit
+  // connection_id is never rewritten, so a remote gateway's same-named profile
+  // stays its own group.
+  const fallbackConnectionId = registry?.primary || 'local'
 
   for (const session of sessions) {
     const profile = normalizeProfileKey(session.profile)
-    const connectionId = session.connection_id || null
+    const connectionId = session.connection_id || fallbackConnectionId
     const id = JSON.stringify([connectionId, profile])
     const gateway = registry?.connections.find(connection => connection.id === connectionId)
     const label = connectionId ? `${gateway?.label || connectionId} · ${profile}` : profile

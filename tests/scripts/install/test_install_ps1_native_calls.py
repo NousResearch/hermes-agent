@@ -37,14 +37,15 @@ def test_native_stderr_under_stop_leaves_the_exit_code_to_the_caller():
     assert "exit=3 preference=Stop" in result.stdout
 
 
-def test_path_uv_must_run_and_meet_the_pin(tmp_path):
-    for name, body in {"old": "@echo uv 0.6.17", "new": "@echo uv 99.0.0 (abc 2099-01-01)",
-                       "broken": "@echo boom 1>&2 & exit /b 1"}.items():
+def test_cached_uv_must_run_and_match_the_exact_pin(tmp_path):
+    for name, body in {"old": "@echo uv 0.6.17", "pinned": "@echo uv 99.0.0 (abc 2099-01-01)",
+                       "newer": "@echo uv 100.0.0", "broken": "@echo boom 1>&2 & exit /b 1"}.items():
         (tmp_path / f"{name}.cmd").write_text(body + "\r\n")
-    checks = "; ".join(f'"{n}=$(Test-UvAtLeastPin \'{tmp_path / (n + ".cmd")}\')"' for n in ("old", "new", "broken"))
-    result = _dot_sourced(checks)
+    names = ("old", "pinned", "newer", "broken")
+    checks = "; ".join(f'"{n}=$(Test-UvAtPin \'{tmp_path / (n + ".cmd")}\')"' for n in names)
+    result = _dot_sourced("$script:UvPinVersion = '99.0.0'; " + checks)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.split() == ["old=False", "new=True", "broken=False"]
+    assert result.stdout.split() == ["old=False", "pinned=True", "newer=False", "broken=False"]
 
 
 def _git(repo: Path, *args: str) -> str:

@@ -190,7 +190,7 @@ def test_strategy_event_rejects_set_value():
     assert "strategy='event' is not supported for set_value" in parsed["error"]
 
 
-def test_session_declared_id_syncs_to_pipe_transport():
+def test_mcp_declared_session_pins_pipe_off_for_lease():
     from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
     session = _CuaDriverSession(_AsyncBridge())
     session._started = True
@@ -198,16 +198,18 @@ def test_session_declared_id_syncs_to_pipe_transport():
     mock_pipe.session_id = None
     session._pipe_transport = mock_pipe
 
-    # Call start_session
+    # The mocked response comes from MCP, so transport affinity belongs to MCP for this lease.
     mock_resp = {"isError": False}
     with patch.object(session._bridge, "run", return_value=mock_resp):
         session.call_tool("start_session", {"session": "test-session-xyz"})
     assert session._declared_session_id == "test-session-xyz"
-    assert mock_pipe.session_id == "test-session-xyz"
+    assert mock_pipe.session_id is None
+    assert session._pipe_disabled_for_session == "test-session-xyz"
 
-    # Call end_session
+    # Ending the MCP-owned lease clears both the declaration and affinity pin.
     with patch.object(session._bridge, "run", return_value=mock_resp):
         session.call_tool("end_session", {"session": "test-session-xyz"})
     assert session._declared_session_id is None
     assert mock_pipe.session_id is None
+    assert session._pipe_disabled_for_session is None
 

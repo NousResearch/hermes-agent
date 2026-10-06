@@ -124,6 +124,20 @@ class _ModelSwitchContext:
             self.current_base_url = override.get("base_url", self.current_base_url)
             self.current_api_key = override.get("api_key", self.current_api_key)
 
+    def align_current_model_with_agent(self, agent) -> None:
+        """A resident agent's live model supersedes the config/override route for ``current_model``.
+
+        After an in-turn fallback the agent serves the fallback model while config/override still
+        name the primary, so the cancel notice, the picker's current-model tag and the
+        "switched from" note would all report the stale configured model — contradicting /status
+        and /usage, which read the agent first (#133993). ``current_model`` is display-only for the
+        switch pipeline (``switch_model`` never reads it), so this cannot change routing or
+        credential resolution; the route fields stay on the config/override chain.
+        """
+        live_model = str(getattr(agent, "model", "") or "").strip()
+        if live_model:
+            self.current_model = live_model
+
 
 
 _TEXT_LISTING_MODELS = 5
@@ -584,6 +598,9 @@ class GatewayModelCommandsMixin:
         )
         ctx.read_config()
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))
+        # The agent's live model outranks config/override for the displayed current model, so a
+        # mid-session fallback doesn't make /model contradict /status and /usage (#133993).
+        ctx.align_current_model_with_agent(self._resident_agent_for(session_key))
         if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)
         result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)

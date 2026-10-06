@@ -183,8 +183,12 @@ def _mcp_result_with_native_images(text: str, image_paths: List[str]) -> Any:
         if not _should_use_native_vision_fast_path():
             return text
         # Decode/resize on the bounded vision pool: a parallel tool batch of image-heavy MCP calls must not
-        # decode dozens of large images at once on tool threads.
-        jobs = [(p, _vision_cpu_executor.submit(_mcp_native_image_part, p)) for p in image_paths[:_MCP_NATIVE_IMAGE_MAX]]
+        # decode dozens of large images at once on tool threads. Each job runs in a copy of the caller's context:
+        # the active runtime (a managed local model narrows formats: no WebP) and the profile's vision settings
+        # are ContextVars a bare pool thread would not see.
+        import contextvars
+        jobs = [(p, _vision_cpu_executor.submit(contextvars.copy_context().run, _mcp_native_image_part, p))
+                for p in image_paths[:_MCP_NATIVE_IMAGE_MAX]]
         prepared = [(p, f.result()) for p, f in jobs]
     except Exception:  # deliberate boundary: the MEDIA: paths already carry the images, so any failure keeps the text
         logger.debug("MCP native image attach failed, keeping MEDIA: paths", exc_info=True)

@@ -175,6 +175,22 @@ class TestNativeImageAttach:
         assert "downscaled from 3000x2000 to 1500x1000" in out["content"][0]["text"]
         assert "multiply any coordinates you report by 2.00" in out["content"][0]["text"]
 
+    def test_image_prep_sees_the_callers_runtime(self, tmp_path, monkeypatch):
+        """The prep pool runs in the caller's context: a managed local runtime (stb_image, no WebP) set on the
+        calling session converts a small WebP instead of attaching bytes its server silently cannot decode."""
+        import io
+        from PIL import Image
+        from agent.auxiliary_client import reset_runtime_main, set_runtime_main
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64), (200, 30, 30)).save(buf, "WEBP")
+        token = set_runtime_main("llamacpp", "local-vlm")
+        try:
+            out = self._call(monkeypatch, tmp_path, {}, image=buf.getvalue(), mime="image/webp")
+        finally:
+            reset_runtime_main(token)
+        assert isinstance(out, dict)
+        assert not out["content"][1]["image_url"]["url"].startswith("data:image/webp")
+
     def test_text_mode_an_undecodable_or_an_unshrinkable_image_keeps_the_string_result(self, tmp_path, monkeypatch):
         assert "MEDIA:" in self._call(monkeypatch, tmp_path, {"agent": {"image_input_mode": "text"}})
         # vision.max_calls_per_image counts pixels, not cache paths: a polled screenshot re-cached under a new

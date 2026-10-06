@@ -2615,13 +2615,12 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         self._structural_no_op_backoff_until = 0.0
         self._verify_compaction_cleared_threshold = True
         if feasibility_skip:
-            # A pre-LLM feasibility skip is not a summary-quality verdict: it must neither extend nor reset the streak.
-            # A deliberate pre-LLM feasibility skip (#60451) is not a summary-quality verdict: it must
+            # A deliberate pre-LLM summary skip (#60451, benched model) is not a summary-quality verdict: it must
             # neither extend a fallback streak (the streak decides whether the summary model is called)
             # nor reset one (a skip proves nothing about the summary model's health).
             if not self.quiet_mode:
                 logger.info(
-                    "Compaction completed via pre-LLM feasibility skip; fallback_compression_streak unchanged (%d)",
+                    "Compaction completed via pre-LLM summary skip; fallback_compression_streak unchanged (%d)",
                     self._fallback_compression_streak,
                 )
             return
@@ -3155,7 +3154,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
                     logger.debug("Compression deferred — %s for %.0fs more", what, remaining)
                 return True
         # Anti-thrash back-off must not be permanent: after _ANTI_THRASH_RECOVERY_SECONDS blocked, allow ONE
-        # probe by dropping counters to 1 strike (persisted). Deadline is armed lazily and persisted on the row.
+        # probe by dropping the ineffective count to 1 strike (persisted). Deadline is armed lazily and persisted on the row.
         if self._tripped():
             # Wall clock: the deadline is persisted so a rebuilt compressor resumes the SAME window.
             # Wall clock, not monotonic: the deadline is persisted on the session row (#100185) so a fresh

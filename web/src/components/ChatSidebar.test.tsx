@@ -184,6 +184,77 @@ describe('ChatSidebar event socket', () => {
     expect(reloadMocks.maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401)
   })
 
+  /** The PTY-side events socket of the chat tab, opened and ready. */
+  async function openedFeedSocket() {
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+    const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1]
+    await act(async () => {
+      socket.emit('open', {})
+    })
+    return socket
+  }
+
+  function feedEvent(payload: Record<string, unknown>) {
+    return {
+      data: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'event',
+        params: { type: 'session.info', payload }
+      })
+    }
+  }
+
+  it('shows the PTY runtime model after a fallback swap (#54509)', async () => {
+    apiMocks.getModelInfo.mockResolvedValue({
+      capabilities: { supports_reasoning: false },
+      model: 'configured-primary'
+    })
+
+    const { ChatSidebar } = await import('./ChatSidebar')
+    await render(<ChatSidebar channel="chat-1" />)
+
+    // The badge seeds from config (/api/model/info): the configured primary.
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain('configured-primary')
+    )
+
+    // End-of-turn `session.info` from the PTY chat session: a provider
+    // fallback replaced the configured primary mid-turn, so the agent's
+    // runtime model is the one that actually answered. The badge must
+    // follow the runtime identity over config.yaml.
+    const socket = await openedFeedSocket()
+    await act(async () => {
+      socket.emit(
+        'message',
+        feedEvent({ model: 'runtime-fallback', provider: 'fallback-provider' })
+      )
+    })
+
+    expect(container.textContent).toContain('runtime-fallback')
+    expect(container.textContent).not.toContain('configured-primary')
+  })
+
+  it('keeps showing the configured model until the PTY reports a runtime one', async () => {
+    apiMocks.getModelInfo.mockResolvedValue({
+      capabilities: { supports_reasoning: false },
+      model: 'configured-primary'
+    })
+
+    const { ChatSidebar } = await import('./ChatSidebar')
+    await render(<ChatSidebar channel="chat-1" />)
+    await openedFeedSocket()
+
+    // A session.info without a usable model (e.g. a title-only update)
+    // must not blank the badge: config stays the source until the PTY
+    // chat session reports its runtime identity.
+    const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1]
+    await act(async () => {
+      socket.emit('message', feedEvent({ title: 'Some session title' }))
+    })
+
+    expect(container.textContent).toContain('configured-primary')
+  })
+
   it("ignores the synchronous sidecar state replay", async () => {
     const { ChatSidebar } = await import("./ChatSidebar");
 

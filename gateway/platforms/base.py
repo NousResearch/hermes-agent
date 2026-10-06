@@ -3281,21 +3281,15 @@ class BasePlatformAdapter(MediaDeliveryMixin, ABC):
         # - code blocks / inline code / blockquotes hold prose examples (#35695) - serialized JSON string
         #   values hold stored tool-result text (#34375) Both maskers are offset-preserving (chars ->
         #   spaces) so match offsets stay valid; chaining them masks the union of both protected regions.
-        # Dedupe on path string AND on-disk identity (first occurrence wins).
-        # String-only seen_paths sent the same inode twice when a MEDIA tag and
-        # an extensionless recovery (or a bind-mount alias) named the same file
-        # via different path strings (#29131 covers identical strings only).
+        # Only identical strings dedupe before acceptance: a rejected alias must not
+        # consume the inode slot of an allowed path. Filters dedupe accepted files.
         seen_paths: set = set()
-        seen_idents: set = set()
 
         def _add(path: str) -> None:
             # is_voice only for audio: a voice-flagged image would leave the photo batch.
-            ident = _media_file_identity(path)
-            if path in seen_paths or ident in seen_idents:
-                return
-            seen_paths.add(path)
-            seen_idents.add(ident)
-            media.append((path, has_voice_tag and os.path.splitext(path)[1].lower() in _AUDIO_EXTS))
+            if path not in seen_paths:
+                seen_paths.add(path)
+                media.append((path, has_voice_tag and os.path.splitext(path)[1].lower() in _AUDIO_EXTS))
         for match in MEDIA_TAG_CLEANUP_RE.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
             if path:

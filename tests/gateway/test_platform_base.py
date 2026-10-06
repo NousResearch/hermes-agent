@@ -236,12 +236,8 @@ class TestExtractMedia:
         media, _ = BasePlatformAdapter.extract_media(content)
         assert media == [(f"{home}/foo.png", False)]
 
-    def test_extract_media_dedupes_same_inode_via_hardlink(self, tmp_path):
-        """Bind-mount / extra-name aliases share an inode but not a path string.
-
-        #29131 only collapsed identical expanded strings, so one PDF named two
-        ways was uploaded twice. First occurrence wins.
-        """
+    def test_extract_media_retains_aliases_until_validation(self, tmp_path):
+        """An invalid first alias must not suppress a valid later path."""
         real = tmp_path / "chart.pdf"
         alias = tmp_path / "chart-alias.pdf"
         real.write_bytes(b"%PDF-1.4\n")
@@ -250,7 +246,7 @@ class TestExtractMedia:
         except OSError:
             pytest.skip("hard links not available")
         media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{real}\nMEDIA:{alias}")
-        assert media == [(str(real), False)]
+        assert media == [(str(real), False), (str(alias), False)]
 
     def test_extract_media_keeps_distinct_copies(self, tmp_path):
         a = tmp_path / "a.pdf"

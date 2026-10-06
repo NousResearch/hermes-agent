@@ -1429,7 +1429,7 @@ class GatewayTurnMixin:
                 turn_sidecar_notes.append(note)
 
         # One-time prompt if no home channel is set (webhooks deliver to configured targets instead).
-        if not human_platform:
+        if not human_platform or getattr(source, "role_authorized", False) is True:  # role grants aren't the operator
             return
         platform_name = source.platform.value
         env_key = _home_target_env_var(platform_name)

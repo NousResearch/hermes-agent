@@ -1624,7 +1624,10 @@ def _try_acquire_durable_review_lease(
     review_run: Optional[_BackgroundReviewRun],
 ) -> Tuple[Any, Optional[str]]:
     """Claim the same durable ownership row foreground turns use, without waiting. The holder
-    carries the background-review mark so a foreground waiter can ask it to yield."""
+    carries the background-review mark so a foreground waiter can ask it to yield, and the
+    PID-namespace stamp every turn-lease holder carries (``hermes_state_pidns``): an unstamped
+    TTL holder is never probed where PID namespaces exist, so a crashed fork's row would otherwise
+    wait out its TTL under a user turn instead of being reclaimed like any other dead holder."""
     db = getattr(parent_agent, "_session_db", None)
     if db is None or not session_id or not callable(
         getattr(type(db), "try_acquire_session_turn_lease", None)
@@ -1632,8 +1635,12 @@ def _try_acquire_durable_review_lease(
         return None, None
     from agent.review_admission import REASON_DURABLE_BUSY, REASON_DURABLE_FAILURE
     from hermes_state_compression import BACKGROUND_REVIEW_LEASE_HOLDER_MARK
+    from hermes_state_pidns import holder_namespace_token
 
-    holder = f"pid={os.getpid()}{BACKGROUND_REVIEW_LEASE_HOLDER_MARK}{uuid.uuid4().hex}"
+    holder = (
+        f"pid={os.getpid()}{holder_namespace_token()}"
+        f"{BACKGROUND_REVIEW_LEASE_HOLDER_MARK}{uuid.uuid4().hex}"
+    )
     try:
         acquired = db.try_acquire_session_turn_lease(
             session_id, holder, ttl_seconds=_REVIEW_LEASE_TTL_SECONDS

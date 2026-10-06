@@ -1383,3 +1383,30 @@ class TestRecentSentTimestampRing:
         adapter._track_sent_timestamp({"timestamp": 3})
         # Both 1 and 2 should be evicted on TTL, only 3 remains
         assert list(adapter._recent_sent_timestamps.keys()) == [3]
+
+
+class TestSignalReactionsGroupTrust:
+    """_reactions_enabled: permitted groups react regardless of the DM allowlist."""
+
+    @staticmethod
+    def _event(chat_type, user_id, chat_id_alt=None):
+        from types import SimpleNamespace
+        return SimpleNamespace(source=SimpleNamespace(chat_type=chat_type, user_id=user_id, chat_id_alt=chat_id_alt))
+
+    def test_permitted_group_reacts_when_sender_not_in_dm_allowlist(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.dm_allow_from = {"+15550000001"}
+        adapter.group_allow_from = {"grp1"}
+        assert adapter._reactions_enabled(self._event("group", "+15559999999", "grp1")) is True
+
+    def test_unlisted_group_still_follows_dm_allowlist(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.dm_allow_from = {"+15550000001"}
+        adapter.group_allow_from = {"grp1"}
+        assert adapter._reactions_enabled(self._event("group", "+15559999999", "other")) is False
+
+    def test_dm_from_stranger_does_not_react(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.dm_allow_from = {"+15550000001"}
+        adapter.group_allow_from = {"grp1"}
+        assert adapter._reactions_enabled(self._event("dm", "+15559999999")) is False

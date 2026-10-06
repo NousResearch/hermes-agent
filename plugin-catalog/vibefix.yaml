@@ -1,0 +1,16 @@
+name: vibefix
+repo: https://github.com/yos88da/vibefix-hermes-plugin
+sha: 9b8a7835ac75f0ab0f67a7ad3e9e7270c03d98d4
+description: "Triage and test a broken live web app built with an AI app builder (Lovable, Base44, v0, Bolt, Replit). Portable Agent Plugin v1: connects the VibeFix remote MCP server (no account, no API key) and adds one skill. Disclosure: tool calls send the symptom text, the builder name and any app URL the agent passes to https://vibe-fixer.com/mcp; both tools are read-only and never contact the app."
+maintainer: VibeFix
+title: VibeFix
+tier: community
+category: web
+version: "1.0.0"
+docs_url: https://vibe-fixer.com
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

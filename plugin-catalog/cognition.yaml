@@ -1,0 +1,19 @@
+name: cognition
+repo: https://github.com/aska-digital/cognition-memory
+sha: f1426529c2caacd9e20113f6c40328c37011414a
+version: "0.1.0"
+description: "Cognition session-end memory — one active provider with internal multi-repo routing, a durable SQLite push queue, fetch-first keep-both merge, per-entry provenance with an eviction-preserving archive, and budgeted prefetch (tools: cognition_search, cognition_status, read-only cognition_dream). Local-only: no network calls, no API keys. Disclosure — all state stays local under HERMES_HOME (SQLite queue, JSON commit log, JSONL archive); author identity defaults to host git config user.name; nothing leaves the machine."
+maintainer: aska-digital
+tier: community
+category: memory
+docs_url: https://github.com/aska-digital/cognition-memory#readme
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+  - cognition_search
+  - cognition_status
+  - cognition_dream
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -61,7 +61,7 @@ class CLITuiRuntimeMixin:
 
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
-        from cli import _DIM, _PASTE_REF_RE, _RST, _cprint, _detect_file_drop, _looks_like_slash_command, _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
+        from cli import _DIM, _PASTE_REF_RE, _RST, _cprint, _detect_file_drop, _looks_like_slash_command, _decode_csi_u_in_paste, _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         from tools.process_registry_notifications import TimelineNotification
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
@@ -74,6 +74,9 @@ class CLITuiRuntimeMixin:
             user_input, submit_images = user_input
 
         if isinstance(user_input, str):
+            # same CSI-u-inside-a-paste case as the TUI handler, for the
+            # classic prompt path
+            user_input = _decode_csi_u_in_paste(user_input)
             user_input = _strip_leaked_bracketed_paste_wrappers(user_input)
             user_input, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(user_input)
             if _had_mouse_reports:

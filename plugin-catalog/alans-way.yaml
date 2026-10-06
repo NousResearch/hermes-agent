@@ -1,6 +1,6 @@
 name: alans-way
 repo: https://github.com/capthvnsen/alans-way-agents
-sha: a538eabc7dad1685c3fbf0de636ecfa99cdac279
+sha: 210a47066d01373bec214d4b1b446616df2b30a0
 subdir: alans-way
 version: "0.4.1"
 title: "Alan's Way"

@@ -48,8 +48,8 @@ def install_cron_store_notices(runner, loop: asyncio.AbstractEventLoop) -> None:
         if event == "unwritable":
             if (handle := pending.pop(store, None)) is not None:
                 handle.cancel()  # never told it recovered: the outage notice still stands
-            elif store not in announced:
-                announced.add(store)
+            elif store not in announced and degraded_record(Path(store)) is not None:
+                announced.add(store)  # recheck: a boot replay can land after the store recovered
                 send(event, record)
         elif store in announced and store not in pending:  # no lone "recovered"
             pending[store] = loop.call_later(NOTICE_REPEAT_SECONDS, send_recovered, record)

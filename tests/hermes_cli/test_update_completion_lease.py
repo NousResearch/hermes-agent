@@ -38,12 +38,19 @@ def _fake_windows_prepare(tmp_path, monkeypatch, acquire):
     monkeypatch.setattr(pm.receipt, "last_for_update", lambda update_id: None)
     monkeypatch.setattr(pm.environments, "project_python", lambda root: Path(sys.executable))
     monkeypatch.setattr(pm.environments, "activation_environment", lambda root: dict(os.environ))
-    monkeypatch.setattr(update_completion.subprocess, "call", lambda *a, **kw: events.append("prepared") or 0)
+    result_path = tmp_path / "result.json"
+
+    def prepared_child(*args, **kwargs):  # a successful --prepared child writes its result
+        events.append("prepared")
+        result_path.write_text("{}", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(update_completion.subprocess, "call", prepared_child)
     root = tmp_path / "checkout"
     root.mkdir()
     request = {"source": str(root), "receipt": {"update_id": "u-l3"}, "bytecode_cache": str(tmp_path / "bc")}
     try:
-        update_completion._prepare(request, tmp_path / "request.json", tmp_path / "result.json")
+        update_completion._prepare(request, tmp_path / "request.json", result_path)
     except RuntimeError as exc:
         events.append(f"raised: {exc}")
     return root, events

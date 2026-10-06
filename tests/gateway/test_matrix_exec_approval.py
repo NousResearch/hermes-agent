@@ -22,6 +22,7 @@ class TestMatrixExecApprovalReactions:
             command="rm -rf /tmp/test",
             session_key="sess-1",
             description="dangerous",
+            metadata={"approval_id": "approval-1"},
         )
 
         assert result.success is True
@@ -49,6 +50,7 @@ class TestMatrixExecApprovalReactions:
             session_key="sess-2",
             description="shortened URL",
             allow_permanent=False,
+            metadata={"approval_id": "approval-2"},
         )
 
         assert result.success is True
@@ -72,6 +74,7 @@ class TestMatrixExecApprovalReactions:
             session_key="sess-3",
             description="dangerous",
             allow_session=False,
+            metadata={"approval_id": "approval-3"},
         )
 
         assert result.success is True

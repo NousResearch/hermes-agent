@@ -511,7 +511,7 @@ gateway:
     prompt_default: " (réamhshocrú: {default})"
     prompt: "☤ **Teastaíonn d'ionchur ón nuashonrú:**\n\n{prompt}{default_hint}\n\nFreagair `{prefix}approve` (tá) nó `{prefix}deny` (níl), nó clóscríobh do fhreagra go díreach."
     finished: "✅ Nuashonrú Hermes críochnaithe."
-    timed_out: "❌ Chuaigh nuashonrú Hermes thar am tar éis 30 nóiméad."
+    timed_out: "❌ Chuaigh nuashonrú Hermes thar am tar éis {minutes} nóiméad."
     finished_success: "✅ Críochnaíodh nuashonrú Hermes go rathúil."
     last_lines: "{msg}\n\nLínte deiridh:\n```\n{tail}\n```"
     managed_action: "Hermes Agent a nuashonrú"

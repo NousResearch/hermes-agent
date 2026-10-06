@@ -61,13 +61,20 @@ def run_source_script(project_root: Path, script: str, *args: str, env: dict, la
 def prepare_source_dependencies(project_root: Path, workspaces: tuple[str, ...], *, env: dict,
                                 explicit: bool = False) -> None:
     from pm import lazy_installs_allowed
+    from hermes_cli.update_cmd import _update_progress_heartbeat
 
-    run_source_script(
-        project_root, "scripts/build/node-deps.mjs", "--source", str(project_root), "--reuse",
-        *(() if explicit or lazy_installs_allowed() else ("--no-install",)),
-        *(arg for workspace in workspaces for arg in ("--workspace", workspace)), env=env,
-        label="Preparing Node dependencies",
-    )
+    # * npm can sit silent for minutes (lockfile reuse, contained off-TTY
+    #   output). Heartbeat so Desktop's idle watchdog (600s of no stdout AND
+    #   no update.log growth → exit 124) does not kill a healthy install.
+    with _update_progress_heartbeat(
+        "  … still installing Node.js dependencies ({elapsed}s elapsed)"
+    ):
+        run_source_script(
+            project_root, "scripts/build/node-deps.mjs", "--source", str(project_root), "--reuse",
+            *(() if explicit or lazy_installs_allowed() else ("--no-install",)),
+            *(arg for workspace in workspaces for arg in ("--workspace", workspace)), env=env,
+            label="Preparing Node dependencies",
+        )
 
 
 def prepare_launch_dependencies(project_root: Path, *, env: dict) -> None:
@@ -150,10 +157,18 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
             build_lock = DesktopBuildLock(project_root)
             build_lock.acquire(wait=True)
             try:
-                build_prepared_desktop(
-                    desktop_dir, source_mode=False,
-                    npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root,
-                )
+                from hermes_cli.update_cmd import _update_progress_heartbeat
+
+                # * Electron/vite is routinely quiet longer than the Desktop
+                #   idle watchdog (600s of no stdout AND no update.log growth).
+                with _update_progress_heartbeat(
+                    "  … still building desktop app ({elapsed}s elapsed) — "
+                    "Electron/vite can take several minutes"
+                ):
+                    build_prepared_desktop(
+                        desktop_dir, source_mode=False,
+                        npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root,
+                    )
             finally:
                 build_lock.release()
         # A current release/ can still sit beside a stale installed copy (an earlier

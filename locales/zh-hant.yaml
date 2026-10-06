@@ -511,7 +511,7 @@ gateway:
     prompt_default: "（預設：{default}）"
     prompt: "☤ **更新需要你的輸入：**\n\n{prompt}{default_hint}\n\n回覆 `{prefix}approve`（是）或 `{prefix}deny`（否），或直接輸入你的答案。"
     finished: "✅ Hermes 更新完成。"
-    timed_out: "❌ Hermes 更新已逾時（30 分鐘）。"
+    timed_out: "❌ Hermes 更新已逾時（{minutes} 分鐘）。"
     finished_success: "✅ Hermes 更新已成功完成。"
     last_lines: "{msg}\n\n最後幾行：\n```\n{tail}\n```"
     managed_action: "更新 Hermes Agent"

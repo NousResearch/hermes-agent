@@ -511,7 +511,7 @@ gateway:
     prompt_default: " (verstek: {default})"
     prompt: "☤ **Opdatering benodig jou insette:**\n\n{prompt}{default_hint}\n\nAntwoord `{prefix}approve` (ja) of `{prefix}deny` (nee), of tik jou antwoord direk in."
     finished: "✅ Hermes-opdatering voltooi."
-    timed_out: "❌ Hermes-opdatering het na 30 minute uitgetel."
+    timed_out: "❌ Hermes-opdatering het na {minutes} minute uitgetel."
     finished_success: "✅ Hermes-opdatering suksesvol voltooi."
     last_lines: "{msg}\n\nLaaste reëls:\n```\n{tail}\n```"
     managed_action: "Hermes Agent opdateer"

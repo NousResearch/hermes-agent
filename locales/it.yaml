@@ -511,7 +511,7 @@ gateway:
     prompt_default: " (predefinito: {default})"
     prompt: "☤ **L'aggiornamento richiede il tuo input:**\n\n{prompt}{default_hint}\n\nRispondi `{prefix}approve` (sì) o `{prefix}deny` (no), oppure digita direttamente la tua risposta."
     finished: "✅ Aggiornamento di Hermes completato."
-    timed_out: "❌ Aggiornamento di Hermes scaduto dopo 30 minuti."
+    timed_out: "❌ Aggiornamento di Hermes scaduto dopo {minutes} minuti."
     finished_success: "✅ Aggiornamento di Hermes completato con successo."
     last_lines: "{msg}\n\nUltime righe:\n```\n{tail}\n```"
     managed_action: "aggiornare Hermes Agent"

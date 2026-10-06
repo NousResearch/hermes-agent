@@ -515,7 +515,7 @@ gateway:
     prompt_default: " (default: {default})"
     prompt: "☤ **Update needs your input:**\n\n{prompt}{default_hint}\n\nReply `{prefix}approve` (yes) or `{prefix}deny` (no), or type your answer directly."
     finished: "✅ Hermes update finished."
-    timed_out: "❌ Hermes update timed out after 30 minutes."
+    timed_out: "❌ Hermes update timed out after {minutes} minutes."
     finished_success: "✅ Hermes update finished successfully."
     last_lines: "{msg}\n\nLast lines:\n```\n{tail}\n```"
     managed_action: "update Hermes Agent"

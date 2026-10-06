@@ -590,7 +590,7 @@ gateway:
 
       Répondez `{prefix}approve` (oui) ou `{prefix}deny` (non), ou saisissez directement votre réponse.
     finished: "✅ Mise à jour d'Hermes terminée."
-    timed_out: "❌ La mise à jour d'Hermes a expiré après 30 minutes."
+    timed_out: "❌ La mise à jour d'Hermes a expiré après {minutes} minutes."
     finished_success: "✅ Mise à jour d'Hermes terminée avec succès."
     last_lines: |-
       {msg}

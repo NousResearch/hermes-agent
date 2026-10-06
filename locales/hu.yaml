@@ -514,7 +514,7 @@ gateway:
     prompt_default: " (alapértelmezett: {default})"
     prompt: "☤ **A frissítéshez a válaszod kell:**\n\n{prompt}{default_hint}\n\nVálaszolj: `{prefix}approve` (igen) vagy `{prefix}deny` (nem), vagy írd be közvetlenül a válaszodat."
     finished: "✅ A Hermes frissítése befejeződött."
-    timed_out: "❌ A Hermes frissítése 30 perc után időtúllépéssel leállt."
+    timed_out: "❌ A Hermes frissítése {minutes} perc után időtúllépéssel leállt."
     finished_success: "✅ A Hermes frissítése sikeresen befejeződött."
     last_lines: "{msg}\n\nUtolsó sorok:\n```\n{tail}\n```"
     managed_action: "a Hermes Agent frissítése"

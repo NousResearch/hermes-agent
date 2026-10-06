@@ -511,7 +511,7 @@ gateway:
     prompt_default: " (varsayılan: {default})"
     prompt: "☤ **Güncelleme girdinizi bekliyor:**\n\n{prompt}{default_hint}\n\n`{prefix}approve` (evet) veya `{prefix}deny` (hayır) yazın ya da yanıtınızı doğrudan yazın."
     finished: "✅ Hermes güncellemesi tamamlandı."
-    timed_out: "❌ Hermes güncellemesi 30 dakika sonra zaman aşımına uğradı."
+    timed_out: "❌ Hermes güncellemesi {minutes} dakika sonra zaman aşımına uğradı."
     finished_success: "✅ Hermes güncellemesi başarıyla tamamlandı."
     last_lines: "{msg}\n\nSon satırlar:\n```\n{tail}\n```"
     managed_action: "Hermes Agent'ı güncelle"

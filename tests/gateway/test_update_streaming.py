@@ -113,13 +113,19 @@ class TestUpdateCommandGatewayFlag:
              patch("subprocess.Popen", mock_popen):
             await runner._handle_update_command(event)
 
-        # Check the bash command string contains --gateway and PYTHONUNBUFFERED
         call_args = mock_popen.call_args[0][0]
-        cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
-        assert "--gateway" in cmd_string
-        assert "PYTHONUNBUFFERED" in cmd_string
-        assert "rc=$?" in cmd_string
-        assert "status=$?" not in cmd_string
+        # * Windows helper vs POSIX bash -c: inspect the whole argv, not only
+        #   the last token. This test is linux-gated; the join still matches
+        #   `setsid bash -c …`.
+        joined = (
+            " ".join(str(a) for a in call_args)
+            if isinstance(call_args, list)
+            else str(call_args)
+        )
+        assert "--gateway" in joined
+        assert "PYTHONUNBUFFERED" in joined
+        assert "rc=$?" in joined
+        assert "status=$?" not in joined
 
 # ---------------------------------------------------------------------------
 # _watch_update_progress — output streaming
@@ -127,6 +133,17 @@ class TestUpdateCommandGatewayFlag:
 
 class TestWatchUpdateProgress:
     """Tests for _watch_update_progress() streaming output."""
+
+    def test_default_timeout_covers_a_full_windows_update(self):
+        """Watcher must outlast npm + Electron, matching the spawn helper."""
+        import inspect
+
+        from gateway.run import GatewayRunner
+
+        default = inspect.signature(
+            GatewayRunner._watch_update_progress
+        ).parameters["timeout"].default
+        assert default >= 3600
 
     @pytest.mark.asyncio
     async def test_streams_output_to_adapter(self, tmp_path):

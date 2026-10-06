@@ -511,7 +511,7 @@ gateway:
     prompt_default: " (デフォルト: {default})"
     prompt: "☤ **更新に入力が必要です:**\n\n{prompt}{default_hint}\n\n`{prefix}approve` (はい) または `{prefix}deny` (いいえ) と返信するか、回答を直接入力してください。"
     finished: "✅ Hermes の更新が終了しました。"
-    timed_out: "❌ Hermes の更新は 30 分でタイムアウトしました。"
+    timed_out: "❌ Hermes の更新は {minutes} 分でタイムアウトしました。"
     finished_success: "✅ Hermes の更新が正常に完了しました。"
     last_lines: "{msg}\n\n最後の行:\n```\n{tail}\n```"
     managed_action: "Hermes Agent の更新"

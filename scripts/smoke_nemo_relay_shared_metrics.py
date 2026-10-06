@@ -819,7 +819,7 @@ def main() -> int:
         / "hermes_cli"
         / "observability"
         / "schemas"
-        / "hermes.shared_metrics.v3.schema.json",
+        / "hermes.shared_metrics.v4.schema.json",
     )
 
     print("Hermes -> NeMo Relay shared-metrics smoke test passed")

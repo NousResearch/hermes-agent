@@ -327,9 +327,7 @@ describe('searchSessions profile scope', () => {
   it('searches the given profile instead of the primary backend', async () => {
     // Unscoped, the primary searched its launch profile while the sidebar showed another.
     hermesApi.mockResolvedValue({ results: [] } as never)
-    vi.mocked(client.profileScoped).mockImplementation(profile =>
-      profile ? { priority: 'foreground', profile } : {}
-    )
+    vi.mocked(client.profileScoped).mockImplementation(profile => (profile ? { priority: 'foreground', profile } : {}))
 
     await searchSessions('zebra', 'research')
 

@@ -6,6 +6,7 @@ import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/run
 import { refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { $setupReadyTick } from '@/store/live-sync'
 import { dismissNotification, notify } from '@/store/notifications'
+import { $desktopOnboarding } from '@/store/onboarding'
 import type { StatusResponse } from '@/types/hermes'
 
 // Statusbar health is ambient chrome, not live data — nothing the user acts on
@@ -90,8 +91,8 @@ export function useStatusSnapshot(
       }
     }
 
-    const refresh = async ({ readiness }: { readiness: boolean }) => {
-      if (!isViewed()) {
+    const refresh = async ({ readiness, force = false }: { readiness: boolean; force?: boolean }) => {
+      if (!force && !isViewed()) {
         scheduleRefresh()
 
         return
@@ -150,12 +151,36 @@ export function useStatusSnapshot(
     // outside the status tick so it neither resets nor waits on the timer.
     const unsubscribeSetupReady = $setupReadyTick.listen(() => void refreshReadiness())
 
+    // An OAuth sign-in updates backend readiness, but ambient polling is
+    // skipped while the window is unfocused — so a stale credential failure can
+    // linger indefinitely if the user stays in the browser after completing the
+    // flow. Watch the onboarding store for the auth-success transition and force
+    // one readiness refresh that bypasses the focus gate. This does not resume
+    // background polling: the forced refresh reschedules the normal (focus-gated)
+    // cadence in its `finally`.
+    let lastFlowStatus = $desktopOnboarding.get().flow.status
+
+    const unsubscribeOnboarding = $desktopOnboarding.listen(state => {
+      const status = state.flow.status
+      const becameSuccess = status === 'success' && lastFlowStatus !== 'success'
+      lastFlowStatus = status
+
+      if (becameSuccess && !cancelled) {
+        if (timer !== undefined) {
+          window.clearTimeout(timer)
+        }
+
+        void refresh({ readiness: true, force: true })
+      }
+    })
+
     document.addEventListener('visibilitychange', onReturn)
     window.addEventListener('focus', onReturn)
     void refresh({ readiness: true })
 
     return () => {
       cancelled = true
+      unsubscribeOnboarding()
       unsubscribeSetupReady()
       document.removeEventListener('visibilitychange', onReturn)
       window.removeEventListener('focus', onReturn)

@@ -332,8 +332,7 @@ def request_elicitation_consent(message: str, description: str, *,
 
     # Nobody can answer a -q, cron or unattended-platform worker. A `hermes chat -q` turn still has the CLI's
     # panel callback registered, which would wait the full approval timeout before failing closed.
-    if (_ctx._is_single_query_approval_context() or _ctx._is_cron_approval_context()
-            or _ctx._is_unattended_platform_approval_context()):
+    if _ctx._no_user_can_answer():
         logger.info("Elicitation consent (%s) declined: no user can answer in this session", surface)
         return "decline"
 

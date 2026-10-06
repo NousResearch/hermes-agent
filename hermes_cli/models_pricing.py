@@ -224,7 +224,8 @@ def fetch_models_with_pricing(
     ...}}``, cached per *base_url* and per credential so one caller's catalog never answers
     another's read. *include_sale_original* (Nous Portal only) copies the gateway's pre-discount
     ``pricing.original`` rates through as a nested ``original`` dict for sale chrome."""
-    from hermes_cli.models import _HERMES_USER_AGENT
+    from hermes_cli.chat_catalog import catalog_item_is_generation
+    from hermes_cli.models import _HERMES_USER_AGENT, _openrouter_model_supports_tools
     url_root = (base_url or "").rstrip("/")
     cache_key = url_root + _pricing_auth_fingerprint(api_key)
     if not force_refresh:
@@ -259,6 +260,12 @@ def fetch_models_with_pricing(
             # Nous Portal-only: the gateway bills this row to a subscription the account holds, not to credits.
             if include_sale_original and item.get("billing_mode") == "subscription":
                 entry["billing_mode"] = "subscription"
+            # Nous Portal-only: on-sale rows join the picker, which must not offer a tool-less model.
+            if include_sale_original and not _openrouter_model_supports_tools(item):
+                entry["tools"] = False
+            # ...nor an image/video generation model (the chat-catalog rule, applied to the row itself).
+            if include_sale_original and catalog_item_is_generation(item):
+                entry["generation"] = True
             result[mid] = entry
 
     return _cache_catalog(cache_key, result, cache_ttl_seconds)
@@ -416,7 +423,14 @@ def _fetch_nous_pricing_for_provider(*, force_refresh: bool = False) -> dict[str
     api_key, base_url = _resolve_nous_pricing_credentials()
     if not base_url:
         return {}
-    _remember_provider_cache_key("nous", base_url.rstrip("/"))
+    # Register the SAME key fetch_models_with_pricing writes (base + credential fingerprint):
+    # _cached_only_pricing resolves cache entries through this map, and a logged-in account's
+    # catalog lands under the fingerprinted key — a bare base here meant the picker's
+    # cached_only read never saw the rows the prewarm filled (review on #132015).
+    # pricing_cache_scope's last-resort fallback reads this value too; there it serves only as
+    # an identity token for the prewarm single-flight, where including the credential is
+    # equally correct (a key rotation means a new catalog and deserves a fresh worker).
+    _remember_provider_cache_key("nous", base_url.rstrip("/") + _pricing_auth_fingerprint(api_key))
     return _fetch_nous_pricing(api_key, base_url, force_refresh=force_refresh)
 
 

@@ -20,6 +20,8 @@ branch, clone) — not mocked subprocess.run — so they exercise the actual
 ``git status`` / ``git cherry`` semantics the guard depends on.
 """
 
+import json
+import os
 import subprocess
 from types import SimpleNamespace
 
@@ -252,21 +254,37 @@ def test_treeless_cherry_failure_degrades_to_conservative_unmerged(tmp_path):
     assert reason == "unmerged:1"
 
 
-def test_parked_branch_guard_never_lazy_fetches_from_a_live_promisor(tmp_path):
+@pytest.mark.parametrize("repo_config", [
+    {},
+    # Foreground auto-GC folds each new pack away inside the same command, so the pack
+    # count alone cannot see a fetch; the Trace2 child count still does.
+    {"gc.auto": "1", "gc.autoPackLimit": "1", "gc.autoDetach": "false"},
+], ids=["plain", "foreground-gc"])
+def test_parked_branch_guard_never_lazy_fetches_from_a_live_promisor(tmp_path, monkeypatch, repo_config):
     """Clean parked branch with a local commit on a tree:0 clone whose promisor
     remote IS reachable: ``git cherry`` would lazy-fetch a tree batch per
     upstream commit, and with nothing bounding that walk one such assessment
     wrote 332 packs / 180 GiB in 7 h on Windows (#131444). The guard must not
-    add a single pack and settles for the commit-graph count."""
+    start a single fetch and settles for the commit-graph count."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     clone = _treeless_repo_pair(tmp_path, promisor_reachable=True)
+    for key, value in repo_config.items():
+        _git(clone, "config", key, value)
     (clone / "feature.txt").write_text("unmerged work\n", encoding="utf-8")
     _git(clone, "add", "feature.txt")
     _git(clone, "commit", "-qm", "feature work")
     packs_before = _pack_count(clone)
+    trace = tmp_path / "trace2.json"
+    monkeypatch.setenv("GIT_TRACE2_EVENT", str(trace))
     safe, reason = update_cmd._assess_parked_branch_switch(
         GIT, clone, "old-feature", "main"
     )
+    monkeypatch.delenv("GIT_TRACE2_EVENT")
+    events = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
+    fetches = [e["argv"] for e in events if e.get("event") == "child_start" and "fetch" in e.get("argv", [])]
     assert (safe, reason) == (True, "unmerged:1")
+    assert fetches == []
     assert _pack_count(clone) == packs_before
 
 

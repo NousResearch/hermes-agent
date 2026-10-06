@@ -6,7 +6,6 @@ test patches on ``update_cmd`` stay effective).
 """
 
 import logging
-import os
 from contextlib import suppress
 import subprocess
 import sys
@@ -14,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, windows_hide_flags
+from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env, windows_hide_flags
 
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
 
@@ -207,7 +206,7 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
     # 180 GiB over 7 h on Windows (#131444). With lazy fetch off a missing object fails the
     # command fast and the commit count below stands in.
     cherry = _git_run(git_cmd, ["cherry", f"origin/{target_branch}"], cwd,
-                      env={**os.environ, **NO_LAZY_FETCH_ENV})
+                      env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV})
     if cherry.returncode != 0:
         # Patch-equivalence only refines the count for rebase/squash-merged branches;
         # a partial clone whose lazy fetch failed must not block a clean checkout,

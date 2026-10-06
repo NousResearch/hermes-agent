@@ -49,13 +49,14 @@ def _agent(db, **overrides):
     return agent
 
 
-def _admit(agent, history=None):
+def _admit(agent, history=None, user_message=None):
     return admit_durable_turn_lease(
         agent,
         session_id="s1",
         relay_turn_id="s1:t:abcd",
         task_context={"session_id": "s1", "task_id": "t", "platform": "cli"},
         conversation_history=history,
+        user_message=user_message,
     )
 
 
@@ -131,3 +132,46 @@ def test_interrupt_turn_only_while_active():
     assert calls == ["lost"] and lease.interrupt_message == "lost"
     lease.deactivate_after_liveness_abort()
     assert lease.stop.is_set() and lease.is_turn_active() is False
+
+
+class _WaitedDb(_Db):
+    """Admission waited on another holder, so it reloads the durable transcript."""
+
+    rows = [
+        {"role": "user", "content": "earlier", "_row_id": 1},
+        {"role": "assistant", "content": "reply", "_row_id": 2},
+        {"role": "user", "content": "unanswered", "_row_id": 3},
+    ]
+
+    def acquire_session_turn_lease(self, session_id, holder, **kwargs):
+        kwargs["on_wait"](0.0)
+        return super().acquire_session_turn_lease(session_id, holder)
+
+    def resolve_resume_session_id(self, session_id):
+        return session_id
+
+    def get_messages_as_conversation(self, session_id, **kwargs):
+        return [dict(row) for row in self.rows]
+
+
+def _reloaded_row_ids(staged, user_message, monkeypatch):
+    monkeypatch.setattr(
+        "agent.turn_liveness.resolve_turn_liveness_settings", lambda cfg: (None, 1.0)
+    )
+    admission = _admit(_agent(_WaitedDb(), _pending_cli_user_message=staged), [], user_message)
+    try:
+        return [m["_row_id"] for m in admission.conversation_history]
+    finally:
+        admission.lease.release()
+
+
+def test_post_wait_reload_keeps_this_turns_staged_submit_row_out_of_history(monkeypatch):
+    """The submit-time user row is staged as the turn's own user dict; a reload must not repeat it."""
+    staged = {"role": "user", "content": "unanswered", "_row_id": 3, "_db_persisted": True}
+    assert _reloaded_row_ids(staged, "unanswered", monkeypatch) == [1, 2]
+
+
+def test_post_wait_reload_keeps_a_stale_staged_rows_durable_user_turn(monkeypatch):
+    """A staged dict this turn will not adopt names a real unanswered row, which stays in history."""
+    staged = {"role": "user", "content": "unanswered", "_row_id": 3, "_db_persisted": True}
+    assert _reloaded_row_ids(staged, "a different message", monkeypatch) == [1, 2, 3]

@@ -869,6 +869,26 @@ def _resume_guard(ctx: _Resume) -> dict | None:
     return None
 
 
+def _prepare_handoff_reattach(rid, session: dict, state: str) -> dict | None:
+    """Preserve the runtime; an idle handback reloads at the next durable turn admission.
+
+    Only a session that requested a handoff here consults the durable outcome, and the request
+    mark is retired once that outcome is consumed, so a later reattach stays cache-stable."""
+    if not session.get("handoff_requested"):
+        return None
+    with session["history_lock"]:
+        if not state:
+            # No handoff row was ever written for this request: the live cache is authoritative.
+            session.pop("handoff_requested", None)
+        elif not session.get("running"):
+            if state not in {"completed", "failed"}:
+                return _err(rid, 4009, "session handoff still settling; retry resume when it finishes")
+            # The destination can append even between reattachment and the prompt.
+            session["handoff_history_refresh"] = True
+            session.pop("handoff_requested", None)
+    return None
+
+
 def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
     """Reattach an already-live session under the resume lock (held across the client-gone check,
     transport attach and reap cancel so grace expiry is atomic). _live_session_payload ATTACHES this
@@ -881,6 +901,8 @@ def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
     """Reuse with _session_resume_lock already held (including the eager double-check)."""
     if (refusal := _reattach_refusal(ctx.rid, sid, session)) is not None:
         return refusal
+    if (err := _prepare_handoff_reattach(ctx.rid, session, (ctx.found or {}).get("handoff_state"))) is not None:
+        return err
     _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
     payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
                                     transport=current_transport() or _stdio_transport,
@@ -1160,6 +1182,15 @@ def _(rid, params: dict) -> dict:
 @_session_method("session.activate")
 def _(rid, params: dict, session: dict) -> dict:
     """Attach the frontend to a live TUI session without closing the previously focused one."""
+    if session.get("handoff_requested"):
+        with _session_db(session) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5007)
+            row = db.get_session(session["session_key"])
+            if row is None:
+                return _err(rid, 4007, "session not found")
+            if (err := _prepare_handoff_reattach(rid, session, row.get("handoff_state"))) is not None:
+                return err
     sid = str(params.get("session_id") or "")
     # Only the rebind is atomic with grace expiry; the payload (a DB history read unless
     # ``omit_messages``) must not hold the process-wide resume lock.
@@ -1408,6 +1439,11 @@ def _(rid, params: dict, session: dict) -> dict:
         try:
             if not db.get_session(key):
                 db.set_session_title(key, f"handoff-{key[:8]}")
+            # Remember even an uncertain write acknowledgement; picker reattachment
+            # must consult the durable outcome rather than trust the old live cache.
+            # A 4027 keeps the mark too: some handoff of this row is in flight, so a later
+            # reattach must still consult its outcome.
+            session["handoff_requested"] = True
             if not db.request_handoff(key, platform_name):
                 return _err(rid, 4027, "session is already in flight for handoff — wait for it to settle, then retry")
         except Exception as e:
@@ -1442,6 +1478,10 @@ def _(rid, params: dict) -> dict:
             if failed := ((db.get_handoff_state(key) or {}).get("state") or "") == "pending":
                 db.fail_handoff(key, reason)
         state = "failed" if failed else (db.get_handoff_state(key) or {}).get("state") or ""
+    if failed:
+        # The CAS proves the gateway never claimed the row: nothing was delivered, so the live
+        # cache stays authoritative and a later reattach needs no durable refresh.
+        session.pop("handoff_requested", None)
     return _ok(rid, {"failed": bool(failed), "state": state})
 
 

@@ -502,6 +502,7 @@ class _TurnRun:
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+    handoff_refresh_armed: bool = False
 
 
 def _adopt_out_of_band_turns(session: dict) -> None:
@@ -693,6 +694,10 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     with session["history_lock"]:
         st.history = list(session["history"])
         st.history_version = int(session.get("history_version", 0))
+        # Hand the one-shot handback refresh to the agent, but keep the session's intent until
+        # the agent reports it adopted the reload: a failed admission or a replaced agent retries.
+        if session.get("handoff_history_refresh"):
+            agent._reload_history_after_handoff = st.handoff_refresh_armed = True
     # Install-first-message onboarding (#82750): gateway parity for the TUI/Desktop
     # surface — no-op unless this is the install's very first message ever.
     _stage_first_contact_onboarding_note(session, agent, not st.history)
@@ -1198,6 +1203,8 @@ def _run_prompt_submit(
                 with session["history_lock"]:
                     session["running"] = False
                     session["last_active"] = time.time()
+                    if st.handoff_refresh_armed and not getattr(st.agent, "_reload_history_after_handoff", False):
+                        session.pop("handoff_history_refresh", None)
                     if not st.error_retained:
                         _clear_inflight_turn(session)
                     _release_hosted_room_turn_slot(session)

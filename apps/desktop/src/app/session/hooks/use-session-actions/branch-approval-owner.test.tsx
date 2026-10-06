@@ -8,11 +8,11 @@ import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { type SessionInfo } from '@/hermes'
-import { createClientSessionState } from '@/lib/chat-runtime'
 import { $approvalModes, approvalModeForProfile, reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestGatewayForAgent } from '@/store/gateway'
-import { $activeGatewayProfile, ensureGatewayAgent, ensureGatewayProfile } from '@/store/profile'
-import { $sessionTiles, setMessages, setSessions, setSelectedStoredSessionId } from '@/store/session'
+import { $activeGatewayProfile } from '@/store/profile'
+import { setMessages, setSelectedStoredSessionId, setSessions } from '@/store/session'
+import { $sessionTiles } from '@/store/session-states'
 
 import type { ClientSessionState } from '../../../types'
 

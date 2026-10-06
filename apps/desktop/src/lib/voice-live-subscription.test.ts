@@ -4,7 +4,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { hermesApi } from '@/hermes'
 import { fetchVoiceLiveStatus, resolveVoiceConversationStart, VoiceLiveSession } from '@/lib/voice-live'
 
-vi.mock('@/api/client', () => ({ profileScoped: () => ({ profile: 'test' }) }))
+const { ownerScoped } = vi.hoisted(() => ({
+  ownerScoped: vi.fn((owner?: unknown) => ({ owner }))
+}))
+
+vi.mock('@/api/client', () => ({
+  ownerScoped,
+  profileScoped: () => ({ profile: 'test' })
+}))
 vi.mock('@/hermes', () => ({ hermesApi: vi.fn() }))
 
 afterEach(() => {
@@ -15,11 +22,13 @@ afterEach(() => {
 
 function media() {
   const sent: Array<Record<string, unknown>> = []
+
   const events = Object.assign(new EventTarget(), {
     readyState: 'open',
     close: vi.fn(),
     send: (raw: string) => sent.push(JSON.parse(raw))
   })
+
   const track = { enabled: true, stop: vi.fn() }
   vi.stubGlobal('navigator', {
     mediaDevices: {
@@ -51,6 +60,7 @@ function media() {
       async setRemoteDescription() {}
     }
   )
+
   return {
     events,
     sent,
@@ -73,10 +83,18 @@ describe('native Live explicit billing', () => {
         session: { id: 'rtc_fixture' },
         transport: { type: 'webrtc', sdp: 'v=0 answer' }
       })
-      const session = new VoiceLiveSession({ onDelegation, onTranscript, onClosed, onError: vi.fn() })
+
+      const session = new VoiceLiveSession(
+        { onDelegation, onTranscript, onClosed, onError: vi.fn() },
+        null,
+        auth
+      )
+
       await session.start([])
+      expect(vi.mocked(hermesApi).mock.calls[0][0].body).toMatchObject({ expected_auth: auth })
       wire.receive({ type: 'session.started', session: { id: 'rtc_fixture' } })
       expect(session.connected).toBe(true)
+
       const delegation =
         auth === 'subscription'
           ? {
@@ -85,13 +103,14 @@ describe('native Live explicit billing', () => {
                 id: 'provider-delegation',
                 type: 'delegation',
                 target: 'client',
-                content: [{ type: 'input_text', text: 'provider paraphrase is not the user transcript' }]
+                content: [{ type: 'input_text', text: 'Read the project status.' }]
               }
             }
           : {
               type: 'session.delegation.created',
               delegation: { id: 'provider-delegation', type: 'delegation', target: 'client' }
             }
+
       wire.receive(
         auth === 'subscription'
           ? { type: 'input_transcript.added', item: { text: 'Read the project status.' } }
@@ -105,7 +124,12 @@ describe('native Live explicit billing', () => {
         'Read the project status.'
       ])
       expect(onTranscript).toHaveBeenCalledTimes(1)
+
       if (auth === 'subscription') {
+        wire.receive({ type: 'output_transcript.added', item: { text: 'I will check.' } })
+        expect(onTranscript).toHaveBeenLastCalledWith(
+          expect.objectContaining({ speaker: 'assistant', text: 'I will check.' })
+        )
         vi.spyOn(performance, 'now').mockReturnValue(performance.now() + 6 * 60_000)
         wire.receive({ type: 'input_transcript.added', item: { text: 'Use only this fresh request.' } })
         expect(session.contextWindow().map(part => part.text)).toEqual(['Use only this fresh request.'])
@@ -119,6 +143,7 @@ describe('native Live explicit billing', () => {
       const commandCount = wire.sent.length
       session.setMuted(true)
       expect(wire.track.enabled).toBe(false)
+
       if (auth === 'subscription') {
         const spoken = wire.sent.filter(event => event.channel === 'speakable')
         const contents = spoken.map(event => (event.content as Array<{ text: string }>)[0].text)
@@ -135,6 +160,7 @@ describe('native Live explicit billing', () => {
         expect(wire.sent[0]).toMatchObject({ type: 'session.commentary.append', delegation_id: 'provider-delegation' })
         expect(wire.sent.at(-1)?.type).toBe('session.input_audio.mute')
       }
+
       wire.receive({ type: 'session.closed', reason: 'closed' })
       expect(onClosed).toHaveBeenCalledOnce()
       expect(wire.track.stop).toHaveBeenCalledOnce()
@@ -167,6 +193,39 @@ describe('native Live explicit billing', () => {
     wire.receive({ type: 'session.closed', reason: 'closed' })
   })
 
+  it('uses delegation content when transcript events are absent', async () => {
+    const wire = media()
+    const onDelegation = vi.fn()
+    vi.mocked(hermesApi).mockResolvedValueOnce({
+      ok: true,
+      auth: 'subscription',
+      session: { id: 'rtc_fixture' },
+      transport: { type: 'webrtc', sdp: 'v=0 answer' }
+    })
+
+    const session = new VoiceLiveSession(
+      { onDelegation, onClosed: vi.fn(), onError: vi.fn() },
+      null,
+      'subscription'
+    )
+
+    await session.start([])
+    wire.receive({
+      type: 'delegation.created',
+      item: {
+        id: 'content-delegation',
+        type: 'delegation',
+        target: 'client',
+        content: [{ type: 'input_text', text: 'Use the provider request.' }]
+      }
+    })
+
+    expect(onDelegation).toHaveBeenCalledWith(
+      'content-delegation',
+      expect.arrayContaining([expect.objectContaining({ speaker: 'user', text: 'Use the provider request.' })])
+    )
+  })
+
   it('waits for authoritative billing and never selects a fallback for subscription, invalid or unknown status', async () => {
     let resolveStatus!: (value: unknown) => void
     vi.mocked(hermesApi).mockImplementationOnce(
@@ -175,7 +234,8 @@ describe('native Live explicit billing', () => {
           resolveStatus = resolve
         })
     )
-    const pending = resolveVoiceConversationStart()
+    const owner = { connectionId: 'remote', profile: 'bot' }
+    const pending = resolveVoiceConversationStart(owner)
     let settled = false
     void pending.then(
       () => {
@@ -188,7 +248,8 @@ describe('native Live explicit billing', () => {
     await Promise.resolve()
     expect(settled).toBe(false)
     resolveStatus({ ok: true, mode: 'gpt-live', auth: 'subscription', available: true })
-    await expect(pending).resolves.toEqual({ mode: 'gpt-live', fallbackReason: null })
+    await expect(pending).resolves.toEqual({ mode: 'gpt-live', auth: 'subscription', fallbackReason: null })
+    expect(ownerScoped).toHaveBeenCalledWith(owner)
 
     const unavailable = {
       ok: true,
@@ -199,18 +260,104 @@ describe('native Live explicit billing', () => {
       model: 'gpt-live-1-codex',
       voice: 'cove'
     }
+
     vi.mocked(hermesApi).mockResolvedValueOnce(unavailable)
     expect((await fetchVoiceLiveStatus())?.auth).toBe('subscription')
-    for (const result of [unavailable, { ...unavailable, auth: 'invalid' }, null]) {
+
+    for (const result of [unavailable, { ...unavailable, auth: 'invalid' }]) {
       vi.mocked(hermesApi).mockResolvedValueOnce(result)
-      await expect(resolveVoiceConversationStart()).rejects.toThrow()
+      await expect(resolveVoiceConversationStart(owner)).rejects.toThrow()
     }
-    vi.mocked(hermesApi).mockResolvedValueOnce({ ...unavailable, auth: 'api' })
-    await expect(resolveVoiceConversationStart()).resolves.toEqual({
+
+    vi.mocked(hermesApi).mockRejectedValueOnce(new Error('404: {"detail":"Not Found"}'))
+    await expect(resolveVoiceConversationStart(owner)).resolves.toEqual({
       mode: 'chained',
+      auth: null,
+      fallbackReason: null
+    })
+    vi.mocked(hermesApi).mockResolvedValueOnce({ ...unavailable, auth: 'api' })
+    await expect(resolveVoiceConversationStart(owner)).resolves.toEqual({
+      mode: 'chained',
+      auth: 'api',
       fallbackReason: unavailable.reason
     })
     vi.mocked(hermesApi).mockResolvedValueOnce({ ...unavailable, mode: 'chained' })
-    await expect(resolveVoiceConversationStart()).resolves.toEqual({ mode: 'chained', fallbackReason: null })
+    await expect(resolveVoiceConversationStart(owner)).resolves.toEqual({
+      mode: 'chained',
+      auth: 'subscription',
+      fallbackReason: null
+    })
+  })
+
+  it('falls back only for a legacy missing endpoint and fails closed for status errors', async () => {
+    const owner = { connectionId: 'remote', profile: 'bot' }
+
+    vi.mocked(hermesApi).mockRejectedValueOnce(new Error('404: {"detail":"Not Found"}'))
+    await expect(resolveVoiceConversationStart(owner)).resolves.toEqual({
+      mode: 'chained',
+      auth: null,
+      fallbackReason: null
+    })
+
+    vi.mocked(hermesApi).mockRejectedValueOnce(new Error(`404: {"detail":"Profile 'bot' does not exist"}`))
+    await expect(resolveVoiceConversationStart(owner)).rejects.toThrow("Profile 'bot' does not exist")
+
+    vi.mocked(hermesApi).mockRejectedValueOnce(Object.assign(new Error('unavailable'), { statusCode: 503 }))
+    await expect(resolveVoiceConversationStart(owner)).rejects.toThrow('unavailable')
+
+    vi.mocked(hermesApi).mockResolvedValueOnce({ ok: false })
+    await expect(resolveVoiceConversationStart(owner)).rejects.toThrow(/status/i)
+  })
+
+  it('accepts an auth-less session response only for legacy API mode', async () => {
+    media()
+    vi.mocked(hermesApi).mockResolvedValueOnce({
+      ok: true,
+      session: { id: 'rtc_fixture' },
+      transport: { type: 'webrtc', sdp: 'v=0 answer' }
+    })
+
+    const apiSession = new VoiceLiveSession(
+      { onDelegation: vi.fn(), onClosed: vi.fn(), onError: vi.fn() },
+      null,
+      'api'
+    )
+
+    await expect(apiSession.start([])).resolves.toBeUndefined()
+
+    media()
+    vi.mocked(hermesApi).mockResolvedValueOnce({
+      ok: true,
+      session: { id: 'rtc_fixture' },
+      transport: { type: 'webrtc', sdp: 'v=0 answer' }
+    })
+
+    const subscriptionSession = new VoiceLiveSession(
+      { onDelegation: vi.fn(), onClosed: vi.fn(), onError: vi.fn() },
+      null,
+      'subscription'
+    )
+
+    await expect(subscriptionSession.start([])).rejects.toThrow(/auth.*changed/i)
+  })
+
+  it('rejects when the session auth differs from the preflight auth', async () => {
+    const wire = media()
+    vi.mocked(hermesApi).mockResolvedValueOnce({
+      ok: true,
+      auth: 'api',
+      session: { id: 'rtc_fixture' },
+      transport: { type: 'webrtc', sdp: 'v=0 answer' }
+    })
+
+    const session = new VoiceLiveSession(
+      { onDelegation: vi.fn(), onClosed: vi.fn(), onError: vi.fn() },
+      null,
+      'subscription'
+    )
+
+    await expect(session.start([])).rejects.toThrow(/auth.*changed/i)
+    wire.receive({ type: 'session.closed', reason: 'closed' })
+    expect(wire.track.stop).toHaveBeenCalledOnce()
   })
 })

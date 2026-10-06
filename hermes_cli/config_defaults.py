@@ -1213,14 +1213,11 @@ DEFAULT_CONFIG = {
     },
 
     "voice": {
-        # How the Desktop voice conversation is wired:
-        #   chained  — STT → Hermes turn → TTS (the stt.* / tts.* providers below)
-        #   gpt-live — one full-duplex voice model (OpenAI GPT-Live) owns the mic and speaker and
-        #              DELEGATES every real request to Hermes (any model / provider you have
-        #              selected); API billing by default, or explicitly use a Codex subscription.
+        # Desktop voice: chained uses STT → Hermes → TTS; gpt-live is full-duplex and delegates to Hermes.
+        # GPT-Live defaults to API billing; Codex subscription billing must be selected explicitly.
         "voice_chat_mode": "chained",
         "gpt_live": {
-            "auth": "api",  # api | subscription; never automatically switches billing
+            "auth": "api",
             "subscription_model": "gpt-live-1-codex",
             "subscription_voice": "cove",
             "model": "gpt-live-1",

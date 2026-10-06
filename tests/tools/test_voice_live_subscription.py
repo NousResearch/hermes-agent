@@ -5,7 +5,6 @@ import json
 
 import httpx
 import pytest
-import yaml
 
 from hermes_cli import auth_codex
 from hermes_cli.auth_constants import AuthError
@@ -20,7 +19,7 @@ def _token(account="account-fixture"):
 
 def _configure(monkeypatch, tmp_path, **live):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+    (tmp_path / "config.yaml").write_text(json.dumps({
         "voice": {"voice_chat_mode": "gpt-live", "gpt_live": live},
     }), encoding="utf-8")
 
@@ -71,7 +70,7 @@ def test_subscription_request_uses_hermes_oauth_and_its_own_wire(monkeypatch, tm
     assert "account-fixture" not in json.dumps([status, result])
 
 
-@pytest.mark.parametrize("failure", ["missing", "account", "invalid-auth", "redirect", "rejected", "sdp"])
+@pytest.mark.parametrize("failure", ["missing", "account", "invalid-auth", "redirect", "rejected", "sdp", "timeout"])
 def test_subscription_failure_cannot_select_paid_api(monkeypatch, tmp_path, failure):
     _configure(monkeypatch, tmp_path, auth="automatic" if failure == "invalid-auth" else "subscription")
     attempted = []
@@ -84,6 +83,8 @@ def test_subscription_failure_cannot_select_paid_api(monkeypatch, tmp_path, fail
 
     def transport(request):
         attempted.append(request)
+        if failure == "timeout":
+            raise httpx.TimeoutException("private timeout detail", request=request)
         if failure == "redirect":
             return httpx.Response(307, headers={"Location": "https://other.example/collect"})
         return httpx.Response(403 if failure == "rejected" else 200, text=private)
@@ -102,3 +103,24 @@ def test_subscription_failure_cannot_select_paid_api(monkeypatch, tmp_path, fail
         status = voice_live.resolve_gpt_live_status()
         assert status["available"] is False
         assert private not in json.dumps(status)
+
+
+def test_status_is_read_only_and_session_auth_is_pinned(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path, auth="subscription")
+    calls = []
+
+    def credentials(**kwargs):
+        calls.append(kwargs)
+        return {"api_key": _token(), "auth_mode": "chatgpt"}
+
+    monkeypatch.setattr(auth_codex, "resolve_codex_runtime_credentials", credentials)
+    status = voice_live.resolve_gpt_live_status()
+
+    assert status["available"] is True
+    assert calls == [{"refresh_if_expiring": False, "read_only": True}]
+
+    with pytest.raises(RuntimeError, match="changed"):
+        voice_live.create_webrtc_session("v=0 offer", expected_auth="api")
+
+    monkeypatch.setattr(voice_live, "_resolve_credentials", lambda *_: pytest.fail("paid API resolver"))
+    assert len(calls) == 1

@@ -148,12 +148,15 @@ def _live_model_voice(live: Dict[str, Any], auth: str) -> tuple[str, str]:
     return str(live.get("model") or DEFAULT_LIVE_MODEL), str(live.get("voice") or DEFAULT_LIVE_VOICE)
 
 
-def _subscription_credentials(*, refresh_if_expiring: bool = True) -> tuple[str, str]:
+def _subscription_credentials(*, refresh_if_expiring: bool = True, read_only: bool = False) -> tuple[str, str]:
     from hermes_cli.auth_codex import resolve_codex_runtime_credentials
     from hermes_cli.auth_constants import AuthError, _decode_jwt_claims
 
     try:
-        credentials = resolve_codex_runtime_credentials(refresh_if_expiring=refresh_if_expiring)
+        credentials = resolve_codex_runtime_credentials(
+            refresh_if_expiring=refresh_if_expiring,
+            read_only=read_only,
+        )
     except AuthError:
         raise ValueError(
             "GPT-Live subscription needs a working Codex sign-in on the Hermes host. "
@@ -182,7 +185,7 @@ def resolve_gpt_live_status() -> Dict[str, Any]:
     try:
         auth = _live_auth(live)
         if auth == "subscription":
-            _subscription_credentials(refresh_if_expiring=False)
+            _subscription_credentials(refresh_if_expiring=False, read_only=True)
         elif not _resolve_credentials(live)[0]:
             reason = "no OpenAI API key (set OPENAI_API_KEY or voice.gpt_live.api_key)"
     except ValueError as exc:
@@ -230,13 +233,22 @@ def _create_subscription_session(sdp_offer: str, config: Dict[str, Any]) -> Dict
         )
     sdp = response.text
     call_id = urlparse(response.headers.get("Location", "")).path.rstrip("/").rsplit("/", 1)[-1]
-    if not sdp.startswith("v=0") or not re.fullmatch(r"rtc_[A-Za-z0-9_-]+|[0-9a-fA-F-]{36}", call_id):
+    call_id_pattern = (
+        r"rtc_[A-Za-z0-9_-]+|"
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    )
+    if not sdp.startswith("v=0") or not re.fullmatch(call_id_pattern, call_id):
         raise RuntimeError("GPT-Live subscription returned an invalid WebRTC answer; no API fallback was used")
     return {"auth": "subscription", "session": {"id": call_id},
             "transport": {"type": "webrtc", "sdp": sdp}}
 
 
-def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> Dict[str, Any]:
+def create_webrtc_session(
+    sdp_offer: str,
+    history: Optional[list] = None,
+    *,
+    expected_auth: Optional[str] = None,
+) -> Dict[str, Any]:
     """Exchange the renderer's SDP offer for the Live session answer.
 
     Returns the vendor response ``{"session": {"id": ...}, "transport": {"type": "webrtc",
@@ -245,6 +257,11 @@ def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> Dic
     """
     live = _live_section()
     auth = _live_auth(live)
+    if expected_auth is not None:
+        if expected_auth not in {"api", "subscription"}:
+            raise ValueError("Invalid expected GPT-Live auth mode")
+        if auth != expected_auth:
+            raise RuntimeError("GPT-Live auth mode changed after preflight; no session was started")
     config = build_session_config(history, live=live)
     if auth == "subscription":
         return _create_subscription_session(sdp_offer, config)

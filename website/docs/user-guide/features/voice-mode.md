@@ -206,6 +206,10 @@ Client-direct wire support: OpenAI (incl. Nous-managed audio), Groq, Mistral, an
 
 The chained loop above is one of two voice chat modes in the desktop app. The other replaces the whole STT → turn → TTS chain with **one full-duplex voice model**, OpenAI's `gpt-live-1`: it listens while it speaks, handles interruptions, backchannels and background noise itself, and has **no tools of its own**. Whenever you ask for real work it *delegates* to Hermes, which answers as usual — with whatever model and provider the session has selected, the full toolset, memory and approvals — and the voice paraphrases the answer aloud.
 
+:::tip Already have a ChatGPT subscription?
+If your signed-in ChatGPT/Codex account includes voice access, Hermes can use that existing subscription for natural, full-duplex desktop voice — **no separate OpenAI API key or metered GPT-Live setup required**. Sign in once with `hermes auth`, then choose the explicit `subscription` configuration below. Your normal Hermes model, tools, memory, and approvals still power the delegated work.
+:::
+
 ```yaml
 voice:
   voice_chat_mode: gpt-live     # chained (default) | gpt-live
@@ -217,7 +221,7 @@ voice:
 
 Requirements: an OpenAI API key (`OPENAI_API_KEY`, `VOICE_TOOLS_OPENAI_KEY`, or `voice.gpt_live.api_key`). The voice layer is billed by OpenAI at **$0.05 per minute of session time** (idle time counts); the Hermes turn is billed on its own provider as always. The mode is also in Settings → Voice → *Voice Chat Mode*.
 
-To use an existing **ChatGPT/Codex subscription**, first sign in to OpenAI Codex with `hermes auth` on the Hermes host. Then explicitly select subscription billing in that profile's `config.yaml`:
+To use an existing **ChatGPT/Codex subscription**, first sign in to OpenAI Codex with `hermes auth` on the Hermes host. Then explicitly select subscription mode in that profile's `config.yaml`:
 
 ```yaml
 voice:

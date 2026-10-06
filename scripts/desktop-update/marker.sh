@@ -72,7 +72,11 @@ proc_ct() { # pid -> creation time (unix seconds, 3 decimals), or nothing
         my $pid = shift; my $want = shift;
         my @mib = (1, 14, 1, $pid);        # CTL_KERN, KERN_PROC, KERN_PROC_PID, pid
         my $buf = "\0" x 1024;
-        my $len = pack("L", 1024);
+        # oldlenp is size_t* (8 bytes on arm64 and x86_64 macOS). The Perl L template is 4
+        # bytes wide, so packing the length with it hands the kernel a 4-byte buffer to write
+        # 8 bytes back into -- an overrun of the scalar, and a garbled length on read-back.
+        # Q is the ABI width. The mib above stays L*: those are ints.
+        my $len = pack("Q", 1024);
         exit 1 unless syscall(202, pack("L*", @mib), 4, $buf, $len, 0, 0) == 0;
         my $s = unpack("q<", substr($buf, 0, 8));
         my $u = unpack("L<", substr($buf, 8, 4));

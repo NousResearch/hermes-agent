@@ -10,6 +10,7 @@ import { MAIN_COMPOSER_SCOPE } from './composer/scope'
 const requestGatewayMock = vi.hoisted(() => vi.fn())
 
 const { $activeSessionId, $sessions, setSessions } = await import('@/store/session')
+const { $confirmRequest, settleConfirm } = await import('@/store/confirm')
 
 const { $sessionStates, $sessionTiles, clearAllSessionStates, publishSessionState, setSessionTileDelegate } =
   await import('@/store/session-states')
@@ -366,10 +367,13 @@ describe('useSessionTileActions reloadFromMessage failed-submit rollback (#95745
     })
 
     const { result } = renderTileActions()
+    // Regenerating u1 archives the later u2 turn: accept the deep-cut confirm (#133716).
+    const stopConfirming = $confirmRequest.listen(request => request && settleConfirm(true))
 
     await act(async () => {
       await result.current.reloadFromMessage('u1')
     })
+    stopConfirming()
 
     const rolledBack = $sessionStates.get()[RUNTIME_SESSION_ID]?.messages
 

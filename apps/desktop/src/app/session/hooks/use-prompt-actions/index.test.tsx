@@ -11,6 +11,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
+import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $goalsBySession, setSessionGoal } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
@@ -6199,7 +6200,10 @@ describe('usePromptActions reloadFromMessage failed-submit rollback (#95745)', (
       />
     )
 
+    // Regenerating u1 archives the later u2 turn: accept the deep-cut confirm (#133716).
+    const stopConfirming = $confirmRequest.listen(request => request && settleConfirm(true))
     await handle!.reloadFromMessage('u1')
+    stopConfirming()
 
     const rolledBack = latest?.messages as Array<{ hidden?: boolean; id: string }> | undefined
 

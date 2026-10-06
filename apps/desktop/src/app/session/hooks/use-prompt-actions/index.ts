@@ -24,6 +24,7 @@ import {
   updateComposerAttachment
 } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
+import { confirm } from '@/store/confirm'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
@@ -60,10 +61,11 @@ import {
   applyBranchVisibility,
   applyReloadOptimistic,
   applyRewindOptimistic,
+  deepReloadConfirmRequest,
   durableRowIdsForRebind,
   finalizeStoppedMessages,
+  planConfirmedReload,
   planEdit,
-  planReload,
   planRestore,
   rebindSurvivorRowIds,
   runRewindSubmit,
@@ -1004,7 +1006,9 @@ export function usePromptActions({
       // the global $messages mirror is empty/divergent for them (#68734).
       const messages = (sessionId ? $sessionStates.get()[sessionId]?.messages : null) ?? $messages.get()
 
-      const plan = planReload(messages, parentId)
+      const plan = await planConfirmedReload(messages, parentId, () =>
+        confirm(deepReloadConfirmRequest(t.assistant.thread))
+      )
 
       if (!plan) {
         return
@@ -1041,7 +1045,7 @@ export function usePromptActions({
         notifyError(err, copy.regenerateFailed)
       }
     },
-    [activeSessionIdRef, applySurvivorRowIds, copy.regenerateFailed, submitRewindPrompt, updateSessionState]
+    [activeSessionIdRef, applySurvivorRowIds, copy.regenerateFailed, submitRewindPrompt, t, updateSessionState]
   )
 
   // Cursor-style "restore checkpoint": rewind the conversation to a past user

@@ -2570,11 +2570,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
 
     def _prune_if_needed(self):
         """Drop expired finished sessions, then the oldest survivor while over
-        MAX_PROCESSES. Must hold _lock."""
+        MAX_PROCESSES. Must hold _lock. A session whose scope stop is still pending is kept
+        either way: it is kill_all's only handle on a scope that may hold live descendants."""
         now = time.time()
-        expired = [sid for sid, s in self._finished.items() if (now - s.started_at) > FINISHED_TTL_SECONDS]
+        prunable = {sid: s for sid, s in self._finished.items() if not getattr(s, "_scope_stop_pending", False)}
+        expired = [sid for sid, s in prunable.items() if (now - s.started_at) > FINISHED_TTL_SECONDS]
         over_cap = len(self._running) + len(self._finished) - len(expired) >= MAX_PROCESSES
-        if over_cap and (survivors := [sid for sid in self._finished if sid not in expired]):
+        if over_cap and (survivors := [sid for sid in prunable if sid not in expired]):
             expired.append(min(survivors, key=lambda sid: self._finished[sid].started_at))
         for sid in expired:
             # Belt-and-suspenders handle release: sessions normally arrive in

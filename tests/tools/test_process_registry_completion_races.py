@@ -403,3 +403,40 @@ def test_bulk_cleanup_does_not_count_a_failed_scope_stop_and_retries_it(monkeypa
     assert registry.kill_all() == 1
     assert registry.kill_all() == 0
     assert stops == [], "a stopped scope was retried"
+
+
+def _failed_scope_stop(registry, monkeypatch, stops) -> ProcessSession:
+    """A long-running session whose root just exited and whose scope stop then failed."""
+    session = _scoped_session(registry, monkeypatch, "proc_pending_scope", stops)
+    session.started_at -= module.FINISHED_TTL_SECONDS + 1
+    registry._finish_exited(session, 0)
+    assert "scope_stop_failed" in registry.kill_process(session.id)
+    return session
+
+
+def test_ttl_pruning_keeps_a_session_whose_scope_stop_is_pending(monkeypatch):
+    registry = ProcessRegistry()
+    stops = [False, True]
+    session = _failed_scope_stop(registry, monkeypatch, stops)
+
+    with registry._lock:
+        registry._prune_if_needed()
+
+    assert session.id in registry._finished
+    assert registry.kill_all() == 1 and stops == []
+    with registry._lock:
+        registry._prune_if_needed()
+    assert session.id not in registry._finished, "a stopped scope is pruned as usual"
+
+
+def test_capacity_pruning_keeps_a_session_whose_scope_stop_is_pending(monkeypatch):
+    registry = ProcessRegistry()
+    session = _failed_scope_stop(registry, monkeypatch, [False])
+    for i in range(module.MAX_PROCESSES):
+        registry._finished[f"proc_newer_{i}"] = _session(f"proc_newer_{i}", exited=True)
+
+    with registry._lock:
+        registry._prune_if_needed()
+
+    assert session.id in registry._finished
+    assert "proc_newer_0" not in registry._finished  # the oldest prunable one goes instead

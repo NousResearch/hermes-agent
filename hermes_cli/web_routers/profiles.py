@@ -475,11 +475,13 @@ def get_profiles_sessions(
         source=source or None, sources=_csv_list(sources) or None,
         exclude_sources=_csv_list(exclude_sources) or None, min_message_count=max(0, min_messages),
         include_archived=archived == "include", archived_only=archived == "only")
-    # Aggregate pages over-fetch each profile to merge correctly, with a 500-row
-    # cap. A concrete profile has no merge step: page its DB directly so offset
-    # 500+ can still reach old sessions without an unbounded read.
+    # A concrete profile has no merge step: page its DB directly so offsets
+    # beyond the first 500 can still reach old sessions without an unbounded
+    # read. Aggregate requests over-fetch each profile so the merged and sorted
+    # window is correct for the requested page; the source window is not capped
+    # because aggregate callers can also page beyond 500.
     single_profile = bool(profile and profile != "all")
-    per_profile = limit if single_profile else min(limit + offset, 500)
+    per_profile = limit if single_profile else limit + offset
     query_offset = offset if single_profile else 0
 
     merged: List[Dict[str, Any]] = []
@@ -687,7 +689,11 @@ def _merge_profile_tree(
             session["profile"] = profile
             session["is_default_profile"] = profile == "default"
 
-        key = project.get("path") or project["id"]
+        # Same folder-identity notion the per-profile tree builder uses (``_path_key``):
+        # shape-derived — Windows paths case-fold on any host, separators unify, NFC —
+        # so the cross-profile merge agrees by construction with the trees it merges.
+        from tui_gateway.project_tree import _path_key
+        key = _path_key(project.get("path") or project["id"])
         existing = merged.get(key)
         if existing is None:
             merged[key] = project

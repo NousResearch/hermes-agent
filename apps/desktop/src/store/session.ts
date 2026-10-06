@@ -36,6 +36,7 @@ const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
 const COMPOSER_MODEL_SOURCE_KEY = 'hermes.desktop.composer.model-source'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
+const COMPOSER_SERVICE_TIER_KEY = 'hermes.desktop.composer.service-tier'
 
 // Unlike presentation-oriented $connection, this scope is published from the
 // gateway activation coordinate before profile-change effects can reseed the
@@ -328,14 +329,19 @@ export function setRememberedRoute(path: null | string, profile: string): void {
 let configuredDefaultProjectDir = ''
 
 function workspaceCwdKey(connection: HermesConnection | null = $connection.get()): string {
+  const profile = connection?.profile?.trim() || 'default'
+
   if (connection?.mode !== 'remote') {
-    return WORKSPACE_CWD_KEY
+    // One desktop runs several local profiles, and one shared key let the last
+    // profile's project leak into every other profile's new chats (#96834).
+    // The default profile keeps the bare key — byte-identical for
+    // single-profile users, the connection-scoped.ts contract.
+    return profile === 'default' ? WORKSPACE_CWD_KEY : `${WORKSPACE_CWD_KEY}.profile.${encodeURIComponent(profile)}`
   }
 
   const base = encodeURIComponent(connection.baseUrl || 'remote')
-  const profile = encodeURIComponent(connection.profile || 'default')
 
-  return `${WORKSPACE_CWD_KEY}.remote.${base}.${profile}`
+  return `${WORKSPACE_CWD_KEY}.remote.${base}.${encodeURIComponent(profile)}`
 }
 
 export const getRememberedWorkspaceCwd = (): string => storedString(workspaceCwdKey())?.trim() || ''
@@ -412,9 +418,13 @@ export async function ensureDefaultWorkspaceCwd(shouldPublish: () => boolean = (
     return
   }
 
-  if (remembered) {
-    const { cwd } = await sanitize(remembered)
-    seedLiveCwd(cwd)
+  // An empty memory is meaningful here too: on a local profile switch the
+  // live cwd still belongs to the outgoing profile, so clear it rather than
+  // let the incoming profile's new chats start there (#96834).
+  const { cwd } = remembered ? await sanitize(remembered) : { cwd: '' }
+
+  if (shouldPublish() && !$activeSessionId.get()) {
+    setCurrentCwdTransient(cwd)
   }
 }
 
@@ -650,26 +660,28 @@ export function mergeSessionPage(
   // root so a mid-turn refresh can't drop a touchSessionActivity bump.
   const prevByLineage = new Map(previous.map(session => [lineageIdentity(session), session]))
 
-  const merged = incoming.map(session => {
-    const prev = prevById.get(identity(session)) ?? prevByLineage.get(lineageIdentity(session))
-    // User-send stamps last_active before the DB flushes the user row
-    // (last_active = MAX(messages.timestamp)). Keep the fresher of the two.
-    const last_active = Math.max(prev?.last_active ?? 0, session.last_active ?? 0)
-    const title = session.title?.trim() ? session.title : prev?.title?.trim() ? prev.title : session.title
-    // Carry the owning connection onto a row that arrives untagged. The
-    // primary aggregate serves a `local` registry source's rows as plain
-    // local rows (the unified-list splice tags only NON-local sources), so
-    // the first refresh after a routed create used to replace the optimistic
-    // row's exact owner (connection_id + profile) with a bare profile — after
-    // which only the transient owner hint knew which socket held the runtime.
-    // A refresh is new information layered over what we know, not a clobber;
-    // the tag is kept only while the row still names the same profile.
-    const connection_id = carriedConnectionId(prev, session)
+  const merged = incoming
+    .filter(session => !session.is_internal_child)
+    .map(session => {
+      const prev = prevById.get(identity(session)) ?? prevByLineage.get(lineageIdentity(session))
+      // User-send stamps last_active before the DB flushes the user row
+      // (last_active = MAX(messages.timestamp)). Keep the fresher of the two.
+      const last_active = Math.max(prev?.last_active ?? 0, session.last_active ?? 0)
+      const title = session.title?.trim() ? session.title : prev?.title?.trim() ? prev.title : session.title
+      // Carry the owning connection onto a row that arrives untagged. The
+      // primary aggregate serves a `local` registry source's rows as plain
+      // local rows (the unified-list splice tags only NON-local sources), so
+      // the first refresh after a routed create used to replace the optimistic
+      // row's exact owner (connection_id + profile) with a bare profile — after
+      // which only the transient owner hint knew which socket held the runtime.
+      // A refresh is new information layered over what we know, not a clobber;
+      // the tag is kept only while the row still names the same profile.
+      const connection_id = carriedConnectionId(prev, session)
 
-    return last_active === session.last_active && title === session.title && connection_id === session.connection_id
-      ? session
-      : { ...session, last_active, title, ...(connection_id ? { connection_id } : {}) }
-  })
+      return last_active === session.last_active && title === session.title && connection_id === session.connection_id
+        ? session
+        : { ...session, last_active, title, ...(connection_id ? { connection_id } : {}) }
+    })
 
   if (keep.size === 0) {
     return merged
@@ -723,6 +735,9 @@ export function mergeSessionPage(
 
   const survivors = previous.filter(
     session =>
+      // An internal delegate child is never listed; the authoritative page
+      // already omits it, so the keep-list must not resurrect it (#94124).
+      !session.is_internal_child &&
       // The keep-list answers "live, not listed yet" — a hidden row (canonical
       // Bot Chat, room plumbing) is LISTED-NEVER by design, so a live turn or
       // open tab must not resurrect it into the sidebar (#113273).
@@ -1370,7 +1385,7 @@ export const $resumeExhaustedSessionId = atom<string | null>(null)
 export const $currentModel = atom(storedComposerString(COMPOSER_MODEL_KEY) ?? '')
 export const $currentProvider = atom(storedComposerString(COMPOSER_PROVIDER_KEY) ?? '')
 export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
-export const $currentServiceTier = atom('')
+export const $currentServiceTier = atom(storedString(COMPOSER_SERVICE_TIER_KEY) ?? '')
 export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
 // Effective approval-bypass state mirrored from the gateway (session.info).
 // Persistence lives in the backend config (approvals.mode), so this is a plain
@@ -1624,7 +1639,17 @@ export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)
 export const setAwaitingResponse = (next: Updater<boolean>) => updateAtom($awaitingResponse, next)
 
 export const setCurrentModel = (next: Updater<string>) => {
+  const previous = $currentModel.get()
   updateAtom($currentModel, next)
+
+  if ($currentModel.get() !== previous) {
+    // The wire level belongs to one (provider, model, effort) triple, and a
+    // different model clamps a different set. Carrying the old route's stamp
+    // makes the pill present a stale escalation as a confirmed one, so drop it
+    // and let the next `session.info` re-stamp.
+    $currentReasoningEffortWire.set('')
+  }
+
   const key = composerSelectionKey(COMPOSER_MODEL_KEY)
 
   if (key !== null) {
@@ -1633,7 +1658,13 @@ export const setCurrentModel = (next: Updater<string>) => {
 }
 
 export const setCurrentProvider = (next: Updater<string>) => {
+  const previous = $currentProvider.get()
   updateAtom($currentProvider, next)
+
+  if ($currentProvider.get() !== previous) {
+    $currentReasoningEffortWire.set('')
+  }
+
   const key = composerSelectionKey(COMPOSER_PROVIDER_KEY)
 
   if (key !== null) {
@@ -1714,7 +1745,10 @@ export const $defaultReasoningEffort = atom('')
 
 export const setDefaultReasoningEffort = (next: string) => updateAtom($defaultReasoningEffort, next)
 
-export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
+export const setCurrentServiceTier = (next: Updater<string>) => {
+  updateAtom($currentServiceTier, next)
+  persistString(COMPOSER_SERVICE_TIER_KEY, $currentServiceTier.get())
+}
 
 export const setCurrentFastMode = (next: Updater<boolean>) => {
   updateAtom($currentFastMode, next)

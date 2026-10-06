@@ -358,10 +358,21 @@ def build_subprocess_env(
     bridges HERMES_HOME + HOME and ``extra`` is applied last so caller overrides win.
     ``strip_launch_profile`` drops the LAUNCH profile's ``.env`` residue from the base first
     (:func:`strip_launch_profile_env`; a no-op unless a routed home is active) so a child that
-    acts for a routed profile sees only that profile's declared names, never the launch profile's."""
+    acts for a routed profile sees only that profile's declared names, never the launch profile's.
+    Under multiplex semantics it then overlays the bound secret scope (the routed profile's own
+    ``.env`` + source values, which never enter ``os.environ``) and re-applies the managed keys,
+    all BEFORE the scrub, so those values pass the same scrub / passthrough rules as any other."""
     env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
     if strip_launch_profile:
         strip_launch_profile_env(env)
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+        if is_multiplex_active():
+            # Single-profile: the scope IS os.environ, so overlaying it would only re-sanitize
+            # values the child already inherits byte-identical.
+            env.update(current_secret_scope() or {})
+            # Administrator-managed values keep their precedence over the routed profile's own .env,
+            # exactly as they do in the launch process (``_apply_managed_env`` applies them last).
+            restore_managed_env(env)
     if scrub_secrets:
         return _sanitize_subprocess_env(env, dict(extra) if extra else None)
     if inherit_profile_home:
@@ -465,16 +476,39 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
     # stored under a variant casing is the same variable and must go too. The
     # selection folds the same way so a lowercase ``path`` in .env is still
     # recognized as a global name and left alone.
+    # Current file AND every key any dotenv load put into os.environ this process lifetime: a key
+    # removed or renamed in the launch .env after boot is still in os.environ with the old value, and
+    # a re-parse of the file alone no longer names it (#107695 review). External secret sources
+    # (vault, 1Password, ...) write their names into the same shared os.environ, and a name the
+    # LAUNCH profile's source supplied is not the target profile's to see; the caller's scope
+    # overlay puts back exactly the ones the target's own sources supply. The administrator-managed
+    # .env is NOT residue: its values are policy for every profile (``_apply_managed_env`` applies
+    # it last, with override, so it beats the user's own .env) — leave them in place.
+    from hermes_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys, source_supplied_names
+    managed_names = {key.upper() for key in managed_dotenv_keys()}
     residue_names = {
         key.upper() for key in
-        set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values())
-        if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")}
+        set(load_env_file(launch_home / ".env")) | set(launch_dotenv_keys())
+        | set(TERMINAL_CONFIG_ENV_MAP.values()) | set(source_supplied_names())
+        if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")} - managed_names
     for key in [k for k in env if k.upper() in residue_names]:
         del env[key]
     # Authorization gates are the one residue a name list cannot see: a unit-file ``Environment=``
     # or an operator export never appears in the launch ``.env``, the secret scrub ignores
     # non-credentials, and the target's own ``.env`` rarely defines the key to overwrite it (#113270).
     return strip_profile_gate_env(env)
+
+
+def restore_managed_env(env: dict) -> dict:
+    """Re-apply the administrator-managed ``.env`` values over *env* — call AFTER a routed profile's scope
+    has been overlaid. ``_apply_managed_env`` gives those keys precedence over the user's own ``.env`` in
+    the launch process; a routed child must see the same precedence, or the routed user's value for a
+    managed key (``ORG_POLICY_FLAG=user-value``) silently wins over policy."""
+    from hermes_cli.env_loader import managed_dotenv_keys
+    for key in managed_dotenv_keys():
+        if key in os.environ:
+            env[key] = os.environ[key]
+    return env
 
 
 # --- Shell discovery ---
@@ -806,16 +840,63 @@ def _sweep_escaped_descendants(descendants: list, pgid: int) -> None:
             continue
 
 
+def _leader_is_ours(pgid, expected_start) -> bool:
+    """The setsid group leader's PID == its PGID.  Confirm it is still the process we
+    spawned before signalling the whole group, so a recycled PID/PGID can never take
+    down an unrelated process group (#43044).  The baseline and the current reading
+    come from the same host at different times, so they go through the drift-tolerant
+    fingerprint comparator — same-host readings drift ~1 s on macOS (#117505), and
+    exact equality made the guard refuse to kill live, legitimately-owned groups.
+    When no baseline was captured, or the current reading is unreadable, keep the
+    legacy best-effort behaviour rather than refusing to kill: only a LIVE leader with
+    a different start time proves recycling."""
+    if pgid is None:
+        return False
+    if expected_start is None:
+        return True
+    from gateway.status import get_process_start_time, start_time_fingerprints_match
+    try:
+        current = get_process_start_time(pgid)
+    except Exception:  # noqa: BLE001 — the guard must never break signalling
+        return True
+    if current is None:
+        # Unreadable while alive: best effort. Gone: POSIX never reuses a PGID while any
+        # member of the group lives, so the group (if it still exists) is ours and its
+        # reparented grandchildren still need the signal; an empty group is just ESRCH.
+        return True
+    try:
+        return start_time_fingerprints_match(expected_start, current)
+    except (TypeError, ValueError):  # junk fingerprints: best-effort, never break signalling
+        return True
+
+
 def _kill_process_group_posix(proc) -> None:
     """TERM the group, wait, KILL, then sweep setsid escapees. Descendants are
     snapshotted BEFORE the first signal — once the wrapper dies they reparent to
     init — and we wait on the group, not the wrapper, which can exit before
-    grandchildren under load. POSIX-only (_IS_WINDOWS handled by the caller)."""
+    grandchildren under load. POSIX-only (_IS_WINDOWS handled by the caller).
+    PID-reuse guard (#43044): the group is only signalled while its leader's start
+    time still matches the spawn-time baseline — a recycled PGID is never killed."""
+    expected_start = getattr(proc, "_hermes_pgid_start", None)
     try:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
         if (pgid := getattr(proc, "_hermes_pgid", None)) is None:
             raise
+    if not _leader_is_ours(pgid, expected_start):
+        # Leader exited and its PID/PGID may have been recycled onto an unrelated
+        # process group; signalling the stale number is unsafe. Bail out — a rare
+        # orphaned grandchild may leak, which is strictly preferable to killing a
+        # stranger. Sweep the snapshotted descendants by PID (identity-checked)
+        # so we still reach escapees that are verifiably ours.
+        descendants = []
+        try:
+            import psutil
+            descendants = psutil.Process(proc.pid).children(recursive=True)
+        except Exception:
+            pass
+        _sweep_escaped_descendants(descendants, pgid)
+        return
     try:  # psutil children snapshot; empty on any failure (must never break the kill)
         import psutil
         descendants = psutil.Process(proc.pid).children(recursive=True)
@@ -829,6 +910,10 @@ def _kill_process_group_posix(proc) -> None:
         try:
             os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
             if not _wait_for_group_exit(proc, pgid, 1.0):
+                if not _leader_is_ours(pgid, expected_start):
+                    # Leader exited during the grace window; do not escalate to
+                    # SIGKILL on a possibly-recycled PGID.
+                    return
                 os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
                 _wait_for_group_exit(proc, pgid, 2.0)
                 with contextlib.suppress(subprocess.TimeoutExpired, OSError):
@@ -973,6 +1058,12 @@ class LocalEnvironment(BaseEnvironment):
         if not _IS_WINDOWS:
             with contextlib.suppress(ProcessLookupError):
                 proc._hermes_pgid = os.getpgid(proc.pid)
+                # Record the group leader's start-time fingerprint so _kill_process can
+                # detect PID/PGID recycling before signalling the group (#43044). The
+                # psutil fallback in get_process_start_time captures a baseline on every
+                # platform, macOS included.
+                from gateway.status import get_process_start_time
+                proc._hermes_pgid_start = get_process_start_time(proc.pid)
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
@@ -991,7 +1082,11 @@ class LocalEnvironment(BaseEnvironment):
             return self._kill_process(proc)
         with contextlib.suppress(OSError):
             pgid = getattr(proc, "_hermes_pgid", None) or os.getpgid(proc.pid)
-            if pgid != os.getpgrp():  # never our own group (see _kill_process_group_posix)
+            # PID-reuse guard (#43044): never SIGKILL a group whose leader's start time
+            # no longer matches the spawn-time baseline — the PGID may have been recycled
+            # onto an unrelated process group. Comparison is drift-tolerant (#117505);
+            # without a baseline keep the legacy best-effort behaviour.
+            if pgid != os.getpgrp() and _leader_is_ours(pgid, getattr(proc, "_hermes_pgid_start", None)):
                 os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (_IS_WINDOWS returned above)
         with contextlib.suppress(OSError):
             proc.kill()

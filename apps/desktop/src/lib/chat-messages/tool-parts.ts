@@ -171,10 +171,26 @@ function findToolPartIndex(
   const overlaps = (index: number) => hasToolMatchOverlap(matchValues, toolPartMatchValues(parts[index]))
 
   if (stableId) {
-    const stableIndex = parts.findIndex(part => part.type === 'tool-call' && part.toolCallId === stableId)
+    const stableIndex = parts.findIndex(
+      part => part.type === 'tool-call' && part.toolCallId === stableId && !Object.hasOwn(part, 'result')
+    )
 
     if (stableIndex >= 0) {
       return stableIndex
+    }
+
+    const repeatedIndex =
+      phase === 'complete'
+        ? parts.findLastIndex(
+            part =>
+              part.type === 'tool-call' &&
+              part.toolCallId === stableId &&
+              (payload?.result === undefined || JSON.stringify(payload.result) === JSON.stringify(part.result))
+          )
+        : -1
+
+    if (repeatedIndex >= 0) {
+      return repeatedIndex
     }
 
     // Some live streams start without an id, then complete with one. Fall

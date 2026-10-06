@@ -67,6 +67,11 @@ interface SessionInfo {
 // path, mirroring the events feed's give-up contract.
 const SIDE_CAR_MAX_RECONNECT_ATTEMPTS = 5;
 
+// A socket that opens and dies within this window is a flap, not a recovery:
+// only a connection that stays open this long refills a reconnect budget.
+// Shared by the JSON-RPC sidecar and the events feed (#129393).
+const HEALTHY_OPEN_GRACE_MS = 10_000;
+
 // Surfaced once when the redial budget is exhausted. Only this module may
 // clear it (on the next successful open), matching how the events feed
 // owns its own banner messages.
@@ -235,19 +240,49 @@ export function ChatSidebar({
     // the counter; unmount or a scope switch (version bump) cancels the
     // pending timer because this effect tears down with the old client.
     let redialTimer: ReturnType<typeof setTimeout> | null = null;
+    let healthyOpenTimer: ReturnType<typeof setTimeout> | null = null;
+    // onState replays the current state synchronously. Ignore only that
+    // subscription-time snapshot; real transitions in the same effect must
+    // still consume the retry budget.
+    let replayingInitialState = true;
+    queueMicrotask(() => {
+      replayingInitialState = false;
+    });
     const offRedial = gw.onState((s) => {
+      if (replayingInitialState) {
+        return;
+      }
       if (s === "open") {
-        sidecarRedialAttemptRef.current = 0;
-        if (sidecarGaveUpRef.current) {
-          sidecarGaveUpRef.current = false;
-          setError((current) =>
-            current === SIDE_CAR_GAVE_UP_MESSAGE ? null : current,
-          );
+        // A pending redialTimer would bump the version and tear down the
+        // connection that just opened (#129393).
+        if (redialTimer) {
+          clearTimeout(redialTimer);
+          redialTimer = null;
         }
+        if (healthyOpenTimer) {
+          clearTimeout(healthyOpenTimer);
+        }
+        // Do not reset the budget on every open: an open→immediate-close
+        // cycle would otherwise reset it forever. Reset only after a stable
+        // connection has remained open for the grace period.
+        healthyOpenTimer = setTimeout(() => {
+          healthyOpenTimer = null;
+          sidecarRedialAttemptRef.current = 0;
+          if (sidecarGaveUpRef.current) {
+            sidecarGaveUpRef.current = false;
+            setError((current: string | null) =>
+              current === SIDE_CAR_GAVE_UP_MESSAGE ? null : current,
+            );
+          }
+        }, HEALTHY_OPEN_GRACE_MS);
         return;
       }
       if (s !== "closed" && s !== "error") {
         return;
+      }
+      if (healthyOpenTimer) {
+        clearTimeout(healthyOpenTimer);
+        healthyOpenTimer = null;
       }
       if (cancelled || redialTimer) {
         return;
@@ -303,6 +338,10 @@ export function ChatSidebar({
         clearTimeout(redialTimer)
         redialTimer = null
       }
+      if (healthyOpenTimer) {
+        clearTimeout(healthyOpenTimer)
+        healthyOpenTimer = null
+      }
       offRedial()
       offState()
       offSessionInfo()
@@ -328,6 +367,7 @@ export function ChatSidebar({
     }
     let unmounting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let healthyOpenTimer: ReturnType<typeof setTimeout> | null = null
     let attempt = 0
 
     // The banner is shared with `info.credential_warning` and the JSON-RPC
@@ -345,6 +385,10 @@ export function ChatSidebar({
     const scheduleReconnect = () => {
       if (unmounting || reconnectTimer) {
         return
+      }
+      if (healthyOpenTimer) {
+        clearTimeout(healthyOpenTimer)
+        healthyOpenTimer = null
       }
       if (attempt >= EVENTS_MAX_RECONNECT_ATTEMPTS) {
         surface(eventsGaveUpMessage())
@@ -397,8 +441,16 @@ export function ChatSidebar({
 
     const offState = feed.onState(state => {
       if (state === 'open') {
-        attempt = 0
         clearEventsBanner()
+        // Same rule as the sidecar: an open that dies within the grace window
+        // is a flap, not a recovery, so it must not refill the ladder.
+        if (healthyOpenTimer) {
+          clearTimeout(healthyOpenTimer)
+        }
+        healthyOpenTimer = setTimeout(() => {
+          healthyOpenTimer = null
+          attempt = 0
+        }, HEALTHY_OPEN_GRACE_MS)
       }
     })
 
@@ -419,6 +471,10 @@ export function ChatSidebar({
       if (reconnectTimer) {
         clearTimeout(reconnectTimer)
         reconnectTimer = null
+      }
+      if (healthyOpenTimer) {
+        clearTimeout(healthyOpenTimer)
+        healthyOpenTimer = null
       }
       offClose()
       offState()

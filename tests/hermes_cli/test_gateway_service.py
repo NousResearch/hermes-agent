@@ -394,6 +394,76 @@ class TestGeneratedSystemdUnits:
         assert "SoftResourceLimits" not in plist
 
 
+class TestWslInteropPaths:
+    """_build_wsl_interop_paths() — only Windows-interop tool dirs belong in the unit's PATH.
+
+    #73163: scraping every ``/mnt/`` entry from the shell PATH persisted heavy
+    Desktop-app/git/node dirs into the gateway unit's Environment=PATH, and the
+    Plan 9 interop (9p) connections those dirs force at gateway start can
+    exhaust the 9p server connection limit. which()-resolved tool dirs and the
+    hardcoded System32 set already cover interop.
+    """
+
+    def test_arbitrary_mount_entries_are_not_scraped_from_shell_path(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
+        monkeypatch.setenv(
+            "PATH",
+            os.pathsep.join(
+                [
+                    "/usr/local/bin",
+                    "/mnt/d/heavy-app/bin",
+                    "/mnt/d/tools/git/cmd",
+                    "/mnt/c/Users/me/AppData/Local/Programs/desktop/bin",
+                ]
+            ),
+        )
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: None)
+        # The hardcoded candidates (System32…) don't exist on this macOS host, so the
+        # expected result is empty — no /mnt/ entry survives.
+        monkeypatch.setattr(Path, "exists", lambda self: False)
+
+        result = gateway_cli._build_wsl_interop_paths([])
+
+        assert result == []
+
+    def test_which_resolved_tool_dirs_and_system32_set_are_included(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
+        monkeypatch.setenv(
+            "PATH",
+            "/usr/local/bin:/mnt/d/heavy-app/bin:/mnt/c/WINDOWS/system32",
+        )
+
+        def fake_which(name):
+            resolved = {
+                "powershell.exe": "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe",
+                "cmd.exe": "/mnt/c/WINDOWS/system32/cmd.exe",
+                "explorer.exe": "/mnt/c/WINDOWS/explorer.exe",
+                "wsl.exe": "/mnt/c/Windows/System32/wsl.exe",
+            }
+            return resolved.get(name)
+
+        monkeypatch.setattr(gateway_cli.shutil, "which", fake_which)
+        monkeypatch.setattr(Path, "exists", lambda self: True)
+
+        result = gateway_cli._build_wsl_interop_paths(["/mnt/d/heavy-app/bin"])
+
+        # which()-resolved dirs land even when absent from the caller's PATH entry list.
+        assert "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0" in result
+        assert "/mnt/c/WINDOWS/system32" in result
+        # Hardcoded System32 family, gated on existence like on a real install.
+        assert "/mnt/c/WINDOWS" in result
+        assert "/mnt/c/WINDOWS/System32/Wbem" in result
+        # Heavy shell-PATH /mnt/ entries never enter, and dedupe keeps out the
+        # entry the caller already has.
+        assert "/mnt/d/heavy-app/bin" not in result
+
+    def test_outside_wsl_nothing_is_added(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
+        monkeypatch.setenv("PATH", "/usr/local/bin:/mnt/c/WINDOWS/system32")
+
+        assert gateway_cli._build_wsl_interop_paths([]) == []
+
+
 class TestGatewayStopCleanup:
     @pytest.mark.platforms("linux")
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
@@ -1799,6 +1869,90 @@ class TestProfileArg:
         plist_path = gateway_cli.get_launchd_plist_path()
 
         assert plist_path == machine_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-orcha.plist"
+
+    def test_launchd_plist_path_falls_back_to_home_when_uid_lookup_fails(self, tmp_path, monkeypatch):
+        """Sandboxed macOS shells can expose a UID that pwd cannot resolve (#57292)."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        machine_home = tmp_path / "Users" / "example"
+        machine_home.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.setenv("HOME", str(machine_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+
+        def raise_key_error(uid):
+            raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+        monkeypatch.setattr(pwd, "getpwuid", raise_key_error)
+
+        plist_path = gateway_cli.get_launchd_plist_path()
+
+        assert plist_path == machine_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-mybot.plist"
+
+    def test_launchd_plist_path_prefers_hermes_real_home_when_uid_lookup_fails(self, tmp_path, monkeypatch):
+        """HERMES_REAL_HOME is the explicit operator override for unresolvable UIDs (#57292)."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        real_home = tmp_path / "real-home"
+        other_home = tmp_path / "other-home"
+        real_home.mkdir(parents=True)
+        other_home.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
+        monkeypatch.setenv("HOME", str(other_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+
+        def raise_key_error(uid):
+            raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+        monkeypatch.setattr(pwd, "getpwuid", raise_key_error)
+
+        plist_path = gateway_cli.get_launchd_plist_path()
+
+        assert plist_path == real_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-mybot.plist"
+
+    def test_launchd_plist_path_fallback_never_returns_profile_home(self, tmp_path, monkeypatch):
+        """When pwd fails and HOME IS the profile home, the fallback must skip it (#57292)."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        profile_home = profile_dir / "home"
+        profile_home.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.setenv("HOME", str(profile_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+
+        def raise_key_error(uid):
+            raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+        monkeypatch.setattr(pwd, "getpwuid", raise_key_error)
+
+        plist_path = gateway_cli.get_launchd_plist_path()
+
+        assert profile_home not in plist_path.parents
+        assert profile_dir not in plist_path.parents
+
+    def test_installed_service_kind_returns_none_when_uid_unresolvable(self, tmp_path, monkeypatch):
+        """`gateway restart`/`status` degrade to "not installed" instead of crashing (#57292)."""
+        machine_home = tmp_path / "Users" / "example"
+        machine_home.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.setenv("HOME", str(machine_home))
+
+        def raise_key_error(uid):
+            raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+        monkeypatch.setattr(pwd, "getpwuid", raise_key_error)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "_systemd_unit_installed", lambda: False)
+
+        assert gateway_cli._installed_service_kind_for(lambda: False) is None
 
 
 class TestRemapPathForUser:

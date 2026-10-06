@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { linuxOzoneBackend } from './hud-windowing'
 import { wslgLaunchArgs } from './wslg-launch'
 
 const env = { WSL_DISTRO_NAME: 'Ubuntu', WAYLAND_DISPLAY: 'wayland-0', DISPLAY: ':0' }
@@ -38,6 +39,15 @@ describe('WSLg launch arguments', () => {
     expect(wslgLaunchArgs([], { WSL_DISTRO_NAME: 'Ubuntu' }, 'linux')).toBeNull()
     expect(wslgLaunchArgs([], { ...env, SSH_CONNECTION: 'remote' }, 'linux')).toBeNull()
     expect(wslgLaunchArgs([], { ...env, DISPLAY: 'localhost:10.0' }, 'linux')).toBeNull()
+  })
+
+  // main.ts keys the WSL GPU-blocklist override off linuxOzoneBackend: forcing GPU
+  // compositing on WSLg's Wayland ozone segfaults the GPU process (no DRM render node).
+  it('is the backend main.ts sees after the relaunch', () => {
+    expect(linuxOzoneBackend(env, wslgLaunchArgs([], env, 'linux')!)).toBe('wayland')
+
+    const x11 = { ...env, ELECTRON_OZONE_PLATFORM_HINT: 'x11' }
+    expect(linuxOzoneBackend(x11, wslgLaunchArgs([], x11, 'linux')!)).toBe('x11')
   })
 })
 

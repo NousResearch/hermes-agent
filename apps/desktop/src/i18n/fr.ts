@@ -1,46 +1,14 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { frAuxTasks } from './fr_aux_tasks'
+import { frBoot } from './fr_boot'
+import { frModelMenu } from './fr_model_menu'
+import { frSharedMetrics } from './fr_shared_metrics'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
-  sharedMetrics: {
-    consentTitle: 'Aider à améliorer Hermes ?',
-    consentBody:
-      'Les métriques partagées ne contiennent que des compteurs bornés. Jamais de prompts, fichiers, chemins ni textes d’erreur. La collecte reste locale. Les envoyer à Nous est un consentement distinct.',
-    whatIsCollected: 'Ce qui est collecté',
-    collectedIntro: 'Uniquement des compteurs bornés :',
-    collectedActivity: 'Activité, durée des sessions, résultats et classes d’erreur',
-    collectedModels: 'Routes de modèles et totaux de tokens',
-    collectedNames: 'Noms des outils, commandes et éléments du catalogue intégrés',
-    collectedMilestones: 'Comptes de configuration regroupés',
-    collectedReliability:
-      'Résultats et durée des mises à jour, plantages, vitesse de démarrage et de réponse, état des plateformes de messagerie',
-    collectedUsage:
-      "Comment Hermes est utilisé : précision et efficacité de l'agent (modifications réussies, boucles, reprises après erreur, jetons et appels d'outils par tâche, ruptures de cache), temps actif par interface et mode Desktop, zones, actions et réglages de l'app utilisés, vite fermés ou désactivés, et résultats de la configuration des fournisseurs",
-    collectedMachine:
-      "Données générales de la machine : plage de RAM, type de GPU, âge et canal de la version de Hermes, mises à jour en retard, utilisation d'un serveur de modèles local",
-    installId:
-      'L’envoi transmet chaque paquet quotidien au service de télémétrie de Nous. Les paquets portent l’identifiant d’installation de ce profil : un UUID aléatoire stable sans information personnelle, réinitialisé en supprimant le dossier des métriques partagées.',
-    consentWindow:
-      'Seuls les paquets dont toute la période de collecte tombe dans une fenêtre de consentement enregistrée sont envoyés — les données d’avant votre accord, ou de toute période où l’envoi était désactivé, restent sur cette machine. L’envoi peut être désactivé à tout moment.',
-    readDocs: 'Lire tous les détails',
-    share: 'Collecter et envoyer à Nous',
-    local: 'Collecter en local uniquement',
-    off: 'Non merci',
-    changeLater: 'Vous pouvez changer cela à tout moment dans Réglages → Sécurité.',
-    saveFailed: 'Impossible d’enregistrer votre choix',
-    collectLabel: 'Collecter les statistiques d’utilisation',
-    collectDesc:
-      'Compteurs bornés conservés sur cet appareil. Jamais de prompts, fichiers, chemins ni textes d’erreur.',
-    sendLabel: 'Envoyer les statistiques d’utilisation à Nous',
-    sendDesc:
-      'Envoyer chaque paquet quotidien au service de télémétrie de Nous. Seules les données d’une fenêtre de consentement sont envoyées. Nécessite la collecte activée.',
-    unavailable: 'Mettez à jour le backend Hermes pour modifier ce réglage.',
-    stripBody: 'Uniquement des compteurs bornés, jamais de prompts ni de fichiers.',
-    stripChoices: { share: 'Envoyer à Nous', local: 'Local uniquement', off: 'Non merci' },
-    stripDetails: 'Détails'
-  },
+  sharedMetrics: frSharedMetrics,
   intro: introFr,
   connectors: {
     title: 'Connectez vos applications',
@@ -439,83 +407,7 @@ export const frOverrides = {
     revealUnavailable:
       "Ce chemin n'est pas sur cet ordinateur : il se trouve sur la machine du backend. Utilisez « Afficher dans l'arborescence »."
   },
-  boot: {
-    ready: 'Hermes Desktop est prêt',
-    desktopBootFailedWithMessage: message => `Échec du démarrage : ${message}`,
-    steps: {
-      connectingGateway: 'Connexion au gateway desktop',
-      loadingSettings: 'Chargement des paramètres Hermes',
-      loadingSessions: 'Chargement des sessions récentes',
-      retryingRemoteBackend: 'Reconnexion au backend Hermes distant…',
-      startingDesktopConnection: 'Démarrage de la connexion desktop',
-      startingHermesDesktop: 'Démarrage de Hermes Desktop…'
-    },
-    errors: {
-      backgroundExited: "Le processus en arrière-plan de Hermes s'est arrêté.",
-      backgroundExitedDuringStartup: "Le processus en arrière-plan de Hermes s'est arrêté pendant le démarrage.",
-      backendStopped: 'Backend arrêté',
-      restartHermes: 'Redémarrer Hermes',
-      openLogs: 'Ouvrir les journaux',
-      desktopBootFailed: 'Échec du démarrage',
-      gatewayConnectionLost: 'Connexion au gateway perdue',
-      gatewayConnectionLostDetail:
-        'Nouvelle tentative en arrière-plan. Vous pouvez continuer à lire et rédiger — ouvrez les paramètres du gateway si le problème persiste.',
-      reconnectNow: 'Se reconnecter maintenant',
-      connectionSettings: 'Paramètres de connexion',
-      gatewaySignInRequired: 'Connexion au gateway requise',
-      gatewaySignInRequiredDetail:
-        'Reconnectez-vous pour rétablir la connexion. Vos conversations et paramètres sont en sécurité.',
-      signInAgain: 'Se reconnecter',
-      ipcBridgeUnavailable: 'Le pont IPC du desktop est indisponible.'
-    },
-    causes: {
-      exitedEarly: "Le service en arrière-plan de Hermes s'est arrêté juste après son démarrage.",
-      timedOut: "Le service en arrière-plan de Hermes n'a pas répondu à temps.",
-      permission: "Hermes n'a pas pu écrire dans son dossier de données (problème d'autorisation).",
-      diskFull: "Le disque est plein ; Hermes n'a donc pas pu démarrer.",
-      portInUse: 'Un autre programme utilise le port réseau nécessaire à Hermes.',
-      installMissing:
-        "Une partie de l'installation de Hermes est manquante. Choisissez Réparer l'installation pour la restaurer."
-    },
-    failure: {
-      title: "Hermes n'a pas pu démarrer",
-      description:
-        "Le gateway en arrière-plan n'a pas pu se lancer. Essayez l'une des étapes de récupération ci-dessous. Rien ici ne supprime vos conversations ou paramètres.",
-      details: 'Détails',
-      remoteTitle: 'Connexion au gateway distante requise',
-      remoteDescription:
-        'Votre session de gateway distante a expiré. Connectez-vous à nouveau pour vous reconnecter. Rien ici ne supprime vos conversations ou paramètres.',
-      retry: 'Réessayer',
-      repairInstall: "Réparer l'installation",
-      useLocalGateway: 'Utiliser le gateway local',
-      gatewaySettings: 'Paramètres du gateway',
-      back: 'Retour',
-      openLogs: 'Ouvrir les journaux',
-      repairHint: "La réparation relance l'installateur et peut prendre quelques minutes sur une machine neuve.",
-      remoteSignInHint: signInLabel =>
-        `Déconnecte la session navigateur distante enregistrée, puis ouvre ${signInLabel}. Utilisez le gateway local pour passer au backend intégré.`,
-      signOutAndSignIn: 'Se déconnecter et se reconnecter',
-      remoteFailureHint:
-        "Vérifiez l'URL du gateway et la connexion dans les paramètres du gateway, ou passez au gateway local.",
-      cloudDownTitle: "L'agent Nous Cloud est indisponible",
-      cloudDownDescription:
-        "L'agent cloud géré par Nous auquel ce gateway se connecte renvoie une erreur serveur. Il ne peut pas être redémarré depuis ici — vérifiez son état, passez au gateway local ou contactez l'assistance.",
-      cloudDownHint:
-        "Les boutons ci-dessous ouvrent le portail Nous, pour consulter et contrôler l'instance, ainsi que notre Discord pour obtenir de l'aide.",
-      cloudDownCheckPortal: "Vérifier l'état sur le portail",
-      cloudDownDiscord: "Obtenir de l'aide sur Discord",
-      hideRecentLogs: 'Masquer les journaux récents',
-      showRecentLogs: 'Afficher les journaux récents',
-      signedInTitle: 'Connecté',
-      signedInMessage: 'Reconnexion au gateway distante…',
-      signInIncompleteTitle: 'Connexion incomplète',
-      signInIncompleteMessage: "La fenêtre de connexion s'est fermée avant la fin de l'authentification.",
-      signInFailed: 'Échec de la connexion',
-      signInToRemoteGateway: 'Se connecter au gateway distante',
-      signInWithProvider: provider => `Se connecter avec ${provider}`,
-      identityProvider: "votre fournisseur d'identité"
-    }
-  },
+  boot: frBoot.boot,
   notifications: {
     region: 'Notifications',
     hide: 'Masquer',
@@ -868,6 +760,15 @@ export const frOverrides = {
     resetConfirm: 'Réinitialiser tous les paramètres aux valeurs par défaut de Hermes ?',
     exportFailed: "Échec de l'export",
     resetFailed: 'Échec de la réinitialisation',
+    pluginPages: {
+      blurb:
+        'Options ajoutées par les plugins installés. Chaque plugin a sa propre page, et certains ajoutent des sous-pages.',
+      empty: "Aucun plugin n'a encore de réglages.",
+      manage: 'Gérer les plugins',
+      agentSettings: "Réglages de l'agent",
+      pageCount: (n: number) => (n === 1 ? '1 page' : `${n} pages`),
+      missing: "Ce plugin n'a pas de page de réglages. Il est peut-être désactivé ou désinstallé."
+    },
     nav: {
       providers: 'Fournisseurs',
       providerAccounts: 'Comptes',
@@ -889,24 +790,15 @@ export const frOverrides = {
     },
     plugins: {
       title: 'Plugins du desktop',
-      blurb:
-        "Étendez cette application, et non un agent : ces plugins sont installés une seule fois pour toute l'application, quel que soit le profil, le gateway ou la machine connectée. Les interrupteurs s'appliquent immédiatement.",
-      count: n => `${n} installés`,
       openFolder: 'Ouvrir le dossier des plugins Desktop',
       rescan: 'Re-analyser',
       reveal: 'Afficher dans le gestionnaire de fichiers',
-      enable: 'Activer',
-      disable: 'Désactiver',
       failed: 'échec',
-      empty: 'Aucun plugin desktop installé pour le moment.',
       kinds: {
         bundled: 'intégré',
         disk: 'sur le disque',
         runtime: "à l'exécution"
       },
-      agentHalfMissing: 'partie agent absente ici',
-      agentHalfMissingTip:
-        "Il s'agit de la partie Desktop d'un plugin groupé, mais sa partie agent n'est pas installée sur le backend ou profil actuellement connecté. Installez-la depuis Capacités → Plugins.",
       installModal: {
         installFromGit: 'Installer depuis Git',
         reviewRepository: 'Examiner le dépôt',
@@ -1134,6 +1026,9 @@ export const frOverrides = {
       }
     },
     appearance: {
+      chatTextScaleTitle: 'Taille du texte du chat',
+      chatTextScaleDesc:
+        'Ajuste le texte des conversations et de la saisie par rapport à l’échelle de l’interface. Les barres latérales et les contrôles gardent leur taille.',
       title: 'Apparence',
       intro:
         'Exclusif au desktop. Le mode contrôle la luminosité ; le thème contrôle la palette et le chrome de la conversation.',
@@ -1697,7 +1592,10 @@ export const frOverrides = {
         "Retirer tous les ensembles d'outils activés ? Cela désactive la mémoire, le terminal, la recherche web, la délégation et la plupart des autres outils jusqu'à leur réactivation.",
       keepAwakeTitle: "Garder l'ordinateur éveillé",
       keepAwakeDesc:
-        "Empêcher cette machine de se mettre en veille pendant les exécutions longues ou nocturnes. L'écran peut toujours s'obscurcir.",
+        "Empêcher cette machine de se mettre en veille. « Pendant le travail » ne s'applique que pendant qu'un tour est en cours : les exécutions nocturnes continuent sans garder le portable éveillé toute la semaine. L'écran peut toujours s'obscurcir.",
+      keepAwakeOff: 'Désactivé',
+      keepAwakeWhileWorking: 'Pendant le travail',
+      keepAwakeAlways: 'Toujours',
       disableF12Title: 'Désactiver les outils de développement avec F12',
       disableF12Desc:
         "Empêcher F12 d'ouvrir les outils de développement. Ctrl+Maj+I (ou Cmd+Option+I sur Mac) continue de fonctionner.",
@@ -2014,6 +1912,8 @@ export const frOverrides = {
         'Plateforme distante non prise en charge. Le mode SSH de Hermes Desktop supporte les hôtes distants Linux, macOS et Windows.',
       sshErrTimeout: "Expiration de la connexion SSH. L'hôte peut être inaccessible ou en veille.",
       sshErrUpdateRequired: "Mettez à jour Hermes sur l'hôte distant avant de vous connecter avec Desktop SSH.",
+      sshErrInteractiveAuth:
+        'Tailscale SSH exige une vérification interactive dans le navigateur. Exécutez `ssh <host> true` dans le terminal, terminez la vérification, puis réessayez — Hermes exécute SSH de façon non interactive.',
       sshErrUnknown: 'Échec de la connexion SSH.'
     },
     keys: {
@@ -2104,6 +2004,8 @@ export const frOverrides = {
       defaultsLabel: 'Par défaut',
       reasoning: 'Raisonnement',
       reasoningOff: 'Désactivé',
+      speed: 'Vitesse',
+      speedStandard: 'Standard',
       defaultsFailed: "Échec de l'enregistrement des modèles par défaut",
       loadFailed: 'Impossible de charger les modèles',
       restartRequired:
@@ -2120,6 +2022,8 @@ export const frOverrides = {
       change: 'Modifier',
       autoUseMain: 'auto · utiliser le modèle principal',
       inheritMainEffort: 'hériter · effort du modèle principal',
+      inheritsFrom: task => `hérite de ${task}`,
+      followTask: task => `Suivre ${task}`,
       providerDefault: '(par défaut du fournisseur)',
       fallbackAdd: 'Ajouter un secours',
       fallbackEmpty: "Aucun modèle de secours — le modèle par défaut est utilisé sauf en cas d'échec.",
@@ -2132,52 +2036,7 @@ export const frOverrides = {
       moaAggregator: 'Agrégateur',
       moaAggregatorBilled: "modèle actif · facturé pour l'exécution",
       moaReferenceHint: 'donne un avis une fois par tour par défaut',
-      tasks: {
-        vision: {
-          label: 'Vision',
-          hint: "Analyse d'image"
-        },
-        compression: {
-          label: 'Compression',
-          hint: 'Compaction de contexte'
-        },
-        skills_hub: {
-          label: 'Hub de skills',
-          hint: 'Recherche de skills'
-        },
-        approval: {
-          label: 'Approbation',
-          hint: 'Auto-approbation intelligente'
-        },
-        mcp: {
-          label: 'MCP',
-          hint: "Routage d'outils MCP"
-        },
-        title_generation: {
-          label: 'Génération de titre',
-          hint: 'Titres de session'
-        },
-        review: {
-          label: 'Révision',
-          hint: 'Sous-agent de révision /review'
-        },
-        triage_specifier: {
-          label: 'Précision du triage',
-          hint: 'Détail des spécifications Kanban'
-        },
-        kanban_decomposer: {
-          label: 'Décomposition Kanban',
-          hint: 'Décomposition des tâches'
-        },
-        profile_describer: {
-          label: 'Description de profil',
-          hint: 'Descriptions automatiques des profils'
-        },
-        curator: {
-          label: 'Curateur',
-          hint: "Revue d'utilisation des skills"
-        }
-      }
+      tasks: frAuxTasks
     },
     localModels: {
       connectionChanged: 'La connexion des modèles locaux a changé',
@@ -2869,6 +2728,7 @@ export const frOverrides = {
         no_interactive_session: 'aucune session interactive',
         version_too_old: 'version trop ancienne',
         missing_app: 'application manquante',
+        unsupported_gpu: 'GPU non prise en charge',
         unknown: 'état inconnu'
       },
       catalogTitle: 'Catalogue de plugins',
@@ -2914,7 +2774,7 @@ export const frOverrides = {
         save: 'Enregistrer les paramètres',
         saved: (name: string) => `Paramètres de ${name} enregistrés.`,
         saveFailed: (name: string) => `Impossible d’enregistrer les paramètres de ${name}`,
-        optional: '(facultatif)',
+        required: 'Obligatoire',
         secretSet: '•••••••• (défini)',
         secretStoredAs: (env: string) =>
           `Stocké dans le .env du profil sous ${env}, jamais dans config.yaml ; laissez vide pour conserver la valeur actuelle.`
@@ -3315,6 +3175,9 @@ export const frOverrides = {
     replaceValue: 'Remplacer la valeur actuelle',
     openDocs: 'Ouvrir la documentation',
     clearField: key => `Effacer ${key}`,
+    addListEntry: 'Ajouter',
+    removeListEntry: 'Retirer',
+    listEntryPlaceholder: 'Saisir un identifiant',
     enableAria: name => `Activer ${name}`,
     disableAria: name => `Désactiver ${name}`,
     platformEnabled: name => `${name} activé`,
@@ -3395,7 +3258,7 @@ export const frOverrides = {
       },
       TELEGRAM_ALLOWED_USERS: {
         label: "IDs d'utilisateurs Telegram autorisés",
-        help: "Recommandé. IDs numériques séparés par des virgules depuis @userinfobot. Sans cela, n'importe qui peut envoyer un message privé à votre bot."
+        help: "Recommandé. IDs numériques (un par case) depuis @userinfobot. Sans cela, n'importe qui peut envoyer un message privé à votre bot."
       },
       TELEGRAM_PROXY: {
         label: 'URL du proxy',
@@ -3407,7 +3270,7 @@ export const frOverrides = {
       },
       DISCORD_ALLOWED_USERS: {
         label: "IDs d'utilisateurs Discord autorisés",
-        help: "Recommandé. IDs d'utilisateurs Discord séparés par des virgules."
+        help: "Recommandé. IDs d'utilisateurs Discord (un par case)."
       },
       DISCORD_REPLY_TO_MODE: {
         label: 'Style de réponse',
@@ -3457,7 +3320,7 @@ export const frOverrides = {
       },
       SLACK_ALLOWED_USERS: {
         label: "IDs d'utilisateurs Slack autorisés",
-        help: "Recommandé. IDs d'utilisateurs Slack séparés par des virgules."
+        help: "Recommandé. IDs d'utilisateurs Slack (un par case)."
       },
       MATTERMOST_URL: {
         label: 'URL du serveur',
@@ -3468,7 +3331,7 @@ export const frOverrides = {
       },
       MATTERMOST_ALLOWED_USERS: {
         label: "IDs d'utilisateurs autorisés",
-        help: "Recommandé. IDs d'utilisateurs Mattermost séparés par des virgules."
+        help: "Recommandé. IDs d'utilisateurs Mattermost (un par case)."
       },
       MATRIX_HOMESERVER: {
         label: 'URL du homeserver',
@@ -3483,7 +3346,7 @@ export const frOverrides = {
       },
       MATRIX_ALLOWED_USERS: {
         label: "IDs d'utilisateurs Matrix autorisés",
-        help: "Recommandé. IDs d'utilisateurs séparés par des virgules au format @utilisateur:serveur."
+        help: "Recommandé. IDs d'utilisateurs (un par case) au format @utilisateur:serveur."
       },
       SIGNAL_HTTP_URL: {
         label: 'URL du pont Signal',
@@ -3496,7 +3359,7 @@ export const frOverrides = {
       },
       SIGNAL_ALLOWED_USERS: {
         label: 'Utilisateurs Signal autorisés',
-        help: 'Recommandé. Identifiants Signal séparés par des virgules.'
+        help: 'Recommandé. Identifiants Signal (un par case).'
       },
       WHATSAPP_ENABLED: {
         label: 'Activer le pont WhatsApp',
@@ -3507,7 +3370,7 @@ export const frOverrides = {
       },
       WHATSAPP_ALLOWED_USERS: {
         label: 'Utilisateurs WhatsApp autorisés',
-        help: 'Recommandé. Numéros de téléphone ou IDs WhatsApp séparés par des virgules.'
+        help: 'Recommandé. Numéros de téléphone ou IDs WhatsApp (un par case).'
       }
     },
     platformIntro: {}
@@ -4061,6 +3924,8 @@ export const frOverrides = {
       reveal: 'Afficher dans le dossier',
       copyPath: 'Copier le chemin',
       removeFromSidebar: 'Masquer de la barre latérale',
+      createdInPreviousContext:
+        "Le projet a été créé sur la connexion ou le profil précédent. Revenez-y ; IDEA.md n'a pas été écrit.",
       createFailed: 'Impossible de créer le projet',
       staleBackend:
         'Mettez à jour le backend Hermes pour créer des projets — votre backend est plus ancien que cette application de bureau (Paramètres → Mises à jour → Backend).',
@@ -4301,7 +4166,7 @@ export const frOverrides = {
       '/init': 'Générer ou mettre à jour les instructions de projet AGENTS.md à partir d’une analyse du dépôt',
       '/suggestions': 'Examiner les automatisations suggérées (accepter/ignorer)',
       '/blueprint': 'Configurer une automatisation à partir d’un modèle',
-      '/browser': 'Gérer la connexion CDP du navigateur [connect|disconnect|status] (gateway local uniquement)',
+      '/browser': 'Gérer le navigateur de l’agent [connect|disconnect|status|use]',
       '/palette': 'Ouvrir la palette de commandes floue (aussi Ctrl+P)',
       '/usage':
         'Afficher l’utilisation des jetons et les limites de débit ; `reset` utilise une réinitialisation de limite Codex en réserve',
@@ -5049,23 +4914,14 @@ export const frOverrides = {
     windowControls: 'Contrôles de fenêtre',
     paneControls: 'Contrôles de panneau',
     appControls: "Contrôles d'application",
-    modelMenu: {
-      search: 'Rechercher des modèles',
-      noModels: 'Aucun modèle trouvé',
-      editModels: 'Modifier les modèles…',
-      followDefault: 'Utiliser le modèle par défaut des Réglages',
-      refreshModels: 'Actualiser les modèles',
-      fast: 'Rapide',
-      free: 'gratuit',
-      cacheRead: 'lecture en cache',
-      priceTitle: (input: string, output: string, cache: string) =>
-        `Entrée ${input}/Mtok · Sortie ${output}/Mtok` + (cache ? ` · Lecture en cache ${cache}/Mtok` : '')
-    },
+    modelMenu: frModelMenu,
     modelOptions: {
       noOptions: 'Aucune option pour ce modèle',
       options: 'Options',
       thinking: 'Réflexion',
       fast: 'Rapide',
+      ultrafast: 'Ultrafast',
+      useStandardSpeed: 'Utiliser la vitesse standard',
       effort: 'Effort',
       minimal: 'Minimal',
       low: 'Faible',
@@ -5252,6 +5108,8 @@ export const frOverrides = {
   },
   preview: {
     tab: 'Aperçu',
+    pin: "Épingler à l'espace de travail",
+    unpin: "Détacher de l'espace de travail",
     closePane: "Fermer le panneau d'aperçu",
     loading: "Chargement de l'aperçu",
     unavailable: 'Aperçu indisponible',
@@ -5280,6 +5138,7 @@ export const frOverrides = {
     editing: 'Modification',
     unsavedChanges: 'Modifications non enregistrées',
     saveFailed: message => `Impossible d'enregistrer : ${message}`,
+    saveScopeChanged: 'Revenez à la connexion et au profil d’origine pour enregistrer ce brouillon.',
     diskChangedTitle: 'Fichier modifié sur le disque',
     diskChangedBody:
       "Ce fichier a changé depuis que vous l'avez ouvert. L'écraser avec votre version, ou abandonner vos modifications et recharger ?",
@@ -5475,6 +5334,7 @@ export const frOverrides = {
       branchNewChat: 'Créer une branche dans une nouvelle conversation',
       react: 'Réagir',
       dismissError: "Ignorer l'erreur",
+      responseStopped: 'Réponse interrompue',
       errorLayers: {
         auth: "Erreur d'authentification",
         billing: 'Crédits épuisés',
@@ -5729,6 +5589,8 @@ export const frOverrides = {
       skipped: 'Ignoré',
       noAnswer: 'Pas de réponse',
       confirmAndContinueLabel: 'Confirmer et continuer',
+      singleSelectHint: 'Choisir une réponse',
+      multiSelectHint: 'Choisir toutes les réponses qui s’appliquent',
       questionProgress: (answered, total) => `${answered} réponse${answered === 1 ? '' : 's'} sur ${total}`,
       notDelivered:
         "Cette question n'a pas atteint l'app, elle ne peut donc pas être répondue ici. Appuyez sur Arrêter pour terminer le tour, puis répondez dans le chat."
@@ -6014,9 +5876,6 @@ export const frOverrides = {
     sessionUnavailable: 'Session indisponible',
     createSessionFailed: 'Impossible de créer une nouvelle session',
     promptFailed: "Échec de l'invite",
-    staleSessionTitle: 'Conversation obsolète',
-    staleSessionBody:
-      'Cette fenêtre était en retard sur une autre vue du même chat. Les derniers messages ont été chargés. Renvoyez si vous le souhaitez encore.',
     providerCredentialRequired: "Ajoutez un identifiant de fournisseur avant d'envoyer votre premier message.",
     emptySlashCommand: 'commande slash vide',
     desktopCommands: 'Commandes Desktop',

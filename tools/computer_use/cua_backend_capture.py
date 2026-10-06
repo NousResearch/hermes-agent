@@ -55,6 +55,12 @@ def _linux_x11_active_window_id() -> Optional[int]:
         return None
     return _parse_xprop_net_active_window(proc.stdout or "") if proc.returncode == 0 else None
 
+def _is_cua_driver_self_window(w: Dict[str, Any]) -> bool:
+    """True for the authorization daemon's own native window (normalized app name)."""
+    app_name = str(w.get("app_name", "")).strip().lower()
+    return re.sub(r"[\s_-]+", "", app_name) == "cuadriver"
+
+
 def _select_capture_target(windows: List[Dict[str, Any]], *, app_requested: bool,
                            exact_target: bool = False) -> Dict[str, Any]:
     """Best window from z-sorted (frontmost-first) list_windows output. Unqualified default captures on
@@ -66,6 +72,14 @@ def _select_capture_target(windows: List[Dict[str, Any]], *, app_requested: bool
     informative, keep that frontmost contract. See #58026.
     """
     pool = [w for w in windows if not w["off_screen"]]
+    # Implicit captures skip the authorization daemon's own windows: the driver refuses to
+    # operate on itself, so a frontmost self-window would fail the capture instead of falling
+    # through to the next real window (#94527). Keep the old target when only self-windows
+    # exist, so the driver still reports its normal refusal. Exact targets stay untouched.
+    if not exact_target:
+        external = [w for w in pool if not _is_cua_driver_self_window(w)]
+        if external:
+            pool = external
     if not exact_target and not app_requested and sys.platform == "linux":
         pool = [w for w in pool if _is_real_app_window(w)] or pool
         if pool and _z_index_uninformative(pool):

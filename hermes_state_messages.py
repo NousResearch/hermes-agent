@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
@@ -23,7 +23,7 @@ from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 from hermes_state_identity import (
-    _absorbed_uids_json, _restore_identity_columns, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json)
+    _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -715,8 +715,8 @@ class SessionMessagesMixin:
         the original's display identity (see _display_dedupe_key). Idempotent; never overwrites a timestamp the
         dict already carries; rows with no match keep their caller-supplied/now_ts value.
 
-        Content identity per _display_dedupe_key minus the timestamp: (role, encoded content, tool_call_id,
-        encoded tool_calls, tool_name). Donors are the parent's ACTIVE rows, consumed first-match-wins in id
+        Content identity = _display_dedupe_key's content key minus the timestamp (role, encoded content,
+        tool_call_id, encoded tool_calls, tool_name). Donors are the parent's ACTIVE rows, consumed first-match-wins in id
         order so two identical-content turns cannot both grab the same parent row. Best-effort: on any error
         the insert falls back to today's behavior (publish-time stamp) and never breaks publish.
         """
@@ -922,108 +922,10 @@ class SessionMessagesMixin:
             f"WHERE id IN ({_placeholders(tail_ids)}) ORDER BY id",
             [session_id, *tail_ids] if retarget else tail_ids)
 
-    def _resolve_carried_row_ids(
-        self, conn, session_id: str, carried_messages: List[Dict[str, Any]],
-    ) -> List[int]:
-        """Resolve byte-identical carried-forward live dicts to their ACTIVE durable originals.
-
-        _row_id is authoritative when the message carries it and the stored identity still matches.
-        Resume surfaces that intentionally omit row ids fall back to a UNIQUE
-        (role/content/tool identity, timestamp) match. Ambiguous or timestamp-less fallbacks are left
-        as compacted history rather than risking a false rewind classification.
-        """
-        if not carried_messages:
-            return []
-        carried: List[Tuple[Tuple[Any, ...], Any, Any]] = []
-        for message in carried_messages:
-            if not isinstance(message, dict):
-                continue
-            identity = self._row_identity(
-                message.get("role", "unknown"), message.get("content"), message.get("tool_call_id"),
-                _parse_tool_calls(message.get("tool_calls")))
-            row_id = message.get("_row_id")
-            if not (isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0):
-                row_id = None
-            carried.append((identity, row_id, message.get("timestamp")))
-
-        def _index(ids: Optional[List[int]]):
-            by_id: Dict[int, Tuple[Any, ...]] = {}
-            by_key: Dict[Tuple[Any, ...], List[int]] = {}
-            narrow = f" AND id IN ({_placeholders(ids)})" if ids else ""
-            for row in conn.execute(
-                "SELECT id, role, content, tool_call_id, tool_calls, timestamp FROM messages "
-                f"WHERE session_id = ? AND active = 1{narrow} ORDER BY id",
-                (session_id, *(ids or ())),
-            ).fetchall():
-                rid = int(row["id"])
-                by_id[rid] = self._row_identity(
-                    row["role"], self._decode_content(row["content"]), row["tool_call_id"],
-                    _parse_tool_calls(row["tool_calls"]))
-                ts = coerce_epoch(row["timestamp"], field="message timestamp")
-                if ts is not None:
-                    by_key.setdefault((*by_id[rid], ts), []).append(rid)
-            return by_id, by_key
-
-        # The common micro pass carries dicts that all hold a matching _row_id, so the identity
-        # check only needs those rows; a full active-row scan is reserved for the fallbacks.
-        row_ids = [row_id for _, row_id, _ in carried if row_id is not None]
-        by_id, by_key = _index(row_ids if len(row_ids) == len(carried) else None)
-        if len(row_ids) == len(carried) and any(by_id.get(rid) != ident for ident, rid, _ in carried):
-            by_id, by_key = _index(None)
-
-        resolved: List[int] = []
-        for identity, row_id, raw_timestamp in carried:
-            if row_id is not None and by_id.get(row_id) == identity:
-                resolved.append(row_id)
-                continue
-            timestamp = coerce_epoch(raw_timestamp, field="message timestamp")
-            if timestamp is None:
-                continue
-            matches = by_key.get((*identity, timestamp), [])
-            if len(matches) == 1:
-                resolved.append(matches[0])
-        return list(dict.fromkeys(resolved))
-
-    def _matching_active_ids(self, conn, session_id: str, message: Dict[str, Any]) -> List[int]:
-        """Active row ids whose stored role and content equal *message*. Empty when it was never persisted."""
-        content = message.get("content")
-        if not isinstance(content, str):
-            return []
-        stored = self._encode_content(self._loaded_view_content(message.get("role", "unknown"), content))
-        return [int(row["id"]) for row in conn.execute(
-            "SELECT id FROM messages WHERE session_id = ? AND active = 1 AND role = ? AND content = ?",
-            (session_id, message.get("role"), stored)).fetchall()]
-
-    def _proved_coverage(
-        self, conn, session_id: str, covered_ids: Optional[List[int]],
-        unresolved_held: Optional[List[Dict[str, Any]]],
-    ) -> Optional[List[int]]:
-        """Ids safe to archive as summarized, or None when a durable held row cannot be named.
-
-        An unresolved dict that still carries the persist marker was loaded from the DB.
-        Failing to name it means the watermark path, which archives the rows the compressor
-        saw, including ones whose ids were stripped. A marker-less miss is an unpersisted
-        turn: it names nothing, and it is not a reason to abandon the ids we do have.
-        Several active rows with the same content are ambiguous, so that also abandons.
-        """
-        if covered_ids is None:
-            return None
-        from agent.context_compressor import _DB_PERSISTED_MARKER
-
-        proved = [int(row_id) for row_id in covered_ids if isinstance(row_id, int) and row_id > 0]
-        for message in unresolved_held or ():
-            if not isinstance(message, dict):
-                continue
-            matches = self._matching_active_ids(conn, session_id, message)
-            if len(matches) > 1 or (message.get(_DB_PERSISTED_MARKER) and len(matches) != 1):
-                return None
-            proved.extend(matches)
-        return list(dict.fromkeys(proved))
-
     def _archive_named_rows(
         self, conn, session_id: str, compacted_messages: List[Dict[str, Any]], covered: List[int], *,
         tail_count: int, carried_messages: Optional[List[Dict[str, Any]]], patched_model_config: Any,
-        patch: bool,
+        patch: bool, merged_away: Set[int],
     ) -> int:
         """Archive *covered* as summarized and clone every other active row after the new set.
 
@@ -1039,7 +941,7 @@ class SessionMessagesMixin:
         covered_active = [row_id for row_id in active_ids if row_id in covered_set]
         rewind_ids = list(carried_ids)
         if tail_count > 0:
-            rewind_ids += covered_active[-int(tail_count):]
+            rewind_ids += self._tail_originals(covered_active, tail_count, merged_away)
         rewind_ids += unseen
         rewind_ids = list(dict.fromkeys(rewind_ids))
         if rewind_ids:
@@ -1113,11 +1015,12 @@ class SessionMessagesMixin:
             # on_missing="raise": never commit against a vanished session row (caller keeps the original).
             patched_model_config = self._merge_model_config_json(
                 conn, session_id, model_config_patch, on_missing="raise") if patch else None
-            proved = self._proved_coverage(conn, session_id, covered_ids, unresolved_held)
+            proved = self._proved_coverage(conn, session_id, covered_ids, unresolved_held, watermark)
             if proved is not None:
                 return self._archive_named_rows(
-                    conn, session_id, compacted_messages, proved, tail_count=tail_count,
-                    carried_messages=carried_messages, patched_model_config=patched_model_config, patch=patch)
+                    conn, session_id, compacted_messages, proved[0], tail_count=tail_count,
+                    carried_messages=carried_messages, patched_model_config=patched_model_config, patch=patch,
+                    merged_away=proved[1])
             tail_ids, tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
                 conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
                 (session_id, int(watermark)))
@@ -1130,7 +1033,8 @@ class SessionMessagesMixin:
                 rewind_ids += [int(row["id"]) for row in conn.execute(
                     f"SELECT id FROM messages WHERE session_id = ? AND active = 1{' AND id <= ?' if bound else ''} "
                     "ORDER BY id DESC LIMIT ?",
-                    (session_id, *((int(watermark),) if bound else ()), int(tail_count))).fetchall()]
+                    (session_id, *((int(watermark),) if bound else ()),
+                     int(tail_count) + self._uncounted_merged_rows(compacted_messages[-int(tail_count):]))).fetchall()]
             rewind_ids += tail_ids
             rewind_ids = list(dict.fromkeys(rewind_ids))
             if rewind_ids:
@@ -1279,8 +1183,8 @@ class SessionMessagesMixin:
                 "display_metadata": self._decode_display_metadata(row["display_metadata"])})
             if handoff is not None and live_view is not None:
                 dedupe_content = self._encode_content(live_view.get("content"))
-        return (row["role"], dedupe_content, row["timestamp"],
-                row["tool_call_id"], row["tool_calls"], row["tool_name"])
+        return _stable_tool_key(row) or (
+            row["role"], dedupe_content, row["timestamp"], row["tool_call_id"], row["tool_calls"], row["tool_name"])
 
     def _is_model_only_row(self, row) -> bool:
         """Python twin of :data:`DISPLAY_VISIBLE_SQL`."""
@@ -1451,6 +1355,15 @@ class SessionMessagesMixin:
                ORDER BY page.display_order ASC""",
             (session_id, -1 if limit is None else limit, offset, session_id),
         ).fetchall()
+
+    def display_message_count(self, session_id: str) -> int:
+        """Rows a display read of this segment paints: one per ``display_order`` group of
+        ``_display_rows_from_conn``'s set. Unindexed legacy rows count as one group (the read
+        backfills them), so the count is zero exactly when the read paints nothing."""
+        row = self._read_one(
+            "SELECT COUNT(*) FROM (SELECT DISTINCT display_order FROM messages"
+            f" WHERE session_id = ?{_DISPLAY_ACTIVE_CLAUSE}{DISPLAY_VISIBLE_SQL})", (session_id,))
+        return int(row[0])
 
     def _display_messages_from_conn(self, conn, session_id: str) -> Optional[List[Dict[str, Any]]]:
         """Exact display snapshot on an already-held transaction; None means fail closed."""
@@ -1641,9 +1554,18 @@ class SessionMessagesMixin:
                               include_summary_markers: bool = False) -> List[Dict[str, Any]]:
         """Decode fetched rows (ordered by id, pre-filtered) into OpenAI format, stable key order. Every dict is
         stamped ``_DB_PERSISTED_MARKER_KEY`` (born durable) so an identity-losing handoff never re-appends the
-        transcript on flush. ``_row_id`` is opt-in (gateway reactions); reasoning restored on assistant rows
-        only; ``api_content`` VERBATIM (no sanitize/strip) so replay keeps the provider prompt cache byte-stable."""
+        transcript on flush. Unaddressed live-replay projections also carry the stored-row CAS digest: if a later rewrite
+        loses its physical ``_row_id``, logical ``message_uid`` can recover the row without guessing by
+        mutable payload while the digest still fences a concurrent winner. ``_row_id`` is opt-in (gateway
+        reactions); reasoning restored on assistant rows only; ``api_content`` VERBATIM (no sanitize/strip)
+        so replay keeps the provider prompt cache byte-stable."""
         from hermes_state import _strip_background_review_harness, _strip_stale_tool_call_markers
+        # Runtime import avoids the transcript_repair -> hermes_state_messages module cycle.
+        from agent.transcript_repair import transcript_row_snapshot
+        # Only the unaddressed live replay gets the digest: row-addressed loaders (include_row_ids) keep the
+        # legacy resumed-dict path, whose rewrite never re-writes columns the projection does not decode
+        # (a CAS-match rewrite of a resumed row would otherwise null token_count).
+        stamp_snapshot = repair_alternation and not include_row_ids
         messages = []
         exact_user_clones: Dict[Tuple[Any, str], Dict[str, Any]] = {}
         tool_uid_index: Dict[str, str] = {}  # pairing-id variant -> uid, from the assistant rows indexed so far
@@ -1655,6 +1577,8 @@ class SessionMessagesMixin:
             # Underscore-prefixed like ``_row_id``: transports strip it before the wire; compression's
             # assembly copies strip it so rotated child handoffs still flush (_fresh_compaction_message_copy).
             msg = {"role": row["role"], "content": content, _DB_PERSISTED_MARKER_KEY: True}
+            if stamp_snapshot:
+                msg[DB_ROW_SNAPSHOT] = transcript_row_snapshot(row)
             # Born durable (#92231): this dict is materialized FROM a durable row, so stamp the persistence
             # marker at the source instead of relying on every restore caller to thread the loaded list back
             # through a flush as ``conversation_history=`` — any identity-losing handoff (compression's

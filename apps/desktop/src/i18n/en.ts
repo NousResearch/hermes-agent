@@ -1,5 +1,9 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
+import { enAuxTasks } from './en_aux_tasks'
+import { enBoot } from './en_boot'
+import { enModelMenu } from './en_model_menu'
+import { enSharedMetrics } from './en_shared_metrics'
 import type { Translations } from './types'
 
 export const en: Translations = {
@@ -13,102 +17,9 @@ export const en: Translations = {
       message: 'This file does not exist — it may have been deleted or moved, or it lives on another machine.'
     }
   },
-  sharedMetrics: {
-    consentTitle: 'Help improve Hermes?',
-    consentBody:
-      'Shared metrics contain only bounded counters. Never prompts, files, paths or error text. Collection is local. Sending them to Nous is a separate opt-in.',
-    whatIsCollected: 'What is collected',
-    collectedIntro: 'Only bounded counters:',
-    collectedActivity: 'Activity, session length, outcomes and error classes',
-    collectedModels: 'Model routes and token totals',
-    collectedNames: 'Built-in tool, command and catalog names',
-    collectedMilestones: 'Bucketed setup counts',
-    collectedReliability: 'Update results and timing, crashes, startup and reply speed, messaging-platform health',
-    collectedUsage:
-      'How Hermes gets used: agent accuracy and efficiency (edit matches, loops, recoveries, tokens and tool calls per task, cache breaks), active time per surface and Desktop mode, which app areas, actions and settings are used, closed quickly or switched off, and provider setup outcomes',
-    collectedMachine:
-      'Coarse machine facts: RAM range, GPU type, Hermes version age and release channel, updates behind, whether a local model server is used',
-    installId:
-      'Sending uploads each daily package to the Nous telemetry service. Packages carry this profile’s install ID: a stable random UUID with no personal information, reset by deleting the shared-metrics directory.',
-    consentWindow:
-      'Only packages whose entire collection period falls inside a recorded consent window are ever sent — data from before you opt in, or from any gap while sending was off, stays on this machine. Sending can be turned off again at any time.',
-    readDocs: 'Read the full details',
-    share: 'Collect and send to Nous',
-    local: 'Collect locally only',
-    off: 'No thanks',
-    changeLater: 'You can change this any time in Settings → Safety.',
-    saveFailed: 'Couldn’t save your choice',
-    collectLabel: 'Collect usage stats',
-    collectDesc: 'Bounded counters kept on this device. Never prompts, files, paths or error text.',
-    sendLabel: 'Send usage stats to Nous',
-    sendDesc:
-      'Upload each daily package to the Nous telemetry service. Only data from inside a consent window is sent. Needs collection on.',
-    unavailable: 'Update the Hermes backend to change this setting.',
-    stripBody: 'Bounded counters only, never prompts or files.',
-    stripChoices: { share: 'Send to Nous', local: 'Local only', off: 'No thanks' },
-    stripDetails: 'Details'
-  },
+  sharedMetrics: enSharedMetrics,
   // English editorial copy stays in the shipped JSONL; other locales override it.
   intro: { stock: {}, custom: () => [] },
-  catalog: {
-    add: 'Add',
-    added: 'Added',
-    discover: 'Discover',
-    featured: 'Featured',
-    explorePlugins: 'Explore plugins',
-    exploreSkills: 'Explore skills',
-    mostStarred: 'Most starred',
-    newest: 'Newest',
-    recentlyUpdated: 'Recently updated',
-    alphabetical: 'Name',
-    sortBy: 'Sort by',
-    seeAll: 'See all',
-    related: 'More like this',
-    tags: 'Tags',
-    screenshots: 'Screenshots',
-    listView: 'List view',
-    cardView: 'Card view',
-    installTitle: (name: string) => `Install “${name}”?`,
-    installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
-    installTo: 'Install to',
-    thisComputer: 'This computer',
-    installing: 'Installing…',
-    installComplete: (name: string) => `“${name}” installed`,
-    destinationChanged: 'The destination changed. Close this dialog and open the install link again.',
-    installed: 'Installed',
-    searchSkills: 'Search skills',
-    searchPlugins: 'Search plugins',
-    allSources: 'All sources',
-    allCategories: 'All categories',
-    about: 'About',
-    author: 'Author',
-    source: 'Source',
-    category: 'Category',
-    version: 'Version',
-    platforms: 'Platforms',
-    requires: 'Requires',
-    tools: 'Tools',
-    hooks: 'Hooks',
-    middleware: 'Middleware',
-    commands: 'Commands',
-    license: 'License',
-    addedDate: 'Added',
-    updatedDate: 'Updated',
-    repository: 'Repository',
-    documentation: 'Documentation',
-    noResults: 'No matches',
-    tryAnother: 'Try another search or clear your filters.',
-    clearFilters: 'Clear filters',
-    filters: 'Filters',
-    loadFailed: 'Could not load the catalog',
-    retry: 'Try again',
-    more: 'Show more',
-    pinned: 'Reviewed commit',
-    snapshotHint: 'From the Hermes catalog. Browsing never contacts source repositories.',
-    installHint: 'Review the source before installing. Changes apply to new sessions.',
-    results: (count: number) => `${count.toLocaleString()} result${count === 1 ? '' : 's'}`,
-    back: 'Back to results'
-  },
   connectors: {
     title: 'Connect your apps',
     connect: 'Connect',
@@ -483,86 +394,7 @@ export const en: Translations = {
     revealUnavailable: 'That path is not on this computer — it lives on the backend machine. Use “Reveal in filetree”.'
   },
 
-  boot: {
-    ready: 'Hermes Desktop is ready',
-    desktopBootFailedWithMessage: message => `Desktop boot failed: ${message}`,
-    steps: {
-      connectingGateway: 'Connecting live desktop gateway',
-      loadingSettings: 'Loading Hermes settings',
-      loadingSessions: 'Loading recent sessions',
-      retryingRemoteBackend: 'Reconnecting to the remote Hermes backend…',
-      startingDesktopConnection: 'Starting desktop connection',
-      startingHermesDesktop: 'Starting Hermes Desktop…'
-    },
-    errors: {
-      backgroundExited:
-        'The service that runs your chats closed unexpectedly. Restart it to keep going — your chats and settings are safe.',
-      backgroundExitedDuringStartup: 'Hermes stopped right after it started.',
-      backendStopped: 'Hermes stopped working in the background',
-      restartHermes: 'Restart Hermes',
-      openLogs: 'Open logs',
-      desktopBootFailed: "Hermes couldn't start",
-      gatewayConnectionLost: 'Hermes lost its connection',
-      gatewayConnectionLostDetail:
-        'Still trying to reconnect. You can keep reading and drafting. If this keeps up, reconnect now or check your connection settings.',
-      reconnectNow: 'Reconnect now',
-      connectionSettings: 'Connection settings',
-      gatewaySignInRequired: 'Your remote Hermes signed you out',
-      gatewaySignInRequiredDetail: 'Sign in again to reconnect. Your chats and settings are safe.',
-      signInAgain: 'Sign in again',
-      ipcBridgeUnavailable: "Hermes Desktop couldn't talk to its own background layer. Restart the app."
-    },
-    // Plain causes for a local backend boot failure (`classifyBootFailure`);
-    // the raw output stays behind "Show recent logs".
-    causes: {
-      exitedEarly: "Hermes' background service stopped right after starting.",
-      timedOut: "Hermes' background service didn't answer in time.",
-      permission: "Hermes couldn't write to its data folder (permission problem).",
-      diskFull: 'The disk is full, so Hermes could not start.',
-      portInUse: 'Another program is using the network port Hermes needs.',
-      installMissing: "Part of Hermes' installation is missing. Choose Repair install to put it back."
-    },
-    failure: {
-      title: "Hermes couldn't start",
-      description:
-        "Hermes' background service didn't come up. Try one of the recovery steps below. Nothing here deletes your chats or settings.",
-      details: 'Details',
-      remoteTitle: 'Remote gateway sign-in required',
-      remoteDescription:
-        'Your remote gateway session has expired. Sign in again to reconnect. Nothing here deletes your chats or settings.',
-      retry: 'Retry',
-      repairInstall: 'Repair install',
-      useLocalGateway: 'Use local gateway',
-      gatewaySettings: 'Gateway settings',
-      back: 'Back',
-      openLogs: 'Open logs',
-      repairHint: 'Repair re-runs the installer and can take a few minutes on a fresh machine.',
-      bundledReinstallHint:
-        'This bundled install can’t repair itself from inside the app — reinstall the app to restore its backend.',
-      reinstallApp: 'Reinstall the app',
-      remoteSignInHint: signInLabel =>
-        `Signs out of the saved remote browser session, then opens ${signInLabel}. Use local gateway to switch to the bundled backend instead.`,
-      signOutAndSignIn: 'Sign out & sign in',
-      remoteFailureHint: 'Check the gateway URL and sign-in under Gateway settings, or switch to the local gateway.',
-      cloudDownTitle: 'Nous Cloud agent is down',
-      cloudDownDescription:
-        'The Nous-managed cloud agent this gateway connects to is returning a server error. It cannot be restarted from here — check its status, switch to the local gateway, or get support.',
-      cloudDownHint:
-        'The buttons below open the Nous Portal (instance status and controls) and our Discord for support.',
-      cloudDownCheckPortal: 'Check Portal status',
-      cloudDownDiscord: 'Get help on Discord',
-      hideRecentLogs: 'Hide recent logs',
-      showRecentLogs: 'Show recent logs',
-      signedInTitle: 'Signed in',
-      signedInMessage: 'Reconnecting to the remote gateway…',
-      signInIncompleteTitle: 'Sign-in incomplete',
-      signInIncompleteMessage: 'The login window closed before authentication finished.',
-      signInFailed: 'Sign-in failed',
-      signInToRemoteGateway: 'Sign in to remote gateway',
-      signInWithProvider: provider => `Sign in with ${provider}`,
-      identityProvider: 'your identity provider'
-    }
-  },
+  boot: enBoot.boot,
 
   notifications: {
     sharedProfileWarning:
@@ -660,7 +492,7 @@ export const en: Translations = {
       inputTitleNamed: session => `Input needed — ${session}`,
       inputBody: 'Hermes is waiting for your response.',
       turnDoneTitle: 'Hermes finished',
-      turnDoneBody: '',
+      turnDoneBody: 'Message complete.',
       turnErrorTitle: 'Turn failed',
       backgroundDoneTitle: 'Background task finished',
       backgroundFailedTitle: 'Background task failed',
@@ -928,6 +760,14 @@ export const en: Translations = {
     resetConfirm: 'Reset all settings to Hermes defaults?',
     exportFailed: 'Export failed',
     resetFailed: 'Reset failed',
+    pluginPages: {
+      blurb: 'Options that installed plugins add. Each plugin gets its own page, and some add sub-pages under it.',
+      empty: 'No plugin has settings yet.',
+      manage: 'Manage plugins',
+      agentSettings: 'Agent settings',
+      pageCount: (n: number) => (n === 1 ? '1 page' : `${n} pages`),
+      missing: 'That plugin has no settings page. It may be disabled or uninstalled.'
+    },
     nav: {
       providers: 'Providers',
       providerAccounts: 'Accounts',
@@ -945,24 +785,16 @@ export const en: Translations = {
       about: 'About',
       billing: 'Billing',
       notifications: 'Notifications',
-      vault: 'Passwords & Logins'
+      vault: 'Passwords & Logins',
+      plugins: 'Plugins'
     },
     plugins: {
       title: 'Desktop plugins',
-      blurb:
-        'Extend this app, not an agent — installed once for the whole app, whichever profile, gateway, or machine you connect to. Bundled or dropped into the desktop-plugins folder; toggles apply live.',
-      count: n => `${n} installed`,
       openFolder: 'Open Desktop plugins folder',
       rescan: 'Rescan',
       reveal: 'Reveal in file manager',
-      enable: 'Enable',
-      disable: 'Disable',
       failed: 'failed',
-      empty: 'No desktop plugins installed yet.',
       kinds: { bundled: 'bundled', disk: 'on disk', runtime: 'runtime' },
-      agentHalfMissing: 'agent half missing here',
-      agentHalfMissingTip:
-        'This is the desktop half of a bundled plugin, but its agent half is not installed on the currently connected backend/profile. Install it from Capabilities → Plugins.',
       installModal: {
         installFromGit: 'Install from Git',
         reviewRepository: 'Review repository',
@@ -1165,6 +997,9 @@ export const en: Translations = {
       system: { label: 'System', description: 'Follow OS appearance' }
     },
     appearance: {
+      chatTextScaleTitle: 'Chat Text Size',
+      chatTextScaleDesc:
+        'Scales conversation text and the message editor relative to UI Scale. Sidebars and controls stay the same size.',
       title: 'Appearance',
       intro: 'Desktop-only. Mode is brightness; theme is palette and chat chrome.',
       colorMode: 'Color Mode',
@@ -1435,7 +1270,11 @@ export const en: Translations = {
       toolsetsWipeConfirm:
         'Remove all enabled toolsets? This disables memory, terminal, web search, delegation, and most other tools until you re-enable them.',
       keepAwakeTitle: 'Keep computer awake',
-      keepAwakeDesc: 'Stop this machine from sleeping so long or overnight runs keep going. The display can still dim.',
+      keepAwakeDesc:
+        'Stop this machine from sleeping. "While working" holds it only while a turn is in flight, so overnight runs survive without pinning the laptop awake all week. The display can still dim.',
+      keepAwakeOff: 'Off',
+      keepAwakeWhileWorking: 'While working',
+      keepAwakeAlways: 'Always',
       disableF12Title: 'Disable F12 DevTools',
       disableF12Desc: 'Block F12 from opening Developer Tools. Ctrl+Shift+I (or Cmd+Opt+I on Mac) still works.',
       alwaysExternalLinksTitle: 'Always open links in external browser',
@@ -1745,6 +1584,8 @@ export const en: Translations = {
         'Unsupported remote platform. Hermes Desktop SSH mode supports Linux, macOS, and Windows remote hosts.',
       sshErrTimeout: 'SSH connection timed out. The host may be unreachable or asleep.',
       sshErrUpdateRequired: 'Update Hermes on the remote host before connecting with Desktop SSH.',
+      sshErrInteractiveAuth:
+        'Tailscale SSH requires an interactive browser check. In Terminal, run `ssh <host> true`, complete the check, then retry — Hermes runs SSH non-interactively.',
       sshErrUnknown: 'SSH connection failed.'
     },
     keys: {
@@ -1831,6 +1672,8 @@ export const en: Translations = {
       defaultsLabel: 'Defaults',
       reasoning: 'Reasoning',
       reasoningOff: 'Off',
+      speed: 'Speed',
+      speedStandard: 'Standard',
       defaultsFailed: 'Failed to save model defaults',
       loadFailed: 'Could not load models',
       restartRequired: 'This backend is running old code after an update. Restart it to load the new code.',
@@ -1845,6 +1688,8 @@ export const en: Translations = {
       change: 'Change',
       autoUseMain: 'auto · use main model',
       inheritMainEffort: 'inherit · main model effort',
+      inheritsFrom: task => `inherits ${task}`,
+      followTask: task => `Follow ${task}`,
       providerDefault: '(provider default)',
       fallbackAdd: 'Add fallback',
       fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
@@ -1856,19 +1701,7 @@ export const en: Translations = {
       moaAggregator: 'Aggregator',
       moaAggregatorBilled: 'acting model · billed for the run',
       moaReferenceHint: 'advises once per turn by default',
-      tasks: {
-        vision: { label: 'Vision', hint: 'Image analysis' },
-        compression: { label: 'Compression', hint: 'Context compaction' },
-        skills_hub: { label: 'Skills hub', hint: 'Skill search' },
-        approval: { label: 'Approval', hint: 'Smart auto-approve' },
-        mcp: { label: 'MCP', hint: 'MCP tool routing' },
-        title_generation: { label: 'Title gen', hint: 'Session titles' },
-        review: { label: 'Review', hint: '/review reviewer subagent' },
-        triage_specifier: { label: 'Triage specifier', hint: 'Kanban spec fleshing' },
-        kanban_decomposer: { label: 'Kanban decomposer', hint: 'Task decomposition' },
-        profile_describer: { label: 'Profile describer', hint: 'Auto profile descriptions' },
-        curator: { label: 'Curator', hint: 'Skill-usage review' }
-      }
+      tasks: enAuxTasks
     },
     localModels: {
       connectionChanged: 'Local models connection changed',
@@ -2457,6 +2290,17 @@ export const en: Translations = {
     }
   },
 
+  skillDeepLink: {
+    installTitle: (name: string) => `Install “${name}”?`,
+    installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
+    installTo: 'Install to',
+    thisComputer: 'This computer',
+    installing: 'Installing…',
+    installComplete: (name: string) => `“${name}” installed`,
+    destinationChanged: 'The destination changed. Close this dialog and open the install link again.',
+    installed: 'Installed',
+    source: 'Source'
+  },
   skills: {
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
@@ -2556,6 +2400,7 @@ export const en: Translations = {
         no_interactive_session: 'no interactive session',
         version_too_old: 'version too old',
         missing_app: 'app missing',
+        unsupported_gpu: 'GPU not supported',
         unknown: 'status unknown'
       },
       catalogTitle: 'Plugin catalog',
@@ -2599,7 +2444,7 @@ export const en: Translations = {
         save: 'Save settings',
         saved: (name: string) => `${name} settings saved.`,
         saveFailed: (name: string) => `Could not save ${name} settings`,
-        optional: '(optional)',
+        required: 'Required',
         secretSet: '•••••••• (set)',
         secretStoredAs: (env: string) =>
           `Stored in the profile's .env as ${env}, never in config.yaml; leave blank to keep the current value.`
@@ -2971,6 +2816,9 @@ export const en: Translations = {
     replaceValue: 'Replace current value',
     openDocs: 'Open docs',
     clearField: key => `Clear ${key}`,
+    addListEntry: 'Add another',
+    removeListEntry: 'Remove',
+    listEntryPlaceholder: 'Enter an ID',
     enableAria: name => `Enable ${name}`,
     disableAria: name => `Disable ${name}`,
     platformEnabled: name => `${name} enabled`,
@@ -3047,7 +2895,7 @@ export const en: Translations = {
       },
       TELEGRAM_ALLOWED_USERS: {
         label: 'Allowed Telegram user IDs',
-        help: 'Recommended. Comma-separated numeric IDs from @userinfobot. Without this, anyone can DM your bot.'
+        help: 'Recommended. Numeric IDs from @userinfobot, one per box. Without this, anyone can DM your bot.'
       },
       TELEGRAM_PROXY: { label: 'Proxy URL', help: 'Only needed on networks where Telegram is blocked.' },
       DISCORD_BOT_TOKEN: {
@@ -3056,7 +2904,7 @@ export const en: Translations = {
       },
       DISCORD_ALLOWED_USERS: {
         label: 'Allowed Discord user IDs',
-        help: 'Recommended. Comma-separated Discord user IDs.'
+        help: 'Recommended. Discord user IDs, one per box.'
       },
       DISCORD_REPLY_TO_MODE: { label: 'Reply style', help: 'first, all, or off.' },
       DISCORD_ALLOW_ALL_USERS: {
@@ -3090,19 +2938,19 @@ export const en: Translations = {
         help: 'Use the app-level token required for Socket Mode.',
         placeholder: 'Paste Slack app token'
       },
-      SLACK_ALLOWED_USERS: { label: 'Allowed Slack user IDs', help: 'Recommended. Comma-separated Slack user IDs.' },
+      SLACK_ALLOWED_USERS: { label: 'Allowed Slack user IDs', help: 'Recommended. Slack user IDs, one per box.' },
       MATTERMOST_URL: { label: 'Server URL', placeholder: 'https://mattermost.example.com' },
       MATTERMOST_TOKEN: { label: 'Bot token' },
       MATTERMOST_ALLOWED_USERS: {
         label: 'Allowed user IDs',
-        help: 'Recommended. Comma-separated Mattermost user IDs.'
+        help: 'Recommended. Mattermost user IDs, one per box.'
       },
       MATRIX_HOMESERVER: { label: 'Homeserver URL', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: 'Access token' },
       MATRIX_USER_ID: { label: 'Bot user ID', placeholder: '@hermes:example.org' },
       MATRIX_ALLOWED_USERS: {
         label: 'Allowed Matrix user IDs',
-        help: 'Recommended. Comma-separated user IDs in @user:server format.'
+        help: 'Recommended. User IDs in @user:server format, one per box.'
       },
       SIGNAL_HTTP_URL: {
         label: 'Signal bridge URL',
@@ -3110,7 +2958,7 @@ export const en: Translations = {
         help: 'URL of a running signal-cli REST bridge.'
       },
       SIGNAL_ACCOUNT: { label: 'Phone number', help: 'The number registered with your signal-cli bridge.' },
-      SIGNAL_ALLOWED_USERS: { label: 'Allowed Signal users', help: 'Recommended. Comma-separated Signal identifiers.' },
+      SIGNAL_ALLOWED_USERS: { label: 'Allowed Signal users', help: 'Recommended. Signal identifiers, one per box.' },
       WHATSAPP_ENABLED: {
         label: 'Enable WhatsApp bridge',
         help: 'Set automatically by the toggle below. Leave alone unless you know you need it.'
@@ -3118,7 +2966,7 @@ export const en: Translations = {
       WHATSAPP_MODE: { label: 'Bridge mode' },
       WHATSAPP_ALLOWED_USERS: {
         label: 'Allowed WhatsApp users',
-        help: 'Recommended. Comma-separated phone numbers or WhatsApp IDs.'
+        help: 'Recommended. Phone numbers or WhatsApp IDs, one per box.'
       }
     },
     platformIntro: {}
@@ -3670,6 +3518,8 @@ export const en: Translations = {
       reveal: 'Reveal in folder',
       copyPath: 'Copy path',
       removeFromSidebar: 'Hide from sidebar',
+      createdInPreviousContext:
+        "Project created on the previous connection or profile. Switch back to find it; IDEA.md wasn't written.",
       createFailed: 'Could not create project',
       staleBackend:
         'Update the Hermes backend to create projects — your backend is older than this desktop app (Settings → Updates → Backend).',
@@ -3906,7 +3756,7 @@ export const en: Translations = {
       '/init': 'Generate or update AGENTS.md project instructions from a repo scan',
       '/suggestions': 'Review suggested automations (accept/dismiss)',
       '/blueprint': 'Set up an automation from a blueprint template',
-      '/browser': 'Manage browser CDP connection [connect|disconnect|status] (local gateway only)',
+      '/browser': 'Manage the agent browser [connect|disconnect|status|use]',
       '/palette': 'Open the fuzzy command palette (also Ctrl+P)',
       '/usage': 'Show token usage and rate limits; `reset` redeems a banked Codex limit reset',
       '/subscription': 'View your Nous plan and change it in the browser',
@@ -3955,6 +3805,11 @@ export const en: Translations = {
     queueDroppedTitle: 'Queued prompt dropped',
     queueDroppedBody:
       'This background queue entry was dropped because its session could not be resumed after repeated attempts. Nothing else in the queue was affected.',
+    terminalSelectionMissingTitle: 'Terminal selection unavailable',
+    terminalSelectionMissingBody:
+      'Re-select the terminal lines (Ctrl/Cmd+L) before sending — this chip has no original text.',
+    queuedTerminalSelectionExpiredBody:
+      'This queued terminal selection is no longer available. Re-select the lines (Ctrl/Cmd+L) and queue the message again.',
     previewUnavailable: 'Preview unavailable',
     previewLabel: label => `Preview ${label}`,
     couldNotPreview: label => `Could not preview ${label}`,
@@ -4170,6 +4025,7 @@ export const en: Translations = {
       scopeUncommitted: 'Uncommitted',
       scopeBranch: 'Branch',
       scopeLastTurn: 'Last turn',
+      readOnlyScope: 'Read-only view — stage, revert, and commit apply to Uncommitted',
       commit: 'Commit',
       commitAndPush: 'Commit & Push',
       commitPlaceholder: shortcut => `Message (${shortcut} to commit)`,
@@ -4298,10 +4154,10 @@ export const en: Translations = {
       restarting: 'Backend restarting to load the update…',
       notAvailable: 'Update not available for this backend.',
       failed: 'Backend update failed.',
-      noReturn: 'Backend didn’t come back online. The update may not have completed — check the backend host.'
+      noReturn: 'Backend didn’t come back online. The update may not have completed — check the backend host.',
+      owed: steps => `Backend updated, but still owed: ${steps}. Re-run \`hermes update\` to finish them.`
     },
-    // Update-status overlay + version-details (mechanism-aware update UI).
-    appName: 'Hermes',
+    appName: 'Hermes', // Update-status overlay + version-details (mechanism-aware update UI).
     version: (value: string) => `Version ${value}`,
     versionUnavailable: 'Version unavailable',
     checkNow: 'Check now',
@@ -4638,23 +4494,14 @@ export const en: Translations = {
     windowControls: 'Window controls',
     paneControls: 'Pane controls',
     appControls: 'App controls',
-    modelMenu: {
-      search: 'Search models',
-      noModels: 'No models found',
-      editModels: 'Edit models…',
-      followDefault: 'Use Settings default',
-      refreshModels: 'Refresh models',
-      fast: 'Fast',
-      free: 'free',
-      cacheRead: 'cached read',
-      priceTitle: (input: string, output: string, cache: string) =>
-        `Input ${input}/Mtok · Output ${output}/Mtok` + (cache ? ` · Cached read ${cache}/Mtok` : '')
-    },
+    modelMenu: enModelMenu,
     modelOptions: {
       noOptions: 'No options for this model',
       options: 'Options',
       thinking: 'Thinking',
       fast: 'Fast',
+      ultrafast: 'Ultrafast',
+      useStandardSpeed: 'Use standard speed',
       effort: 'Effort',
       minimal: 'Minimal',
       low: 'Low',
@@ -4717,6 +4564,9 @@ export const en: Translations = {
       showTerminal: 'Show terminal',
       hideTerminal: 'Hide terminal',
       gateway: 'Gateway',
+      backend: 'Backend',
+      messagingStopped: 'messaging stopped',
+      messagingDegraded: name => `${name} down`,
       gatewayReady: 'ready',
       gatewayNeedsSetup: 'needs setup',
       gatewayUnavailable: 'inference unavailable',
@@ -4847,10 +4697,15 @@ export const en: Translations = {
 
   preview: {
     tab: 'Preview',
+    pin: 'Pin to workspace',
+    unpin: 'Unpin from workspace',
     closePane: 'Close preview pane',
     loading: 'Loading preview',
     unavailable: 'Preview unavailable',
     missingTarget: 'That path does not exist on this computer',
+    missingTitle: 'File no longer exists',
+    missingBody: label =>
+      `${label} was deleted, moved, or its temporary location was cleared. This tab will not be restored on the next launch.`,
     opening: 'Opening...',
     hide: 'Hide',
     openPreview: 'Open preview',
@@ -4876,6 +4731,7 @@ export const en: Translations = {
     editing: 'Editing',
     unsavedChanges: 'Unsaved changes',
     saveFailed: message => `Couldn't save: ${message}`,
+    saveScopeChanged: 'Switch back to the original connection and profile to save this draft.',
     diskChangedTitle: 'File changed on disk',
     diskChangedBody:
       'This file changed since you opened it. Overwrite it with your version, or discard your edits and reload?',
@@ -5069,6 +4925,7 @@ export const en: Translations = {
       branchNewChat: 'Branch in new chat',
       react: 'React',
       dismissError: 'Dismiss error',
+      responseStopped: 'Response stopped',
       errorLayers: {
         auth: 'Sign-in problem',
         billing: 'Out of credits',
@@ -5320,6 +5177,8 @@ export const en: Translations = {
       skipped: 'Skipped',
       noAnswer: 'No answer',
       confirmAndContinueLabel: 'Confirm and continue',
+      singleSelectHint: 'Pick one',
+      multiSelectHint: 'Select all that apply',
       questionProgress: (answered, total) => `${answered} of ${total} answered`,
       notDelivered:
         "This question didn't reach the app, so it can't be answered here. Press Stop to end the turn, then reply in chat."
@@ -5516,11 +5375,11 @@ export const en: Translations = {
     sessionUnavailable: 'Session unavailable',
     createSessionFailed: 'Could not create a new session',
     promptFailed: 'Prompt failed',
-    staleSessionTitle: 'Chat out of date',
-    staleSessionBody:
-      'This window was behind another view of the same chat. Latest messages were loaded. Send again if you still want to.',
     providerCredentialRequired: 'Add a provider credential before sending your first message.',
     emptySlashCommand: 'empty slash command',
+    slashCommandIgnoredTitle: 'Command not sent',
+    slashCommandIgnoredBody:
+      'Slash commands cannot be combined with attachments. Remove the attachment or send the command separately.',
     desktopCommands: 'Desktop commands',
     skillCommandsAvailable: count => `${count} skill commands available.`,
     warningLine: message => `warning: ${message}`,
@@ -5585,6 +5444,9 @@ export const en: Translations = {
     openImage: 'Open image',
     downloadImage: 'Download image',
     savingImage: 'Saving image',
+    zoomIn: 'Zoom in',
+    zoomOut: 'Zoom out',
+    resetZoom: 'Reset zoom',
     imagePreviewFailed: 'Image preview failed',
     imageAttach: 'Image attach',
     imageWriteFailed: 'Failed to write image to disk.',

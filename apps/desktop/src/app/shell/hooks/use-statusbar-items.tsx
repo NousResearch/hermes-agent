@@ -17,6 +17,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { displayPath, pathLeaf } from '@/lib/display-path'
+import { statusBarGatewayHealth } from '@/lib/gateway-health-pill'
 import {
   Activity,
   AlertCircle,
@@ -30,7 +31,7 @@ import {
   Terminal,
   Zap
 } from '@/lib/icons'
-import { runtimeReadinessDisplay, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { resolveSessionTimerSince } from '@/lib/session-timer-since'
 import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -60,13 +61,8 @@ import {
   idsShareLineage,
   sessionMatchesStoredId
 } from '@/store/session'
-import {
-  $focusedRuntimeId,
-  $focusedSessionState,
-  $focusedStoredSessionId,
-  $sessionTiles,
-  isSessionRemote
-} from '@/store/session-states'
+import { $focusedStoredSessionId } from '@/store/session-focus'
+import { $focusedRuntimeId, $focusedSessionState, $sessionTiles, isSessionRemote } from '@/store/session-states'
 import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
 import { $gatewayRestarting } from '@/store/system-actions'
@@ -140,16 +136,24 @@ export function useStatusbarItems({
   const primaryTurnStartedAt = useStore($turnStartedAt)
 
   // The indicator must speak the same scope as the Spawn-tree panel it opens:
-  // every session's subagents, never background system actions. Only two
-  // COUNTS are read, so select scalars — a whole-map `useStore` re-ran this
-  // hook (rebuilding all ~9 statusbar items) on every subagent progress tick
-  // in ANY session, including background ones.
+  // running/queued from every session (never background system actions), plus
+  // terminal rows only for the session the user is in — the scope
+  // `subagentsForPanel` derives, so the count and the tree can never disagree
+  // and finished history from inactive sessions stops accumulating (#75505).
+  // Only two COUNTS are read, so select scalars — a whole-map `useStore` re-ran
+  // this hook (rebuilding all ~9 statusbar items) on every subagent progress
+  // tick in ANY session, including background ones.
   const subagentsRunning = useStoreSelector($subagentsBySession, bySession =>
     Object.values(bySession).reduce((sum, items) => sum + activeSubagentCount(items), 0)
   )
 
+  // Terminal rows only from the session the user is in — the panel drops other
+  // sessions' finished history (#75505), so the count the indicator shows must
+  // not resurrect it. Live running/queued rows stay cross-session above.
   const subagentsFailed = useStoreSelector($subagentsBySession, bySession =>
-    Object.values(bySession).reduce((sum, items) => sum + failedSubagentCount(items), 0)
+    Object.entries(bySession)
+      .filter(([sid]) => sid === primaryActiveSessionId)
+      .reduce((sum, [, items]) => sum + failedSubagentCount(items), 0)
   )
 
   // Backend truth for the free-tier chip. Refreshed on the ambient status
@@ -362,20 +366,30 @@ export function useStatusbarItems({
 
   const gatewayOpen = gatewayState === 'open'
   const gatewayConnecting = gatewayState === 'connecting'
-  const inferenceReady = gatewayOpen && inferenceStatus?.ready === true
-  const gatewayDegraded = gatewayOpen || gatewayConnecting
-  const readinessDisplay = runtimeReadinessDisplay(inferenceStatus)
 
-  const gatewayDetail = gatewayOpen
-    ? {
-        checking: copy.gatewayChecking,
-        needs_setup: copy.gatewayNeedsSetup,
-        ready: copy.gatewayReady,
-        unavailable: copy.gatewayUnavailable
-      }[readinessDisplay]
-    : gatewayConnecting
-      ? copy.gatewayConnecting
-      : copy.gatewayOffline
+  const gatewayHealth = statusBarGatewayHealth({
+    connectionState: gatewayState,
+    copy: {
+      backend: copy.backend,
+      checking: copy.gatewayChecking,
+      connecting: copy.gatewayConnecting,
+      messagingDegraded: copy.messagingDegraded,
+      messagingStopped: copy.messagingStopped,
+      needsSetup: copy.gatewayNeedsSetup,
+      offline: copy.gatewayOffline,
+      ready: copy.gatewayReady,
+      restarting: copy.gatewayRestarting,
+      unavailable: copy.gatewayUnavailable
+    },
+    inferenceStatus,
+    messagingRunning: statusSnapshot?.gateway_running,
+    messagingState: statusSnapshot?.gateway_state,
+    platforms: statusSnapshot?.gateway_platforms,
+    restarting: gatewayRestarting
+  })
+
+  const inferenceReady = gatewayOpen && inferenceStatus?.ready === true && !gatewayHealth.degraded
+  const gatewayDegraded = gatewayOpen || gatewayConnecting || gatewayHealth.degraded
 
   const gatewayClassName = inferenceReady
     ? undefined
@@ -499,7 +513,7 @@ export function useStatusbarItems({
       },
       {
         className: gatewayRestarting ? undefined : gatewayClassName,
-        detail: gatewayRestarting ? copy.gatewayRestarting : gatewayDetail,
+        detail: gatewayHealth.detail,
         hidden: botsShowing,
         icon: gatewayRestarting ? (
           <GlyphSpinner ariaLabel={copy.gatewayRestarting} className="size-3" />
@@ -509,12 +523,12 @@ export function useStatusbarItems({
           <AlertCircle className="size-3" />
         ),
         id: 'gateway-health',
-        label: copy.gateway,
+        label: gatewayHealth.label,
         menuClassName: 'w-72',
         menuContent: gatewayMenuContent,
-        // Tip only when there's a real status reason — not "gateway status" restating the label.
-        title: inferenceStatus?.reason || undefined,
-        toggleLabel: copy.gateway,
+        // Tip only when there's a real status reason — not a restatement of the label.
+        title: gatewayHealth.title || inferenceStatus?.reason || undefined,
+        toggleLabel: copy.backend,
         variant: 'menu'
       },
       {
@@ -647,7 +661,7 @@ export function useStatusbarItems({
       guideOwnsSignIn,
       gatewayMenuContent,
       gatewayClassName,
-      gatewayDetail,
+      gatewayHealth,
       gatewayRestarting,
       inferenceReady,
       inferenceStatus?.reason,

@@ -826,12 +826,9 @@ class GatewayShutdownMixin:
         _maybe_update_status(force=True)
         if not self._running_agents and not (_cron0 or _api0 or _deferred0):
             return snapshot, False
-        # Cron has its own deadline: a chat turn is announced+resumable; a killed cron run is a permanent failure.
-        # ``timeout`` (``restart_drain_timeout``) defaults to 0 because interrupting a chat turn is
-        # announced and resumable; a cron run killed mid-flight is recorded in jobs.json as a permanent
-        # failure nobody is waiting on. Sharing one budget meant the default config could report
-        # ``timed_out=True`` after 0.00s with a cron job in flight and kill it — the drain never even
-        # entered this loop (#82161).
+        # Cron and api_server runs ride the cron floor: a chat turn is announced+resumable, but a killed
+        # cron run is a permanent failure and a killed /v1 run fails a caller blocked on its result.
+        # On ``restart_drain_timeout``'s 0 default they were killed after 0.00s (#82161, #132989).
         started = loop.time()
         deadline = started + timeout
         cron_deadline = started + (timeout if cron_timeout is None else cron_timeout)
@@ -839,7 +836,7 @@ class GatewayShutdownMixin:
         def _still_draining() -> bool:
             now = loop.time()
             agents, cron, api, deferred = self._drain_work_counts()
-            return bool(((agents or api or deferred) and now < deadline) or (cron and now < cron_deadline))
+            return bool(((agents or deferred) and now < deadline) or ((cron or api) and now < cron_deadline))
 
         # Both budgets at 0 = an expired deadline (loop unentered), so timed_out still comes from real state.
         while _still_draining():
@@ -1531,13 +1528,34 @@ class GatewayShutdownMixin:
         """
         return self._wedged_chat_agent_count() + self._wedged_cron_job_count()
 
+    def _restart_wait_cron_counts(self) -> dict:
+        """``cron.scheduler.get_restart_wait_cron_counts``, counted per profile-scoped run.
+
+        Fail-soft toward waiting: if the split can't be read, every active cron run stays
+        awaitable and nothing is excluded.
+        """
+        try:
+            from cron.scheduler import get_restart_wait_cron_counts
+            return get_restart_wait_cron_counts()
+        except Exception:
+            return {"awaitable": self._active_cron_job_count(), "wedged": 0, "restart_safe": 0}
+
     def _wedged_cron_job_count(self) -> int:
         """Cron runs past ``cron.scheduler.get_wedged_job_ids``'s allowance; 0 if cron can't import."""
-        try:
-            from cron.scheduler import get_wedged_job_ids
-            return len(get_wedged_job_ids())
-        except Exception:
-            return 0
+        return self._restart_wait_cron_counts()["wedged"]
+
+    def _restart_safe_cron_count(self) -> int:
+        """Cron runs whose worker owns a restart-safe systemd scope; 0 if cron can't import.
+
+        Such a worker runs outside the gateway cgroup, so neither the tool-process sweep nor
+        ``mark_running_jobs_interrupted`` reaches it, and its final send rides the durable delivery
+        queue for whichever gateway is live next. The restart after-turn wait must therefore not
+        hold the gateway in ``draining`` for it: waiting buys the run nothing and refuses new turns
+        for up to the whole cap (observed live: a 100-minute job held the gateway ~30 minutes).
+        Degraded (no user bus) workers are NOT in this set — they share the cgroup and die with a
+        systemd stop, so they keep holding the wait.
+        """
+        return self._restart_wait_cron_counts()["restart_safe"]
 
     def _wedged_chat_agent_count(self) -> int:
         """Running chat agents with no activity for ``agent.gateway_timeout`` (0 when disabled);
@@ -1566,8 +1584,24 @@ class GatewayShutdownMixin:
         )
 
     def _awaitable_work_count(self) -> int:
-        """Active work minus wedged turns — what the restart wait waits on."""
-        return max(0, self._active_work_count() - self._wedged_agent_count())
+        """Active work minus the units the restart wait must not hold for.
+
+        Two disjoint exclusions: wedged turns (idle past ``agent.gateway_timeout`` / past the cron
+        in-flight allowance — restart is their remedy, #115469) and cron runs executing in a
+        restart-safe external worker (``_restart_safe_cron_count``), which outlives this process
+        either way. Cron runs are counted per profile-scoped run by the scheduler, not by
+        subtracting from the bare-ID active count: two profiles can run the same job ID, and one
+        excluded run must not hide the other.
+        """
+        non_cron = (
+            self._running_agent_count()
+            + self._active_api_run_count()
+            + self._active_deferred_agent_worker_count()
+        )
+        return (
+            max(0, non_cron - self._wedged_chat_agent_count())
+            + self._restart_wait_cron_counts()["awaitable"]
+        )
 
     def _describe_active_work(self) -> list:
         """One dict per in-flight work unit the restart wait is holding for, so an observer
@@ -1602,7 +1636,8 @@ class GatewayShutdownMixin:
             for job in get_running_job_details():
                 units.append({"kind": "cron", "job_id": job["job_id"], "elapsed_s": job["elapsed_s"],
                               "pid": job["worker_pid"] or os.getpid(), "external": bool(job["worker_pid"]),
-                              "wedged": job["job_id"] in wedged})
+                              "wedged": job["job_id"] in wedged,
+                              "restart_safe": bool(job.get("restart_safe"))})
         for kind, count in (("api", self._active_api_run_count()), ("deferred", self._active_deferred_agent_worker_count())):
             units.extend({"kind": kind, "pid": os.getpid()} for _ in range(count))
         return units
@@ -1618,9 +1653,11 @@ class GatewayShutdownMixin:
             return True
         if self._awaitable_work_count() <= 0:
             logger.warning(
-                "Restart requested with %d active work unit(s), all wedged "
-                "past the inactivity timeout; skipping the after-turn wait "
-                "and proceeding to stop()/drain which will interrupt them", active,
+                "Restart requested with %d active work unit(s), none awaitable "
+                "(%d wedged past the inactivity timeout, %d in restart-safe external cron "
+                "workers that outlive this process); skipping the after-turn wait and "
+                "proceeding to stop()/drain", active,
+                self._wedged_agent_count(), self._restart_safe_cron_count(),
             )
             return False
         timeout = float(getattr(self, "_restart_after_turn_timeout", 0.0) or 0.0)
@@ -1651,8 +1688,10 @@ class GatewayShutdownMixin:
             if (now - last_status_at) >= 30.0:
                 logger.info(
                     "Restart deferred: waiting on %d active work unit(s) "
-                    "(%d wedged and excluded; %.0fs remaining before force drain): %s",
-                    self._awaitable_work_count(), self._wedged_agent_count(), deadline - now,
+                    "(%d wedged and excluded, %d restart-safe and excluded; "
+                    "%.0fs remaining before force drain): %s",
+                    self._awaitable_work_count(), self._wedged_agent_count(),
+                    self._restart_safe_cron_count(), deadline - now,
                     self._describe_active_work(),
                 )
                 self._scale_to_zero_status("draining", "restart wait: status mark failed")
@@ -1660,8 +1699,10 @@ class GatewayShutdownMixin:
             await asyncio.sleep(0.1)
         if self._active_work_count() > 0:
             logger.warning(
-                "Restart deferred wait: %d wedged work unit(s) remain; "
-                "proceeding to stop()/drain which will interrupt them", self._active_work_count(),
+                "Restart deferred wait: %d excluded work unit(s) remain "
+                "(%d wedged, %d restart-safe external cron); proceeding to stop()/drain",
+                self._active_work_count(), self._wedged_agent_count(),
+                self._restart_safe_cron_count(),
             )
             return False
         logger.info("Restart deferred wait complete — active work drained; proceeding to stop()")
@@ -1866,11 +1907,11 @@ class GatewayShutdownMixin:
         _cron_timeout = resolve_cron_drain_budget(
             timeout, _cron_drain_cfg, watchdog_delay=_cron_leash, elapsed=ctx.elapsed(),
         )
-        if _cron_at_start and _cron_timeout > timeout:
+        if (_cron_at_start or _api_at_start) and _cron_timeout > timeout:
             logger.info(
-                "Shutdown drain: %d in-flight cron job(s) — waiting up to "
+                "Shutdown drain: %d in-flight cron job(s), %d api_server run(s) — waiting up to "
                 "%.0fs for them (cron_drain_timeout=%.0fs, restart_drain_timeout=%.0fs)",
-                _cron_at_start, _cron_timeout, _cron_drain_cfg, timeout,
+                _cron_at_start, _api_at_start, _cron_timeout, _cron_drain_cfg, timeout,
             )
         _drain_started_at = time.monotonic()
         ctx.active_agents, ctx.timed_out = await self._drain_active_agents(timeout, _cron_timeout)

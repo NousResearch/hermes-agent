@@ -3,10 +3,13 @@
 import shutil
 import sys
 
+import pytest
+
 from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
 from hermes_cli import nous_subscription as ns
 from tools import tool_backend_helpers
 from tools import browser_tool_install as bt_install
+from tools.image_generation_catalog import DEFAULT_MODEL as FAL_DEFAULT_MODEL
 
 
 _POOL_COVERAGE = {
@@ -204,6 +207,24 @@ def test_logged_in_entitled_account_yields_a_state_for_every_feature(monkeypatch
 
     assert set(result.features) == set(ns._FEATURES)
     assert result.modal.available is True  # entitled + gateway ready → managed modal is offered
+
+
+@pytest.mark.parametrize(
+    "image_cfg, partner",
+    [
+        ({"provider": "nous", "model": "krea-2-medium"}, "Krea"),
+        ({"model": FAL_DEFAULT_MODEL}, "FAL"),
+        ({"provider": "nous", "model": "openai/gpt-image-2"}, "Nous Portal"),
+        ({"model": "openai/gpt-image-2"}, "FAL"),
+        ({"use_gateway": True, "model": "openai/gpt-image-2"}, "FAL"),  # managed-model routing ignores legacy use_gateway
+        ({"provider": "openai", "model": "gpt-image-2"}, None),
+    ],
+)
+def test_managed_image_partner_follows_the_stored_model(image_cfg, partner):
+    """The partner is the gateway the runtime dispatcher routes to (tools.image_generation_managed.
+    managed_route): the stored model decides under the managed pick, Portal ids only with an
+    explicit ``nous``; a direct vendor owns its model id."""
+    assert ns.managed_image_partner({"image_gen": image_cfg}) == partner
 
 
 def test_prompt_enable_tool_gateway_pool_offers_covered_tools_only(monkeypatch):

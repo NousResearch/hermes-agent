@@ -16,11 +16,14 @@
 // fail loudly if a future spectrum-ts reshapes a path that still needs repair.
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const MARKER = "Hermes patch: Preserve mixed text + attachment iMessage payloads";
 const POLL_TITLE_MARKER = "Hermes patch: Accept empty inbound iMessage poll titles";
 const POLL_CACHE_MARKER = "Hermes patch: Preserve outbound iMessage poll metadata";
+const POLL_RESOLVE_MARKER = "Hermes patch: Resolve poll seeds before remote fetch";
+const POLL_SEQUENCE_MARKER = "Hermes patch: Identify poll votes by stream sequence";
 const POLL_RECOVERY_MARKER = "Hermes patch: Merge and persist iMessage poll option identifiers";
 // Patch names reported by patchSpectrumTs() and the sidecar's /healthz.
 const PATCH_MARKERS = {
@@ -28,8 +31,10 @@ const PATCH_MARKERS = {
   pollEmptyTitle: POLL_TITLE_MARKER,
   pollMetadataCache: POLL_CACHE_MARKER,
   pollVoteRecovery: POLL_RECOVERY_MARKER,
+  pollSeedResolution: POLL_RESOLVE_MARKER,
+  pollVoteSequence: POLL_SEQUENCE_MARKER,
 };
-const POLL_PATCHES = ["pollEmptyTitle", "pollMetadataCache", "pollVoteRecovery"];
+const POLL_PATCHES = ["pollEmptyTitle", "pollMetadataCache", "pollVoteRecovery", "pollSeedResolution", "pollVoteSequence"];
 
 function scriptDir() {
   return path.dirname(fileURLToPath(import.meta.url));
@@ -219,6 +224,32 @@ function patchPollVoteRecovery(source) {
   );
 }
 
+function patchPollSeedResolution(source) {
+  if (source.includes(POLL_RESOLVE_MARKER)) return source;
+  source = replaceOnce(source,
+    `const resolvePoll = async (client, cache, event) => {\n\tconst cached = cache.get(event.pollMessageGuid);`,
+    `const resolvePoll = async (client, cache, event) => {\n\t// ${POLL_RESOLVE_MARKER}\n\tconst cached = cache.get(event.pollMessageGuid) ?? globalThis.__hermesPhotonPollSeeds?.get(event.pollMessageGuid);\n\tif (cached) cache.set(event.pollMessageGuid, cached);`,
+    "cold poll seed resolution");
+  return replaceOnce(source,
+    `\tlet cached = await resolvePoll(client, pollCache, event);`,
+    `\tconst seed = globalThis.__hermesPhotonPollSeeds?.get(event.pollMessageGuid);\n\tconst known = pollCache.get(event.pollMessageGuid);\n\tif (seed && known) {\n\t\tfor (const [identifier, option] of seed.optionsByIdentifier) {\n\t\t\tif (!known.optionsByIdentifier.has(identifier)) known.optionsByIdentifier.set(identifier, known.poll.options.find((choice) => choice.title === option.title) ?? option);\n\t\t}\n\t}\n\tlet cached = await resolvePoll(client, pollCache, event);`,
+    "vote seed merge before remote fetch");
+}
+
+function patchPollSequence(source) {
+  if (source.includes(POLL_SEQUENCE_MARKER)) return source;
+  const start = source.indexOf("const buildPollOptionMessage = (input) => {");
+  const end = source.indexOf("const refreshPollMetadata =", start);
+  if (start < 0 || end < 0) throw new Error("could not find poll vote message builder");
+  const builder = source.slice(start, end);
+  const anchor = /id: `([^`]+)`,/g;
+  const matches = [...builder.matchAll(anchor)];
+  if (matches.length !== 1) throw new Error("expected exactly one poll vote message id");
+  const patched = builder.replace(anchor, (_, body) =>
+    `// ${POLL_SEQUENCE_MARKER}\n\t\tid: \`${body}\${Number.isSafeInteger(input.event.sequence) ? \`:seq:\${input.event.sequence}\` : ""}\`,`);
+  return source.slice(0, start) + patched + source.slice(end);
+}
+
 function patchStates(sources) {
   const states = {};
   for (const [name, marker] of Object.entries(PATCH_MARKERS)) {
@@ -246,15 +277,22 @@ function upstreamPreservesMixed(source) {
 // so a crash or full disk never leaves a truncated SDK module.
 function writeAtomically(writes) {
   const temps = [];
+  const renamed = [];
   try {
-    for (const { file, patched } of writes) {
-      const temp = `${file}.hermes-${process.pid}.tmp`;
-      fs.writeFileSync(temp, patched, "utf8");
-      temps.push([temp, file]);
+    for (const { file, patched, raw } of writes) {
+      const temp = `${file}.hermes-${process.pid}-${randomUUID()}.tmp`;
+      temps.push({ temp, file, raw });
+      fs.writeFileSync(temp, patched, { encoding: "utf8", flag: "wx" });
     }
-    for (const [temp, file] of temps) fs.renameSync(temp, file);
+    for (const entry of temps) {
+      fs.renameSync(entry.temp, entry.file);
+      renamed.push(entry);
+    }
+  } catch (err) {
+    for (const { file, raw } of renamed.reverse()) fs.writeFileSync(file, raw, "utf8");
+    throw err;
   } finally {
-    for (const [temp] of temps) fs.rmSync(temp, { force: true });
+    for (const { temp } of temps) fs.rmSync(temp, { force: true });
   }
 }
 
@@ -275,7 +313,6 @@ export function patchSpectrumTs(root = scriptDir()) {
     .map((name) => path.join(dist, name));
 
   const writes = [];
-  const originals = [];
   const finals = [];
   let firstCandidate;
   try {
@@ -299,7 +336,6 @@ export function patchSpectrumTs(root = scriptDir()) {
         continue;
       }
       firstCandidate ??= file;
-      originals.push(original);
 
       let patched = original;
       if (hasPollMapper) {
@@ -307,6 +343,8 @@ export function patchSpectrumTs(root = scriptDir()) {
         patched = patchPollMetadataCache(patched);
         if (patched.includes(POLL_CACHE_MARKER)) {
           patched = patchPollVoteRecovery(patched);
+          patched = patchPollSeedResolution(patched);
+          patched = patchPollSequence(patched);
         }
       }
       if (hasMixedMapper && !original.includes(MARKER) && !upstreamPreservesMixed(original)) {
@@ -317,7 +355,7 @@ export function patchSpectrumTs(root = scriptDir()) {
       }
       finals.push(patched);
       if (patched !== original) {
-        writes.push({ file, patched: usedCRLF ? patched.split("\n").join(CRLF) : patched });
+        writes.push({ file, raw, patched: usedCRLF ? patched.split("\n").join(CRLF) : patched });
       }
     }
     if (!firstCandidate) {
@@ -335,17 +373,16 @@ export function patchSpectrumTs(root = scriptDir()) {
     }
     writeAtomically(writes);
     if (writes.length > 0) {
-      return { patched: true, file: writes[0].file, patches: states };
+      return { patched: true, file: writes[0].file, patches: patchStates(files.map((file) => fs.readFileSync(file, "utf8"))) };
     }
     return {
       patched: false,
       file: firstCandidate,
       reason: "already patched or not needed",
-      patches: states,
+      patches: patchStates(files.map((file) => fs.readFileSync(file, "utf8"))),
     };
   } catch (err) {
-    // Nothing was written: report what the files on disk already carry.
-    err.patches = patchStates(originals);
+    err.patches = patchStates(files.map((file) => fs.readFileSync(file, "utf8")));
     throw err;
   }
 }

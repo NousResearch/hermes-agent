@@ -394,7 +394,7 @@ async def test_partial_group_totals_are_marked(monkeypatch) -> None:
     vote = _poll_option_event(title="Route", group=True)
     vote["content"].update(tally={"Route": 1, "Calendar": 0}, voters=1, partial=True)
     await adapter._dispatch_inbound(vote)
-    assert captured[0].text.endswith("\nTotals (since restart): Route: 1, Calendar: 0 (1 voters)")
+    assert captured[0].text.endswith("\nTotals (partial): Route: 1, Calendar: 0 (1 voters)")
 
 
 @pytest.mark.asyncio
@@ -462,7 +462,7 @@ async def test_unrelated_vote_does_not_reach_a_busy_session(monkeypatch, caplog,
 
 
 @pytest.mark.asyncio
-async def test_unmatched_poll_id_answers_the_only_open_poll_clarify(monkeypatch, caplog) -> None:
+async def test_unmatched_poll_id_cannot_answer_the_only_open_poll_clarify(monkeypatch, caplog) -> None:
     import logging
 
     adapter = _make_adapter(monkeypatch)
@@ -473,8 +473,8 @@ async def test_unmatched_poll_id_answers_the_only_open_poll_clarify(monkeypatch,
     await adapter.send_clarify("+155****4567", entry.question, entry.choices, "clar-1", "sess-1")
     with caplog.at_level(logging.WARNING, logger="plugins.platforms.photon.adapter"):
         await adapter._dispatch_inbound(_poll_option_event(title="Calendar", poll_id="vote-id"))
-    assert entry.response == "Calendar"
-    assert captured == []
+    assert not entry.event.is_set()
+    assert len(captured) == 1 and not captured[0].allow_gateway_control
     assert "unmatched poll vote-id" in caplog.text
 
 

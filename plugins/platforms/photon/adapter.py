@@ -100,12 +100,13 @@ async def _aiter_ndjson_lines(response: Any) -> AsyncIterator[str]:
 
 class _PollClarify:
     """A clarify rendered as a native poll; ``poll_id`` lands when ``/send-poll`` returns."""
-    __slots__ = ("clarify_id", "chat_id", "question", "choices", "poll_id")
+    __slots__ = ("clarify_id", "chat_id", "question", "choices", "poll_id", "sending")
 
     def __init__(self, clarify_id: str, chat_id: str, question: str, choices: List[str]) -> None:
         self.clarify_id, self.chat_id, self.question = clarify_id, chat_id, question
         self.choices = [str(choice).strip() for choice in choices]
         self.poll_id: Optional[str] = None
+        self.sending = True
 
     def is_open(self) -> bool:
         from tools import clarify_gateway as cg
@@ -619,7 +620,8 @@ class PhotonAdapter(BasePlatformAdapter):
         self._pending_fffc: Dict[str, tuple[float, Any]] = {}  # chat_key → (timestamp, asyncio.Task)
         self._clarify_polls: Dict[str, _PollClarify] = {}  # poll id → clarify (bounded; answers stale votes)
         self._open_poll_clarifies: Dict[str, _PollClarify] = {}  # clarify id → still-open poll clarify
-        self._early_poll_votes: Dict[str, List[Tuple[str, str]]] = {}  # poll id → [(chat id, choice)] before binding
+        self._early_poll_votes: Dict[str, Dict[str, Tuple[str, str, bool]]] = {}  # poll id → latest voter states
+        self._sent_poll_ids: Dict[str, bool] = {}  # survives binding eviction; refreshed from sidecar seeds
         # Group-chat mention gating (parity with BlueBubbles); DMs are never gated.
         require_mention = extra.get("require_mention")
         if require_mention is None:
@@ -908,21 +910,24 @@ class PhotonAdapter(BasePlatformAdapter):
     async def _dispatch_poll_vote(self, content: Dict[str, Any], chat_id: str, chat_type: str,
                                   make_event: Callable[..., MessageEvent]) -> None:
         """Resolve the vote's own poll clarify, else forward it as gated, non-control info."""
+        poll_id = content.get("pollId") or None
+        if not poll_id:
+            logger.warning("[photon] poll vote without pollId; cannot answer a clarify")
         choice = (content.get("title") or "").strip()
         if not choice:
             logger.debug("[photon] ignoring poll vote with empty title")
             return
         selected = content.get("selected") is not False
-        poll_id = content.get("pollId") or None
         vote_event = make_event("", allow_gateway_control=False)
         source = vote_event.source
         authorized = (not getattr(source, "profile_route_rejected", False)
                       and self._is_sender_authorized(source.user_id, chat_type, chat_id) is True)
+        self._prune_poll_clarifies()
         binding = self._clarify_polls.get(poll_id) if poll_id else None
         if binding is not None and binding.chat_id != chat_id:
             binding = None
         elif binding is None and poll_id not in self._clarify_polls:
-            binding = self._match_unbound_poll_vote(poll_id, chat_id, choice, selected and authorized)
+            binding = self._match_unbound_poll_vote(poll_id, chat_id, source.user_id, choice, selected, authorized)
             if binding is self._BUFFERED:
                 return
         if binding is not None and selected and authorized:
@@ -930,6 +935,7 @@ class PhotonAdapter(BasePlatformAdapter):
             if resolve_gateway_clarify(binding.clarify_id, choice):
                 # The clarify result carries the answer; forwarding it too would be a second turn.
                 logger.info("[photon] poll vote answered clarify %s", binding.clarify_id)
+                self._prune_poll_clarifies()
                 return
         if chat_type == "group" and self.require_mention:
             logger.debug("[photon] ignoring group poll vote (require_mention=true; votes carry no mention)")
@@ -945,31 +951,74 @@ class PhotonAdapter(BasePlatformAdapter):
 
     _BUFFERED: Any = object()
 
-    def _match_unbound_poll_vote(self, poll_id: Optional[str], chat_id: str, choice: str,
-                                 can_answer: bool) -> Any:
-        """A vote whose poll id no clarify claims: answer the chat's only open poll clarify
-        when the choice fits, or hold it until an in-flight ``/send-poll`` binds its id."""
-        self._prune_poll_clarifies()
-        open_here = [pending for pending in self._open_poll_clarifies.values() if pending.chat_id == chat_id]
-        if not open_here:
+    def _match_unbound_poll_vote(self, poll_id: Optional[str], chat_id: str, voter: str,
+                                 choice: str, selected: bool, authorized: bool) -> Any:
+        """Only the id returned by an in-flight send can claim an early vote."""
+        if not poll_id or poll_id in self._sent_poll_ids:
             return None
-        if all(pending.poll_id for pending in open_here):
-            logger.warning("[photon] poll vote for unmatched poll %s while %d poll clarify(s) open in chat %s",
-                           poll_id or "unknown", len(open_here), chat_id)
-        else:
-            logger.info("[photon] poll vote for %s arrived before /send-poll returned", poll_id or "unknown poll")
-        if len(open_here) == 1 and choice in open_here[0].choices:
-            return open_here[0]
-        if can_answer and poll_id and any(pending.poll_id is None for pending in open_here):
-            bounded_put(self._early_poll_votes, poll_id, [
-                *self._early_poll_votes.get(poll_id, []), (chat_id, choice)], 50)
-            return self._BUFFERED
-        return None
+        sending = any(pending.chat_id == chat_id and pending.sending
+                      for pending in self._open_poll_clarifies.values())
+        if not sending:
+            logger.warning("[photon] stale poll vote for unmatched poll %s in chat %s", poll_id, chat_id)
+            return None
+        if not authorized:
+            return None
+        states = self._early_poll_votes.get(poll_id, {})
+        previous = states.get(voter)
+        # A removal of an old choice must not erase a newer selection.
+        if selected or previous is None or previous[1] == choice:
+            bounded_put(states, voter, (chat_id, choice, selected), 32)
+        bounded_put(self._early_poll_votes, poll_id, states, 50)
+        return self._BUFFERED
 
     def _prune_poll_clarifies(self) -> None:
         for clarify_id, pending in list(self._open_poll_clarifies.items()):
             if not pending.is_open():
                 self._open_poll_clarifies.pop(clarify_id, None)
+        sending_chats = {pending.chat_id for pending in self._open_poll_clarifies.values() if pending.sending}
+        for poll_id, states in list(self._early_poll_votes.items()):
+            kept = {voter: state for voter, state in states.items() if state[0] in sending_chats}
+            if kept:
+                self._early_poll_votes[poll_id] = kept
+            else:
+                self._early_poll_votes.pop(poll_id, None)
+
+    async def _watch_poll_send(self, pending: _PollClarify) -> None:
+        while pending.sending and pending.is_open():
+            await asyncio.sleep(0.1)
+        self._prune_poll_clarifies()
+
+    def _refresh_sent_poll_ids(self) -> None:
+        try:
+            with _poll_state_path().open("rb") as stream:
+                raw = stream.read(1024 * 1024 + 1)
+            if len(raw) > 1024 * 1024:
+                logger.warning("[photon] ignoring oversized poll seed file")
+                return
+            saved = json.loads(raw)
+            ids = saved.get("sentPollIds", []) + [poll.get("id") for poll in saved.get("polls", [])
+                                                   if isinstance(poll, dict)]
+            for poll_id in ids:
+                if isinstance(poll_id, str) and poll_id.strip():
+                    bounded_put(self._sent_poll_ids, poll_id, True, 2000)
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError, AttributeError, TypeError) as exc:
+            logger.warning("[photon] ignoring unreadable poll seed file: %s", exc)
+
+    def _bind_poll_clarify(self, pending: _PollClarify, poll_id: Optional[str]) -> None:
+        if not poll_id:
+            logger.warning("[photon] /send-poll returned no messageId; clarify requires typed text")
+            return
+        from tools.clarify_gateway import resolve_gateway_clarify
+        pending.poll_id = poll_id
+        bounded_put(self._clarify_polls, poll_id, pending, 200)
+        bounded_put(self._sent_poll_ids, poll_id, True, 2000)
+        states = self._early_poll_votes.pop(poll_id, {})
+        for vote_chat, choice, selected in states.values():
+            if vote_chat == pending.chat_id and selected and resolve_gateway_clarify(pending.clarify_id, choice):
+                logger.info("[photon] early poll vote answered clarify %s", pending.clarify_id)
+                break
 
     @staticmethod
     def _poll_vote_text(content: Dict[str, Any], choice: str, selected: bool,
@@ -982,7 +1031,7 @@ class PhotonAdapter(BasePlatformAdapter):
         tally = content.get("tally")
         if chat_type == "group" and isinstance(tally, dict) and tally:
             totals = ", ".join(f"{title}: {count}" for title, count in tally.items())
-            since = " (since restart)" if content.get("partial") else ""
+            since = " (partial)" if content.get("partial") else ""
             text += f"\nTotals{since}: {totals} ({content.get('voters', 0)} voters)"
         return text
 
@@ -1343,9 +1392,20 @@ class PhotonAdapter(BasePlatformAdapter):
             return question_result
         # Registered before the send: a vote can stream in before /send-poll returns its id.
         self._prune_poll_clarifies()
+        if not any(pending.sending for pending in self._open_poll_clarifies.values()):
+            self._refresh_sent_poll_ids()
         pending = _PollClarify(clarify_id, chat_id, question, list(choices))
         self._open_poll_clarifies[clarify_id] = pending
-        result = await self._sidecar_send_poll(chat_id, question, list(choices))
+        watcher = asyncio.create_task(self._watch_poll_send(pending))
+        try:
+            result = await self._sidecar_send_poll(chat_id, question, list(choices))
+            if result.success:
+                self._bind_poll_clarify(pending, result.message_id)
+        finally:
+            pending.sending = False
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
+            self._prune_poll_clarifies()
         if not result.success:
             self._open_poll_clarifies.pop(clarify_id, None)
             # The question bubble already arrived; reuse the numbered fallback without it.
@@ -1355,12 +1415,6 @@ class PhotonAdapter(BasePlatformAdapter):
                         for i, choice in enumerate(choices, start=1)]
             hint = t("gateway.clarify.hint_single")
             return await self.send(chat_id, "\n".join([*numbered, "", hint]), metadata=metadata)
-        if result.message_id:
-            pending.poll_id = result.message_id
-            bounded_put(self._clarify_polls, result.message_id, pending, 200)
-            for vote_chat, choice in self._early_poll_votes.pop(result.message_id, []):
-                if vote_chat == chat_id and cg.resolve_gateway_clarify(clarify_id, choice):
-                    logger.info("[photon] early poll vote answered clarify %s", clarify_id)
         return result
 
     # -- Outbound media (parity with BlueBubbles): URL-based helpers cache to a local path

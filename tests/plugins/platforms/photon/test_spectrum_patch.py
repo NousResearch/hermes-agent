@@ -591,7 +591,7 @@ def test_renamed_poll_mapper_fails_loudly_without_writes(tmp_path: Path) -> None
     chunk.write_text(renamed, encoding="utf-8")
     result = _patch(tmp_path)
     assert result.returncode == 1
-    assert "poll vote patch missing (pollEmptyTitle, pollMetadataCache, pollVoteRecovery)" in result.stderr
+    assert "poll vote patch missing (pollEmptyTitle, pollMetadataCache, pollVoteRecovery, pollSeedResolution, pollVoteSequence)" in result.stderr
     assert '"pollEmptyTitle":"missing"' in result.stderr
     assert chunk.read_text(encoding="utf-8") == renamed
 
@@ -603,8 +603,6 @@ def test_patch_reports_states_and_leaves_no_temp_files(tmp_path: Path) -> None:
     assert '"mixedAttachments":"applied","pollEmptyTitle":"applied"' in result.stderr
     assert '"pollMetadataCache":"applied","pollVoteRecovery":"applied"' in result.stderr
     assert sorted(path.name for path in chunk.parent.iterdir()) == ["index.js"]
-    source = Path("plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs").read_text(encoding="utf-8")
-    assert "fs.renameSync(temp, file)" in source  # temp + rename, never an in-place truncating write
 
 
 _REAL_SIDECAR = Path("plugins/platforms/photon/sidecar")

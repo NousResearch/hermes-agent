@@ -5,7 +5,7 @@ function nonempty(value) {
 export function parsePollVoteId(messageId, senderId) {
   if (typeof messageId !== "string") return null;
   // Parse the fixed suffix from the right; sender handles can contain colons.
-  const match = /^(.*):([^:]+):(selected|deselected):(-?\d+)$/.exec(messageId);
+  const match = /^(.*):([^:]+):(selected|deselected):(-?\d+)(?::seq:(\d+))?$/.exec(messageId);
   if (!match) return null;
   const prefix = match[1];
   const senderSuffix = nonempty(senderId) ? `:${senderId}` : null;
@@ -13,7 +13,8 @@ export function parsePollVoteId(messageId, senderId) {
   const pollId = senderSuffix && prefix.endsWith(senderSuffix)
     ? prefix.slice(0, -senderSuffix.length)
     : separator > 0 ? prefix.slice(0, separator) : null;
-  return pollId ? { pollId, eventTime: Number(match[4]) } : null;
+  return pollId ? { pollId, eventTime: Number(match[4]),
+    ...(match[5] ? { sequence: Number(match[5]) } : {}) } : null;
 }
 
 // Event ids remembered per poll so a reconnect replay is a no-op.
@@ -25,10 +26,11 @@ export class PollVoteTracker {
     this.polls = new Map();
     // Polls this process saw from creation; their totals are complete.
     this.complete = new Set();
+    this.seenPolls = new Set();
   }
 
   noteCreated(pollId) {
-    if (!nonempty(pollId)) return;
+    if (!nonempty(pollId) || this.seenPolls.has(pollId)) return;
     this.complete.delete(pollId);
     this.complete.add(pollId);
     while (this.complete.size > this.limit) this.complete.delete(this.complete.keys().next().value);
@@ -51,12 +53,19 @@ export class PollVoteTracker {
       partial: true,
     };
     if (!pollId) return vote;
-    vote.partial = !this.complete.has(pollId);
     let poll = this.polls.get(pollId);
+    if (!poll && this.seenPolls.has(pollId)) this.complete.delete(pollId);
+    this.seenPolls.add(pollId);
+    while (this.seenPolls.size > this.limit * 10) this.seenPolls.delete(this.seenPolls.values().next().value);
     if (!poll) poll = { voters: new Map(), updates: new Map(), options: new Set(), seen: new Set() };
     this.polls.delete(pollId);
     this.polls.set(pollId, poll);
-    while (this.polls.size > this.limit) this.polls.delete(this.polls.keys().next().value);
+    while (this.polls.size > this.limit) {
+      const evicted = this.polls.keys().next().value;
+      this.polls.delete(evicted);
+      this.complete.delete(evicted);
+    }
+    vote.partial = !this.complete.has(pollId);
     for (const option of content.poll?.options ?? []) {
       if (nonempty(option?.title)) poll.options.add(option.title);
     }
@@ -73,14 +82,14 @@ export class PollVoteTracker {
     if (voter && nonempty(vote.title) && !replay) {
       const selections = poll.voters.get(voter) ?? new Set();
       const updates = poll.updates.get(voter) ?? new Map();
-      const time = parsed?.eventTime ?? new Date(message.timestamp).getTime();
+      const order = parsed?.sequence ?? parsed?.eventTime ?? new Date(message.timestamp).getTime();
       const previous = updates.get(vote.title);
-      // Reconnects can replay a selection after its deselection. Keep the latest state;
-      // the stream is ordered, so an unseen event at the same millisecond is newer.
-      if (!previous || !Number.isFinite(previous.time) || !Number.isFinite(time) || time >= previous.time) {
+      // Sequence orders distinct events even when their timestamps are identical.
+      // Legacy ids use time; their unseen equal-time events retain stream order.
+      if (!previous || !Number.isFinite(previous.order) || !Number.isFinite(order) || order >= previous.order) {
         if (vote.selected) selections.add(vote.title);
         else selections.delete(vote.title);
-        updates.set(vote.title, { time });
+        updates.set(vote.title, { order });
         poll.updates.set(voter, updates);
         if (selections.size) poll.voters.set(voter, selections);
         else poll.voters.delete(voter);

@@ -100,8 +100,7 @@ function fakeSsh(rules: any[] = []) {
       // Existing lifecycle fixtures predate the install-wide relaunch gate.
       // Their default remote has no update marker; focused marker tests below
       // use explicit SSH doubles to exercise live/uncertain transitions.
-      // The spawn payload (setsid/nohup) runs under the same marker gate as the relaunch probe.
-      const mutexWrapped = /setsid|nohup/.test(cmd)
+      const mutexWrapped = /setsid|nohup/.test(cmd) // spawn payloads run under the relaunch probe's marker gate
 
       if (cmd.includes('.hermes-update-in-progress') && !mutexWrapped) {
         return 'CLEAR'

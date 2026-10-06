@@ -29,6 +29,7 @@ import math
 import os
 import sqlite3
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import (
@@ -153,6 +154,9 @@ class ResolvedLocation(TypedDict, total=False):
     dwell_time: str
     previous_place: str
     telemetry_gap: str
+    placemark_name: Optional[str]
+    placemark_locality: Optional[str]
+    placemark_thoroughfare: Optional[str]
 
 
 class TimelineStayEvent(TypedDict, total=False):
@@ -339,36 +343,95 @@ def default_places_file() -> Path:
 
 
 def load_places(path: Path) -> List[PlaceRecord]:
-    if not path.is_file():
-        return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        log("ERROR", f"could not read places {path}: {exc}")
-        return []
-    if not isinstance(data, list):
-        log("ERROR", f"places file {path} must be a JSON list")
-        return []
-    return [
-        PlaceRecord(
-            id=str(item.get("id", "")),
-            name=str(item.get("name", "")),
-            category=str(item.get("category", "general")),
-            activity=str(item.get("activity", f"at {item.get('name', 'place')}")),
-            latitude=_to_float(item.get("latitude")),
-            longitude=_to_float(item.get("longitude")),
-            radius_meters=_to_float(item.get("radius_meters"), 150.0),
-            notes=str(item.get("notes", "")),
-        )
-        for item in data
-        if isinstance(item, dict) and "latitude" in item and "longitude" in item
-    ]
+    records: List[PlaceRecord] = []
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                records = [
+                    PlaceRecord(
+                        id=str(item.get("id", "")),
+                        name=str(item.get("name", "")),
+                        category=str(item.get("category", "general")),
+                        activity=str(item.get("activity", f"at {item.get('name', 'place')}")),
+                        latitude=_to_float(item.get("latitude")),
+                        longitude=_to_float(item.get("longitude")),
+                        radius_meters=_to_float(item.get("radius_meters"), 150.0),
+                        notes=str(item.get("notes", "")),
+                    )
+                    for item in data
+                    if isinstance(item, dict) and "latitude" in item and "longitude" in item
+                ]
+            else:
+                log("ERROR", f"places file {path} must be a JSON list")
+        except (OSError, json.JSONDecodeError) as exc:
+            log("ERROR", f"could not read places {path}: {exc}")
+
+    # Seamlessly merge places configured in the iOS app via iCloud container
+    for directory in ICLOUD_DIRS:
+        icloud_file = directory / "places.json"
+        if icloud_file.is_file() and (not path.is_file() or icloud_file.resolve() != path.resolve()):
+            try:
+                ic_data = json.loads(icloud_file.read_text(encoding="utf-8"))
+                if isinstance(ic_data, list):
+                    existing_names = {r["name"].strip().lower() for r in records}
+                    existing_ids = {r["id"].strip().lower() for r in records if r["id"]}
+                    for item in ic_data:
+                        if not isinstance(item, dict) or "latitude" not in item or "longitude" not in item:
+                            continue
+                        p_name = str(item.get("name", "")).strip().lower()
+                        p_id = str(item.get("id", "")).strip().lower()
+                        if p_id in existing_ids or (p_name and p_name in existing_names):
+                            continue
+                        records.append(
+                            PlaceRecord(
+                                id=str(item.get("id", "")),
+                                name=str(item.get("name", "")),
+                                category=str(item.get("category", "general")),
+                                activity=str(item.get("activity", f"at {item.get('name', 'place')}")),
+                                latitude=_to_float(item.get("latitude")),
+                                longitude=_to_float(item.get("longitude")),
+                                radius_meters=_to_float(item.get("radius_meters"), 150.0),
+                                notes=str(item.get("notes", "")),
+                            )
+                        )
+                        if p_name:
+                            existing_names.add(p_name)
+                        if p_id:
+                            existing_ids.add(p_id)
+            except Exception:
+                pass
+            break
+
+    return records
 
 
 def save_places(path: Path, places: Sequence[PlaceRecord]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(list(places), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    content = json.dumps(list(places), indent=2, ensure_ascii=False) + "\n"
+    path.write_text(content, encoding="utf-8")
     log("INFO", f"wrote {len(places)} place(s) to {path}")
+    path_str = str(path.resolve())
+    is_temp = (
+        path_str.startswith(tempfile.gettempdir())
+        or path_str.startswith("/tmp")
+        or path_str.startswith("/var/folders")
+        or path_str.startswith("/private/var")
+        or path_str.startswith("/private/tmp")
+    )
+    if not is_temp:
+        for directory in ICLOUD_DIRS:
+            if directory.is_dir():
+                icloud_file = directory / "places.json"
+                if icloud_file.resolve() != path.resolve():
+                    try:
+                        icloud_file.write_text(content, encoding="utf-8")
+                        log("INFO", f"mirrored {len(places)} place(s) to iCloud: {icloud_file}")
+                    except Exception:
+                        pass
+                break
+
+
 
 
 def match_place(latitude: float, longitude: float, places: Sequence[PlaceRecord]) -> Optional[PlaceRecord]:
@@ -450,6 +513,14 @@ def resolve_location(
         activity = str(known.get("activity") or category)
         at_known = True
         is_transit = False
+    elif raw.get("placemark_name"):
+        pm_name = str(raw["placemark_name"]).strip()
+        pm_loc = str(raw.get("placemark_locality") or "").strip()
+        place_name = f"{pm_name}, {pm_loc}" if pm_loc and pm_loc not in pm_name else pm_name
+        category = "apple_maps"
+        activity = f"at {pm_name}"
+        at_known = False
+        is_transit = False
     else:
         place_name = "Unlisted place"
         category = "unlisted"
@@ -502,6 +573,9 @@ def resolve_location(
         "is_moving_now": moving_now,
         "trigger_source": trig_src,
         "app_state": app_st,
+        "placemark_name": str(raw["placemark_name"]) if raw.get("placemark_name") else None,
+        "placemark_locality": str(raw["placemark_locality"]) if raw.get("placemark_locality") else None,
+        "placemark_thoroughfare": str(raw["placemark_thoroughfare"]) if raw.get("placemark_thoroughfare") else None,
     }
 
 
@@ -585,6 +659,8 @@ def format_location(loc: ResolvedLocation) -> str:
         f"coordinates: {loc.get('coordinates', 'unknown')}",
         f"source: {loc.get('source_file', 'unknown')}",
     ]
+    if loc.get("placemark_name"):
+        lines.append(f"apple_maps_placemark: {loc['placemark_name']}")
     if loc.get("arrived_at"):
         lines.append(f"arrived_at: {loc['arrived_at']}")
     if loc.get("dwell_time"):
@@ -709,9 +785,20 @@ def build_timeline(
                 gap_detected = True
                 gap_minutes = int(delta_sec // 60)
 
-        is_place = known is not None
-        place_name = known["name"] if known else "Unlisted place"
-        place_cat = known["category"] if known else "unlisted"
+        pm = str(r.get("placemark_name") or "").strip()
+        pm_loc = str(r.get("placemark_locality") or "").strip()
+        pm_display = f"{pm}, {pm_loc}" if (pm_loc and pm and pm_loc not in pm) else pm
+
+        is_place = known is not None or bool(pm)
+        if known:
+            place_name = known["name"]
+            place_cat = known["category"]
+        elif pm:
+            place_name = pm_display
+            place_cat = "apple_maps"
+        else:
+            place_name = "Unlisted place"
+            place_cat = "unlisted"
 
         if is_place:
             if current_transit is not None:
@@ -830,6 +917,20 @@ def build_timeline(
     latest_lat = _to_float(latest.get("latitude"))
     latest_lon = _to_float(latest.get("longitude"))
     latest_known = match_place(latest_lat, latest_lon, places)
+    latest_pm = str(latest.get("placemark_name") or "").strip()
+    latest_pm_loc = str(latest.get("placemark_locality") or "").strip()
+    latest_pm_display = f"{latest_pm}, {latest_pm_loc}" if (latest_pm_loc and latest_pm and latest_pm_loc not in latest_pm) else latest_pm
+
+    if latest_known:
+        curr_place = latest_known["name"]
+        curr_cat = latest_known["category"]
+    elif latest_pm:
+        curr_place = latest_pm_display
+        curr_cat = "apple_maps"
+    else:
+        curr_place = "Unlisted place"
+        curr_cat = "unlisted"
+
     latest_ts_str = str(latest.get("timestamp") or latest.get("recorded_at") or "")
     latest_ts = parse_utc(latest_ts_str) or now
     age_now = int((now - latest_ts).total_seconds())
@@ -838,8 +939,8 @@ def build_timeline(
         "status": "ok",
         "total_records": len(filtered_records),
         "events_count": len(clean_events),
-        "current_place": latest_known["name"] if latest_known else "Unlisted place",
-        "current_category": latest_known["category"] if latest_known else "unlisted",
+        "current_place": curr_place,
+        "current_category": curr_cat,
         "current_motion": str(latest.get("motion_activity") or "unknown"),
         "latest_recorded_at": latest_ts_str or None,
         "latest_age_seconds": age_now,
@@ -874,7 +975,9 @@ def query_history_sqlite(
             movement_reason TEXT,
             device_name TEXT,
             place_name TEXT,
-            place_category TEXT
+            place_category TEXT,
+            placemark_name TEXT,
+            placemark_locality TEXT
         )
         """
     )
@@ -882,11 +985,20 @@ def query_history_sqlite(
         lat = _to_float(r.get("latitude"))
         lon = _to_float(r.get("longitude"))
         known = match_place(lat, lon, places)
-        p_name = known["name"] if known else None
-        p_cat = known["category"] if known else None
+        pm_name = str(r.get("placemark_name") or "") or None
+        pm_loc = str(r.get("placemark_locality") or "") or None
+        if known:
+            p_name = known["name"]
+            p_cat = known["category"]
+        elif pm_name:
+            p_name = f"{pm_name}, {pm_loc}" if (pm_loc and pm_loc not in pm_name) else pm_name
+            p_cat = "apple_maps"
+        else:
+            p_name = None
+            p_cat = None
         cur.execute(
             """
-            INSERT INTO locations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO locations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(r.get("id", "")),
@@ -905,6 +1017,8 @@ def query_history_sqlite(
                 str(r.get("device_name") or ""),
                 p_name,
                 p_cat,
+                pm_name,
+                pm_loc,
             ),
         )
     conn.commit()

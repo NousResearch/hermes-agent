@@ -249,6 +249,55 @@ def test_bug_md_scenario_gap_detection() -> None:
     check("still_there is unconfirmed when old without fresh motion", resolved["still_there"] is False and "unconfirmed" in resolved["still_there_status"])
 
 
+def test_apple_maps_placemark_resolution() -> None:
+    places = [companion.PlaceRecord(id="home", name="Home", category="home", latitude=52.53, longitude=13.41, radius_meters=150.0)]
+    
+    # 1. Unlisted coordinate with Apple Maps placemark fallback
+    raw_with_pm = {
+        "latitude": 48.80196,
+        "longitude": 9.22026,
+        "timestamp": "2026-10-05T09:30:00Z",
+        "motion_activity": "stationary",
+        "motion_timestamp": "2026-10-05T09:30:00Z",
+        "placemark_name": "Fitness First Cannstatt",
+        "placemark_locality": "Stuttgart",
+        "movement_reason": "moved",
+    }
+    resolved = companion.resolve_location(raw_with_pm, places, companion.parse_utc("2026-10-05T09:40:00Z") or NOW, "fixture")
+    check("placemark name used when unlisted", resolved["place_name"] == "Fitness First Cannstatt, Stuttgart")
+    check("placemark category is apple_maps", resolved["place_category"] == "apple_maps")
+    formatted = companion.format_location(resolved)
+    check("formatted text includes apple_maps_placemark", "apple_maps_placemark: Fitness First Cannstatt" in formatted)
+
+    # 2. Known place overrides Apple Maps placemark
+    raw_at_home = {
+        "latitude": 52.53001,
+        "longitude": 13.41001,
+        "timestamp": "2026-10-05T12:00:00Z",
+        "motion_activity": "stationary",
+        "placemark_name": "Chausseestraße 42",
+        "placemark_locality": "Berlin",
+    }
+    resolved_home = companion.resolve_location(raw_at_home, places, companion.parse_utc("2026-10-05T12:05:00Z") or NOW, "fixture")
+    check("known place overrides placemark", resolved_home["place_name"] == "Home")
+    check("known place category kept", resolved_home["place_category"] == "home")
+
+    # 3. Timeline event uses placemark
+    records = [
+        {
+            "latitude": 48.80196,
+            "longitude": 9.22026,
+            "timestamp": "2026-10-05T09:30:00Z",
+            "motion_activity": "stationary",
+            "placemark_name": "Fitness First Cannstatt",
+            "placemark_locality": "Stuttgart",
+        }
+    ]
+    tl = companion.build_timeline(records, places, companion.parse_utc("2026-10-05T10:00:00Z") or NOW)
+    events = tl.get("events", [])
+    check("timeline uses placemark", len(events) > 0 and events[0].get("place_name") == "Fitness First Cannstatt, Stuttgart")
+
+
 def main() -> int:
     test_still_home_after_hours()
     test_walking_at_home()
@@ -262,6 +311,7 @@ def main() -> int:
     test_battery_is_not_reported()
     test_timeline_and_history()
     test_bug_md_scenario_gap_detection()
+    test_apple_maps_placemark_resolution()
     print("ok")
     return 0
 

@@ -46,7 +46,7 @@ Do not use this skill for a generic map, a route, or weather. Do not invent a pl
 - Location set to Always, Motion & Fitness allowed, and Health access allowed.
 - iCloud Drive has finished downloading `latest_location.json` and `latest_health.json`.
 
-If the skill config block names `hermes-companion.places_file` or `hermes-companion.icloud_dir`, pass those paths as `--places` and `--icloud-dir`. Otherwise the script uses its defaults, including an existing Hermes profile `state/places.json` when exactly one profile has that file.
+If the skill config block names `hermes-companion.places_file` or `hermes-companion.icloud_dir`, pass those paths as `--places` and `--icloud-dir`. Otherwise the script uses its defaults, including an existing Hermes profile `state/places.json` when exactly one profile has that file. Places added in the iOS app (`Places` tab) synchronize directly into the iCloud container (`Documents/places.json`) and are automatically merged with any profile places.
 
 ## How to Run
 
@@ -60,7 +60,7 @@ python3 ${HERMES_SKILL_DIR}/scripts/companion.py --context
 python3 ${HERMES_SKILL_DIR}/scripts/companion.py --json
 ```
 
-Known places:
+Known places (can also be managed directly in the iOS app):
 
 ```bash
 python3 ${HERMES_SKILL_DIR}/scripts/companion.py --list
@@ -104,7 +104,7 @@ This file is English because the model reads it. The user never sees it.
 4. Treat `motion_activity` when `motion_fresh` is `yes` as what the body is doing this minute. Walking at a saved place with an old GPS age is still that place, walking around, not lost and not in transit.
 5. Treat a fresh `recorded_at` as an accepted move. It does not say they arrived, left, or came back. Do not announce an arrival unless they said so.
 6. For health, use only lines present in this run. `age_seconds` is when that snapshot was saved. Steps and calories are from that time. Sleep is for the morning, or a short night mentioned in the evening. Do not recap last night's hours in the afternoon. A workout in progress gets one short line. A workout finished within about 90 minutes can include how it felt and protein or water as care. Recovery `fatigued` is the only case for urging rest.
-7. If `place_name` is `Unlisted place`, ask what to call it. Do not name it home, work, or a gym from the coordinates alone.
+7. If `place_name` is from an Apple Maps placemark (category `apple_maps`) or is `Unlisted place`, you can refer to it naturally. You may ask the user if they'd like to remember it as a custom place (e.g., Home, Work, Gym).
 
 ## Place and Motion Rules
 
@@ -126,7 +126,7 @@ Field notes live in `references/files.md`. Load that file only when a raw key is
 - Coordinates are for saving a place or when the user asks for them. Do not recite them in a normal reply.
 - Ignore `battery_level`, `battery_state`, and `speed` if an older file still has them. Battery percentage and speed are omitted from data and are not part of this app or skill.
 - Two Macs on the same Apple ID share the container. Read the local file; do not fetch it from the network.
-- The script does not reverse-geocode. An unlisted coordinate stays unlisted until the user names it.
+- The iPhone app reverse-geocodes via Apple Maps (CLGeocoder) and saves `placemark_name`. User-saved places in `places.json` always take precedence. If neither is available, it reports `Unlisted place`.
 
 ## Verification
 

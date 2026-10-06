@@ -107,23 +107,10 @@ def test_gated_status_is_public(gated_app):
 
 @pytest.mark.parametrize("path", [
     "/api/health",
-    "/api/config/defaults",
-    "/api/config/schema",
-    "/api/model/info",
     "/api/dashboard/themes",
-    "/api/dashboard/plugins",
 ])
 def test_other_public_api_paths_are_public_under_gate(gated_app, path):
-    """The remaining ``PUBLIC_API_PATHS`` entries must also bypass the
-    gate. They're documented as non-sensitive read-only endpoints that
-    the SPA pre-loads before login (themes, config schema, model
-    metadata). A 401 / 302-to-login here would block the dashboard
-    shell from rendering pre-auth.
-
-    Accept any non-auth-failure status: 200 when the route succeeds,
-    or any route-specific error (e.g. 400 / 404 / 500 from a missing
-    dependency) — but NEVER 401, and NEVER a 302 to ``/login``.
-    """
+    """Health and appearance bootstrap stay reachable before login."""
     r = gated_app.get(path, follow_redirects=False)
     assert r.status_code != 401, (
         f"{path} returned 401 under the OAuth gate — should be public"
@@ -134,6 +121,34 @@ def test_other_public_api_paths_are_public_under_gate(gated_app, path):
             f"{path} redirected to {location} — should be public, "
             "not bounced to /login"
         )
+
+
+_SENSITIVE_METADATA_PATHS = (
+    "/api/model/info",
+    "/api/dashboard/plugins",
+    "/api/config/defaults",
+    "/api/config/schema",
+    "/api/profiles",
+    "/api/providers/oauth",
+)
+
+
+@pytest.mark.parametrize("path", _SENSITIVE_METADATA_PATHS)
+def test_sensitive_dashboard_metadata_requires_session_and_stays_available_after_login(
+    gated_app, path
+):
+    response = gated_app.get(path, follow_redirects=False)
+    assert response.status_code == 401
+    assert response.json() == {
+        "error": "unauthenticated",
+        "detail": "Unauthorized",
+        "reason": "no_cookie",
+        "login_url": "/login",
+    }
+
+    _complete_stub_login(gated_app)
+    response = gated_app.get(path, follow_redirects=False)
+    assert response.status_code == 200, f"{path}: {response.text}"
 
 
 # ---------------------------------------------------------------------------

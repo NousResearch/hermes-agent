@@ -2010,6 +2010,8 @@ def _update_fallback_context_compressor(agent) -> None:
         config_context_length=getattr(agent, "_config_context_length", None),
         custom_providers=getattr(agent, "_custom_providers", None),
     )
+    from agent.agent_init import refresh_compressor_output_reservation
+    refresh_compressor_output_reservation(agent)
     compressor.update_model(  # callable api_key preserved → call_llm
         model=agent.model, context_length=fb_context_length, base_url=agent.base_url,
         api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,

@@ -47,3 +47,35 @@ async def test_preprocess_includes_slack_author_mention_for_shared_thread():
     assert result == "[Alice | Slack user <@U123>] mention me again"
 
 
+@pytest.mark.asyncio
+async def test_preprocess_includes_matrix_author_mxid_for_shared_thread():
+    """Shared Matrix rooms expose the current author's verifiable MXID next to
+    the display name, mirroring the Slack behaviour (#17916), so identity rests
+    on the server-set id rather than the mutable, per-room display name."""
+    runner = _make_runner(
+        GatewayConfig(
+            platforms={
+                Platform.MATRIX: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+    )
+    source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id="!room:example.org",
+        chat_name="team-room",
+        chat_type="group",
+        user_id="@alice:example.org",
+        user_name="Alice",
+        thread_id="$abc123",
+    )
+    event = MessageEvent(text="mention me again", source=source)
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result == "[Alice | Matrix user <@alice:example.org>] mention me again"
+
+

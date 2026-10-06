@@ -20,7 +20,7 @@ from fastapi import APIRouter
 from hermes_cli.web_routers._common import http_failure
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
-from hermes_cli.web_server_gateway import _split_text_for_speak_stream
+from hermes_cli.web_server_gateway import _read_dashboard_json_response, _split_text_for_speak_stream
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from hermes_cli.web_models import (
     AudioTranscriptionRequest,
@@ -250,7 +250,7 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
 
         def _fetch() -> Dict[str, Any]:
             with urllib.request.urlopen(request, timeout=10) as response:
-                return json.loads(response.read().decode("utf-8"))
+                return _read_dashboard_json_response(response)
 
         payload = await loop.run_in_executor(None, _fetch)
     except urllib.error.HTTPError as exc:

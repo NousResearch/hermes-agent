@@ -46,6 +46,7 @@ class StoreDegraded:
     recovered_at: Optional[float] = None  # epoch seconds of the first write that landed again
     sites: set = field(default_factory=set)
     skipped: set = field(default_factory=set)  # distinct (job id, scheduled instant) not run
+    reported: set = field(default_factory=set)  # misses already counted this outage (first_report)
     # Monotonic time of the last failed dispatch write or re-probe. None until a dispatch write
     # fails, so a due one-shot reaches its claim and settles its ``failed`` row once per probe.
     last_probe: Optional[float] = None
@@ -173,6 +174,19 @@ def dispatch_blocked(due_jobs: list) -> bool:
         if blocked:
             record.skipped |= _run_keys(due_jobs)
     return blocked
+
+
+def first_report(cron_dir: Path, job: dict) -> bool:
+    """Whether a missed run should be counted now. An unwritable store cannot persist the scan's
+    fast-forward, so the scan re-finds the same miss every tick: count it once per outage."""
+    record = _degraded.get(str(cron_dir))
+    if record is None:
+        return True
+    key = (job.get("id"), job.get("next_run_at"))
+    with _lock:
+        fresh = key not in record.reported
+        record.reported.add(key)
+    return fresh
 
 
 def recheck_idle() -> None:

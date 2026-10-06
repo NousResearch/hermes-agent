@@ -216,6 +216,8 @@ def test_unwritable_store_degrades_once_throttles_and_catches_up_once(cron_store
     assert events == [("unwritable", 0)]
     # Distinct (job, due instant): the unpersisted fast-forward keeps both on one instant each.
     assert store_health.degraded_record(cron_store / "cron").skipped_runs == 2
+    from cron.occurrences import get_catch_up_occurrence_count
+    assert get_catch_up_occurrence_count() == 1  # the unpersisted fast-forward is counted once, not per tick
     outage = False
     clock["now"], clock["mono"] = FIXED_NOW + timedelta(minutes=5), 180.0
     assert scheduler.tick(verbose=False, sync=True) == 2

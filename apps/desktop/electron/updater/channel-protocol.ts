@@ -373,7 +373,8 @@ function request(fields: Fields): ChannelRequest {
     'HERMES_DATA_DIR_SUFFIX',
     'HERMES_DESKTOP_USER_DATA_DIR',
     'HERMES_SHARED_AUTH_DIR',
-    'HERMES_GUEST_ONBOARDING'
+    'HERMES_GUEST_ONBOARDING',
+    'HERMES_PREVIEW_FULL_CONNECTORS'
   ])
 
   for (const key of environment.keys()) {

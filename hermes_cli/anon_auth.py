@@ -50,6 +50,11 @@ ANON_SECRET_ENV = "HERMES_ANON_API_SECRET"
 # tier did not exist. ``guest_enabled`` is the only reader. Not a user preference: never written to
 # config.yaml or .env, never shown in setup. Deleted at GA together with this comment.
 GUEST_ONBOARDING_ENV = "HERMES_GUEST_ONBOARDING"
+# Preview cohort for the free tier's connector set, sent once on account creation so the account
+# service can record it on the account. Exactly "true" or "false" is sent as that boolean; anything
+# else (unset included) omits the field and the service applies its default. Self-reported and
+# baked into desktop bundles in plain text: the service must treat it as a preference, never proof.
+PREVIEW_FULL_CONNECTORS_ENV = "HERMES_PREVIEW_FULL_CONNECTORS"
 GUEST_MINT_TIMEOUT_SECONDS = 5.0
 # Copy shared by every surface that names the free tier (R-USR-1): never guest / anonymous / account.
 FREE_TIER_LABEL = "Nous · free tier"
@@ -326,9 +331,17 @@ def _raise_for_anon_status(
               retryable=code not in ANON_TERMINAL_CODES)
 
 
+def mint_request_body() -> Dict[str, Any]:
+    """The ``/api/anonymous/create`` body: ``{"preview_full_connectors": bool}`` when the env var is
+    exactly ``true`` / ``false``, else ``{}``."""
+    raw = (os.environ.get(PREVIEW_FULL_CONNECTORS_ENV) or "").strip()
+    return {"preview_full_connectors": raw == "true"} if raw in ("true", "false") else {}
+
+
 def mint_guest(client: httpx.Client, portal_base_url: str) -> Dict[str, Any]:
     """``POST /api/anonymous/create`` -> ``{user_id, org_id, token, idle_ttl_days}``. Token shown once."""
-    response = client.post(f"{portal_base_url.rstrip('/')}/api/anonymous/create", headers=_anon_headers(), json={})
+    response = client.post(
+        f"{portal_base_url.rstrip('/')}/api/anonymous/create", headers=_anon_headers(), json=mint_request_body())
     payload = _raise_for_anon_status(response, action="sign-up")
     token = payload.get("token")
     if not isinstance(token, str) or not token.startswith("anon_"):

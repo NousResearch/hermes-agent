@@ -176,7 +176,8 @@ def test_all_ptb_clients_share_the_platform_ssl_context(monkeypatch):
         pass
     assert seen.get("verify") is shared
 
-    # An SSL_CERT_FILE bundle is honoured (as httpx verify=True did) and still cached once.
+    # An SSL_CERT_FILE bundle is honoured ON TOP of the platform store (as httpx
+    # verify=True did) and still cached once.
     import certifi
     from agent import ssl_verify
     monkeypatch.setattr(ssl_verify, "_CA_CONTEXTS", {})
@@ -184,7 +185,8 @@ def test_all_ptb_clients_share_the_platform_ssl_context(monkeypatch):
     bundle_ctx = ssl_verify.platform_ssl_context()
     assert bundle_ctx is ssl_verify.platform_ssl_context()
     assert bundle_ctx is not ssl_verify._shared_context(None)
-    assert bundle_ctx.cert_store_stats()["x509_ca"] > 0
+    assert type(bundle_ctx) is ssl.SSLContext  # truststore-injected: bundle + OS store
+    assert bundle_ctx._ctx.cert_store_stats()["x509_ca"] > 0
 
 
 def test_proxy_branch_general_pool_has_tight_keepalive(monkeypatch):

@@ -670,6 +670,48 @@ def _capture_digest(cap: CaptureResult) -> str:
     return hashlib.sha256((str(cap.image_mime_type or "") + ":").encode("utf-8")
                           + (cap.png_b64 or "").encode("ascii", "ignore")).hexdigest()
 
+def _model_facing_image_url(cap: CaptureResult, v: SimpleNamespace) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """Data URL for the model-facing screenshot, capped like every other native-vision embed.
+
+    A native desktop capture is embedded with no size bound (#133596): a high-resolution capture can
+    exceed a provider's per-image ceiling (Anthropic 5 MB — "Image base64 size … exceeds API limit")
+    and the whole tool result fails. Route the embed through the same proactive resize browser/native
+    vision already apply (``vision.embed_target_bytes`` + 1568px cap, JPEG re-encode when shrinking);
+    the original stays on disk at ``screenshot_path``. Returns ``(url, scale_info)`` — ``scale_info``
+    (orig/new dimensions) is None when nothing was downscaled. Fail-open: no persisted copy or a resize
+    failure embeds the raw bytes exactly as before."""
+    mime, _ext = _capture_image_format(cap)
+    raw_url = f"data:{mime};base64,{cap.png_b64}"
+    if not v.screenshot_path:
+        return raw_url, None
+    try:
+        from pathlib import Path as _P
+        from tools.vision_tools import _EMBED_MAX_DIMENSION, _resize_image_for_vision
+        from tools.vision_tools_history_budget import resolve_embed_target_bytes
+        scale_info: Dict[str, Any] = {}
+        data_url = _resize_image_for_vision(_P(v.screenshot_path), mime_type=mime,
+                                            max_base64_bytes=resolve_embed_target_bytes(),
+                                            max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True,
+                                            scale_out=scale_info)
+        return data_url, (scale_info or None)
+    except Exception as exc:
+        logger.debug("computer_use: embed resize skipped: %s", exc)
+        return raw_url, None
+
+def _image_scale_note(scale_info: Optional[Dict[str, Any]]) -> str:
+    """Summary suffix telling the model the embedded pixels were downscaled, so coordinates read off
+    the screenshot are scaled up to native desktop space (element bounds/index clicks are unaffected)."""
+    if not scale_info:
+        return ""
+    fx = scale_info["orig_width"] / scale_info["new_width"] if scale_info.get("new_width") else 1.0
+    fy = scale_info["orig_height"] / scale_info["new_height"] if scale_info.get("new_height") else 1.0
+    clause = (f"multiply by {fx:.2f}" if f"{fx:.2f}" == f"{fy:.2f}"
+              else f"multiply x by {fx:.2f} and y by {fy:.2f}")
+    return (f"\n  (screenshot downscaled from {scale_info['orig_width']}x{scale_info['orig_height']} to "
+            f"{scale_info.get('new_width')}x{scale_info.get('new_height')} for the provider's image limit; "
+            f"screenshot-pixel coordinates need {clause} to map to the native desktop space — element "
+            "bounds/indices below are already native and unaffected)")
+
 def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS,
                       session_id: Optional[str] = None) -> Any:
     v = _capture_view(cap, max_elements)
@@ -687,13 +729,15 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         # Hand the screenshot to auxiliary.vision (text-only result) when the main model may not consume images
         # natively; returning the multimodal envelope unconditionally tripped HTTP 404/400 at the provider.
         if not _should_route_through_aux_vision():  # envelope carrying the screenshot (not the elements array, so no truncation note)
+            image_url, image_scale = _model_facing_image_url(cap, v)
             return {
                 "_multimodal": True,
-                "content": [{"type": "text", "text": summary},
-                            {"type": "image_url", "image_url": {"url": f"data:{_capture_image_format(cap)[0]};base64,{cap.png_b64}"}}],
+                "content": [{"type": "text", "text": summary + _image_scale_note(image_scale)},
+                            {"type": "image_url", "image_url": {"url": image_url}}],
                 "text_summary": summary,
                 "meta": {"mode": cap.mode, "width": v.width, "height": v.height, "elements": v.total, "png_bytes": cap.png_bytes_len,
-                         **_present(screenshot_path=v.screenshot_path, elements_file=v.elements_file, bounds_scale=v.bounds_scale)},
+                         **_present(screenshot_path=v.screenshot_path, elements_file=v.elements_file, bounds_scale=v.bounds_scale,
+                                    image_scale=image_scale)},
             }
         # Decide whether to hand the screenshot to the auxiliary.vision pipeline (text-only result) or keep
         # the multimodal envelope (main model handles vision natively). Issue #24015: previously the

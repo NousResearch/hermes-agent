@@ -52,6 +52,7 @@ _APPROVAL_CHOICE_KEYS = {
     "once": "cli.tui.approval_once",
     "session": "cli.tui.approval_session",
     "always": "cli.tui.approval_always",
+    "yolo": "cli.tui.approval_yolo",
     "deny": "cli.tui.approval_deny",
     "view": "cli.tui.approval_view"}
 

@@ -825,6 +825,13 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                        outcome=outcome, noun=spec.noun, **extra)
 
     def grant(choice: str) -> dict:
+        # "yolo" is the mid-task trust decision: approve THIS command and drop the approval gate for
+        # the rest of the session. The wider scope replaces the narrower one, so no pattern is
+        # persisted. A smart-DENY owner override stays one operation — it never arms the bypass.
+        if choice == "yolo":
+            if not smart_denied:
+                enable_session_yolo(session_key)
+            choice = "once"
         # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
         if not smart_denied:
             _persist_choice(session_key, choice, warnings)

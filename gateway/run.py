@@ -609,6 +609,7 @@ def _format_exec_approval_fallback(
     choices = [t("gateway.exec_approval.text_choice_once", prefix=command_prefix)]
     if not smart_denied and allow_session:
         choices.append(t("gateway.exec_approval.text_choice_session", prefix=command_prefix))
+        choices.append(t("gateway.exec_approval.text_choice_yolo", prefix=command_prefix))
         if allow_permanent:
             choices.append(t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
     choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))

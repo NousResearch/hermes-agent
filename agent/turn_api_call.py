@@ -175,7 +175,7 @@ def handle_api_interrupt(
     """``InterruptedError`` during the provider call: a pending redirect keeps its correction
     queued for the outer-loop rebuild; otherwise keep any streamed partial text so the next
     turn has a record of the half-finished reply."""
-    from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+    from agent.turn_failure_copy import interrupted_waiting_for_model
 
     thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
     # redirect() cancelled only this request: keep the correction queued, clear the
@@ -209,7 +209,7 @@ def handle_api_interrupt(
         })
         final_response = _partial
     else:
-        final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."
+        final_response = interrupted_waiting_for_model(api_elapsed)
     agent._persist_session(messages, conversation_history)
     return ApiInterruptVerdict("break", thinking_spinner, interrupted, final_response)
 

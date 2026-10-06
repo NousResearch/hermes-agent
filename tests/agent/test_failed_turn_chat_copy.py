@@ -15,7 +15,7 @@ from agent.error_classifier import classify_api_error
 from agent.error_surface import LAYER_GATEWAY, LAYER_PROVIDER, build_error_surface_from_result
 from agent.turn_loop_errors import handle_outer_loop_error
 from agent.turn_recovery import max_retries_exhausted_result, nonretryable_client_error_result
-from agent.turn_failure_copy import SITE_FAILURE_CODES
+from agent.turn_failure_copy import SITE_FAILURE_CODES, failed_turn_notice, site_copy
 from agent.turn_response_check import retry_invalid_response
 
 
@@ -223,3 +223,14 @@ def test_model_caused_codes_stay_on_the_provider_layer_and_runtime_codes_on_gate
               for c in ("truncated", "empty_response", "invalid_response", "session_busy", "loop_error")}
     assert layers["truncated"] == layers["empty_response"] == layers["invalid_response"] == LAYER_PROVIDER
     assert layers["session_busy"] == layers["loop_error"] == LAYER_GATEWAY
+
+
+def test_failed_turn_and_site_copy_use_catalog_entries(monkeypatch):
+    """Core notices use the same catalog facade as the rest of the agent UI."""
+    values = {
+        "turn_failure.partial_notice": "partial translated",
+        "turn_failure.site.truncated": "truncated translated",
+    }
+    monkeypatch.setattr("agent.turn_failure_copy.t", lambda key, **_kwargs: values.get(key, key))
+    assert failed_turn_notice([{"role": "tool", "content": "done"}]) == "partial translated"
+    assert site_copy("truncated", model="m") == "truncated translated"

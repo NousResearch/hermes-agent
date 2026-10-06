@@ -223,6 +223,101 @@ def test_posix_materializer_publishes_only_executable_shell_launchers(tmp_path, 
     assert launcher.stat().st_mtime_ns == before
 
 
+@pytest.mark.platforms("posix")
+def test_published_shell_launcher_bakes_interpreter_fallbacks(tmp_path, monkeypatch):
+    """Published store launchers carry the machine-toolchain fallback chain."""
+    repo, _home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    out = tmp_path / "bin"
+    out.mkdir()
+    assert _launchers.ensure_install_launchers(repo, out)
+    # ``out`` receives convenience forwarders; the store launcher itself lands
+    # in the checkout's own .hermes/bin (stage_launcher's first target).
+    body = (repo / ".hermes" / "bin" / "hermes").read_text(encoding="utf-8-sig")
+    assert '"$HOME"/.hermes/tools/python-*/bin/python3' in body
+    assert '"$HERMES_HOME"/tools/python-*/bin/python3' in body
+    assert "exit 127" in body
+
+
+@pytest.mark.platforms("posix")
+def test_shell_launcher_survives_pruned_published_interpreter(tmp_path, monkeypatch):
+    """A launcher baked against a pruned home still runs from the machine toolchain.
+
+    Regression for the erp-runtime exit-126 incident (t_05e2e685): the repo
+    shim had been minted with its interpreter inside a card workspace home,
+    and pruning the workspace made every worker spawn die at ``exec``.
+    """
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    select_generation(repo, "shared", "ready")
+    # Stand the machine toolchain's entry up where the fallback looks for it.
+    fleet_python = home / "tools" / "python-fleet" / "bin" / "python3"
+    fleet_python.parent.mkdir(parents=True)
+    fleet_python.symlink_to(interpreter)
+    out = tmp_path / "bin"
+    out.mkdir()
+    pruned = (tmp_path / "pruned-workspace" / "home" / ".hermes" / "tools"
+              / "python-3.14" / "bin" / "python3")
+    launcher = _launchers._mint_shell_launcher(
+        "hermes", out, pruned, _launchers._launcher_script("hermes", repo, None))
+    assert launcher is not None
+    result = subprocess.run([str(launcher)], cwd=tmp_path,
+                            capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 7, result.stdout + result.stderr
+    receipt = json.loads(result.stdout)
+    assert receipt["value"] == "ready"
+    assert Path(receipt["exe"]).samefile(interpreter)
+
+
+@pytest.mark.platforms("posix")
+def test_shell_launcher_falls_back_to_home_toolchain(tmp_path, monkeypatch):
+    """The $HOME leg runs the launcher when HERMES_HOME/tools holds no interpreter.
+
+    Profile workers run with HERMES_HOME=<root>/profiles/<name>, which never
+    carries a toolchain; the fleet toolchain under the user's home is what
+    has to keep the launcher runnable there.
+    """
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    select_generation(repo, "shared", "ready")
+    # No python-* under the fixture HERMES_HOME/tools; the live toolchain the
+    # fallback may reach sits under the user's $HOME.
+    user_home = tmp_path / "user-home"
+    fleet_python = user_home / ".hermes" / "tools" / "python-fleet" / "bin" / "python3"
+    fleet_python.parent.mkdir(parents=True)
+    fleet_python.symlink_to(interpreter)
+    out = tmp_path / "bin"
+    out.mkdir()
+    launcher = _launchers._mint_shell_launcher(
+        "hermes", out, tmp_path / "gone" / "python3",
+        _launchers._launcher_script("hermes", repo, None))
+    assert launcher is not None
+    env = dict(os.environ)
+    env["HOME"] = str(user_home)
+    result = subprocess.run([str(launcher)], cwd=tmp_path, env=env,
+                            capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 7, result.stdout + result.stderr
+    receipt = json.loads(result.stdout)
+    assert receipt["value"] == "ready"
+    assert Path(receipt["exe"]).samefile(interpreter)
+
+
+@pytest.mark.platforms("posix")
+def test_shell_launcher_without_any_interpreter_exits_127(tmp_path, monkeypatch):
+    """No candidate anywhere: exit 127 with a message, never a bare exec failure (126)."""
+    repo, _home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    out = tmp_path / "bin"
+    out.mkdir()
+    launcher = _launchers._mint_shell_launcher(
+        "hermes", out, tmp_path / "nope" / "python3",
+        _launchers._launcher_script("hermes", repo, None))
+    assert launcher is not None
+    env = dict(os.environ)
+    env["HERMES_HOME"] = str(tmp_path / "empty-home")
+    env["HOME"] = str(tmp_path / "empty-user")
+    result = subprocess.run([str(launcher)], cwd=tmp_path, env=env,
+                            capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 127, result.stdout + result.stderr
+    assert "no runnable Python interpreter" in result.stderr
+
+
 def test_materializer_cli_refuses_missing_store_without_publishing(tmp_path, monkeypatch):
     repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
     (home / "tools" / "facts.json").unlink()

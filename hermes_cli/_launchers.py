@@ -482,8 +482,55 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
     )
 
 
-def _write_shell(target: Path, command: list[str]) -> Path | None:
-    body = f'#!/bin/sh\nexec {shlex.join(command)} "$@"\n'
+#: Fleet-toolchain fallbacks appended to every published store launcher. The
+#: first candidate exec'd is the store interpreter the install was minted
+#: against; when that path dies -- a workspace home that got pruned is the
+#: observed case (t_05e2e685; every erp-runtime spawn then died with exit 126)
+#: -- the launcher must still run. ``$HERMES_HOME`` covers custom-root
+#: deployments whose toolchain follows the launching home, and
+#: ``$HOME/.hermes/tools`` is the machine's fleet toolchain. Both are re-read
+#: at exec time on purpose: publication and execution run under different
+#: environments, and only the exec-time env names the live toolchain.
+_SHELL_LAUNCHER_FALLBACKS = (
+    '"$HERMES_HOME"/tools/python-*/bin/python3',
+    '"$HOME"/.hermes/tools/python-*/bin/python3',
+)
+
+
+def _shell_launcher_body(command: list[str]) -> str:
+    """POSIX launcher body that survives its published interpreter vanishing.
+
+    *command* is ``[python, "-I", "-c", script, ...]``. Candidates are tried
+    in order and the first executable one execs the bootstrap, so a launcher
+    baked against a home that no longer exists still runs on the machine's
+    fleet toolchain instead of failing at ``exec`` with exit 126. Only when no
+    candidate exists does it exit 127 with a message a human can act on.
+    """
+    python, *rest = command
+    candidates = [shlex.quote(str(python)), *_SHELL_LAUNCHER_FALLBACKS]
+    lines = [
+        "#!/bin/sh",
+        "# Published launcher: exec the interpreter this install was minted",
+        "# against; if that home is gone, fall back to the machine toolchain",
+        "# rather than dying with exit 126.",
+        "for _hermes_python in \\",
+    ]
+    for index, candidate in enumerate(candidates):
+        lines.append(f"    {candidate}" + (" \\" if index < len(candidates) - 1 else ""))
+    lines += [
+        "do",
+        f'    [ -x "$_hermes_python" ] && exec "$_hermes_python" {shlex.join(rest)} "$@"',
+        "done",
+        "echo 'hermes: no runnable Python interpreter found; checked the published "
+        "interpreter and the machine toolchain' >&2",
+        "exit 127",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _write_shell(target: Path, command: list[str], *, interpreter_fallbacks: bool = False) -> Path | None:
+    body = (_shell_launcher_body(command) if interpreter_fallbacks
+            else f'#!/bin/sh\nexec {shlex.join(command)} "$@"\n')
     try:
         if not target.is_symlink() and target.read_bytes() == body.encode("utf-8"):
             if os.access(target, os.X_OK):
@@ -499,7 +546,8 @@ def _write_shell(target: Path, command: list[str]) -> Path | None:
 
 
 def _mint_shell_launcher(name: str, out_dir: Path, python_exe: Path, script: str) -> Path | None:
-    return _write_shell(out_dir / name, [str(python_exe), "-I", "-c", script])
+    return _write_shell(out_dir / name, [str(python_exe), "-I", "-c", script],
+                        interpreter_fallbacks=True)
 
 
 def _owns_launcher(target: Path, root: Path) -> bool:

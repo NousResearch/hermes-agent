@@ -141,6 +141,20 @@ def run_task(task, model: str, provider: str, timeout_mult: float,
     return result
 
 
+def _rep_is_resumable(data: object) -> bool:
+    """True only if `report.load_label` can consume this rep file.
+
+    Parsing as JSON is not the bar: the comparison does `data["records"]` and then
+    `rec.get(...)` on every element, so a non-object payload, a missing/non-list
+    `records`, or a non-object element each poison the cell exactly like truncated
+    JSON does. Anything else is re-run.
+    """
+    if not isinstance(data, dict):
+        return False
+    records = data.get("records")
+    return isinstance(records, list) and all(isinstance(rec, dict) for rec in records)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
@@ -179,14 +193,28 @@ def main() -> int:
         rep_path = out_dir / f"rep{rep}.json"
         if rep_path.exists():
             try:
-                json.loads(rep_path.read_text(encoding="utf-8"))
+                existing = json.loads(rep_path.read_text(encoding="utf-8"))
             except ValueError:
                 # An interrupt between truncate and write leaves invalid JSON, and
                 # a bare exists() check would then skip that rep forever.
                 print(f"rep{rep} exists but is unreadable; rewriting")
-            else:
-                print(f"rep{rep} exists, skipping")
+            except OSError as exc:
+                # The path exists but cannot be read at all (a directory in its
+                # place, a permissions change). The pre-gate behaviour was
+                # `exists()` -> skip and carry on, so do that rather than letting
+                # the read abort the whole run — the comparison still gets its
+                # other reps.
+                print(f"rep{rep} exists but cannot be read ({exc.__class__.__name__}); skipping")
                 continue
+            else:
+                if _rep_is_resumable(existing):
+                    print(f"rep{rep} exists, skipping")
+                    continue
+                # Valid JSON the consumer still cannot read: report.py does
+                # data["records"] and then rec.get(...) on every element, so a
+                # non-list `records` (or a non-object element) poisons the cell
+                # exactly like truncated JSON does. Re-run it.
+                print(f"rep{rep} exists but is not a readable rep; rewriting")
         records = []
         for task in slate:
             print(f"[rep{rep}] {task.task_id} ...", flush=True)
@@ -203,6 +231,10 @@ def main() -> int:
             rep_path,
             {"model": args.model, "provider": args.provider, "label": args.label,
              "rep": rep, "records": records},
+            # Keep the on-disk form the json.dumps this replaced produced
+            # (ensure_ascii=True): a rep stays readable by any reader that opens
+            # it with the locale default, not just report.py's explicit UTF-8.
+            ensure_ascii=True,
         )
         print(f"wrote {rep_path}")
     return 0

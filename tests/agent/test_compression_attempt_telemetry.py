@@ -343,3 +343,63 @@ def test_in_place_commit_preserves_seeded_telemetry_fields(caplog):
     ):
         assert key in payload, f"seeded field lost: {key}"
     assert payload["middle_window_tokens"] is not None
+
+
+def test_new_attempt_clears_previous_attempt_telemetry():
+    """A new attempt must not inherit the previous attempt's telemetry (#118580 follow-up).
+
+    The commit-time hold keeps the trio for its own attempt's emit; the next attempt
+    (and any emit before it re-seeds) must start from a clean slate.
+    """
+    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+        compressor = ContextCompressor(
+            model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
+            config_context_length=100_000,
+        )
+    compressor.tail_token_budget = 10
+    compressor._last_compression_telemetry = {
+        "event": "compression_attempt", "attempt_id": "prior-attempt", "session_id": "prior-session", "commit_ms": 73,
+    }
+    compressor._active_compression_telemetry = compressor._last_compression_telemetry
+    compressor._compression_telemetry_seed = {"attempt_id": "prior-attempt"}
+    agent = _Agent(compressor)
+
+    from agent.conversation_compression import _begin_compression_attempt
+
+    _begin_compression_attempt(agent, force=True, defer_notification=False)
+
+    assert compressor._last_compression_telemetry is None
+    assert compressor._active_compression_telemetry is None
+    assert compressor._compression_telemetry_seed["attempt_id"] == agent._compression_attempt_id
+
+
+def test_pool_saturation_emit_does_not_inherit_previous_attempt_telemetry(caplog):
+    """The pool-refusal emit fires before any attempt begins: no previous attempt's numbers ride along."""
+    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+        compressor = ContextCompressor(
+            model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
+            config_context_length=100_000,
+        )
+    compressor.tail_token_budget = 10
+    compressor._last_compression_telemetry = {
+        "event": "compression_attempt", "attempt_id": "prior-attempt", "session_id": "prior-session",
+        "commit_ms": 73, "middle_window_tokens": 2407,
+    }
+    compressor._active_compression_telemetry = compressor._last_compression_telemetry
+    agent = _Agent(compressor)
+
+    from agent.conversation_compression import CompressionCommitFence, run_compress_context_with_progress_timeout
+
+    with patch("agent.conversation_compression._try_admit_compression_job", return_value=False):
+        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            run_compress_context_with_progress_timeout(
+                worker=lambda fence: ([], "system prompt"), messages=[], system_prompt_fallback="system prompt",
+                idle_timeout_seconds=30, total_ceiling_seconds=120, fence=CompressionCommitFence(),
+                telemetry_agent=agent, stall_fallback=False,
+            )
+
+    payload = _extract_telemetry(caplog)
+    assert payload["failure_class"] == "pool_saturated"
+    assert payload["session_id"] == "session-telemetry-test"
+    assert payload.get("commit_ms") is None
+    assert payload.get("middle_window_tokens") is None

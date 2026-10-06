@@ -1332,7 +1332,8 @@ class SessionSearchMixin:
                         if is_malformed_db_error(exc):
                             logger.error(
                                 "FTS rebuild failed with a corruption-class error for %s: %s; "
-                                "the index needs the offline repair path (repair_state_db_schema)", tbl, exc)
+                                "run 'hermes sessions repair' (or 'hermes doctor --fix') to rebuild the index offline",
+                                tbl, exc)
                         else:
                             logger.warning("FTS rebuild failed for %s: %s", tbl, exc)
         return rebuilt

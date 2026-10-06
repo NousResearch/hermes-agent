@@ -60,7 +60,7 @@ def test_corruption_class_error_is_caught_rolled_back_and_reported(
     )
     with caplog.at_level("WARNING"):
         assert db.rebuild_fts() == 0
-    assert any("offline repair" in rec.message for rec in caplog.records) is repair_hint
+    assert any("hermes sessions repair" in rec.message for rec in caplog.records) is repair_hint
 
 
 @pytest.mark.parametrize("method,command", [("rebuild_fts", "rebuild"), ("optimize_fts", "optimize")])

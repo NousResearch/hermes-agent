@@ -457,11 +457,24 @@ def _accepted_path(marker_path: Path) -> Path:
 def mark_stop_accepted(path: Path, marker: dict) -> None:
     """The consumer's receipt when it cannot checkpoint into the record (busy mutex, refused
     replace): this incarnation accepted the request and drains until it exits, however long past
-    the request's TTL. Written beside the marker, in the gateway's own home, never into the record."""
+    the request's TTL. Written beside the marker, in the gateway's own home, never into the record.
+
+    A home that refuses the new file (an ACL, a read-only directory) still lets the kept request be
+    rewritten in place: stamped ``accepted`` it is the receipt. Torn mid-write it reads malformed,
+    which recovery holds as unknown, never as "not asked". The consumer accepts the stop either way."""
     try:
         _atomic_write(_accepted_path(path), dict(marker))
+        return
     except OSError as exc:
-        print(f"  ⚠ Could not record the accepted stop request {path}: {exc}", file=sys.stderr)
+        refused = exc
+    try:
+        with open(path, "r+", encoding="utf-8") as fh:  # r+: never creates a request that was not there
+            json.dump({**marker, "accepted": True}, fh)
+            fh.truncate()
+            fh.flush()
+            os.fsync(fh.fileno())
+    except OSError as exc:
+        print(f"  ⚠ Could not record the accepted stop request {path}: {refused}; {exc}", file=sys.stderr)
 
 
 def discharge(token: dict, path: Path | None = None) -> None:
@@ -742,40 +755,50 @@ def _without(token: dict, pids: set[str]) -> dict:
     return token
 
 
-def _request_on_disk(token: dict, pid: str) -> bool:
+def _request_on_disk(token: dict, pid: str) -> bool | None:
     """The planned-stop marker this update's stopper wrote for *pid* is still on disk (the gateway's
     watcher has not consumed it yet): the request was issued even if the updater died before
     :func:`mark_stop_sent` — or the gateway's receipt of accepting it (:func:`mark_stop_accepted`).
-    A marker naming another stopper (a user's ``hermes gateway stop``) is not."""
+    A marker naming another stopper (a user's ``hermes gateway stop``) is not. ``None``: one of them
+    exists but cannot be read or parsed — the stop may have been accepted, so it is unknown."""
     path = (token.get("stop_markers") or {}).get(str(pid))
     if not path:
         return False
     from gateway.status import _PLANNED_STOP_MARKER_TTL_S
     # An unconsumed request expires; the receipt of an accepted one is evidence for the whole drain
     # (only the accepting incarnation is ever judged: a later one is not this entry's live process).
-    return (_names_request(token, pid, Path(path), _PLANNED_STOP_MARKER_TTL_S)
-            or _names_request(token, pid, _accepted_path(Path(path)), None))
+    verdicts = (_names_request(token, pid, Path(path), _PLANNED_STOP_MARKER_TTL_S),
+                _names_request(token, pid, _accepted_path(Path(path)), None))
+    return True if True in verdicts else None if None in verdicts else False
 
 
-def _names_request(token: dict, pid: str, path: Path, ttl_s: int | None) -> bool:
+def _names_request(token: dict, pid: str, path: Path, ttl_s: int | None) -> bool | None:
+    """Does *path* hold this stopper's request for *pid*'s incarnation? Only an absent file or a
+    valid one naming something else is ``False``; refused (a sharing violation, an AV scanner) or
+    malformed is ``None``, unknown."""
     from gateway.status import _marker_is_stale, get_process_start_time
     try:
         marker = json.loads(path.read_text(encoding="utf-8-sig"))
-        if (int(marker["target_pid"]) != int(pid)
-                or int(marker["stopper_pid"]) != int(token["stopper_pid"])
-                or (ttl_s is not None and _marker_is_stale(marker.get("written_at") or "", ttl_s))):
-            return False
-        expected, actual = marker.get("target_start_time"), get_process_start_time(int(pid))
-        # Match the consumer's optional birth fingerprint, including unavailable clocks.
-        return None in (expected, actual) or expected == actual
-    except (OSError, ValueError, TypeError, KeyError):
+        target, stopper = int(marker["target_pid"]), int(marker["stopper_pid"])
+    except FileNotFoundError:
         return False
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    if (target != int(pid) or stopper != int(token.get("stopper_pid") or 0)
+            or (ttl_s is not None and not marker.get("accepted")
+                and _marker_is_stale(marker.get("written_at") or "", ttl_s))):
+        return False
+    expected, actual = marker.get("target_start_time"), get_process_start_time(int(pid))
+    # Match the consumer's optional birth fingerprint, including unavailable clocks.
+    return None in (expected, actual) or expected == actual
 
 
-def _asked(token: dict) -> set[str]:
-    """Pids this update actually asked to stop: recorded as sent, or whose request is still on disk."""
+def _asked(token: dict) -> tuple[set[str], set[str]]:
+    """``(asked, unknown)``: pids this update actually asked to stop (recorded as sent, or whose
+    request is still on disk), and pids whose request evidence exists but cannot be read."""
     sent = {str(p) for p in token.get("stop_sent") or []}
-    return sent | {str(p) for p in token.get("stop_requested") or [] if str(p) not in sent and _request_on_disk(token, str(p))}
+    verdicts = {str(p): _request_on_disk(token, str(p)) for p in token.get("stop_requested") or [] if str(p) not in sent}
+    return sent | {p for p, v in verdicts.items() if v}, {p for p, v in verdicts.items() if v is None}
 
 
 def drop_never_stopped(token: dict) -> dict:
@@ -784,12 +807,14 @@ def drop_never_stopped(token: dict) -> dict:
     serving, and a later exit — a user's ``hermes gateway stop`` included — is not this update's to
     undo. One it asked may be draining: it keeps its restart debt (:func:`split_draining`). The
     evidence is resolved here, once, into ``stop_sent`` (a merge carries it under another stopper).
-    No stop record at all (a set from before stop tracking): nothing can be told apart."""
+    Evidence that cannot be read keeps the entry too (it may be draining) but resolves nothing: it is
+    judged again next time. No stop record at all (a set from before stop tracking): nothing can be
+    told apart."""
     if token.get("stop_requested") is None:
         return token
-    asked = _asked(token)
+    asked, unknown = _asked(token)
     token["stop_sent"] = sorted(asked)
-    return _without(token, _live_pids(token) - asked)
+    return _without(token, _live_pids(token) - asked - unknown)
 
 
 def split_draining(token: dict) -> dict:

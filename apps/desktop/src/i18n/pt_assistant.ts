@@ -6,12 +6,12 @@ export const ptAssistant = {
       loadingSession: 'Carregando a sessão',
       showEarlier: 'Mostrar mensagens anteriores',
       loadingResponse: 'O Hermes está carregando uma resposta',
-      loadingLocalModel: model => `Carregando ${model} na memória`,
+      loadingLocalModel: model => `Carregando ${model} na mem\xF3ria`,
       processingPrompt: 'Processando o prompt',
       resumeWhenBackgroundDone: count =>
         count === 1
-          ? 'Será retomado quando a tarefa em segundo plano terminar'
-          : `Será retomado quando ${count} tarefas em segundo plano terminarem`,
+          ? 'Ser\xE1 retomado quando a tarefa em segundo plano terminar'
+          : `Ser\xE1 retomado quando ${count} tarefas em segundo plano terminarem`,
       thinking: 'Pensando',
       thought: 'Pensou',
       thoughtBriefly: 'Pensou brevemente',
@@ -57,29 +57,31 @@ export const ptAssistant = {
         auth: {
           title: provider => `${provider} rejeitou o seu login`,
           body: provider =>
-            `As credenciais salvas para ${provider} não foram aceitas. Corrija-as em Configurações ou troque de provedor e envie a mensagem de novo.`
+            `As credenciais salvas para ${provider} n\xE3o foram aceitas. Corrija-as em Configura\xE7\xF5es ou troque de provedor e envie a mensagem de novo.`
         },
         auth_permanent: {
           title: provider => `${provider} rejeitou o seu login`,
           body: provider =>
-            `As credenciais salvas para ${provider} são inválidas ou foram revogadas. Atualize-as ou troque de provedor e envie a mensagem de novo.`
+            `As credenciais salvas para ${provider} s\xE3o inv\xE1lidas ou foram revogadas. Atualize-as ou troque de provedor e envie a mensagem de novo.`
         },
         billing: {
           title: 'Sem créditos',
           body: provider =>
-            `A sua conta em ${provider} não tem mais créditos. Recarregue ou troque de provedor e envie de novo.`
+            `A sua conta em ${provider} n\xE3o tem mais cr\xE9ditos. Recarregue ou troque de provedor e envie de novo.`
         },
         rate_limit: {
           title: 'O serviço de IA está ocupado',
-          body: provider => `${provider} está limitando as solicitações agora. Espere um minuto e tente de novo.`
+          body: provider =>
+            `${provider} est\xE1 limitando as solicita\xE7\xF5es agora. Espere um minuto e tente de novo.`
         },
         upstream_rate_limit: {
           title: 'O serviço de IA está ocupado',
-          body: provider => `${provider} está limitando as solicitações agora. Espere um minuto e tente de novo.`
+          body: provider =>
+            `${provider} est\xE1 limitando as solicita\xE7\xF5es agora. Espere um minuto e tente de novo.`
         },
         overloaded: {
           title: 'O serviço de IA está sobrecarregado',
-          body: provider => `${provider} está com problemas agora. Tente de novo em instantes ou troque de provedor.`
+          body: provider => `${provider} est\xE1 com problemas agora. Tente de novo em instantes ou troque de provedor.`
         },
         server_error: {
           title: 'O serviço de IA teve um problema',
@@ -89,7 +91,7 @@ export const ptAssistant = {
         timeout: {
           title: 'Não foi possível acessar o serviço de IA',
           body: provider =>
-            `Não foi possível acessar ${provider}, ou ele não respondeu a tempo. Verifique sua conexão com a internet e tente de novo.`
+            `N\xE3o foi poss\xEDvel acessar ${provider}, ou ele n\xE3o respondeu a tempo. Verifique sua conex\xE3o com a internet e tente de novo.`
         },
         stream_drop: {
           title: 'A resposta foi interrompida',
@@ -102,12 +104,12 @@ export const ptAssistant = {
         upstream_blocked: {
           title: 'Um firewall bloqueou a solicitação',
           body: provider =>
-            `Um firewall ou CDN na frente de ${provider} bloqueou a solicitação antes de ela chegar ao modelo; provavelmente a sua chave está certa. Defina um cabeçalho User-Agent pelo extra_headers do provedor em Configurações ou troque de provedor e envie a mensagem de novo.`
+            `Um firewall ou CDN na frente de ${provider} bloqueou a solicita\xE7\xE3o antes de ela chegar ao modelo; provavelmente a sua chave est\xE1 certa. Defina um cabe\xE7alho User-Agent pelo extra_headers do provedor em Configura\xE7\xF5es ou troque de provedor e envie a mensagem de novo.`
         },
         ssl_cert_verification: {
           title: 'Falha na conexão segura',
           body: provider =>
-            `O Hermes não conseguiu verificar a conexão segura com ${provider}. Verifique as configurações de rede ou de proxy, ou troque de provedor, e envie a mensagem de novo.`
+            `O Hermes n\xE3o conseguiu verificar a conex\xE3o segura com ${provider}. Verifique as configura\xE7\xF5es de rede ou de proxy, ou troque de provedor, e envie a mensagem de novo.`
         },
         context_overflow: {
           title: 'Esta conversa ficou longa demais',
@@ -120,21 +122,21 @@ export const ptAssistant = {
         model_not_found: {
           title: 'Este modelo não está disponível',
           body: provider =>
-            `${provider} não oferece este modelo na sua conta. Escolha outro modelo e envie a mensagem de novo.`
+            `${provider} n\xE3o oferece este modelo na sua conta. Escolha outro modelo e envie a mensagem de novo.`
         },
         provider_policy_blocked: {
           title: 'Este modelo está bloqueado pelas configurações da sua conta',
           body: provider =>
-            `${provider} não encaminharia esta solicitação com as configurações de dados ou de privacidade da sua conta. Escolha outro modelo ou troque de provedor.`
+            `${provider} n\xE3o encaminharia esta solicita\xE7\xE3o com as configura\xE7\xF5es de dados ou de privacidade da sua conta. Escolha outro modelo ou troque de provedor.`
         },
         content_policy_blocked: {
           title: 'O serviço de IA recusou esta solicitação',
-          body: provider => `${provider} não responderia a esta mensagem. Edite-a e envie de novo.`
+          body: provider => `${provider} n\xE3o responderia a esta mensagem. Edite-a e envie de novo.`
         },
         format_error: {
           title: 'O serviço de IA rejeitou a solicitação',
           body: provider =>
-            `${provider} não aceitou a forma como esta solicitação foi montada. Troque de provedor ou envie o diagnóstico para investigarmos.`
+            `${provider} n\xE3o aceitou a forma como esta solicita\xE7\xE3o foi montada. Troque de provedor ou envie o diagn\xF3stico para investigarmos.`
         },
         truncated: {
           title: 'A resposta foi cortada',
@@ -142,11 +144,11 @@ export const ptAssistant = {
         },
         invalid_response: {
           title: 'O serviço de IA enviou uma resposta ilegível',
-          body: provider => `${provider} retornou algo que o Hermes não conseguiu ler. Tente de novo em instantes.`
+          body: provider => `${provider} retornou algo que o Hermes n\xE3o conseguiu ler. Tente de novo em instantes.`
         },
         empty_response: {
           title: 'O serviço de IA enviou uma resposta vazia',
-          body: provider => `${provider} não retornou nada para esta mensagem. Tente de novo em instantes.`
+          body: provider => `${provider} n\xE3o retornou nada para esta mensagem. Tente de novo em instantes.`
         },
         loop_error: {
           title: 'O Hermes ficou preso em um loop',
@@ -192,7 +194,8 @@ export const ptAssistant = {
       errorAuthKinds: {
         api_key: {
           title: provider => `${provider} rejeitou a sua chave de API`,
-          body: provider => `A chave salva para ${provider} é inválida ou foi revogada. Atualize-a e tente de novo.`
+          body: provider =>
+            `A chave salva para ${provider} \xE9 inv\xE1lida ou foi revogada. Atualize-a e tente de novo.`
         },
         oauth: {
           title: provider => `O seu login em ${provider} expirou`
@@ -202,9 +205,9 @@ export const ptAssistant = {
       errorGenericProvider: 'O serviço de IA',
       errorToastTitle: 'O Hermes não conseguiu concluir a resposta',
       errorRetry: 'Tentar novamente',
-      errorLimitResets: time => `O limite é renovado às ${time}`,
+      errorLimitResets: time => `O limite \xE9 renovado \xE0s ${time}`,
       errorRetryAtReset: time => `Tentar de novo quando o limite for renovado (${time})`,
-      errorRetryScheduled: (time, wait) => `Nova tentativa às ${time}, em ${wait}`,
+      errorRetryScheduled: (time, wait) => `Nova tentativa \xE0s ${time}, em ${wait}`,
       errorRetryScheduledCancel: 'Cancelar',
       errorStartNewSession: 'Iniciar nova sessão',
       errorSwitchProvider: 'Mudar provedor',
@@ -217,7 +220,7 @@ export const ptAssistant = {
       errorSignInAgain: provider => `Fazer login em ${provider} de novo`,
       errorSignInFreeTier: 'Fazer login com uma conta Nous',
       errorOauthExpired: provider =>
-        `O seu login em ${provider} expirou ou foi revogado. Faça login de novo para continuar conversando.`,
+        `O seu login em ${provider} expirou ou foi revogado. Fa\xE7a login de novo para continuar conversando.`,
       errorOpenLogs: 'Abrir logs',
       errorOpenLogsFailed: 'Não foi possível abrir a pasta de logs',
       errorOpenDesktopLogs: 'Abrir logs do Desktop',
@@ -264,7 +267,7 @@ export const ptAssistant = {
       reject: 'Rejeitar',
       alwaysTitle: 'Sempre permitir este comando?',
       alwaysDescription: pattern =>
-        `Isto adiciona o padrão “${pattern}” à sua lista de permissões permanente (~/.hermes/config.yaml). O Hermes não perguntará de novo sobre comandos como este, nesta sessão nem em sessões futuras.`,
+        `Isto adiciona o padr\xE3o \u201C${pattern}\u201D \xE0 sua lista de permiss\xF5es permanente (~/.hermes/config.yaml). O Hermes n\xE3o perguntar\xE1 de novo sobre comandos como este, nesta sess\xE3o nem em sess\xF5es futuras.`,
       alwaysAllow: 'Sempre permitir'
     },
     clarify: {
@@ -315,7 +318,18 @@ export const ptAssistant = {
         failed: 'A varredura falhou'
       },
       requirementsLabel: 'Requer',
-      credentialsHeading: 'Credenciais'
+      requiresHermes: range => `Hermes ${range}`,
+      envVar: name => `vari\xE1vel de ambiente ${name}`,
+      credentialsHeading: 'Credenciais',
+      phase: {
+        downloading: 'Baixando…',
+        python_packages: 'Instalando pacotes Python…',
+        loading_tools: 'Carregando as ferramentas…'
+      },
+      serverNotConnected: (server, reason) => `Servidor MCP ${server} n\xE3o conectado${reason ? `: ${reason}` : ''}`,
+      notEnabled: 'Instalado, mas não ativado',
+      missingEnv: names => `Defina ${names} para concluir a configura\xE7\xE3o`,
+      alreadyInstalled: 'Já instalado; mantido como está'
     },
     mcpSetup: {
       installTitle: 'Adicionar servidores MCP',
@@ -327,7 +341,7 @@ export const ptAssistant = {
       installed: server => `${server} instalado`,
       enabled: server => `${server} ativado`,
       authorized: server => `${server} autorizado`,
-      failed: server => `Falha na configuração de ${server}`,
+      failed: server => `Falha na configura\xE7\xE3o de ${server}`,
       toolCount: count => (count === 1 ? '1 ferramenta' : `${count} ferramentas`),
       envRequired: 'Preencha as credenciais necessárias primeiro',
       sendFailed: 'Não foi possível enviar resposta de configuração MCP',
@@ -363,7 +377,7 @@ export const ptAssistant = {
       rawResponse: 'Resposta bruta',
       copyActivity: 'Copiar atividade',
       recoveredOne: 'Recuperado após 1 etapa com falha',
-      recoveredMany: count => `Recuperado após ${count} etapas com falha`,
+      recoveredMany: count => `Recuperado ap\xF3s ${count} etapas com falha`,
       failedOne: '1 etapa falhou',
       failedMany: count => `${count} etapas falharam`,
       statusRunning: 'Em execução',
@@ -392,7 +406,7 @@ export const ptAssistant = {
       },
       titleTemplates: {
         actionCommand: (action, command) => `${action} ${command}`,
-        actionQuoted: (action, value) => `${action} “${value}”`,
+        actionQuoted: (action, value) => `${action} \u201C${value}\u201D`,
         actionTarget: (action, target) => `${action} ${target}`,
         prefixedDone: (prefix, action) => `${prefix}: ${action}`,
         runningPrefixedTool: (prefix, action) => `Executando ${prefix.toLowerCase()}: ${action.toLowerCase()}`,

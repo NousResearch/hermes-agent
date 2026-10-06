@@ -60,6 +60,15 @@ export const ptSettingsA = {
   resetConfirm: 'Redefinir todas as configurações para o padrão do Hermes?',
   exportFailed: 'Falha ao exportar',
   resetFailed: 'Falha ao redefinir',
+  pluginPages: {
+    blurb:
+      'Opções que os plugins instalados adicionam. Cada plugin tem a própria página, e alguns adicionam subpáginas dentro dela.',
+    empty: 'Nenhum plugin tem configurações ainda.',
+    manage: 'Gerenciar plugins',
+    agentSettings: 'Configurações do agente',
+    pageCount: n => (n === 1 ? '1 p\xE1gina' : `${n} p\xE1ginas`),
+    missing: 'Esse plugin não tem página de configurações. Ele pode estar desativado ou desinstalado.'
+  },
   nav: {
     providers: 'Provedores',
     providerAccounts: 'Contas',
@@ -77,28 +86,20 @@ export const ptSettingsA = {
     about: 'Sobre',
     billing: 'Faturamento',
     notifications: 'Notificações',
-    vault: 'Senhas e logins'
+    vault: 'Senhas e logins',
+    plugins: 'Plugins'
   },
   plugins: {
     title: 'Plugins do Desktop',
-    blurb:
-      'Estendem este aplicativo, não um agente — instalados uma única vez para todo o app, em qualquer perfil, gateway ou máquina à qual você se conectar. Nativos ou colocados na pasta desktop-plugins; as alternâncias valem imediatamente.',
-    count: n => `${n} instalados`,
     openFolder: 'Abrir pasta de plugins',
     rescan: 'Reescanear',
     reveal: 'Mostrar no explorador de arquivos',
-    enable: 'Ativar',
-    disable: 'Desativar',
     failed: 'falhou',
-    empty: 'Nenhum plugin do desktop instalado ainda.',
     kinds: {
       bundled: 'nativo',
       disk: 'no disco',
       runtime: 'em execução'
     },
-    agentHalfMissing: 'metade do agente ausente aqui',
-    agentHalfMissingTip:
-      'Esta é a metade desktop de um plugin embutido, mas a metade do agente não está instalada no backend/perfil conectado no momento. Instale-a em Capacidades → Plugins.',
     installModal: {
       installFromGit: 'Instalar a partir do Git',
       reviewRepository: 'Revisar repositório',
@@ -113,7 +114,7 @@ export const ptSettingsA = {
       agentTargetLocal: profile => `Instala no backend ${profile} (~/.hermes/plugins/)`,
       agentTargetRemote: profile => `Instala no backend ${profile} conectado`,
       catalogPinned: (name, sha) =>
-        `Entrada “${name}” do catálogo do Hermes — o componente do agente é instalado no pin revisado${sha ? ` ${sha}` : ''}, não na ponta da branch.`,
+        `Entrada \u201C${name}\u201D do cat\xE1logo do Hermes \u2014 o componente do agente \xE9 instalado no pin revisado${sha ? ` ${sha}` : ''}, n\xE3o na ponta da branch.`,
       reviewedHeading: 'Entrada de catálogo revisada',
       reviewedIntro:
         'Esta entrada foi revisada por uma pessoa no commit fixado. Você ainda pode inspecionar o código exato abaixo.',
@@ -121,9 +122,9 @@ export const ptSettingsA = {
       skillsReady: names => (names.length === 1 ? `skill ${names[0]} pronta` : `${names.length} skills prontas`),
       nextChat: 'mais ferramentas disponíveis no seu próximo chat',
       serverNotConnected: (server, reason) =>
-        `O servidor MCP ${server} não está conectado${reason ? `: ${reason}` : '.'}`,
+        `O servidor MCP ${server} n\xE3o est\xE1 conectado${reason ? `: ${reason}` : '.'}`,
       missingEnvAction: 'Configurar',
-      alreadyInstalled: name => `${name} já está instalado.`,
+      alreadyInstalled: name => `${name} j\xE1 est\xE1 instalado.`,
       desktopTarget: 'Instala na pasta local desktop-plugins deste aplicativo',
       desktopTargetFromPackage: 'Carregado neste app a partir do pacote acima, igual para todos os perfis',
       desktopOnlyNote: 'Pacotes apenas para desktop não instalam um plugin de agente no backend.',
@@ -217,7 +218,7 @@ export const ptSettingsA = {
       'A “chave de configuração” que o site mostra ao ativar a verificação em duas etapas. Com ela salva, o Hermes gera os códigos sozinho.',
     twoFactorBadge: '2FA automático',
     deleteTitle: 'Excluir este item?',
-    deleteDescription: label => `“${label}” será removido. Esta ação não pode ser desfeita.`,
+    deleteDescription: label => `\u201C${label}\u201D ser\xE1 removido. Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
     deleteConfirm: 'Excluir',
     sources: {
       title: 'Gerenciadores de senhas',
@@ -225,7 +226,7 @@ export const ptSettingsA = {
         'Os gerenciadores de senhas instalados são detectados automaticamente. O agente pede para você desbloquear um deles na primeira vez que precisar de um login dele (uma vez por sessão); só um token de sessão fica na memória, e o agente nunca vê sua senha mestra nem nenhum login.',
       toggleFailed: 'Não foi possível atualizar o gerenciador de senhas',
       notInstalled: name =>
-        `Não detectado. Instale a ferramenta de linha de comando ${name} e faça login nela; o Hermes a reconhece automaticamente.`,
+        `N\xE3o detectado. Instale a ferramenta de linha de comando ${name} e fa\xE7a login nela; o Hermes a reconhece automaticamente.`,
       disabledDesc: 'Detectado, mas desativado para o Hermes.',
       lockedDesc:
         'Detectado. O agente pedirá para você desbloqueá-lo quando precisar de um login, ou você pode desbloqueá-lo agora.',
@@ -238,7 +239,7 @@ export const ptSettingsA = {
       unlock: 'Desbloquear',
       unlocking: 'Desbloqueando…',
       lock: 'Bloquear',
-      unlocked: name => `${name} desbloqueado para esta sessão.`,
+      unlocked: name => `${name} desbloqueado para esta sess\xE3o.`,
       unlockTitle: name => `Desbloquear ${name}`,
       unlockDescription:
         'Digite sua senha mestra. Ela é entregue ao gerenciador de senhas nesta máquina e descartada: nunca é armazenada, registrada em log nem mostrada ao agente.',
@@ -468,7 +469,7 @@ export const ptSettingsA = {
       chooseDesc: 'Escolher um instala-o (se necessário) e o torna ativo.',
       searchPlaceholder: 'Buscar mascotes…',
       unreachable: 'Não foi possível acessar a galeria do petdex. Verifique sua conexão e reabra esta página.',
-      noMatch: query => `Nenhum mascote corresponde a “${query}”.`,
+      noMatch: query => `Nenhum mascote corresponde a \u201C${query}\u201D.`,
       installedTag: 'instalado',
       generatedTag: 'Gerado',
       countCapped: (cap, total) => `Mostrando ${cap} de ${total}: digite para refinar.`,
@@ -483,10 +484,10 @@ export const ptSettingsA = {
       renamePlaceholder: 'Dê um nome ao seu mascote',
       renameSave: 'Salvar',
       exportPet: name => `Exportar ${name}`,
-      adoptFailed: slug => `Não foi possível adotar ${slug}`,
-      uninstallFailed: slug => `Não foi possível desinstalar ${slug}`,
-      renameFailed: slug => `Não foi possível renomear ${slug}`,
-      exportFailed: slug => `Não foi possível exportar ${slug}`,
+      adoptFailed: slug => `N\xE3o foi poss\xEDvel adotar ${slug}`,
+      uninstallFailed: slug => `N\xE3o foi poss\xEDvel desinstalar ${slug}`,
+      renameFailed: slug => `N\xE3o foi poss\xEDvel renomear ${slug}`,
+      exportFailed: slug => `N\xE3o foi poss\xEDvel exportar ${slug}`,
       noneAvailable: 'Nenhum mascote disponível para ativar agora.',
       turnOnFailed: 'Não foi possível ativar o mascote.',
       turnOffFailed: 'Não foi possível desativar o mascote.'
@@ -541,11 +542,15 @@ export const ptSettingsA = {
     'stt.enabled': 'Fala para texto',
     'stt.echoTranscripts': 'Ecoar transcrições',
     'stt.provider': 'Provedor de fala para texto',
+    'stt.streaming': 'Transcrição ao vivo',
     'stt.local.model': 'Modelo de transcrição local',
     'stt.local.language': 'Idioma da transcrição',
     'stt.openai.model': 'Modelo STT da OpenAI',
+    'stt.openai.streamingModel': 'Modelo de transcrição ao vivo da OpenAI',
     'stt.groq.model': 'Modelo STT da Groq',
     'stt.mistral.model': 'Modelo STT da Mistral',
+    'stt.xai.model': 'Modelo de STT da xAI',
+    'stt.deepinfra.model': 'Modelo de STT da DeepInfra',
     'stt.elevenlabs.modelId': 'Modelo STT da ElevenLabs',
     'stt.elevenlabs.languageCode': 'Idioma da ElevenLabs',
     'stt.elevenlabs.tagAudioEvents': 'Marcar eventos de áudio',
@@ -650,6 +655,8 @@ export const ptSettingsA = {
     'tts.neutts.device': 'Dispositivo de inferência local do NeuTTS.',
     'stt.enabled': 'Ativa a transcrição de fala local ou por provedor.',
     'stt.echoTranscripts': 'Publica de volta no chat a transcrição bruta 🎙️ das mensagens de voz.',
+    'stt.streaming':
+      'Mostra o texto enquanto você fala (OpenAI, xAI, ElevenLabs). Volta para a gravação em caso de qualquer falha.',
     'stt.elevenlabs.languageCode':
       'Código de idioma ISO-639-3 opcional. Em branco, a ElevenLabs detecta automaticamente.',
     'updates.nonInteractiveLocalChanges':
@@ -659,10 +666,13 @@ export const ptSettingsA = {
     dangerZone: 'Zona de perigo',
     checkingInstalled: 'Verificando o que está instalado…',
     uninstallHermes: 'Desinstalar o Hermes',
+    managedBody: 'Esta instalação é gerenciada pelo seu sistema, então o Hermes não consegue se remover sozinho.',
+    dataKept: path => `Suas configura\xE7\xF5es, chats e segredos ficam em ${path}. Remover o app n\xE3o os exclui.`,
+    openAppsSettings: 'Abrir as configurações de Apps',
     chooseHowMuch:
       'Escolha quanto remover. O app fecha para concluir o trabalho; reabra o instalador a qualquer momento para voltar.',
     confirmUninstall: 'Confirmar desinstalação',
-    confirmBody: what => `Isto remove ${what}. Esta ação não pode ser desfeita.`,
+    confirmBody: what => `Isto remove ${what}. Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
     appLabel: 'App:',
     couldNotStart: 'Não foi possível iniciar a desinstalação.',
     uninstalling: 'Desinstalando…',
@@ -720,7 +730,7 @@ export const ptSettingsA = {
     endpointSaved: 'Endpoint personalizado salvo.',
     saveFailed: 'Falha ao salvar',
     endpointReachable: 'O endpoint está acessível.',
-    endpointReachableTransport: transport => `O endpoint está acessível (rota ${transport} atendida).`,
+    endpointReachableTransport: transport => `O endpoint est\xE1 acess\xEDvel (rota ${transport} atendida).`,
     endpointReachableModels: (reachable, count) =>
       `${reachable} ${count} modelo${count === 1 ? '' : 's'} encontrado${count === 1 ? '' : 's'}.`,
     endpointValidationFailed: 'A validação do endpoint falhou.',
@@ -769,6 +779,9 @@ export const ptSettingsA = {
     keepAwakeTitle: 'Manter o computador ativo',
     keepAwakeDesc:
       'Impede que esta máquina entre em repouso, para que execuções longas ou noturnas continuem. A tela ainda pode escurecer.',
+    keepAwakeOff: 'Desativado',
+    keepAwakeWhileWorking: 'Enquanto trabalha',
+    keepAwakeAlways: 'Sempre',
     disableF12Title: 'Desativar o DevTools pelo F12',
     disableF12Desc:
       'Impede que o F12 abra as Ferramentas do Desenvolvedor. Ctrl+Shift+I (ou Cmd+Opt+I no Mac) continua funcionando.',
@@ -871,7 +884,7 @@ export const ptSettingsA = {
     removeConnection: 'Remover',
     removeConfirmTitle: 'Remover esta conexão?',
     removeConfirmDesc: label =>
-      `“${label}” será removido deste app. A instância em si não é afetada: você pode adicioná-la de novo quando quiser.`,
+      `\u201C${label}\u201D ser\xE1 removido deste app. A inst\xE2ncia em si n\xE3o \xE9 afetada: voc\xEA pode adicion\xE1-la de novo quando quiser.`,
     makePrimary: 'Tornar principal',
     testConnection: 'Testar',
     testOk: 'Acessível',
@@ -905,9 +918,9 @@ export const ptSettingsA = {
     headerAdd: 'Adicionar cabeçalho',
     headerRemove: 'Remover',
     duplicateLocal: 'Este app já gerencia uma conexão local; só pode haver uma.',
-    duplicateUrl: label => `Já existe uma conexão com esta URL de gateway (“${label}”).`,
-    duplicateSsh: label => `Já existe uma conexão com este host SSH (“${label}”).`,
-    sameBackendHint: label => `Mesmo backend de “${label}”`,
+    duplicateUrl: label => `J\xE1 existe uma conex\xE3o com esta URL de gateway (\u201C${label}\u201D).`,
+    duplicateSsh: label => `J\xE1 existe uma conex\xE3o com este host SSH (\u201C${label}\u201D).`,
+    sameBackendHint: label => `Mesmo backend de \u201C${label}\u201D`,
     localAddHint: 'Local indisponível: a conexão local gerenciada já existe (só existe uma).',
     cloudAddHint:
       'Dica: entrar no Hermes Cloud acima descobre seus agentes automaticamente. Use este formulário apenas para registrar manualmente a URL de uma instância conhecida.',

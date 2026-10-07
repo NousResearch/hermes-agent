@@ -578,7 +578,7 @@ import { createSourcePythonBackend, resolveSourceInstallationBackend, type Sourc
 import { resolveSourcePython } from './source-python'
 import { resolveSshBinary } from './ssh-binary'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
-import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
+import { collectSshConfigHosts, parseSshGOutput, resolveEffectiveSshUser } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
 import { createSshTeardownTracker } from './ssh-teardown'
@@ -16113,7 +16113,7 @@ ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) =
   })
 })
 ipcMain.handle('hermes:ssh-config:hosts', async () => ({ hosts: collectSshConfigHosts() }))
-ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
+async function resolveSshGConfig(host): Promise<{ hostname: string | null; user: string | null; port: number | null; identityFile: string | null }> {
   const value = String(host || '').trim()
 
   if (!value) {
@@ -16152,7 +16152,8 @@ ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
       }
     })
   })
-})
+}
+ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => resolveSshGConfig(host))
 ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testDesktopConnectionConfig(payload))
 
 // ── Opt-in keychain encryption for stored secrets ───────────────────────────
@@ -16380,8 +16381,24 @@ async function probeSshProfileInventory(connection) {
     return
   }
 
+  // Resolve the effective username from the client's SSH config so a stale
+  // stored username — e.g. the desktop's own OS login that an older build
+  // auto-filled into the connection — cannot override the `User` directive in
+  // ~/.ssh/config. The primary bootstrap already prefers the config user
+  // (`ssh || savedSsh`); without this the roster probe authenticated as the
+  // wrong account and failed non-interactively with Permission denied while
+  // the bootstrap succeeded, so the two paths disagreed on the user.
+  let user = sshConfig.user
+  try {
+    const resolved = await resolveSshGConfig(connection.host)
+    user = resolveEffectiveSshUser(sshConfig.user, resolved.user || '')
+  } catch {
+    // `ssh -G` could not resolve the host (e.g. an unmatched alias mask);
+    // fall back to the stored/configured user rather than failing the probe.
+  }
+
   const ssh = createSshProbeConnection(
-    { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
+    { host: sshConfig.host, user, port: sshConfig.port, keyPath: sshConfig.keyPath },
     { rememberLog: sshRememberLog, sshBinary: desktopSshBinary() }
   )
 

@@ -997,16 +997,31 @@ VISION_ANALYZE_SCHEMA = {
 }
 
 
+def _profile_env(name: str) -> str:
+    """``name`` from the active profile's env, never another profile's. The multiplexed gateway
+    bridges its LAUNCH profile's config.yaml into ``os.environ`` (``AUXILIARY_VISION_MODEL``
+    included), so a routed profile reading ``os.getenv`` paired the launch profile's model with its
+    own provider (a local GLM id sent through the Claude CLI → 404). ``get_secret`` answers from the
+    routed profile's own ``.env``; a routed task with no scope bound borrows nothing."""
+    from agent.secret_scope import UnscopedSecretError, current_secret_scope, get_secret, serves_routed_profile
+    try:
+        if current_secret_scope() is None and serves_routed_profile():
+            return ""
+        return (get_secret(name) or "").strip()
+    except UnscopedSecretError:
+        return ""
+
+
 def _configured_aux_model(sections: tuple, env_vars: tuple) -> Optional[str]:
     """First non-empty ``auxiliary.<section>.model`` from config.yaml, else the first non-empty
-    env var (legacy override), else None."""
+    env var (legacy override, profile-scoped: :func:`_profile_env`), else None."""
     for section in sections:
         _vmodel = _cfg_auxiliary(section, "model")
         if _vmodel:
             if str(_vmodel).strip():
                 return str(_vmodel).strip()
             break
-    return next((v for v in (os.getenv(e, "").strip() for e in env_vars) if v), None)
+    return next((v for v in (_profile_env(e) for e in env_vars) if v), None)
 
 
 async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:

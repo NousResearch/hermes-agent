@@ -90,3 +90,32 @@ def test_upstream_capacity_429_is_not_a_credential_to_bench(monkeypatch, body, b
     if benches_pool:
         assert pool.rotate_calls[0]["status_code"] == 429
         assert pool.rotate_calls[0]["api_key_hint"] == "sk-failed"
+
+
+# The Claude CLI plugin's two failure strings from one production turn (2026-10-07). The 404 is a
+# wrong model id behind the CLI (a launch-profile vision model leaked into a routed profile); it
+# must never read as a rate limit, or a routing bug would bench the primary and drop the bot to its
+# fallback. The 429 is the account's real spend/weekly limit and is a rate limit.
+_PLUGIN_MODEL_404 = (
+    "Incomplete upstream response (first upstream attempt: status 404, capture incomplete, native "
+    "retries denied: 1, upstream said: model: GLM-5.3-Flash-EXL3): API Error: 400 "
+    "HERMES_MODEL_ADMISSION_CONSUMED")
+_PLUGIN_SPEND_LIMIT_429 = (
+    "Incomplete upstream response (first upstream attempt: status 429, capture incomplete, native "
+    "retries denied: 0, upstream said: This request would exceed your account's rate limit. Please "
+    "try again later.): You've hit your monthly spend limit · raise it at claude.ai/settings/usage "
+    "· your weekly limit resets Oct 9")
+
+
+def test_plugin_model_404_is_not_a_rate_limit():
+    exc = RuntimeError(_PLUGIN_MODEL_404)
+    assert classify_api_error(exc).reason not in (FailoverReason.rate_limit, FailoverReason.upstream_rate_limit)
+    assert not ac._is_rate_limit_error(exc)
+    assert not ac._is_payment_error(exc)
+
+
+def test_plugin_spend_limit_429_is_a_rate_limit():
+    exc = RuntimeError(_PLUGIN_SPEND_LIMIT_429)
+    verdict = classify_api_error(exc)
+    assert verdict.reason is FailoverReason.rate_limit
+    assert verdict.should_fallback

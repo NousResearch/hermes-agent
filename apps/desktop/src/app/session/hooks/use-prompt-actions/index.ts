@@ -1059,8 +1059,9 @@ export function usePromptActions({
 
         if (!isDeepTruncateRefusal(err) || plan.confirmDeepTruncate) {
           notifyError(err, copy.regenerateFailed)
-        } else if (await confirmDeep()) {
-          // Re-run from the top: the session is re-read and re-validated after this wait.
+        } else if ((await confirmDeep()) && activeSessionIdRef.current === sessionId) {
+          // Re-run from the top: the session is re-read and re-validated after this wait. The answer
+          // belongs to this session: a switch during the dialog drops it.
           await reloadFromMessageRef.current(parentId, messages)
         }
       }
@@ -1353,8 +1354,9 @@ export function usePromptActions({
 
         if (!isDeepTruncateRefusal(surfaced) || plan.confirmDeepTruncate) {
           notifyError(surfaced, unavailable ? copy.editTurnUnavailable : copy.editFailed)
-        } else if (await confirmDeep()) {
-          // Re-run from the top: the session is re-read and re-validated after this wait.
+        } else if ((await confirmDeep()) && activeSessionIdRef.current === sessionId) {
+          // Re-run from the top: the session is re-read and re-validated after this wait. The answer
+          // belongs to this session: a switch during the dialog drops it.
           await editMessageRef.current(edited, planning)
         }
       }

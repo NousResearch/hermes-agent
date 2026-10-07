@@ -553,6 +553,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
   const reloadFromMessage = useCallback(
     async (parentId: string | null, answeredFor?: ChatMessage[]): Promise<void> => {
       const state = readState()
+      const runtimeId = runtimeIdRef.current
 
       if (!state || state.busy) {
         return
@@ -605,8 +606,9 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
         if (!isDeepTruncateRefusal(err) || plan.confirmDeepTruncate) {
           notifyError(err, copy.regenerateFailed)
-        } else if (await confirmDeep()) {
-          // Re-run from the top: the session is re-read and re-validated after this wait.
+        } else if ((await confirmDeep()) && runtimeIdRef.current === runtimeId) {
+          // Re-run from the top: the session is re-read and re-validated after this wait. The answer
+          // belongs to this runtime: a rebind during the dialog drops it.
           await reloadFromMessageRef.current(parentId, messages)
         }
       }
@@ -767,8 +769,9 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
         if (!isDeepTruncateRefusal(err) || plan.confirmDeepTruncate) {
           notifyError(err, copy.editFailed)
-        } else if (await confirmDeep()) {
-          // Re-run from the top: the session is re-read and re-validated after this wait.
+        } else if ((await confirmDeep()) && runtimeIdRef.current === sessionId) {
+          // Re-run from the top: the session is re-read and re-validated after this wait. The answer
+          // belongs to this runtime: a rebind during the dialog drops it.
           await editMessageRef.current(edited, planning)
         }
       }

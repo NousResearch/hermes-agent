@@ -2762,6 +2762,141 @@ def test_history_to_messages_preserves_live_ask_without_compaction_scaffolding()
     ) == [{"role": "user", "text": "test the browser controller"}]
 
 
+def _inflight_replay_carrier(text: str) -> str:
+    from agent.context_compressor import (
+        HISTORICAL_TASK_HEADING,
+        SUMMARY_PREFIX,
+        _INFLIGHT_TASK_REPLAY_HEADER,
+        _SUMMARY_END_MARKER,
+    )
+
+    return (
+        f"{SUMMARY_PREFIX}\n\n"
+        f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
+        f"{_SUMMARY_END_MARKER}\n\n"
+        f"{_INFLIGHT_TASK_REPLAY_HEADER}\n{text}"
+    )
+
+
+def _multimodal_task_content():
+    return [
+        {"type": "text", "text": "inspect this"},
+        {"type": "image_url", "image_url": {"url": "https://example.test/image.png"}},
+    ]
+
+
+def _multimodal_replay_content():
+    from agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER
+
+    return [
+        {"type": "text", "text": f"{_INFLIGHT_TASK_REPLAY_HEADER}\n"},
+        *_multimodal_task_content(),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("task_content", "between", "replay_content"),
+    [
+        (
+            "finish the task",
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}}
+                    ],
+                },
+                {"role": "tool", "content": "ok", "tool_call_id": "call_1"},
+            ],
+            _inflight_replay_carrier("finish the task"),
+        ),
+        *[
+            (
+                "finish the task",
+                [{"role": "assistant", "content": "candidate", "finish_reason": finish_reason}],
+                _inflight_replay_carrier("finish the task"),
+            )
+            for finish_reason in (
+                "length",
+                "incomplete",
+                "verification_required",
+                "verify_hook_continue",
+                "kanban_terminal_required",
+            )
+        ],
+        (
+            _multimodal_task_content(),
+            [{"role": "assistant", "content": "", "finish_reason": "length"}],
+            _multimodal_replay_content(),
+        ),
+    ],
+)
+def test_history_to_messages_deduplicates_only_inflight_replays_for_open_turns(
+    task_content, between, replay_content
+):
+    rows = server._history_to_messages(
+        [
+            {"role": "user", "content": task_content, "_row_id": 10},
+            *between,
+            {"role": "user", "content": replay_content, "_row_id": 20},
+        ]
+    )
+
+    assert [row.get("row_id") for row in rows if row["role"] == "user"] == [10]
+    assert "STILL IN PROGRESS" not in "\n".join(row.get("text", "") for row in rows)
+
+
+@pytest.mark.parametrize(
+    ("history", "expected_user_rows", "expected_user_texts"),
+    [
+        (
+            [{"role": "user", "content": _inflight_replay_carrier("finish the task"), "_row_id": 20}],
+            [20],
+            ["finish the task"],
+        ),
+        (
+            [{"role": "user", "content": _multimodal_replay_content(), "_row_id": 20}],
+            [20],
+            ["inspect this\nhttps://example.test/image.png"],
+        ),
+        (
+            [
+                {"role": "user", "content": "finish the task", "_row_id": 10},
+                {"role": "assistant", "content": "done", "finish_reason": "stop"},
+                {"role": "user", "content": _inflight_replay_carrier("finish the task"), "_row_id": 20},
+            ],
+            [10, 20],
+            ["finish the task", "finish the task"],
+        ),
+        (
+            [
+                {"role": "user", "content": "finish the task", "_row_id": 10},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}}
+                    ],
+                },
+                {"role": "tool", "content": "ok", "tool_call_id": "call_1"},
+                {"role": "user", "content": "finish the task", "_row_id": 20},
+            ],
+            [10, 20],
+            ["finish the task", "finish the task"],
+        ),
+    ],
+)
+def test_history_to_messages_preserves_replay_fallbacks_and_authored_repeats(
+    history, expected_user_rows, expected_user_texts
+):
+    rows = server._history_to_messages(history)
+    users = [row for row in rows if row["role"] == "user"]
+
+    assert [row.get("row_id") for row in users] == expected_user_rows
+    assert [row["text"] for row in users] == expected_user_texts
+
+
 def test_history_to_messages_unwraps_merged_assistant_carrier():
     from agent.context_compressor import (
         HISTORICAL_TASK_HEADING,

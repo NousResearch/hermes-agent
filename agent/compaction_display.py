@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from agent.context_compressor import ContextCompressor, is_compaction_summary_message
+from agent.context_compressor import (
+    ContextCompressor,
+    _INFLIGHT_TASK_REPLAY_HEADER,
+    is_compaction_summary_message,
+)
 
 
 _COMPACTION_INTERNAL_FIELDS = (
@@ -52,3 +56,40 @@ def project_compaction_message_for_display(message: Dict[str, Any]) -> Optional[
         projected.pop(key, None)
     projected.pop("display_kind", None)
     return projected
+
+
+def _without_inflight_replay_header(content: Any) -> Optional[Any]:
+    """Copy replay content without its synthetic header, or ``None`` when absent."""
+    if isinstance(content, str):
+        leading = content.lstrip()
+        if not leading.startswith(_INFLIGHT_TASK_REPLAY_HEADER):
+            return None
+        return leading[len(_INFLIGHT_TASK_REPLAY_HEADER):].lstrip()
+    if not isinstance(content, list) or not content:
+        return None
+    first, *tail = content
+    text = first if isinstance(first, str) else first.get("text") if isinstance(first, dict) else None
+    if not isinstance(text, str):
+        return None
+    leading = text.lstrip()
+    if not leading.startswith(_INFLIGHT_TASK_REPLAY_HEADER):
+        return None
+    remainder = leading[len(_INFLIGHT_TASK_REPLAY_HEADER):].lstrip()
+    if not remainder:
+        return tail
+    rewritten = remainder if isinstance(first, str) else {**first, "text": remainder}
+    return [rewritten, *tail]
+
+
+def inflight_replay_content_for_display(message: Dict[str, Any]) -> Optional[Any]:
+    """Return task content restated by an in-flight compaction replay.
+
+    The replay is model-facing recovery state, not a second authored user
+    turn. Display projections use this helper to suppress it when the
+    authentic still-open turn is present, while retaining a clean fallback
+    when history paging omitted that original row.
+    """
+    projected = project_compaction_message_for_display(message)
+    if projected is None or projected.get("role") != "user":
+        return None
+    return _without_inflight_replay_header(projected.get("content"))

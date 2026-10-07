@@ -4,7 +4,8 @@
 Single-shape tool; the mode is inferred from the args: DISCOVERY (``query``;
 FTS5 deduped by lineage, adaptive detail hydrates only the top result),
 SCROLL (``session_id`` + ``around_message_id``; ±window around the anchor),
-READ (``session_id`` alone; whole session or head/tail), BROWSE (no args).
+READ (``session_id`` alone; whole session or head/tail), BROWSE (no args),
+REF (``ref``; the original of one message by its ``m:<hex>`` pointer, overriding the rest).
 No LLM calls — every shape returns actual DB messages.
 """
 
@@ -574,14 +575,63 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
               "means you've hit that end of the session."), **extra)
 
 
+def _ref_window(db, ref: str, window: int, profile: Optional[str]) -> str:
+    """Ref shape: the ORIGINAL row behind an ``m:<hex>`` pointer from a compaction summary or stub, with
+    neighbours from its original position. Unlike scroll it never rejects a current-lineage anchor: a
+    superseded carried-tail original (``active=0, compacted=0``) is exactly what a demoted stub points at.
+    Resolves in ONE store, like ``_read_scoped``."""
+    window = _clamp_int(window, 5, 1, 20)
+    try:
+        anchor = db.resolve_message_ref(ref)
+    except ValueError:
+        return tool_error(f"invalid ref {ref!r}: pass 'm:<hex>' (12-32 hex chars) exactly as written", success=False)
+    except LookupError:
+        return tool_error(f"ref {ref!r} is ambiguous (matches several messages): use a longer ref, or "
+                          "session_search(query=...)", success=False)
+    except Exception as e:
+        logging.error("resolve_message_ref failed: %s", e, exc_info=True)
+        return tool_error(f"failed to resolve ref: {e}", success=False)
+    if anchor is None:
+        return tool_error(f"ref {ref!r} not found" + ("" if profile else " in this profile. If it came from "
+                          "another profile, pass profile=<name>"), success=False)
+    owning, row_id = anchor["session_id"], anchor["id"]
+    view, err = _loud(lambda: db.get_messages_around(owning, row_id, window=window),
+                      "get_messages_around failed: %s", "failed to load messages")
+    if err:
+        return err
+    # Later copies of a message (carried tails, rotation clones, stubs) share its uid; keep the earliest.
+    seen, messages = set(), []
+    for m in view.get("window") or []:  # ascending id
+        uid = m.get("message_uid")
+        if not (uid and uid in seen):
+            seen.add(uid)
+            messages.append(m)
+    state = _get_message_storage_state(db, row_id)
+    extra = {"note": "This message is also still in your active context."} if state and state["active"] == 1 else {}
+    return _ok(
+        mode="ref", ref="m:" + ref.strip().lower().removeprefix("m:"), session_id=owning,
+        link=_session_link(owning, profile), session_meta=_session_meta_block(_get_session_meta(db, owning)),
+        around_message_id=row_id, window=window,
+        # The anchor is exact recovery (uncapped, like scroll); neighbours take the read-shape cap so one ref
+        # call next to other large tool outputs cannot flood the context.
+        messages=[_shape_message(m, anchor_id=row_id, max_content_len=None if m.get("id") == row_id
+                                 else _READ_MAX_CONTENT) for m in messages],
+        messages_before=view.get("messages_before", 0), messages_after=view.get("messages_after", 0),
+        hint=("More context: repeat with a larger window (max 20), or scroll with "
+              f"session_search(session_id='{owning}', around_message_id=<first or last id above>)."),
+        **extra)
+
+
 def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
               around_message_id, window, sort, profile, detail, owned_dbs,
-              after=None, before=None, exclude_session_ids=None) -> str:
-    """Mode dispatch (see module docstring); scroll wins when an anchor is set.
+              after=None, before=None, exclude_session_ids=None, ref=None) -> str:
+    """Mode dispatch (see module docstring); ref wins over everything, then scroll when an anchor is set.
     Profile DBs opened here are appended to *owned_dbs* for the caller to close."""
+    has_ref = isinstance(ref, str) and bool(ref.strip())
     # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
-    # split on it and adopt the embedded profile only when none was passed.
-    if isinstance(session_id, str) and "/" in session_id:
+    # split on it and adopt the embedded profile only when none was passed. Not for a ref:
+    # it resolves in the EXPLICIT profile's store only, so a stray link cannot switch stores.
+    if not has_ref and isinstance(session_id, str) and "/" in session_id:
         emb_profile, _, emb_id = session_id.partition("/")
         if emb_id:
             session_id = emb_id
@@ -596,6 +646,8 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
     if profile_db is not None:
         db, current_session_id = profile_db, None
         owned_dbs.append(profile_db)
+    if has_ref:
+        return _ref_window(db, ref, window, profile)
     if isinstance(session_id, str) and session_id.strip():
         if around_message_id is not None:
             return _scroll(db, session_id.strip(), around_message_id, window, current_session_id)
@@ -619,7 +671,8 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
 def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=None,
                    current_session_id: str = None, session_id: str = None, around_message_id: int = None,
                    window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive",
-                   after: str = None, before: str = None, exclude_session_ids: Optional[List[str]] = None) -> str:
+                   after: str = None, before: str = None, exclude_session_ids: Optional[List[str]] = None,
+                   ref: str = None) -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers;
     new parameters are appended after ``detail``."""
     from hermes_state import format_session_db_unavailable
@@ -633,7 +686,7 @@ def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=
     try:
         return _dispatch(query, role_filter, limit, db, current_session_id, session_id,
                          around_message_id, window, sort, profile, detail, owned_dbs,
-                         after=after, before=before, exclude_session_ids=exclude_session_ids)
+                         after=after, before=before, exclude_session_ids=exclude_session_ids, ref=ref)
     finally:
         for owned_db in reversed(owned_dbs):
             _quiet(lambda: release_or_close(owned_db), None, "Failed to close session_search SessionDB")
@@ -766,6 +819,14 @@ SESSION_SEARCH_SCHEMA = {
                     "behaviour) or 'tool' to search tool output only."
                 ),
             },
+            "ref": {
+                "type": "string",
+                "description": (
+                    "Exact pointer copied from a compaction summary or stub (e.g. 'm:3f2a9c1e0b7d'). "
+                    "Returns that original message verbatim with `window` neighbours, even if it was "
+                    "compacted away. Overrides other shapes."
+                ),
+            },
             "profile": {
                 "type": "string",
                 "description": (
@@ -791,6 +852,6 @@ registry.register(
         query=args.get("query") or "", limit=args.get("limit", 3), window=args.get("window", 5),
         detail=args.get("detail", "adaptive"), db=kw.get("db"), current_session_id=kw.get("current_session_id"),
         **{k: args.get(k) for k in ("role_filter", "session_id", "around_message_id", "sort", "profile",
-                                    "after", "before", "exclude_session_ids")}),
+                                    "after", "before", "exclude_session_ids", "ref")}),
     check_fn=check_session_search_requirements,
     emoji="🔍")

@@ -846,7 +846,7 @@ left behind — the import is a clean transcript, not a byte-for-byte replay.
 
 The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. It makes no LLM calls and returns views of actual messages from the DB rather than generating summaries.
 
-### Four calling shapes
+### Five calling shapes
 
 The tool infers what you want from which arguments you set. There's no `mode` parameter.
 
@@ -899,6 +899,14 @@ session_search()
 ```
 
 Returns recent sessions chronologically (titles, previews, timestamps). Useful when the user asks "what was I working on" without naming a topic.
+
+**5. Exact recovery — pass `ref`:**
+
+```python
+session_search(ref="m:3f2a9c1e0b7d", window=5)
+```
+
+Compaction summaries and demoted tool-output stubs carry `m:<hex>` refs. A ref names one message exactly: it returns the original message verbatim, with `window` neighbours from its original position, even when the message was compacted away or its live copy is only a stub. A ref overrides every other shape and resolves in the current profile's store only (pass `profile=` for another profile). A ref that matches more than one message is reported as ambiguous.
 
 ### FTS5 query syntax
 

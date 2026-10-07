@@ -35,6 +35,7 @@ from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.message_metadata import MESSAGE_UID
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
@@ -958,9 +959,27 @@ _LEAN_TAIL_KEEP_TOOL_ROUNDS = 6
 _LEAN_TAIL_DEMOTE_MIN_CHARS = 1_500
 
 
-def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> str:
+# Exact pointer to a message's original row, resolved by session_search(ref=...). Fixed width: a collision
+# takes the tool's ambiguity path; refs never lengthen dynamically.
+_MESSAGE_REF_HEX_CHARS = 12
+_MINTED_MESSAGE_UID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def _message_ref(msg: Dict[str, Any]) -> str:
+    """``m:<12hex>`` for a dict carrying a minted ``message_uid``; "" when it has none (unflushed or legacy)."""
+    uid = msg.get(MESSAGE_UID)
+    if isinstance(uid, str) and _MINTED_MESSAGE_UID_RE.fullmatch(uid):
+        return f"m:{uid[:_MESSAGE_REF_HEX_CHARS]}"
+    return ""
+
+
+def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str, message_uid: Optional[str] = None) -> str:
     """One-line replacement for a demoted tail tool result."""
-    hint = f" Recover with session_search(query=..., session_id='{session_id}')" if session_id else ""
+    ref = _message_ref({MESSAGE_UID: message_uid})
+    if ref:
+        hint = f" Recover exactly with session_search(ref='{ref}')"
+    else:
+        hint = f" Recover with session_search(query=..., session_id='{session_id}')" if session_id else ""
     return (
         f"[{tool_name or 'tool'} output demoted at compaction — {content_len:,} "
         f"chars preserved in session history.{hint}]"
@@ -997,7 +1016,8 @@ def _build_verbatim_user_section(turns: List[Dict[str, Any]]) -> str:
         if len(text) > remaining and remaining <= ELISION_MARKER_MAX_LEN:
             break  # no room for marker + content: a marker-only quote would overshoot the budget
         text = elide(text, min(_LEAN_USER_MESSAGE_MAX_CHARS, remaining))
-        collected.append("> " + text.replace("\n", "\n> "))
+        ref = _message_ref(msg)
+        collected.append("> " + (f"[{ref}] " if ref else "") + text.replace("\n", "\n> "))
         used += len(text)
     if not collected:
         return ""
@@ -1010,12 +1030,19 @@ def _build_verbatim_user_section(turns: List[Dict[str, Any]]) -> str:
     )
 
 
-def _build_recovery_footer(session_id: str, region_len: int) -> str:
+def _build_recovery_footer(session_id: str, turns: List[Dict[str, Any]]) -> str:
     """Deterministic pointer to the compacted region in session history.
     state.db keeps every pre-compaction message; naming the session_search re-access path lets the model
-    treat compaction as deferred retrieval, not loss."""
+    treat compaction as deferred retrieval, not loss. When the region's first and last messages carry uids,
+    an exact range is added: a ref resolves to the original row, in its original position."""
     if not session_id:
         return ""
+    region_len = len(turns)
+    first, last = (_message_ref(turns[0]), _message_ref(turns[-1])) if turns else ("", "")
+    span = (
+        f" The region spans {first} … {last} ({region_len} messages): "
+        f"session_search(ref='{first}', window=10) opens its start, then scroll forward."
+    ) if first and last else ""
     return (
         "\n\n" + _LEAN_RECOVERY_HEADING + "\n"
         f"The {region_len} compacted message(s) remain fully preserved in "
@@ -1024,6 +1051,7 @@ def _build_recovery_footer(session_id: str, region_len: int) -> str:
         "reasoning), recover it with: "
         f"session_search(query='<keywords>', session_id='{session_id}') — "
         "do not guess at lost specifics when you can look them up."
+        + span
     )
 
 
@@ -1057,7 +1085,8 @@ _LEAN_ANCHOR_HEADING = "## Anchor Index (mechanically extracted, exact)"
 _LEAN_ANCHOR_BUDGET_CHARS = 7_000
 _ANCHOR_PATTERNS: "list[tuple[str, re.Pattern[str], int]]" = [
     ("PRs/issues", re.compile(r"#\d{3,6}\b"), 120),
-    ("commits", re.compile(r"\b[0-9a-f]{9,40}\b"), 40),
+    # Not our own ``m:<hex>`` message refs (stubs and quotes from earlier compactions): they are not commits.
+    ("commits", re.compile(r"(?<!m:)\b[0-9a-f]{9,40}\b"), 40),
     ("branches", re.compile(r"\b(?:fix|feat|docs|refactor|chore|salvage|ent)/[A-Za-z0-9._/-]{3,60}"), 40),
     ("files", re.compile(r"\b[\w./-]+/[\w.-]+\.(?:py|ts|tsx|js|rs|md|yaml|yml|json|toml|sh)\b"), 80),
     ("errors", re.compile(r"\b(?:[A-Z][a-zA-Z]*Error|Exception|ENOSPC|EACCES|SIGKILL|Traceback)\b[^\n]{0,90}"), 40),
@@ -3767,7 +3796,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 continue
             if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS or SKILL_PRUNED_MARKER_PREFIX in content or _is_summary_stub(content):
                 continue
-            result[i] = _rewritten(msg, _lean_recovery_stub(msg.get("tool_name") or "", len(content), session_id))
+            result[i] = _rewritten(msg, _lean_recovery_stub(
+                msg.get("tool_name") or "", len(content), session_id, msg.get(MESSAGE_UID)))
             demoted += 1
         if demoted and not self.quiet_mode:
             logger.info("Lean tail: demoted %d stale tool result(s)", demoted)
@@ -3780,7 +3810,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         for heading, build in (
             (_LEAN_ANCHOR_HEADING, lambda: _redact_compaction_text(_build_anchor_index(turns_to_summarize))),
             (_LEAN_USER_MESSAGES_HEADING, lambda: _redact_compaction_text(_build_verbatim_user_section(turns_to_summarize))),
-            (_LEAN_RECOVERY_HEADING, lambda: _build_recovery_footer(getattr(self, "_session_id", "") or "", len(turns_to_summarize))),
+            (_LEAN_RECOVERY_HEADING, lambda: _build_recovery_footer(getattr(self, "_session_id", "") or "", turns_to_summarize)),
         ):
             if heading not in summary:
                 summary += build()

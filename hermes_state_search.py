@@ -38,6 +38,13 @@ _FTS5_SPECIAL_CHARS = '+{}():"^@/#&|~[]<>,;!?$=\\\''
 _FTS5_SPECIAL_RE = re.compile(f"[{re.escape(_FTS5_SPECIAL_CHARS)}]")
 
 _FTS_OPERATORS = frozenset({"AND", "OR", "NOT"})
+
+# session_search(ref=...): ``m:<hex>`` or bare hex, 12-32 chars of a ``message_uid``. Both lookups are served
+# by idx_messages_message_uid (the rowid rides in the index, so ORDER BY id needs no sort).
+_MESSAGE_REF_RE = re.compile(r"(?:m:)?([0-9a-f]{12,32})")
+_MESSAGE_REF_CANDIDATES_SQL = ("SELECT DISTINCT message_uid FROM messages "
+                               "WHERE message_uid >= ? AND message_uid < ? LIMIT 2")
+_MESSAGE_REF_ROW_SQL = "SELECT id, session_id, message_uid FROM messages WHERE message_uid = ? ORDER BY id LIMIT 1"
 _LIKE_SKIP_TOKENS = _FTS_OPERATORS | {"NEAR"}
 _LIKE_TOKEN_RE = re.compile(r'"[^"]+"|\S+')
 _QUOTED_PHRASE_RE = re.compile(r'"[^"]*"')
@@ -1257,6 +1264,25 @@ class SessionSearchMixin:
         return [row for _, row in ranked[:limit]]
 
     # ── FTS maintenance commands ───────────────────────────────────────────
+
+    def resolve_message_ref(self, ref: str) -> Optional[Dict[str, Any]]:
+        """The ORIGINAL row behind an ``m:<hex>`` ref (a 12-32 hex prefix of a ``message_uid``), or ``None``.
+
+        Every copy of a message keeps its uid, so the earliest row by ``id`` is the original, in its original
+        position, whatever its ``active``/``compacted`` flags now say. Raises ``ValueError`` for a malformed
+        ref and ``LookupError`` when the prefix matches more than one uid (a longer ref disambiguates).
+        """
+        match = _MESSAGE_REF_RE.fullmatch(ref.strip().lower()) if isinstance(ref, str) else None
+        if match is None:
+            raise ValueError(f"invalid message ref: {ref!r}")
+        prefix = match.group(1)
+        # Index range scan over the prefix: [prefix, prefix with its last char incremented).
+        upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        uids = [row[0] for row in self._read_all(_MESSAGE_REF_CANDIDATES_SQL, (prefix, upper))]
+        if len(uids) > 1:
+            raise LookupError(f"message ref m:{prefix} is ambiguous")
+        row = self._read_one(_MESSAGE_REF_ROW_SQL, (uids[0],)) if uids else None
+        return {"id": row["id"], "session_id": row["session_id"], "message_uid": row["message_uid"]} if row else None
 
     def _fts_table_exists(self, name: str) -> bool:
         """True if an FTS5 virtual table is queryable ("no such table" and "vtable

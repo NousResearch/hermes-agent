@@ -316,6 +316,9 @@ def test_inspect_reuses_one_ssrf_safe_client_for_metadata_and_bundle(monkeypatch
             return Response()
 
     class Source:
+        def source_id(self):
+            return "github"
+
         def inspect(self, _identifier):
             hub._guarded_http_get("https://example.com/metadata")
             # The Hermes-index fetch must ride the same pool (no cache → real GET).

@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
 import { ruModelMenu } from './ru_model_menu'
+import { ruNotices } from './ru_notices'
 import { ruPluginSettings } from './ru_plugins'
 import { ruSharedMetrics } from './ru_shared_metrics'
 
@@ -259,10 +260,7 @@ export const ru = defineLocale({
       creditsTitle: 'Кредиты'
     }
   },
-  remoteDisplayBanner: {
-    message: reason =>
-      `Включён программный рендеринг — обнаружен удалённый дисплей (${reason}). GPU-ускорение отключено, чтобы избежать мерцания.`
-  },
+  ...ruNotices,
 
   billingBlock: {
     titleNous: 'Кредиты Nous закончились',

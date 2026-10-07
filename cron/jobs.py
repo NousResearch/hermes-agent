@@ -576,6 +576,27 @@ def _is_recoverable_error_job(job: Dict[str, Any]) -> bool:
     )
 
 
+def _is_exhausted_recurring_job(job: Dict[str, Any]) -> bool:
+    """True for a recurring (cron/interval) job whose finite ``repeat.times`` budget is spent.
+
+    Its repeat-limit branch retires it through the same ``_complete_job_record`` path as a spent
+    one-shot (``state=completed``, disabled, no ``next_run_at``), so every automatic path treats it
+    as genuinely terminal — correctly, because a spent budget must NOT resurrect itself. What the
+    record cannot express is that its schedule still has future occurrences, so an explicit
+    ``resume_job`` may restart the series. This is the sibling of ``_is_recoverable_error_job``:
+    there the job stays enabled and self-heals on the next tick, here it stays stopped until the
+    user asks for it.
+    """
+    kind = (job.get("schedule") or {}).get("kind")
+    if kind not in {"cron", "interval"}:
+        return False
+    repeat = job.get("repeat") or {}
+    times = repeat.get("times")
+    if times is None or times <= 0:
+        return False
+    return repeat.get("completed", 0) >= times
+
+
 def _secure_dir(path: Path):
     """Owner-only (0700) via the shared helper, so cron/ and cron/output honor the same managed/
     container/HERMES_HOME_MODE rules as the rest of HERMES_HOME (#10757)."""
@@ -2000,8 +2021,17 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     return jobs
 
 
-def _reject_terminal_activation(job: Dict[str, Any], updated: Dict[str, Any], job_id: str) -> None:
-    """A genuinely terminal job cannot be reactivated through update_job (use cron resume)."""
+def _reject_terminal_activation(
+    job: Dict[str, Any], updated: Dict[str, Any], job_id: str, *, allow: bool = False
+) -> None:
+    """A genuinely terminal job cannot be reactivated through update_job (use cron resume).
+
+    ``allow`` is set ONLY by ``resume_job`` restarting an exhausted recurring job — the one
+    user-initiated path that may revive a terminal record. Every other caller (the ``cronjob``
+    tool, the dashboard, ``cron edit``) keeps the refusal.
+    """
+    if allow:
+        return
     if (
         is_terminal_job(job)
         and not _is_recoverable_error_job(job)
@@ -2113,8 +2143,15 @@ def _fill_missing_next_run(updated: Dict[str, Any]) -> None:
     updated["next_run_at"] = next_run
 
 
-def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Update a job by ID, refreshing derived schedule fields when needed."""
+def update_job(
+    job_id: str, updates: Dict[str, Any], *, _reactivate_terminal: bool = False
+) -> Optional[Dict[str, Any]]:
+    """Update a job by ID, refreshing derived schedule fields when needed.
+
+    ``_reactivate_terminal`` is the sanctioned exception to the terminal-job refusal, set only by
+    ``resume_job``; it is not part of the public update contract (the ``cronjob`` tool and the CLI
+    must go through ``resume_job`` to revive a terminal record).
+    """
     # ``id`` is a path component under OUTPUT_DIR — changing it would leak path-escape values.
     bad_fields = _IMMUTABLE_JOB_FIELDS.intersection(updates or {})
     if bad_fields:
@@ -2125,7 +2162,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         _normalize_job_updates(job, updates)
         _apply_pin_update(job, updates)
         updated = _apply_skill_fields({**job, **updates})
-        _reject_terminal_activation(job, updated, job_id)
+        _reject_terminal_activation(job, updated, job_id, allow=_reactivate_terminal)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
         if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):
             _validate_job_mode_invariants(
@@ -2147,7 +2184,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
             updated.pop("pending_slot", None)
         _fill_missing_next_run(updated)
-        _reject_terminal_activation(job, updated, job_id)
+        _reject_terminal_activation(job, updated, job_id, allow=_reactivate_terminal)
         jobs[i] = updated
         save_jobs(jobs)
         return _normalize_job_record(updated)
@@ -2199,13 +2236,28 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
         raise ValueError(
             f"Cannot resume: one-shot time {run_at} is in the past "
             f"(grace window: {ONESHOT_GRACE_SECONDS}s) and will never fire.")
-    return update_job(job["id"], {
+    # A recurring job with a finite ``repeat.times`` retires as state=completed when its budget is
+    # spent (mark_job_run's repeat-limit branch -> _complete_job_record), which is indistinguishable
+    # from a spent one-shot everywhere else — and deliberately so: a spent budget must not resurrect
+    # itself. That left NO path back in: resume refused it as terminal, while --run-now/--at demand a
+    # one-shot schedule, so "every 30m x48" could only be revived by deleting and recreating it.
+    # An explicit resume is the one place allowed to restart such a series, so reset the counter it
+    # retired on. A genuinely spent one-shot keeps its refusal below.
+    restart_series = _is_exhausted_recurring_job(job)
+    updates = {
         "enabled": True,
         "state": "scheduled",
         "paused_at": None,
         "paused_reason": None,
         "next_run_at": next_run_at,
-    })
+    }
+    if restart_series:
+        updates["repeat"] = {**(job.get("repeat") or {}), "completed": 0}
+        logger.info(
+            "Job '%s' (%s): resuming restarts the repeat series (budget of %s was exhausted).",
+            job.get("name", job["id"]), job["schedule"].get("kind"),
+            (job.get("repeat") or {}).get("times"))
+    return update_job(job["id"], updates, _reactivate_terminal=restart_series)
 
 
 def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:

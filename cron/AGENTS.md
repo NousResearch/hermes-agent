@@ -85,6 +85,14 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   post-restore re-exec must replay the whole worker, never land after the ack with the payload
   gone and no dependency boot.
 - Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
+- **A spent repeat budget must not resurrect itself, and `resume` is the only way back.** A recurring
+  (cron/interval) job with a finite `repeat.times` retires through the same `_complete_job_record` path
+  as a spent one-shot (`state=completed`, disabled, `next_run_at=None`), so the due scan, `claim_job_for_fire`,
+  `advance_next_run(s)` and `trigger_job` must all keep treating it as terminal. Only an explicit
+  `resume_job` restarts the series — resetting `repeat.completed` while keeping `times` (the user's budget),
+  through the single `update_job(..., _reactivate_terminal=True)` seam. Do not widen that exception to
+  another caller, and do not make exhaustion auto-recoverable: a spent budget that fires again on its own is
+  worse than one that needs a human (#125872; sibling of the `state=error` case in #16265).
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
   reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
   or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored

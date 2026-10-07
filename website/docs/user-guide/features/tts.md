@@ -53,6 +53,7 @@ tts:
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
     speed: 1.0                  # Converted to rate percentage (+/-%)
+    timeout: 60                 # Positive finite seconds per synthesis/chunk; raise for slow/long audio
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
     model_id: "eleven_multilingual_v2"
@@ -112,6 +113,8 @@ tts:
     # volume: 1.0                               # 0.5 = half as loud
     # normalize_audio: true
 ```
+
+**Edge timeout**: `tts.edge.timeout` bounds the wait for each synthesis/chunk (default 60 seconds). Increase it for slow connections or long audio. On timeout, cancellation is requested and that worker cannot publish its output or overwrite a retry. A process permits at most two concurrent Edge workers; if both remain stuck in non-cancellable I/O, further attempts fail promptly until a worker finishes. Use another provider or restart the process if they never recover.
 
 KittenTTS is not available on Intel macOS or Windows ARM64: its dependencies publish no `onnxruntime` or PyTorch wheels for those platforms. Selecting it there reports the provider unavailable.
 

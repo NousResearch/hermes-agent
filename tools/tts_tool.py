@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 from pathlib import Path
 from typing import Callable, Dict, Any, List, Optional
 
@@ -151,6 +152,12 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
 # Platforms whose native voice-bubble delivery requires Ogg/Opus (MP3 renders broken there).
 OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "signal"})
 
+# Per-synthesis default; tts.edge.timeout can raise it for slow/long audio.
+_EDGE_TTS_TIMEOUT_S = 60
+# Cancellation cannot stop a thread blocked in native code. Bound the process-wide
+# number of Edge workers so repeated timeouts cannot accumulate unlimited daemons.
+_EDGE_TTS_WORKER_SLOTS = threading.BoundedSemaphore(2)
+
 # MEDIA:<path> is a line-level gateway protocol. A filename containing an anchored media
 # directive forges a second attachment whenever the path is echoed into the tool result
 # (media_tag / file_path fields, error text): the collector scans producer output with a
@@ -197,14 +204,83 @@ def _error_json(message: str) -> str:
 
 
 def _run_edge_tts(text: str, file_str: str, tts_config: Dict[str, Any]) -> None:
-    """Run the async Edge generator from sync code (worker thread; direct run if that fails)."""
-    run = lambda: asyncio.run(_generate_edge_tts(text, file_str, tts_config))  # noqa: E731
+    """Bound the caller's wait and publish output only from a completed synthesis.
+
+    Workers own unique staging files, never the requested output. Timeout requests
+    cooperative cancellation without waiting for it; even an uncooperative worker
+    can only write its staging file, which it removes when it eventually unwinds.
+    A process-wide two-worker limit bounds truly stuck threads (and allows one retry).
+    There is deliberately no unbounded synchronous fallback.
+    """
+    import math
+
+    timeout = (tts_config.get("edge") or {}).get("timeout", _EDGE_TTS_TIMEOUT_S)
     try:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            pool.submit(run).result(timeout=60)
-    except RuntimeError:
-        run()
+        if isinstance(timeout, bool):
+            raise ValueError
+        timeout = float(timeout)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise ValueError("tts.edge.timeout must be a positive finite number of seconds") from None
+    slots = _EDGE_TTS_WORKER_SLOTS
+    if not slots.acquire(blocking=False):
+        raise TimeoutError("Edge TTS workers are still busy; retry after they finish or use another provider")
+
+    abandoned = threading.Event()
+    lock = threading.Lock()
+    box: Dict[str, Any] = {}
+    staging = None
+    started = False
+    try:
+        target = Path(file_str)
+        fd, staging = tempfile.mkstemp(prefix=".edge-tts-", suffix=target.suffix, dir=target.parent)
+        os.close(fd)
+        generator = _generate_edge_tts
+
+        async def _generate() -> None:
+            with lock:
+                box["loop"] = asyncio.get_running_loop()
+                task = asyncio.current_task()
+                assert task is not None
+                box["task"] = task
+                if abandoned.is_set():
+                    task.cancel()
+            await generator(text, staging, tts_config)
+
+        def _runner() -> None:
+            try:
+                asyncio.run(_generate())
+            except BaseException as exc:  # re-raised on the caller's thread below
+                box["error"] = exc
+            finally:
+                if abandoned.is_set():
+                    _remove_quietly(staging)
+                slots.release()
+
+        worker = threading.Thread(target=_runner, name="edge-tts", daemon=True)
+        worker.start()
+        started = True
+        worker.join(timeout=timeout)
+        if worker.is_alive():
+            with lock:
+                abandoned.set()
+                loop, task = box.get("loop"), box.get("task")
+                if loop is not None and task is not None:
+                    try:
+                        loop.call_soon_threadsafe(task.cancel)
+                    except RuntimeError:  # loop already closed during the timeout race
+                        pass
+            raise TimeoutError(f"Edge TTS did not finish within {timeout:g}s; cancellation requested")
+        if "error" in box:
+            raise box["error"]
+        # Only the caller publishes, and only after the worker has stopped writing.
+        os.replace(staging, file_str)
+    finally:
+        if not started:
+            slots.release()
+        if staging is not None:
+            _remove_quietly(staging)
 
 
 def _select_builtin_engine(provider: str) -> tuple:

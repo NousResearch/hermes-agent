@@ -30,7 +30,7 @@ def _fake_windows_prepare(tmp_path, monkeypatch, acquire):
     events = []
     monkeypatch.setattr(update_completion, "sys", _Win32Sys())
     monkeypatch.setattr(update_lock, "_acquire_checkout", lambda root: acquire(events, Path(root)))
-    for name in ("refuse_foreign_owned_venv", "arm_completion", "collect_superseded_generations"):
+    for name in ("arm_completion", "collect_superseded_generations"):
         monkeypatch.setattr(venv_sync, name, lambda root, _name=name: events.append(_name))
     monkeypatch.setattr(pm.client, "ensure_tools_for_sync", lambda: events.append("tools"))
     monkeypatch.setattr(pm, "sync_venv", lambda **kw: events.append("sync_venv"))
@@ -63,8 +63,8 @@ def test_windows_bootstrap_holds_a_checkout_lease_before_it_writes_the_checkout(
     root, events = _fake_windows_prepare(
         tmp_path, monkeypatch, lambda events, root: events.append(("lease", root)))
     assert events[0] == ("lease", root), events
-    assert events[1:] == ["refuse_foreign_owned_venv", "arm_completion", "tools", "sync_venv",
-                          "collect_superseded_generations", "prepared"]
+    assert events[1:] == ["arm_completion", "tools", "sync_venv", "collect_superseded_generations",
+                          "prepared"]
 
 
 def test_windows_bootstrap_that_cannot_join_the_checkout_lock_writes_nothing(tmp_path, monkeypatch):

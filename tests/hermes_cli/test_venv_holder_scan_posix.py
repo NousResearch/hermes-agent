@@ -182,3 +182,67 @@ def test_detector_shape_matches_windows_contract(monkeypatch, tmp_path):
     finally:
         proc.terminate()
         proc.wait(timeout=10)
+
+
+def _patch_chain(monkeypatch, venv: Path, *, gateway_cmd: str) -> tuple[int, int, dict]:
+    """Fake a parent chain: one gateway-shaped ancestor, one interactive ancestor.
+
+    Returns ``(gateway_pid, shell_pid, seen)`` where ``seen`` records what the scan asked
+    its own helpers for. ``hermes_cli.venv_holder_scan`` is patched rather than the detector,
+    because the detector imports these names at call time.
+    """
+    gateway_pid, shell_pid = 424242, 434343
+    seen: dict = {}
+    monkeypatch.setattr(
+        vhs, "self_and_ancestor_pids", lambda pid=None: {os.getpid(), gateway_pid, shell_pid}
+    )
+    monkeypatch.setattr(
+        vhs,
+        "proc_cmdline",
+        lambda pid: {gateway_pid: gateway_cmd, shell_pid: "/bin/bash -l"}.get(pid, ""),
+    )
+    monkeypatch.setattr(vhs, "proc_name", lambda pid: "python")
+
+    def fake_pids_holding_venv(venv_dir, *, exclude_pids=None, include_ancestors=False):
+        seen["exclude"] = set(exclude_pids or set())
+        seen["include_ancestors"] = include_ancestors
+        return [gateway_pid]
+
+    monkeypatch.setattr(vhs, "pids_holding_venv", fake_pids_holding_venv)
+    return gateway_pid, shell_pid, seen
+
+
+def test_gateway_ancestor_stays_visible_on_posix(monkeypatch, tmp_path):
+    """#87594: under /update the updater is the gateway's child.
+
+    Blanket ancestor-exclusion would hide the very process the pause machinery must see —
+    on POSIX that is how a live gateway ends up with its venv replaced underneath it.
+    """
+    from hermes_cli import update_cmd_windows as ucw
+
+    venv = _make_venv(tmp_path)
+    _patch_detector_env(monkeypatch, tmp_path, venv)
+    gateway_pid, shell_pid, seen = _patch_chain(
+        monkeypatch, venv, gateway_cmd=f"{venv}/bin/python -m hermes_cli.main gateway run"
+    )
+
+    rows = ucw._detect_venv_python_processes()
+
+    assert [row[0] for row in rows] == [gateway_pid], "a gateway ancestor must remain a visible holder"
+    assert os.getpid() in seen["exclude"], "the updater never nominates itself"
+    assert shell_pid in seen["exclude"], "interactive ancestry is never a blocker"
+    assert gateway_pid not in seen["exclude"], "gateway ancestry must not be blanket-excluded (#87594)"
+    assert seen["include_ancestors"] is True, "the chain decision is made once, here — not twice"
+
+
+def test_caller_exclude_pids_is_unioned_with_own_chain(monkeypatch, tmp_path):
+    """An explicit ``exclude_pids`` from the caller survives the #87594 carve-out."""
+    from hermes_cli import update_cmd_windows as ucw
+
+    venv = _make_venv(tmp_path)
+    _patch_detector_env(monkeypatch, tmp_path, venv)
+    _, _, seen = _patch_chain(monkeypatch, venv, gateway_cmd="/bin/sh -c true")
+
+    ucw._detect_venv_python_processes(exclude_pids={777})
+
+    assert 777 in seen["exclude"] and os.getpid() in seen["exclude"]

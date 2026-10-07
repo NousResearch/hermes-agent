@@ -156,13 +156,33 @@ def _posix_venv_holders(*, exclude_pids: set[int] | None = None) -> list[tuple[i
     Best-effort: an unreadable or mid-exit process is skipped, never fatal.
     """
     from hermes_cli.update_cmd import _m
-    from hermes_cli.venv_holder_scan import pids_holding_venv, proc_cmdline, proc_name
+    from hermes_cli.venv_holder_scan import (
+        pids_holding_venv,
+        proc_cmdline,
+        proc_name,
+        self_and_ancestor_pids,
+    )
     from hermes_constants import project_venv_dir
 
     venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
+    is_gateway = None
+    with suppress(Exception):
+        from gateway.status import looks_like_gateway_command_line as is_gateway
+    skip: set[int] = set(exclude_pids or set()) | {os.getpid()}
+    for ancestor in self_and_ancestor_pids() - {os.getpid()}:
+        cmdline = proc_cmdline(ancestor)
+        # Same #87594 carve-out as the Windows scan: exclude our own interactive ancestry, but keep a
+        # GATEWAY ancestor visible. Under /update the updater is the gateway's child, so blanket
+        # ancestor exclusion hides the process the pause machinery must see — on POSIX that is how a
+        # live gateway ends up with its venv replaced underneath it (#134218).
+        if is_gateway is not None and cmdline and is_gateway(cmdline):
+            continue
+        skip.add(ancestor)
     return [
         (pid, proc_name(pid), proc_cmdline(pid))
-        for pid in pids_holding_venv(venv_dir, exclude_pids=exclude_pids)
+        for pid in pids_holding_venv(
+            venv_dir, exclude_pids=skip, include_ancestors=True
+        )
     ]
 
 

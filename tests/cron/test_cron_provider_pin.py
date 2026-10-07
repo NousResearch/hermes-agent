@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # Ensure project root is importable.
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -170,6 +172,72 @@ class TestPinnedLocksTheMainModel:
 
         still = jobs.update_job(job["id"], {"pinned": True, "model": "other-model"})
         assert still["model"] == "other-model"
+
+
+class TestNamedCustomProviderPin:
+    """A pin is re-requested verbatim on every later run, so it must round-trip.
+
+    ``resolve_runtime_provider`` reports the bare ``custom`` billing class for a NAMED custom
+    provider (``custom:<name>``). Storing that as the pin poisons every later run: bare
+    ``custom`` with no endpoint raises AuthError ("provider 'custom' resolved without
+    credentials"), so the job fails on every tick and never runs at all.
+    """
+
+    _NAMED = "custom:probe.studio"
+
+    @staticmethod
+    def _named_custom_home(monkeypatch, tmp_path):
+        """A HERMES_HOME whose global default IS a named custom provider."""
+        import cron.jobs as jobs
+
+        home = tmp_path / "named-custom-home"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "model:\n"
+            "  default: deepseek-flash\n"
+            f"  provider: {TestNamedCustomProviderPin._NAMED}\n"
+            "providers:\n"
+            "  probe.studio:\n"
+            "    base_url: https://probe.studio/v1\n"
+            "    api_key: probe-key\n"
+            "    model: deepseek-flash\n"
+            "    api_mode: chat_completions\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(jobs, "get_hermes_home", lambda: home, raising=True)
+        state = {"jobs": []}
+        monkeypatch.setattr(jobs, "load_jobs", lambda: list(state["jobs"]), raising=True)
+        monkeypatch.setattr(jobs, "save_jobs", lambda j: state.__setitem__("jobs", list(j)), raising=True)
+        monkeypatch.setattr(jobs, "resolve_job_ref", lambda ref: next(
+            (j for j in state["jobs"] if j["id"] == ref), None), raising=True)
+        return jobs
+
+    def test_pin_carries_the_named_identity(self, monkeypatch, tmp_path):
+        jobs = self._named_custom_home(monkeypatch, tmp_path)
+
+        job = jobs.create_job(prompt="do a thing", schedule="every 1 hour", pinned=True)
+
+        assert job["provider"] == self._NAMED, "the bare 'custom' class would not resolve again"
+        assert job["model"] == "deepseek-flash"
+
+    def test_pin_round_trips_through_the_real_resolver(self, monkeypatch, tmp_path):
+        """The contract a bare-``custom`` pin breaks: re-requesting the stored pin must
+        resolve again, with the endpoint the job was created under."""
+        from hermes_cli.auth_constants import AuthError
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        jobs = self._named_custom_home(monkeypatch, tmp_path)
+        job = jobs.create_job(prompt="do a thing", schedule="every 1 hour", pinned=True)
+
+        resolved = resolve_runtime_provider(requested=job["provider"])
+        assert resolved["provider"] == "custom"
+        assert resolved["base_url"] == "https://probe.studio/v1"
+
+        # The shape that poisoned the job: bare 'custom' has no endpoint to fall back on.
+        with pytest.raises(AuthError) as excinfo:
+            resolve_runtime_provider(requested="custom")
+        assert "without credentials" in str(excinfo.value)
 
 
 class TestRuntimeResolutionTargetModel:

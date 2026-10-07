@@ -1051,9 +1051,10 @@ pkill caffeinate
 
 :::warning Closing a MacBook's lid
 Idle-sleep settings don't stop lid-close sleep: `caffeinate -i` or `-d`,
-`pmset sleep 0`, and Battery → Options → "Prevent automatic sleeping when the
-display is off" all leave it in place, even on AC power. The gateway then stays
-offline until the lid opens. To keep a gateway reachable with the lid closed:
+`pmset sleep 0`, and the Battery → Options setting that prevents automatic
+sleeping when the display is off all leave it in place, even on AC power. The
+gateway then stays offline until the lid opens. To keep a gateway reachable with
+the lid closed:
 
 - **On AC power, `caffeinate -s`** also blocks lid-close sleep, without root
   (`-dis` above includes it). It has no effect on battery, so an unplugged

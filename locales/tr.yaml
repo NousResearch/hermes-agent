@@ -250,6 +250,7 @@ gateway:
       timed_out: "⏱ {head} {span} aştı ve durduruldu; otomatik olarak yeniden denenecek."
       blocked: "⏸ {head} engellendi{reason}"
       crashed: "✖ {head} — worker süreci beklenmedik şekilde durdu; otomatik olarak yeniden denenecek."
+      worker_note: "📐 Worker'ın son notu: {note}"
       status: "🔄 {head} → {status}"
       board_tag: "[{board}] "
       assignee_tag: "@{assignee} "

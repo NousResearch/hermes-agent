@@ -253,6 +253,7 @@ gateway:
       timed_out: "⏱ {head} ran past {span} and was stopped; it will be retried automatically."
       blocked: "⏸ {head} blocked{reason}"
       crashed: "✖ {head} — its worker stopped unexpectedly; it will be retried automatically."
+      worker_note: "📎 worker's last note: {note}"
       status: "🔄 {head} → {status}"
       board_tag: "[{board}] "
       assignee_tag: "@{assignee} "

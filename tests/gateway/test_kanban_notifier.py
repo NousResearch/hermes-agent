@@ -796,3 +796,161 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+# ---------------------------------------------------------------------------
+# Terminal-diagnostic pings must CARRY the worker's findings: a worker that
+# dies (gave_up/crashed/timed_out) after documenting findings in its last
+# comment used to produce a ping carrying only the error string — the
+# findings died with the worker and the operator had to ask, 16+ hours
+# later, to learn what the worker had already written down.
+# ---------------------------------------------------------------------------
+
+
+class _NoteNotif:
+    """Minimal formatter-facing notification stub (head + cached comment)."""
+
+    def __init__(self, last_comment):
+        self.head = "H123"
+        self.task_id = "t_stub"
+        self.last_comment = last_comment
+
+
+def test_get_last_comment_returns_most_recent_row(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "last-comment.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="commented task", assignee="worker")
+        assert kb.get_last_comment(conn, tid) is None
+        kb.add_comment(conn, tid, author="worker", body="first note")
+        kb.add_comment(conn, tid, author="worker", body="second note")
+        last = kb.get_last_comment(conn, tid)
+        assert last is not None and last.body == "second note"
+        # Unknown ids read as "no comment", never raise.
+        assert kb.get_last_comment(conn, "t_nope") is None
+    finally:
+        conn.close()
+
+
+def test_gave_up_ping_carries_last_comment_findings(tmp_path, monkeypatch):
+    """The gave_up ping must contain the last comment's contents."""
+    marker = "FINDINGS-CARRIER-TEST-20261001"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "gave-up-note.db"))
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="dies with findings", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.add_comment(
+            conn, tid, author="worker",
+            body=f"{marker}: two residual defects remain; fix path documented",
+        )
+        kb._append_event(
+            conn, tid, "gave_up",
+            {"failures": 2, "error": "exited with code 1"},
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1, "the gave_up ping must still be delivered"
+    text = adapter.sent[0]["text"]
+    assert marker in text, "the worker's documented findings must ride the ping"
+    assert "two residual defects remain" in text
+    assert "worker's last note" in text
+
+
+def test_crashed_and_timed_out_pings_carry_last_comment(tmp_path, monkeypatch):
+    """crashed and timed_out carry the findings block the same way."""
+    marker = "FINDINGS-CARRIER-TEST-CRASH-TIMEOUT"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "crash-timeout-note.db"))
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="crash then time out", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.add_comment(conn, tid, author="worker", body=f"{marker} partial state logged")
+        kb._append_event(conn, tid, "crashed", {"error": "exit 3"})
+        kb._append_event(conn, tid, "timed_out", {"limit_seconds": 7200})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 2
+    for ping in adapter.sent:
+        assert marker in ping["text"], (
+            f"{ping['text']!r} must carry the worker's last note"
+        )
+
+
+def test_terminal_ping_without_comment_format_unchanged(tmp_path, monkeypatch):
+    """No comment on the task -> the three diagnostic pings render exactly as
+    they did before the findings block existed (no regression)."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "no-note.db"))
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="dies silently", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb._append_event(conn, tid, "gave_up", {"failures": 3, "error": "boom"})
+        kb._append_event(conn, tid, "crashed", {})
+        kb._append_event(conn, tid, "timed_out", {"limit_seconds": 3600})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 3
+    for ping in adapter.sent:
+        assert "last note" not in ping["text"], (
+            f"no-comment pings must not grow a findings block: {ping['text']!r}"
+        )
+    # The base messages keep their exact pre-change content.
+    gave_up = next(p["text"] for p in adapter.sent if "is now blocked" in p["text"])
+    assert "it failed 3 times in a row" in gave_up
+    assert "(last: boom)" in gave_up
+
+
+def test_worker_note_truncates_long_comment_to_240_chars():
+    """A 5,000-char findings comment surfaces as a bounded excerpt."""
+    from gateway.kanban_watchers_notifier import _last_worker_note
+
+    class _Comment:
+        body = "x" * 5000
+
+    note = _last_worker_note(_NoteNotif(_Comment()))
+    assert note, "a long comment must still surface a bounded excerpt"
+    assert "worker's last note" in note
+    # 240-char clip + ellipsis + label + leading newline keep the block compact.
+    assert len(note) < 320
+
+
+def test_worker_note_scrubs_local_paths_and_missing_comment():
+    """Local paths are scrubbed (external delivery) and a missing comment is a
+    silent no-op, never an exception."""
+    from gateway.kanban_watchers_notifier import _last_worker_note
+
+    class _Comment:
+        body = "fix lives at C:\\Users\\DELL\\secret\\exploit.py, see marker ZQX"
+
+    note = _last_worker_note(_NoteNotif(_Comment()))
+    assert "C:\\Users" not in note
+    assert "[local path]" in note
+    assert "marker ZQX" in note
+
+    assert _last_worker_note(_NoteNotif(None)) == ""
+    class _Empty:
+        body = "   "
+    assert _last_worker_note(_NoteNotif(_Empty())) == ""

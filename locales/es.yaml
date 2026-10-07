@@ -250,6 +250,7 @@ gateway:
       timed_out: "⏱ {head} superó {span} y se detuvo; se reintentará automáticamente."
       blocked: "⏸ {head} bloqueada{reason}"
       crashed: "✖ {head} — su worker se detuvo inesperadamente; se reintentará automáticamente."
+      worker_note: "📐 Última nota del worker: {note}"
       status: "🔄 {head} → {status}"
       board_tag: "[{board}] "
       assignee_tag: "@{assignee} "

@@ -539,6 +539,8 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `MATRIX_APPROVAL_REQUIRE_SENDER` | Require approval/model-picker reactions to come from the original requester when known (default: `true`) |
 | `MATRIX_APPROVAL_TIMEOUT_SECONDS` | Timeout for Matrix reaction approval/model-picker prompts (default: `300`) |
 | `MATRIX_ALLOW_PUBLIC_ROOMS` | Allow Matrix room-creation tools to create public rooms (default: `false`) |
+| `MATRIX_TOOLS_ALLOW_ROOM_CREATE` | Enable the Matrix room-admin tools (`matrix_create_room`, `matrix_leave_room`, `matrix_delete_room`) for Matrix sessions (default: `false`) |
+| `MATRIX_TOOLS_ALLOW_CROSS_ROOM` | Let `matrix_leave_room` / `matrix_delete_room` act on rooms other than the current conversation's room, including from non-Matrix sessions (default: `false`) |
 | `MATRIX_MAX_MEDIA_BYTES` | Maximum Matrix media upload/download size in bytes (default: `104857600`) |
 | `MATRIX_RECOVERY_KEY` | Recovery key for cross-signing verification after device key rotation. Recommended for E2EE setups with cross-signing enabled. |
 | `MATRIX_RECOVERY_KEY_OUTPUT_FILE` | Optional one-time path for a generated Matrix recovery key. Created with mode `0600` and never overwritten. |

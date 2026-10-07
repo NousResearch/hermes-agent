@@ -44,6 +44,9 @@ _FEISHU_TOOLS = [
     "feishu_doc_read", "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
     "feishu_drive_reply_comment", "feishu_drive_add_comment",
 ]
+# Matrix room admin: only the hermes-matrix bundle gets these, and their check_fn
+# additionally requires MATRIX_TOOLS_ALLOW_ROOM_CREATE.
+_MATRIX_TOOLS = ["matrix_create_room", "matrix_leave_room", "matrix_delete_room"]
 _YUANBAO_TOOLS = ["yb_query_group_info", "yb_query_group_members", "yb_send_dm", "yb_search_sticker", "yb_send_sticker"]
 
 
@@ -218,7 +221,7 @@ TOOLSETS = {
     "hermes-bluebubbles": _bundle("BlueBubbles iMessage bot toolset - Apple iMessage via local BlueBubbles server"),
     "hermes-email": _bundle("Email bot toolset - interact with Hermes via email (IMAP/SMTP)"),
     "hermes-mattermost": _bundle("Mattermost bot toolset - self-hosted team messaging (full access)"),
-    "hermes-matrix": _bundle("Matrix bot toolset - decentralized encrypted messaging (full access)"),
+    "hermes-matrix": _bundle("Matrix bot toolset - decentralized encrypted messaging (full access)", _MATRIX_TOOLS),
     "hermes-dingtalk": _bundle("DingTalk bot toolset - enterprise messaging platform (full access)"),
     "hermes-feishu": _bundle("Feishu/Lark bot toolset - enterprise messaging via Feishu/Lark (full access)", _FEISHU_TOOLS),
     "hermes-weixin": _bundle("Weixin bot toolset - personal WeChat messaging via iLink (full access)"),

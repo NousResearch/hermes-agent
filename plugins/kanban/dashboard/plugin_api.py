@@ -334,8 +334,13 @@ def get_board(
 
         # Queue columns keep list_tasks' dispatch order (priority DESC, created_at ASC).
         tenants = [r["tenant"] for r in conn.execute("SELECT DISTINCT tenant FROM tasks WHERE tenant IS NOT NULL ORDER BY tenant")]
-        assignees = [r["assignee"] for r in conn.execute(
-            "SELECT DISTINCT assignee FROM tasks WHERE assignee IS NOT NULL AND status != 'archived' ORDER BY assignee")]
+        # List of known assignees for the lane-by-profile sub-grouping.
+        # Uses kanban_db.known_assignees so the lane set unions profiles
+        # currently holding non-archived tasks with profiles configured on
+        # disk — a freshly-added profile shows up as a (possibly empty)
+        # lane immediately, matching the assignee picker at /assignees
+        # which already uses this helper.
+        assignees = [entry["name"] for entry in kanban_db.known_assignees(conn)]
         return {
             "columns": [{"name": name, "tasks": columns[name]} for name in columns], "tenants": tenants,
             "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time())}

@@ -135,7 +135,7 @@ on:
       - 'hermes_cli/*update*'
       - 'hermes_cli/pm*'
       - 'hermes_cli/*install*'
-      - 'hermes_cli/_early_recovery.py'
+      - 'hermes_cli/_early_recovery*.py'
       - 'hermes_cli/_launchers.py'
       - 'hermes_cli/managed_uv.py'
       - 'hermes_cli/venv_sync.py'

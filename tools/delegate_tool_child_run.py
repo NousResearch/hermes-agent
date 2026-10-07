@@ -856,9 +856,13 @@ class _ChildRun:
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                return child.run_conversation(
-                    user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
-                )
+                run_kwargs = {
+                    "user_message": user_message, "task_id": self.child_task_id, "stream_callback": self.relay_text,
+                }
+                fork_history = getattr(child, "_delegate_fork_history", None)
+                if isinstance(fork_history, list):
+                    run_kwargs["conversation_history"] = fork_history
+                return child.run_conversation(**run_kwargs)
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
         # One wait covers both ways out: the worker finishing, or the heartbeat's stale verdict.

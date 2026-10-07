@@ -640,7 +640,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # Unified queue for all background events (distinguished by "type"); the CLI
         # process_loop and the gateway drain it after each agent turn to trigger new turns.
         import queue as _queue_mod
-        self._completion_queue: _queue_mod.Queue = _queue_mod.Queue()
+        self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
         # Defer durable delegation rehydration until notifications are drained or
         # explicitly requested, preventing state.db creation during module import (#123265).
         self._durable_completions_restored_homes: set = set()
@@ -1829,31 +1829,25 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # ownership, so leave them for the owner.
         return not (is_async_delegation and evt.get("restored"))
 
-    @property
-    def completion_queue(self):
-        self.ensure_durable_completions_restored()
-        return self._completion_queue
-
-    @completion_queue.setter
-    def completion_queue(self, val) -> None:
-        self._completion_queue = val
-
     def restore_durable_completions(self, profile_home: Optional[Any] = None) -> int:
         """Rehydrate durable delegation completions once per profile home."""
         from hermes_constants import get_hermes_home
         key = str(profile_home or get_hermes_home())
-        if key in self._durable_completions_restored_homes:
+        restored = getattr(self, "_durable_completions_restored_homes", None)
+        if restored is None:
+            restored = self._durable_completions_restored_homes = set()
+        if key in restored:
             return 0
-        self._durable_completions_restored_homes.add(key)
+        restored.add(key)
         try:
             from tools.async_delegation import restore_undelivered_completions
-            return restore_undelivered_completions(self._completion_queue)
+            return restore_undelivered_completions(self.completion_queue)
         except Exception as exc:
             logger.warning("Could not restore async delegation completions: %s", exc)
             return 0
 
-    def ensure_durable_completions_restored(self) -> None:
-        self.restore_durable_completions()
+    def ensure_durable_completions_restored(self, profile_home: Optional[Any] = None) -> None:
+        self.restore_durable_completions(profile_home=profile_home)
 
     def drain_notifications(
         self, session_key: str = "", owns_event=None, *, skip_poll_observed: bool = True,

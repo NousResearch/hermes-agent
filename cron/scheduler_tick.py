@@ -40,6 +40,39 @@ def tick(verbose=True, adapters=None, loop=None, sync=True, *, can_dispatch=None
         return _tick_admitted(verbose, adapters, loop, sync, can_dispatch=can_dispatch)
 
 
+def _is_recurring(job: dict) -> bool:
+    return (job.get("schedule") or {}).get("kind") in {"cron", "interval"}
+
+
+def _acquire_tick_lock_or_degrade(_sched):
+    """The tick lock fd, or None when this tick must not run: another ticker holds the lock, or
+    the store cannot be written (read-only/full/denied: the lock file cannot even be created), in
+    which case the store is marked degraded and the MCP orphan sweep still runs."""
+    lock_dir, lock_file = _sched._get_lock_paths()
+    _sched._ensure_cron_dir(lock_dir)
+    try:
+        return _sched._acquire_tick_lock(lock_file)
+    except OSError as exc:
+        if exc.errno not in store_health.UNWRITABLE_ERRNOS:
+            raise  # EMFILE/ENFILE etc. stay a FAILED tick (#87644)
+        store_health.note_unwritable(exc, "tick lock unavailable", "lock", cron_dir=lock_dir)
+        _sched._sweep_mcp_orphans()
+        return None
+
+
+def _advance_or_drop_recurring(_sched, due_jobs: list) -> list:
+    """Persist the recurring jobs' advance before any runs; when the store refuses it, drop them
+    (no durable advance -> a crash mid-run would re-fire them, so skipping is the at-most-once
+    side). One-shots still go through their own fire claim."""
+    try:
+        _sched.advance_next_runs([job["id"] for job in due_jobs])
+        return due_jobs
+    except OSError as exc:
+        skipped = [j for j in due_jobs if _is_recurring(j)]
+        store_health.note_unwritable(exc, f"skipped {len(skipped)} recurring job(s)", "advance", skipped)
+        return [j for j in due_jobs if not _is_recurring(j)]
+
+
 def _tick_admitted(
     verbose: bool = True, adapters=None, loop=None, sync: bool = True, *, can_dispatch=None):
     """Check and run all due jobs. File-locked so only one tick runs at a time (gateway ticker vs
@@ -55,17 +88,7 @@ def _tick_admitted(
         _log_tick_yield_once(f"boot={_skew[0]} disk={_skew[1]}")
         raise _sched.CronTickYielded(_skew[0], _skew[1])
 
-    lock_dir, lock_file = _sched._get_lock_paths()
-    _sched._ensure_cron_dir(lock_dir)
-    try:
-        lock_fd = _sched._acquire_tick_lock(lock_file)
-    except OSError as exc:
-        if exc.errno not in store_health.UNWRITABLE_ERRNOS:
-            raise  # EMFILE/ENFILE etc. stay a FAILED tick (#87644)
-        # Read-only/full/denied store: the lock file cannot be created, so nothing can dispatch.
-        store_health.note_unwritable(exc, "tick lock unavailable", "lock", cron_dir=lock_dir)
-        _sched._sweep_mcp_orphans()
-        return 0
+    lock_fd = _acquire_tick_lock_or_degrade(_sched)
     if lock_fd is None:
         return 0
 
@@ -120,17 +143,10 @@ def _tick_admitted(
         # Advance next_run_at for recurring jobs FIRST, under the lock, before any execution
         # (at-most-once). Re-advancing running jobs keeps the grace window alive; mark_job_run
         # overwrites it on completion. Composes with the claim-time advance in claim_job_for_fire.
-        try:
-            _sched.advance_next_runs([job["id"] for job in due_jobs])
-        except OSError as exc:
-            # No durable advance -> a crash mid-run would re-fire recurring jobs; skipping is the
-            # at-most-once side. One-shots still go through their own fire claim.
-            skipped = [j for j in due_jobs if (j.get("schedule") or {}).get("kind") in {"cron", "interval"}]
-            due_jobs = [j for j in due_jobs if (j.get("schedule") or {}).get("kind") not in {"cron", "interval"}]
-            store_health.note_unwritable(exc, f"skipped {len(skipped)} recurring job(s)", "advance", skipped)
-            if not due_jobs:
-                _sched._sweep_mcp_orphans()
-                return 0
+        due_jobs = _advance_or_drop_recurring(_sched, due_jobs)
+        if not due_jobs:
+            _sched._sweep_mcp_orphans()
+            return 0
 
         _max_workers = _sched._resolve_max_parallel_workers()
         if verbose:

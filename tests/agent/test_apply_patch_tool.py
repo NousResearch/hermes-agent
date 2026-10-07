@@ -25,7 +25,7 @@ def _tool_names(tools):
 
 
 class TestIsEnabled:
-    @pytest.mark.parametrize("model", ["openai/gpt-5.6-luna", "openai/gpt-6-luna", "gpt-5", "openai/gpt-10-mini"])
+    @pytest.mark.parametrize("model", ["openai/gpt-5.6-luna", "openai/gpt-6-luna", "gpt-5", "openai/gpt-10-mini", "openai/gpt-6-luna@preset/omnio"])
     def test_should_enable_gpt5_and_later_on_openrouter_by_default(self, model):
         assert apply_patch_tool.is_enabled("auto", model, "openrouter", "chat_completions")
 

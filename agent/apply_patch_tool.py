@@ -81,8 +81,11 @@ _AUTO_PROVIDERS = frozenset({"openrouter"})
 
 
 def _gpt_major_version(model: str) -> Optional[int]:
-    """Major version of a ``gpt-N`` model id (vendor prefix allowed), else None."""
-    name = (model or "").lower().rsplit("/", 1)[-1]
+    """Major version of a ``gpt-N`` model id (vendor prefix and ``@preset/…`` suffix allowed),
+    else None. A pure preset (``@preset/name``) hides its model, so it never matches."""
+    from agent.model_metadata import _openrouter_concrete_model
+
+    name = _openrouter_concrete_model(model or "").lower().rsplit("/", 1)[-1]
     if not name.startswith("gpt-"):
         return None
     digits = ""

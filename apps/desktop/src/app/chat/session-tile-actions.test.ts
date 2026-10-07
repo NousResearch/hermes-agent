@@ -358,6 +358,67 @@ describe('useSessionTileActions reloadFromMessage failed-submit rollback (#95745
     })
   })
 
+  it('drops a deep regenerate whose transcript changed while the confirm was open', async () => {
+    requestGatewayMock.mockImplementation(async () => ({}))
+    const { result } = renderTileActions()
+
+    // Output lands while the user reads the dialog: the plan and its rollback snapshot are stale.
+    const stopConfirming = $confirmRequest.listen(request => {
+      if (request) {
+        const current = $sessionStates.get()[RUNTIME_SESSION_ID]!
+        publishSessionState(RUNTIME_SESSION_ID, {
+          ...current,
+          messages: [...current.messages, { id: 'a3', parts: [textPart('late')], role: 'assistant', timestamp: 4 }]
+        } as never)
+        settleConfirm(true)
+      }
+    })
+
+    await act(async () => {
+      await result.current.reloadFromMessage('u1')
+    })
+    stopConfirming()
+
+    expect(requestGatewayMock.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(false)
+    expect($sessionStates.get()[RUNTIME_SESSION_ID]?.messages.map(m => m.id)).toEqual(['u1', 'a1', 'u2', 'a2', 'a3'])
+  })
+
+  it('a deep-cut 4033 the tile did not predict asks once and resubmits confirmed', async () => {
+    const { JsonRpcGatewayError } = await import('@hermes/shared')
+    let submits = 0
+
+    requestGatewayMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submits += 1
+
+        if (!params?.confirm_deep_truncate) {
+          throw new JsonRpcGatewayError('truncation would archive later user turns', { code: 4033 })
+        }
+      }
+
+      return {}
+    })
+
+    const { result } = renderTileActions()
+    let asked = 0
+
+    const stopConfirming = $confirmRequest.listen(request => {
+      if (request) {
+        asked += 1
+        settleConfirm(true)
+      }
+    })
+
+    // Regenerating the tail predicts no deep cut; the server counts one anyway.
+    await act(async () => {
+      await result.current.reloadFromMessage('a2')
+    })
+    stopConfirming()
+
+    expect(asked).toBe(1)
+    expect(submits).toBe(2)
+  })
+
   it('restores the full tile transcript when regenerate is rejected', async () => {
     requestGatewayMock.mockImplementation(async (method: string) => {
       if (method === 'prompt.submit') {

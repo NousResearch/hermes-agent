@@ -280,8 +280,10 @@ export const SESSION_BUSY_RETRY_TIMEOUT_MS = 6_000
 export const SESSION_BUSY_RETRY_INTERVAL_MS = 150
 
 /** prompt.submit refused an unconfirmed truncation that would archive later user turns (#133716). */
+export const GATEWAY_DEEP_TRUNCATE_REFUSED_CODE = 4033
+
 export function isDeepTruncateRefusal(error: unknown): boolean {
-  return error instanceof JsonRpcGatewayError && error.code === 4033
+  return error instanceof JsonRpcGatewayError && error.code === GATEWAY_DEEP_TRUNCATE_REFUSED_CODE
 }
 
 export function isSessionBusyError(error: unknown): boolean {

@@ -219,14 +219,19 @@ def test_kitty_payload_structure(boba_like):
     assert payload["cols"] < 18  # 0.4 scale is much smaller than a pinned 18-col box
     # placeholder grid matches the requested geometry
     assert len(payload["placeholder"]) == payload["rows"]
-    # one transmit escape per animation frame, each a kitty virtual placement
-    assert len(payload["frames"]) == r.frame_count("run")
-    for esc in payload["frames"]:
+    # one tiny frame switch per animation frame (a=a,c=N — control only, no pixel data moves)
+    count = r.frame_count("run")
+    assert len(payload["frames"]) == count
+    for n, esc in enumerate(payload["frames"], start=1):
         assert esc.startswith("\x1b_G")
         assert esc.endswith("\x1b\\")
         assert f"i={image_id}" in esc
-        assert "a=T" in esc and "U=1" in esc
-        assert f"c={payload['cols']}" in esc and f"r={payload['rows']}" in esc
+        assert "a=a" in esc and f"c={n},q=2" in esc
+    # ... and one upload stream: base frame as the virtual placement, the rest as a=f frames
+    upload = payload["upload"]
+    assert "a=T" in upload and "U=1" in upload
+    assert upload.count("\x1b_Ga=f,") == max(0, count - 1)
+    assert f"c={payload['cols']}" in upload and f"r={payload['rows']}" in upload
 
 
 

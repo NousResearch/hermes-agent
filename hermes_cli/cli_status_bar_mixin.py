@@ -659,6 +659,7 @@ class CLIStatusBarMixin:
         self._pet_kitty_cache.clear()
         self._pet_kitty_pending = ""
         self._pet_kitty_image_id = 0
+        self._pet_kitty_uploaded = set()
 
     def _pet_resolve_config(self) -> None:
         """(Re)resolve the active pet from config so ``/pet`` / ``hermes pets`` changes apply
@@ -708,6 +709,7 @@ class CLIStatusBarMixin:
                     self._pet_kitty_cache.clear()
                     self._pet_kitty_pending = ""
                     self._pet_kitty_image_id = pet_render.kitty_image_id(pet.slug)
+                    self._pet_kitty_uploaded = set()
                     self._pet_frame_idx = 0
                 self._pet_enabled = True
         except Exception:
@@ -780,15 +782,19 @@ class CLIStatusBarMixin:
         return grids
 
     def _pet_kitty_payload_for(self, state: str) -> dict | None:
-        """Return and cache a Kitty virtual-placeholder payload for *state*."""
+        """Return and cache a Kitty virtual-placeholder payload for *state*.
+
+        Each state is its own animation (own image id), so switching states re-references
+        a resident image instead of re-transmitting pixel data on a displayed one."""
         with self._pet_lock:
             cached = self._pet_kitty_cache.get(state)
             if cached is not None:
                 return cached
             renderer = self._pet_renderer
-            image_id = self._pet_kitty_image_id
+            slug = getattr(self, "_pet_slug", "")
             if renderer is None or renderer.mode != "kitty":
                 return None
+        image_id = pet_render.kitty_image_id(f"{slug}:{state}")
         try:
             # PNG encoding outside _pet_lock: first visit of a state must not stall the prompt.
             payload = renderer.kitty_payload(state, image_id=image_id)
@@ -797,12 +803,12 @@ class CLIStatusBarMixin:
         if payload is not None:
             payload = {**payload, "image_id": image_id}
             with self._pet_lock:
-                if self._pet_renderer is renderer and self._pet_kitty_image_id == image_id:
+                if self._pet_renderer is renderer and getattr(self, "_pet_slug", "") == slug:
                     self._pet_kitty_cache[state] = payload
         return payload
 
     def _pet_queue_kitty_frame(self, state: str | None = None) -> None:
-        """Queue one virtual Kitty frame for the next prompt_toolkit render. No-op when the
+        """Queue one Kitty update for the next prompt_toolkit render. No-op when the
         pet pane was never initialized (``__new__`` fixtures, redraw on a pet-less CLI)."""
         if not getattr(self, "_pet_enabled", False):
             return
@@ -814,7 +820,17 @@ class CLIStatusBarMixin:
         with self._pet_lock:
             if self._pet_renderer is not None and self._pet_renderer.mode == "kitty":
                 frames = payload["frames"]
-                self._pet_kitty_pending = frames[self._pet_frame_idx % len(frames)]
+                switch = frames[self._pet_frame_idx % len(frames)]
+                # First sight of a state ships its animation data once; every later tick
+                # is a tiny frame switch (a=a,c=N) with no pixel data moving.
+                uploaded = getattr(self, "_pet_kitty_uploaded", None)
+                if uploaded is None:
+                    uploaded = self._pet_kitty_uploaded = set()
+                if state in uploaded:
+                    self._pet_kitty_pending = switch
+                else:
+                    uploaded.add(state)
+                    self._pet_kitty_pending = payload.get("upload", "") + switch
 
     def _pet_flush_kitty_frame(self, app) -> None:
         """Write a queued APC after prompt_toolkit has finished its screen diff."""

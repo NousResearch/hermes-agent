@@ -883,7 +883,6 @@ def test_retirement_strict_apply_does_not_unshallow_a_proven_safe_history(tmp_pa
 
     request = {"commit": target, "sourceVersion": "1.0.0", "sequence": 1,
                "repository": "NousResearch/hermes-agent"}
-    terminal = {"name": "stable", "head": {"sequence": 1}}
     assert source_releases._classify_strict_ancestry(request, ["git"], fresh,
                                                      _FixtureGit(fresh)) is True
     assert git(fresh, "rev-parse", "HEAD") == installed

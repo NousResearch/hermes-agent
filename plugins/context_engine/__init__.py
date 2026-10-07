@@ -14,6 +14,25 @@ from plugins import plugin_loader as _loader
 
 logger = logging.getLogger(__name__)
 
+# Last load outcome is intentionally queryable by status/doctor surfaces.  Keep only the
+# current outcome per engine; a successful retry clears a prior failure.
+_LOAD_ERRORS: dict[tuple[str, str], str] = {}
+
+
+def _load_error_scope() -> str:
+    """Return the stable home/profile key for the current plugin search scope."""
+    try:
+        from hermes_constants import get_hermes_home, hermes_home_key
+        return hermes_home_key(get_hermes_home())
+    except Exception:
+        return str(_loader.user_plugins_dir() or "")
+
+def context_engine_load_errors() -> dict[str, str]:
+    """Return configured context-engine load failures keyed by engine name."""
+    scope = _load_error_scope()
+    return {name: error for (error_scope, name), error in _LOAD_ERRORS.items()
+            if error_scope == scope}
+
 _CONTEXT_ENGINE_PLUGINS_DIR = Path(__file__).parent
 # Synthetic parent package for user-installed engines (keeps them out of the bundled namespace).
 _USER_NAMESPACE = "_hermes_user_context_engine"
@@ -61,11 +80,22 @@ def load_context_engine(name: str) -> Optional["ContextEngine"]:  # noqa: F821
     """Load a ContextEngine instance by name; None if not found or it fails to load."""
     engine_dir = find_engine_dir(name)
     if engine_dir is None:
+        _LOAD_ERRORS.pop((_load_error_scope(), name), None)
         logger.debug("Context engine '%s' not found in bundled or user plugins", name)
         return None
-    return _loader.load_named(
-        name, engine_dir, _load_engine_from_dir, kind="Context engine", noun="engine", logger=logger
-    )
+    scope = _load_error_scope()
+    try:
+        engine = _load_engine_from_dir(engine_dir)
+    except Exception as exc:
+        _LOAD_ERRORS[(scope, name)] = str(exc)
+        logger.error("Failed to load context engine '%s': %s", name, exc, exc_info=True)
+        return None
+    if engine is None:
+        _LOAD_ERRORS[(scope, name)] = "plugin loaded but did not register a context engine"
+        logger.error("Context engine '%s' loaded but did not register an engine", name)
+        return None
+    _LOAD_ERRORS.pop((scope, name), None)
+    return engine
 
 
 def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:  # noqa: F821
@@ -81,10 +111,10 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:  # noq
                                   base_ref="agent.context_engine:ContextEngine")
     mod = _loader.load_plugin_module(
         module_name, engine_dir, parents=("plugins", "plugins.context_engine"), logger=logger,
-        synthetic_namespace=None if is_bundled else _USER_NAMESPACE)
+        synthetic_namespace=None if is_bundled else _USER_NAMESPACE, raise_errors=True)
     return mod and _loader.instance_from_module(
         mod, collector=_EngineCollector(engine_name=name), collected_attr="engine",
-        base_cls=ContextEngine, name=name, logger=logger)
+        base_cls=ContextEngine, name=name, logger=logger, raise_errors=True)
 
 
 class _EngineCollector(_loader.NoopPluginContext):

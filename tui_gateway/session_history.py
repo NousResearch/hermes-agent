@@ -367,6 +367,34 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
     return project_history_commentary(messages, home=profile_home)
 
 
+def _incomplete_branch_carrier(row: dict, field: str) -> bool:
+    """A native content carrier cannot own a display-only row with tools or different text."""
+    value = row.get(field)
+    blocks = [block for block in value if isinstance(block, dict)] if isinstance(value, list) else []
+    if field == "codex_message_items":
+        blocks = [part for item in blocks if isinstance(item.get("content"), list)
+                  for part in item["content"] if isinstance(part, dict)]
+    if any("toolUse" in block or "toolResult" in block
+           or (isinstance(block.get("type"), str)
+               and block["type"] in {"tool_use", "tool_result", "function_call", "function_call_output"})
+           for block in blocks):
+        return True
+    native_text = "\n".join(block["text"] for block in blocks if isinstance(block.get("text"), str))
+    return native_text != _coerce_message_text(row.get("content"))
+
+
+def _display_only_replay_copy(message: dict) -> dict:
+    """Copy a visible row without authority for the tool exchange a branch discards."""
+    row = dict(message)
+    for field in ("anthropic_content_blocks", "bedrock_content_blocks", "codex_message_items"):
+        if row.get("tool_calls") or _incomplete_branch_carrier(row, field):
+            # Removing individual signed/interleaved blocks would invent a native replay.
+            # Keep readable thinking, independent encrypted reasoning, and original provenance.
+            row.pop(field, None)
+    row.pop("tool_calls", None)
+    return row
+
+
 _SEED_ASSISTANT_FIELDS = (
     "reasoning", "reasoning_content", "reasoning_details", "_reasoning_route",
     "anthropic_content_blocks", "bedrock_content_blocks",
@@ -393,7 +421,7 @@ def _coerce_seed_history(value: Any) -> list[dict]:
                     for field in _SEED_ASSISTANT_FIELDS
                     if item.get(field) is not None
                 )
-            history.append(row)
+            history.append(_display_only_replay_copy(row))
     return history
 
 

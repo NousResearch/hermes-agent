@@ -16750,7 +16750,7 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
         {"role": "user", "content": "hello from parent"},
         {
             "role": "assistant",
-            "content": "parent reply",
+            "content": "done",  # Matches the exact Codex message item's visible text.
             "reasoning": BRANCH_REASONING,
             "reasoning_content": BRANCH_REASONING_CONTENT,
             "reasoning_details": BRANCH_REASONING_DETAILS,
@@ -21812,8 +21812,8 @@ def test_fallback_session_info_always_emits_branch(monkeypatch):
 BRANCH_REASONING = "the parent's chain of thought"
 BRANCH_REASONING_CONTENT = "the parent's reasoning content"
 BRANCH_REASONING_ROUTE = "same-route-provenance"
-BRANCH_ANTHROPIC_CONTENT_BLOCKS = [{"type": "thinking", "signature": "signed"}]
-BRANCH_BEDROCK_CONTENT_BLOCKS = [{"reasoningContent": "signed"}]
+BRANCH_ANTHROPIC_CONTENT_BLOCKS = [{"type": "thinking", "signature": "signed"}, {"type": "text", "text": "done"}]
+BRANCH_BEDROCK_CONTENT_BLOCKS = [{"reasoningContent": "signed"}, {"text": "done"}]
 BRANCH_REASONING_DETAILS = [
     {"type": "reasoning.text", "text": "keep the parent's plan", "format": "unknown"}
 ]

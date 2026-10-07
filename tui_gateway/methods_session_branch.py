@@ -11,8 +11,8 @@ _registry = HandlerRegistry()
 
 # ── session.branch ───────────────────────────────────────────────────
 def _visible_branch_history(messages) -> list:
-    """user/assistant rows with visible text, as FULL copies (reasoning + timeline-marker tags survive)."""
-    return [dict(message) for message in messages or []
+    """Visible user/assistant copies; discarded tool exchanges have no native replay authority."""
+    return [_display_only_replay_copy(message) for message in messages or []
             if isinstance(message, dict) and message.get("role") in {"user", "assistant"}
             and _coerce_message_text(message.get("content")).strip()]
 

@@ -1372,7 +1372,9 @@ def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:
         server_name = target.split(":", 1)[0]
         if err := _mcp_plugin_write_error(rid, server_name, plugins):
             return err
-    missing_servers = tc._apply_mcp_change(cfg, mcp_targets, action) if mcp_targets else set()
+    missing_servers, held = tc._apply_mcp_change(cfg, mcp_targets, action) if mcp_targets else (set(), {})
+    if held:  # a glob keeps the tool where it is; refuse before saving rather than report a no-op
+        return _err(rid, 4091, "; ".join(held.values()))
     hc.save_config(cfg)
     info = _reset_session_agent(sid, session) if session else None
     enabled = sorted(tc._get_platform_tools(hc.load_config(), "cli", include_default_mcp_servers=False))

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Dict, Optional, Union
 
 from hermes_constants import get_hermes_home, hermes_home_key
 
@@ -48,8 +48,10 @@ def register_ticked_homes(homes) -> None:
     if departed:
         # Late import: cron.scheduler imports this module.
         from cron.scheduler import discard_parallel_pools
+        from cron.store_health import forget_homes
 
         discard_parallel_pools(departed)
+        forget_homes(departed)
 
 
 def ticked_homes() -> dict:
@@ -135,3 +137,20 @@ def live_gateway_ticking(home: Optional[Union[Path, str]] = None) -> Optional[di
     except Exception:
         return None
     return record if record_serves_profile(record, home) else None
+
+
+def _claim_owner_is_dead(claim: Dict[str, Any]) -> bool:
+    """True when the claim's ``by`` names a process on THIS host that provably no longer exists.
+    ``_machine_id()`` stamps ``host:pid[:token]``; a foreign host, an explicit HERMES_MACHINE_ID,
+    or any liveness-probe failure returns False (fail safe: only a proven death shortens the TTL)."""
+    parts = str(claim.get("by") or "").split(":")
+    if len(parts) < 2 or not parts[1].isdigit():
+        return False
+    try:
+        import socket
+        if parts[0] != socket.gethostname():
+            return False
+        from gateway.status import _pid_exists
+        return not _pid_exists(int(parts[1]))
+    except Exception:
+        return False

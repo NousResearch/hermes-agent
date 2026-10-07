@@ -33,7 +33,7 @@ def reran_completion(cp: subprocess.CompletedProcess) -> bool:
 def make_origin(root: Path) -> Path:
     """``I.make_origin`` at the commit under test, serving partial clones like GitHub does.
 
-    install.sh clones ``--filter=tree:0``. Without ``uploadpack.allowFilter`` the local origin
+    install.sh clones ``--filter=blob:none``. Without ``uploadpack.allowFilter`` the local origin
     ignores the filter and must pack every blob in history, which a blobless developer
     checkout (the ``--shared`` object store) cannot serve.
     """

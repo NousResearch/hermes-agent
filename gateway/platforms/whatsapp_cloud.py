@@ -172,8 +172,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP_CLOUD)
         extra = config.extra or {}
+        # `or ""`: an empty YAML value (null) is unset, not the guessable HMAC key "None".
         self._phone_number_id, self._access_token, self._app_id, self._app_secret, self._waba_id, self._verify_token = (
-            str(extra.get(key, "")).strip()
+            str(extra.get(key) or "").strip()
             for key in ("phone_number_id", "access_token", "app_id", "app_secret", "waba_id", "verify_token")
         )
         # Falsy host (None/"") collapses to the dual-stack default.

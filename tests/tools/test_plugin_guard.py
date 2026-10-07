@@ -866,3 +866,19 @@ class TestIntakeFalsePositiveRound3:
         result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
         sevs = {f.severity for f in result.findings if f.pattern_id == pattern_id}
         assert sevs == {severity}, format_scan_report(result)
+
+    def test_google_installed_app_client_secret_is_caution_not_dangerous(self, tmp_path):
+        """A ``GOCSPX-`` literal is a Google installed-app OAuth client secret, which ships in every
+        copy of the app: reviewable caution. Any other secret-shaped literal still hard-blocks."""
+        files = dict(BASE_FILES)
+        files["oauth.py"] = 'CLIENT_SECRET = "GOCSPX-abcdefghijklmnopqrstuvwxyz12"\n'
+        (tmp_path / "google").mkdir()
+        (tmp_path / "other").mkdir()
+        result = scan_plugin(_mk_plugin(tmp_path / "google", files), source="owner/repo")
+        assert {f.severity for f in result.findings if f.pattern_id == "hardcoded_secret"} == {"high"}
+        assert result.verdict == "caution"
+
+        files["oauth.py"] = 'CLIENT_SECRET = "Xabcdefghijklmnopqrstuvwxyz1234"\n'
+        result = scan_plugin(_mk_plugin(tmp_path / "other", files), source="owner/repo")
+        assert {f.severity for f in result.findings if f.pattern_id == "hardcoded_secret"} == {"critical"}
+        assert result.verdict == "dangerous"

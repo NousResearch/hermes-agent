@@ -17,7 +17,8 @@ from typing import Iterator, List, Optional, Tuple
 
 from tools.plugin_guard_context import (
     STEP_DOWN, catalog_cap, is_agent_facing, is_base64_media, is_ci_workflow, is_coin_name_only, is_data_decode,
-    is_doc_prose, is_hex_in_char_class, is_inert_fixture_line, is_json_prose_value, is_locale_catalog,
+    is_doc_prose, is_google_installed_app_secret, is_hex_in_char_class, is_inert_fixture_line,
+    is_json_prose_value, is_locale_catalog,
     is_loopback_continuation, is_loopback_only, is_pip_install_in_prose_literal, is_regex_alternation_token,
     is_self_uninstall_doc, is_test_tree, logical_line, prose_cap)
 from tools.skills_guard import (
@@ -248,6 +249,8 @@ def _context_severity(f: Finding, rel_path: str, line: str, joined: str, doc_pro
         sev = "low"    # `[\x00-\x1F\x7F]`: a control-char filter, not an assembled payload
     if is_coin_name_only(f, line):
         sev = _at_most(sev, "medium")    # "monero gateway" in a connector index, no miner on the line
+    if is_google_installed_app_secret(f, line):
+        sev = _at_most(sev, "high")    # public installed-app OAuth client secret, reviewable caution
     if is_code and is_pip_install_in_prose_literal(f, line):
         sev = "low"    # "no pip install is needed" in a user-facing message
     return sev

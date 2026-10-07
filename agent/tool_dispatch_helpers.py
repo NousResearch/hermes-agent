@@ -32,9 +32,6 @@ _NEVER_PARALLEL_TOOLS = frozenset({"clarify", "manage_connections", "manage_cata
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({
     "connectors__execute",  # pure remote batches have per-dispatch idempotency keys
-    "ha_get_state",
-    "ha_list_entities",
-    "ha_list_services",
     "image_generate",
     "read_file",
     "search_files",
@@ -512,8 +509,17 @@ def _detect_upstream_elision(content: Any) -> bool:
 
 
 def _maybe_append_elision_notice(name: str, content: Any) -> Any:
-    """Append the incompleteness notice to untrusted string results with elision markers."""
-    if _is_untrusted_tool(name) and _detect_upstream_elision(content):
+    """Append the incompleteness notice to untrusted results with elision markers. A multimodal part list (an MCP
+    result that also carries images) is judged by its first text part, which is where the notice goes."""
+    if not _is_untrusted_tool(name):
+        return content
+    if isinstance(content, list):
+        idx = next((i for i, item in enumerate(content) if _is_text_item(item)), None)
+        if idx is not None and _detect_upstream_elision(content[idx]["text"]):
+            return [*content[:idx], {**content[idx], "text": content[idx]["text"] + _UPSTREAM_ELISION_NOTICE},
+                    *content[idx + 1:]]
+        return content
+    if _detect_upstream_elision(content):
         return content + _UPSTREAM_ELISION_NOTICE
     return content
 

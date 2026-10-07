@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_constants import OPENROUTER_MODELS_URL
-from utils import base_url_host_matches
+from utils import base_url_host_matches, normalize_proxy_env_vars
 
 _APIKEY_PROVIDERS_CACHE: list | None = None
 
@@ -430,6 +430,9 @@ def run_probes(probes: list) -> list:
     """
     # Disable boto3's EC2 instance-metadata probe (169.254.169.254, multi-second timeout off-EC2). Set on the
     # parent thread before submitting so it never races a worker; has_aws_credentials() already gates on real creds.
+    normalize_proxy_env_vars()  # a bracketed-IPv6 NO_PROXY entry ([::1], Clash Verge/mihomo) makes every bare
+    # trust_env client a probe builds raise InvalidURL at construction (#118159) — sanitize once, before any
+    # worker runs, so no probe ever reports "(Invalid port: :1])" as provider downtime.
     _imds_prev = os.environ.get("AWS_EC2_METADATA_DISABLED")
     os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
     try:

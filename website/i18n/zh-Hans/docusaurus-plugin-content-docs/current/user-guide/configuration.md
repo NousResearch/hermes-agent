@@ -1308,7 +1308,7 @@ display:
       tool_progress: 'off'    # 在共享 Slack 工作区中保持安静
 ```
 
-没有覆盖的平台回退到全局 `tool_progress` 值。有效平台键：`telegram`、`discord`、`slack`、`signal`、`whatsapp`、`matrix`、`mattermost`、`email`、`sms`、`homeassistant`、`dingtalk`、`feishu`、`wecom`、`weixin`、`bluebubbles`、`qqbot`。旧版 `display.tool_progress_overrides` 键仍可加载以向后兼容，但已弃用，并在首次加载时迁移到 `display.platforms`。
+没有覆盖的平台回退到全局 `tool_progress` 值。有效平台键：`telegram`、`discord`、`slack`、`signal`、`whatsapp`、`matrix`、`mattermost`、`email`、`sms`、`dingtalk`、`feishu`、`wecom`、`weixin`、`bluebubbles`、`qqbot`，以及任意插件平台的名称（例如 Home Assistant 插件的 `homeassistant`）。旧版 `display.tool_progress_overrides` 键仍可加载以向后兼容，但已弃用，并在首次加载时迁移到 `display.platforms`。
 
 `interim_assistant_messages` 仅限 gateway。启用后，Hermes 将已完成的轮次中 assistant 更新作为单独的聊天消息发送。这与 `tool_progress` 无关，不需要 gateway 流式传输。
 
@@ -1600,15 +1600,11 @@ discord:
 
 ## 安全
 
-预执行安全扫描和机密脱敏：
+机密脱敏和网站黑名单：
 
 ```yaml
 security:
   redact_secrets: false          # 在工具输出和日志中脱敏 API 密钥模式（默认关闭）
-  tirith_enabled: true           # 为终端命令启用 Tirith 安全扫描
-  tirith_path: "tirith"          # tirith 二进制文件路径（默认：$PATH 中的 "tirith"）
-  tirith_timeout: 5              # 等待 tirith 扫描的秒数
-  tirith_fail_open: true         # 如果 tirith 不可用，允许命令执行
   website_blocklist:             # 参见下方网站黑名单部分
     enabled: false
     domains: []
@@ -1616,10 +1612,8 @@ security:
 ```
 
 - `redact_secrets` —— 为 `true` 时，自动检测并脱敏工具输出中看起来像 API 密钥、token 和密码的模式，然后再进入对话上下文和日志。**默认关闭** —— 如果您经常在工具输出中处理真实凭据并希望有安全网，请启用。显式设置为 `true` 以开启。
-- `tirith_enabled` —— 为 `true` 时，终端命令在执行前由 [Tirith](https://github.com/sheeki03/tirith) 扫描以检测潜在危险操作。
-- `tirith_path` —— tirith 二进制文件的路径。如果 tirith 安装在非标准位置，请设置此项。
-- `tirith_timeout` —— 等待 tirith 扫描的最大秒数。如果扫描超时，命令继续执行。
-- `tirith_fail_open` —— 为 `true`（默认）时，如果 tirith 不可用或失败，允许命令执行。设置为 `false` 以在 tirith 无法验证时阻止命令。
+
+使用 tirith 扫描命令现在是可选插件，参见[内容级命令检查](security.md#内容级命令检查)。
 
 ## 网站黑名单
 

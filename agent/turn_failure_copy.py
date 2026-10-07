@@ -177,6 +177,11 @@ _EXHAUSTED_LEADS: Dict[str, str] = {
     FailoverReason.timeout.value: "{label} didn't respond in time on any of {attempts} attempts",
 }
 _EXHAUSTED_DEFAULT_LEAD = "{label} didn't answer after {attempts} attempts"
+# One attempt: an attended free-tier session ended the cycle on a cooldown longer than it waits.
+_EXHAUSTED_FIRST_ATTEMPT_LEADS: Dict[str, str] = {
+    FailoverReason.rate_limit.value: "{label} is rate-limiting requests right now",
+    FailoverReason.upstream_rate_limit.value: "{label} is rate-limiting requests right now",
+}
 
 # Terminal copy for a non-retryable provider rejection, keyed by classifier reason.
 _NONRETRYABLE_COPY: Dict[str, str] = {
@@ -337,11 +342,6 @@ _ONE_OFF_COPY: Dict[str, str] = {
         "Hermes hit an internal error while handling the model's reply and stopped this turn. "
         + _NEXT_STEPS_LOOP + "\n\nDetails: {detail}"
     ),
-    "reasoning_only": (
-        "⚠️ {model} spent all of its output budget thinking and never wrote an answer. Lower "
-        "its reasoning effort with `/reasoning low`, or switch to a different model with /model. "
-        "Its last thoughts, which may contain the answer:\n\n{preview}"
-    ),
     "max_iterations_no_summary": (
         "I ran out of steps for this turn ({limit} tool calls) before finishing, and couldn't "
         "produce a summary. Send `continue` to keep going, or raise `max_iterations` in your config."
@@ -363,8 +363,11 @@ def site_copy(code: str, **fields: Any) -> str:
 def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
     """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
     limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
-    lead = _EXHAUSTED_LEADS.get(reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
-    if reset_seconds is not None and reset_seconds >= 120:
+    first_attempt = attempts == 1 and reason in _EXHAUSTED_FIRST_ATTEMPT_LEADS
+    lead = (_EXHAUSTED_FIRST_ATTEMPT_LEADS if first_attempt else _EXHAUSTED_LEADS).get(
+        reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
+    # The free-tier cutoff (one attempt) fires on any cooldown over a minute, so it always names the reset.
+    if reset_seconds is not None and (reset_seconds >= 120 or first_attempt and reset_seconds > 0):
         from agent.retry_utils import format_reset_window
         situation = (f"its usage limit resets in {format_reset_window(reset_seconds)}. "
                      "Send /retry after that, or switch models with /model.")

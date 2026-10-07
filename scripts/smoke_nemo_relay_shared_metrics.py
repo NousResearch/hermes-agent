@@ -264,8 +264,6 @@ def _write_config(home: Path, port: int) -> None:
   base_url: http://127.0.0.1:{port}/v1
   api_mode: chat_completions
   api_key: no-key-required
-security:
-  tirith_enabled: false
 auxiliary:
   title_generation:
     enabled: false
@@ -275,6 +273,32 @@ telemetry:
 """,
         encoding="utf-8",
     )
+
+
+# ---- iuf c1 ----
+# The offline probes in the skill-lifecycle subprocess: one failed URL plugin install and one failed
+# update run (refused before the checkout moved), identical in SQLite and in the export.
+FAILURE_EXPECTED_DIMENSIONS = {
+    "hermes.extension.install.count": {
+        "failure_class": "clone_failed", "kind": "plugin", "name": "custom", "outcome": "failed",
+        "registry": "none", "source": "local",
+    },
+    "hermes.update.run": {
+        "apply_mode": "unknown", "duration_bucket": "lt_30s", "failed_stage": "apply",
+        "failure_class": "aborted_before_apply", "from_version_age_bucket": "unknown", "kind": "cli",
+        "outcome": "failed",
+    },
+}
+
+
+def _validate_failure_rows(rows: dict[str, list[dict[str, Any]]]) -> None:
+    for name, dimensions in FAILURE_EXPECTED_DIMENSIONS.items():
+        if [row["dimensions"] for row in rows[name]] != [dimensions] or rows[name][0]["value"] != 1:
+            raise AssertionError(f"Unexpected {name}: {rows[name]}")
+    stages = sorted((row["dimensions"]["stage"], row["dimensions"]["outcome"]) for row in rows["hermes.update.stage"])
+    if stages != [("plan", "success"), ("snapshot", "skipped")]:
+        raise AssertionError(f"Unexpected update stages: {rows['hermes.update.stage']}")
+# ---- end iuf c1 ----
 
 
 # One interactive turn (2 model calls, 1 read_file) on the canary custom model: the v5 per-turn,
@@ -330,6 +354,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     if set(by_name) != {
         "hermes.client.active",
         "hermes.context_peak.count",
+        "hermes.extension.install.count",  # iuf c1
         "hermes.install.milestone",
         "hermes.install.snapshot",
         "hermes.model_reply_issue.count",
@@ -350,6 +375,8 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         "hermes.tool_enabled_unused.count",
         "hermes.tool_output_truncation.count",
         "hermes.tool_overhead.count",
+        "hermes.update.run",  # iuf c1
+        "hermes.update.stage",  # iuf c1
     }:
         raise AssertionError(
             f"Unexpected SQLite counters:\n{json.dumps(counters, indent=2)}"
@@ -382,7 +409,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     expected_start = {
         "name": "hermes.task_run.started",
         "dimensions": {
-            "entrypoint": "interactive",
+            "entrypoint": "one_shot",
             "execution_surface": "cli",
             "platform": "none",
         },
@@ -396,7 +423,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     [terminal] = by_name["hermes.task_run.finished"]
     expected_terminal_dimensions = {
         "end_reason": "completed",
-        "entrypoint": "interactive",
+        "entrypoint": "one_shot",
         "execution_surface": "cli",
         "failure_class": "none",
         "outcome": "success",
@@ -500,6 +527,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     ):
         raise AssertionError(f"Unexpected skill load counters: {loads}")
     _validate_v5_rows(by_name)
+    _validate_failure_rows(by_name)  # iuf c1
     return counters
 
 
@@ -554,6 +582,7 @@ def _validate_packages(
     if set(metrics) != {
         "hermes.client.active",
         "hermes.context_peak.count",
+        "hermes.extension.install.count",  # iuf c1
         "hermes.install.milestone",
         "hermes.install.snapshot",
         "hermes.model_reply_issue.count",
@@ -574,6 +603,8 @@ def _validate_packages(
         "hermes.tool_enabled_unused.count",
         "hermes.tool_output_truncation.count",
         "hermes.tool_overhead.count",
+        "hermes.update.run",  # iuf c1
+        "hermes.update.stage",  # iuf c1
     }:
         raise AssertionError(
             f"Unexpected package metrics:\n{json.dumps(metrics, indent=2)}"
@@ -603,7 +634,7 @@ def _validate_packages(
     [terminal] = metrics["hermes.task_run.finished"]
     if terminal["dimensions"] != {
         "end_reason": "completed",
-        "entrypoint": "interactive",
+        "entrypoint": "one_shot",
         "execution_surface": "cli",
         "failure_class": "none",
         "outcome": "success",
@@ -644,6 +675,7 @@ def _validate_packages(
     }:
         raise AssertionError(f"Unexpected skill load metrics: {loads}")
     _validate_v5_rows(metrics)
+    _validate_failure_rows(metrics)  # iuf c1
     return package_paths, packages
 
 
@@ -783,6 +815,25 @@ def main() -> int:
                 "set_state(skill, STATE_ARCHIVED)",
                 "set_state(skill, STATE_ACTIVE)",
                 "record_installed(installed)",
+                # A real failing plugin install (offline: a file:// repo that does not exist) and a
+                # dirty-tree-shaped final update receipt: each emits one row with a failure_class.
+                "from pathlib import Path",
+                "from hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core",
+                "from hermes_cli.plugins_cmd_install import recorded_install",
+                "missing = (Path.cwd() / 'no-such-plugin-repo').as_uri()",
+                "try:",
+                "    recorded_install(lambda: _install_plugin_core(missing, force=False),",
+                "                     catalog_name=None, identifier=missing)",
+                "    raise SystemExit('bogus plugin install succeeded')",
+                "except PluginOperationError:",
+                "    pass",
+                "from hermes_cli.observability.shared_metrics_update import record_update_receipt",
+                "record_update_receipt({'schema': 1, 'update_id': '0123456789abcdef',",
+                "    'started_at': '2026-10-06T10:00:00+00:00', 'finished_at': '2026-10-06T10:00:01+00:00',",
+                "    'outcome': 'failed', 'exit_code': 1, 'stop_reason': 'sys.exit(1)', 'pre_update': {},",
+                "    'stages': [{'name': 'plan', 'outcome': 'success', 'at': '2026-10-06T10:00:00+00:00'},",
+                "               {'name': 'snapshot', 'outcome': 'skipped', 'at': '2026-10-06T10:00:00+00:00'}],",
+                "    'steps': [], 'fleet': []})",
                 "runtime = relay_shared_metrics._get_runtime()",
                 "assert runtime is not None",
                 "runtime.shutdown()",
@@ -819,7 +870,7 @@ def main() -> int:
         / "hermes_cli"
         / "observability"
         / "schemas"
-        / "hermes.shared_metrics.v3.schema.json",
+        / "hermes.shared_metrics.v4.schema.json",
     )
 
     print("Hermes -> NeMo Relay shared-metrics smoke test passed")

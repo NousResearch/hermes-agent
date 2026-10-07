@@ -10,7 +10,7 @@ Curated, Nous-approved Hermes plugins. Each YAML file in this directory
 Presence in this directory **is** the trust signal. The rules that keep it
 meaningful:
 
-<!-- admission-rules:start (mirrored in website/docs/developer-guide/plugins/catalog-submission.md; tests/plugin_catalog keeps them identical) -->
+<!-- admission-rules:start (mirrored in website/docs/developer-guide/plugins/catalog-submission.md; tests/website/test_catalog_rules_mirror.py keeps them identical) -->
 1. **Human-merged gate.** Entries are added *only* via a PR to the
    `hermes-agent` repository, reviewed and merged by a maintainer. There is
    no self-serve registry, no automated ingestion.
@@ -105,6 +105,13 @@ meaningful:
 15. **No skins or forks of bundled plugins.** A change to a bundled plugin is a
    PR against `hermes-agent`, not a competing listing, and vendor-lookalike skins
    are not listed under Nous branding.
+16. **One listing per plugin lineage.** A fork of a listed community plugin is
+   listed only when it is materially different from the original: a different
+   transport or architecture, or capability the original lacks and its author
+   declined or has not answered a PR for 30 days. Improvements to a listed plugin
+   go upstream as a PR to its author. A fork that renames, rebrands or adds small
+   changes is declined in favour of the original. A listed fork names its origin
+   in its disclosure line (`Derived from <entry>`).
 <!-- admission-rules:end -->
 
 The step-by-step submission guide, with the same rules and what reviewers check,
@@ -133,6 +140,9 @@ image: ""                   # optional https image on a GitHub host, 2:1 (e.g. 1
 screenshots: []             # optional, up to 6 https images on a GitHub host; gallery on /docs/plugins/<name>
 readme: true                # optional, default true; the README at the PINNED SHA renders on /docs/plugins/<name>
 platforms: []               # optional, e.g. [linux, macos]; empty = all
+title: ""                   # optional human name on cards ("NVIDIA App"); default = name
+onboarding: false           # optional; offered on the Desktop onboarding card (official entries only)
+known_issues: []            # optional strings shown at the install prompt; informational, never blocks
 capabilities:
   provides_tools: []
   provides_hooks: []
@@ -163,11 +173,16 @@ When an entry is pulled from the catalog for security or policy reasons, it
 is recorded in `removed.yaml` with a reason and date. The installer refuses
 to install anything matching a removed entry's name or repo URL, so a
 malicious plugin cannot be re-installed from a stale identifier after
-removal. Removals, like additions, land via reviewed PRs.
+removal. A plugin that lands on the list after a user installed it stops
+updating, cannot be enabled and is refused at load time. Removals, like
+additions, land via reviewed PRs.
 
-Delisting is different from removal: an entry that is merely unmaintained, superseded, or
-squatting a name it is not affiliated with is deleted from the catalog (plain file removal,
-users who already installed it are unaffected) and is welcome back under a distinct name.
+Delisting is different from removal: an entry that is unmaintained, superseded, squatting a
+name it is not affiliated with, or no longer meets a rule is deleted from the catalog (plain
+file removal, users who already installed it are unaffected). It is welcome back once the
+problem is fixed; a name squatter comes back under a distinct name. When a new rule affects
+entries that are already listed, their authors get an issue on their repository explaining
+the change and time to update before anything is delisted.
 
 ## Names
 

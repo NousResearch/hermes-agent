@@ -44,6 +44,7 @@ _BARE_MODULE_SCOPE: Dict[str, str] = {}  # bare module name -> owning scope_key
 _LOAD_TIMEOUT_SECS = 10.0
 _MAX_LOAD_TIMEOUT_SECS = 600.0
 _MAX_ABANDONED_LOADERS = 8
+_LOADER_THREAD_PREFIX = "plugin-load:"  # names each deadline-bounded load worker; the re-arm guard matches it
 _ABANDONED_LOADERS: List[threading.Thread] = []
 _ABANDONED_LOADERS_LOCK = threading.Lock()
 # PluginContexts of the outermost deadline-bounded load; set only inside its worker.
@@ -135,7 +136,7 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
             _IN_PLUGIN_LOAD.reset(token)
 
     worker = threading.Thread(
-        target=contextvars.copy_context().run, args=(_worker,), name=f"plugin-load:{plugin_key}", daemon=True,
+        target=contextvars.copy_context().run, args=(_worker,), name=f"{_LOADER_THREAD_PREFIX}{plugin_key}", daemon=True,
     )
     worker.start()
     worker.join(timeout)
@@ -264,6 +265,29 @@ class PluginLoaderMixin:
             self._load_plugin(manifest)
             return
         self._register_deferred_platform_tools(manifest, loaded)
+
+    def rearm_failed_platform(self, platform_name: str) -> bool:
+        """Re-lease the deferred loader of a platform plugin whose load failed, so the next registry lookup
+        retries the import. A failed load disposes its lease (the registry forgets the platform), so without
+        this a load that raised or overran its deadline at startup stays down until a forced re-discovery
+        (#126356). True when a loader was re-armed."""
+        from hermes_cli.plugins_discovery import _get_disabled_plugins, _get_enabled_plugins, gate_manifest
+        from hermes_cli.plugins_manifest import requires_hermes_error
+        with self._discovery_lock, _plugin_home_scope(self.home_path):
+            failed = next((p.manifest for p in self._plugins.values()
+                           if p.error and not p.enabled and p.manifest.kind == "platform"
+                           and self._platform_name_from_manifest(p.manifest) == platform_name), None)
+            # Re-gate: a placeholder (disabled, not enabled, catalog-removed) or a requires_hermes mismatch
+            # carries the same error-set shape as a failed load but must never be imported.
+            if failed is None or requires_hermes_error(failed) or gate_manifest(
+                    failed, _get_disabled_plugins(), _get_enabled_plugins()).action not in ("defer", "load"):
+                return False
+            with _ABANDONED_LOADERS_LOCK:  # its hung import is still running: another retry only leaks a thread
+                if any(t.is_alive() and t.name == f"{_LOADER_THREAD_PREFIX}{manifest_key(failed)}" for t in _ABANDONED_LOADERS):
+                    return False
+            logger.info("Re-arming failed platform plugin load: %s", platform_name)
+            self._register_deferred_platform(failed)
+            return True
 
     @_serialized_replacement
     def _lease_deferred_platform(self, manifest: PluginManifest, lookup_key: str) -> bool:
@@ -455,12 +479,17 @@ class PluginLoaderMixin:
         module_name = self._policy_module_name(manifest)
         self._track_tool_override_policy(manifest, module_name)
         ctx = PluginContext(manifest, self)
+        in_host = self._runs_in_plugin_host(manifest)
 
         def _import_and_register() -> bool:
             """Import + register() — the part a plugin controls, so the part the deadline covers."""
             # Declared language packs register before any plugin code runs, inside the same ledger slice
             # so a failing register() unwinds them too.
             self._register_declared_locales(manifest, ctx)
+            if in_host and not self._is_manifest_only_language_pack(manifest):
+                self._plugin_host().load(manifest, ctx, module_name=module_name,
+                                         entrypoint=manifest.source not in {"user", "project"})
+                return True
             # Reuse a deferred platform's already-imported package so its body doesn't run twice.
             # See #78050.
             module = self._predeclared_modules.pop(plugin_key, None)
@@ -534,6 +563,19 @@ class PluginLoaderMixin:
             if lang_id not in registered:
                 logger.warning("Plugin '%s' declares provides_locales %r but %s has no %s.yaml",
                                manifest.name, lang_id, locales_dir, lang_id)
+
+    def _runs_in_plugin_host(self, manifest: PluginManifest) -> bool:
+        """``plugins.isolation: host`` sends every non-bundled Python plugin to the profile's host."""
+        from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+        return manifest.source != "bundled" and isolation_mode() == ISOLATION_HOST
+
+    def _plugin_host(self) -> Any:
+        """This manager's plugin host (one process per profile home), created on first use."""
+        host = getattr(self, "_plugin_host_instance", None)
+        if host is None:
+            from hermes_cli.plugin_host import PluginHost
+            host = self._plugin_host_instance = PluginHost(self)
+        return host
 
     def _track_tool_override_policy(self, manifest: PluginManifest, module_name: str) -> None:
         """Install the plugin's tool-override policy in tools.registry as a ledger-owned lease."""

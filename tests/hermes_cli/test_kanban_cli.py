@@ -72,6 +72,77 @@ def test_kanban_show_json_includes_runtime_limit(kanban_home):
     assert uncapped["task"]["max_runtime_seconds"] is None
 
 
+def test_kanban_show_exposes_actionable_block_contract(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="approval", assignee="publisher")
+        kb.block_task(
+            conn,
+            task_id,
+            kind="needs_input",
+            reason="Choose staging or production",
+        )
+
+    payload = json.loads(kc.run_slash(f"show {task_id} --json"))
+    action = payload["task"]["block_action"]
+    assert action["disposition"] == "Matt action required"
+    assert action["owner"] == "Matt"
+    assert action["action"] == "Choose staging or production"
+    assert action["reply_format"] == "Reply with the requested decision or input in plain text."
+
+    text = kc.run_slash(f"show {task_id}")
+    assert "Required action: Choose staging or production" in text
+    assert "Owner: Matt" in text
+
+
+def test_kanban_show_uses_verified_body_contract_on_explicit_board(kanban_home):
+    kb.create_board("alpha")
+    body = """Source context.
+
+```kanban-block-action
+{"verified": true, "disposition": "Internal owner action", "owner": "Release manager", "action": "Publish the signed release manifest"}
+```
+"""
+    with kbc.connect_closing(board="alpha") as conn:
+        task_id = kb.create_task(
+            conn,
+            title="release",
+            body=body,
+            assignee="publisher",
+        )
+        kb.block_task(
+            conn,
+            task_id,
+            kind="needs_input",
+            reason="Choose staging or production",
+        )
+
+    payload = json.loads(kc.run_slash(f"--board alpha show {task_id} --json"))
+    action = payload["task"]["block_action"]
+    assert action["disposition"] == "Internal owner action"
+    assert action["action_required"] is False
+    assert action["owner"] == "Release manager"
+    assert action["action"] == "Publish the signed release manifest"
+    assert action["reply_format"] == "No reply required."
+
+    text = kc.run_slash(f"--board alpha show {task_id}")
+    assert "No action needed from Matt" in text
+
+
+def test_kanban_show_marks_prior_blocked_attempt_historical(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="approval", assignee="publisher")
+        kb.block_task(conn, task_id, kind="transient", reason="Old failure")
+        assert kb.unblock_task(conn, task_id)
+        kb.block_task(conn, task_id, kind="needs_input", reason="Current decision")
+
+    text = kc.run_slash(f"show {task_id}")
+
+    assert text.count("[historical] blocked") == 1
+    assert "Old failure" in text
+    assert "Current decision" in text
+    assert text.count("blocked (historical)") == 1
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kbc.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")

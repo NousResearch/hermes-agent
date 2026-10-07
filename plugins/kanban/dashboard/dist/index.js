@@ -3992,6 +3992,41 @@
     );
   }
 
+  function BlockActionSection(props) {
+    const action = props.action;
+    if (!action) return null;
+    const rows = [
+      ["Disposition", action.disposition],
+      ["Owner", action.owner],
+      ["Required action", action.action],
+      ["Reply format", action.action_required ? action.reply_format : "No reply required."],
+      ["If no action", action.consequence_if_no_action],
+      ["Next action", action.next_action],
+      ["Retry condition", action.retry_condition],
+      ["Auto-resume", action.auto_resume ? "yes" : "no"],
+    ];
+    return h("div", { className: "hermes-kanban-section hermes-kanban-block-action" },
+      h("div", { className: "hermes-kanban-section-head" }, "Required action"),
+      action.action_required ? null : h("div", {
+        className: "hermes-kanban-block-action-clear",
+      }, "No action needed from Matt"),
+      h("div", { className: "hermes-kanban-block-action-card" },
+        rows.map(function (item) {
+          return h("div", { className: "hermes-kanban-meta-row", key: item[0] },
+            h("span", { className: "hermes-kanban-meta-label" }, item[0]),
+            h("span", { className: "hermes-kanban-meta-value" }, item[1] || "—"),
+          );
+        }),
+      ),
+    );
+  }
+
+  function TaskBlockActionSection(props) {
+    const task = props.task;
+    if (!task || task.status !== "blocked" || !task.block_action) return null;
+    return h(BlockActionSection, { action: task.block_action });
+  }
+
   function TaskDetail(props) {
     const { t: i18n } = useI18n();
     const t = props.data.task;
@@ -4040,6 +4075,7 @@
         }) : null,
         t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
       ),
+      h(TaskBlockActionSection, { task: t }),
       h(StatusActions, {
         task: t,
         onPatch: props.onPatch,

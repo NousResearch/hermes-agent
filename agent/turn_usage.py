@@ -294,4 +294,13 @@ def record_response_usage(
             f"{cached:,}/{prompt:,} tokens "
             f"({hit_pct:.0f}% hit, {written:,} written)"
         )
+
+    # Let interactive surfaces repaint usage-dependent chrome now that every per-call context
+    # and session counter is current. UI callbacks are best-effort and must never fail a turn.
+    usage_updated_callback = getattr(agent, "_usage_updated_callback", None)
+    if usage_updated_callback:
+        try:
+            usage_updated_callback()
+        except Exception:
+            logger.debug("Usage-updated callback failed", exc_info=True)
     return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)

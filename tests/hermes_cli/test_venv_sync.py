@@ -204,17 +204,36 @@ def _self_managed_tree(tmp_path, monkeypatch):
     return root
 
 
-def test_legacy_in_tree_venv_never_drives_pm_launch(tmp_path, monkeypatch):
+@pytest.mark.parametrize("name", ["venv", ".venv"])
+def test_legacy_in_tree_venv_never_drives_pm_launch(tmp_path, monkeypatch, name):
     """Scripts pinned to ``<checkout>/venv/bin/python`` keep running on that interpreter.
 
     After an update the stamp reads ``self``; asking PM about the legacy venv waits on a
-    worker for minutes, so every import of Hermes code from it hung.
+    worker for minutes, so every import of Hermes code from it hung. ``.venv`` is the layout
+    CONTRIBUTING.md tells developers to build, so it is covered the same way.
     """
     root = _self_managed_tree(tmp_path, monkeypatch)
-    legacy = root / "venv"
+    legacy = root / name
     legacy.mkdir()
     monkeypatch.setattr(sys, "prefix", str(legacy))
     assert venv_sync.prepare_launch(root, []) is None
+
+
+@pytest.mark.parametrize("name", ["venv", ".venv"])
+def test_in_tree_legacy_venv_matches_both_layouts(tmp_path, monkeypatch, name):
+    """Pins the name pair independently of ``prepare_launch``."""
+    root = tmp_path / "checkout"
+    (root / name).mkdir(parents=True)
+    monkeypatch.setattr(sys, "prefix", str(root / name))
+    assert venv_sync._in_tree_legacy_venv(root) is True
+
+
+def test_in_tree_legacy_venv_rejects_outside_prefix(tmp_path, monkeypatch):
+    root = tmp_path / "checkout"
+    (root / "venv").mkdir(parents=True)
+    (root / ".venv").mkdir()
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "somewhere-else"))
+    assert venv_sync._in_tree_legacy_venv(root) is False
 
 
 def test_other_interpreters_still_reach_pm(tmp_path, monkeypatch):

@@ -310,16 +310,18 @@ def _supervised_child() -> bool:
 
 
 def _in_tree_legacy_venv(root: Path) -> bool:
-    """True when this process runs on the checkout's own ``venv/``.
+    """True when this process runs on the checkout's own ``venv/`` or ``.venv/``.
 
     Scripts pinned to ``<checkout>/venv/bin/python`` predate the managed store and must keep
     running on it. PM currency is about the store environment, not this interpreter, and asking
-    PM from here waits on its worker for minutes before every import of Hermes code.
+    PM from here waits on its worker for minutes before every import of Hermes code. Both names
+    are in the wild (``uv venv`` defaults to ``.venv``; see ``project_venv_dir``).
     """
     import sys
 
     try:
-        return Path(sys.prefix).resolve() == (root / "venv").resolve()
+        prefix = Path(sys.prefix).resolve()
+        return any(prefix == (root / name).resolve() for name in ("venv", ".venv"))
     except OSError:
         return False
 

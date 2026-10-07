@@ -19,6 +19,7 @@ def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
     return {**{k: getattr(agent, k, "") for k in _RUNTIME_KEYS},
             "reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None)),
+            "reasoning_user_override": bool(getattr(agent, "reasoning_user_override", False)),
             "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None))}
 
 
@@ -30,6 +31,8 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
     # runtime restore paths below (primary_runtime may predate a session /reasoning change).
     if "reasoning_config" in snapshot:
         agent.reasoning_config = snapshot["reasoning_config"]
+    if "reasoning_user_override" in snapshot:
+        agent.reasoning_user_override = snapshot["reasoning_user_override"]
     primary = snapshot.get("primary_runtime")
     if primary and hasattr(agent, "_restore_primary_runtime"):
         try:
@@ -397,13 +400,23 @@ def _apply_switch_reasoning(sid: str, session, agent, effort: str, *, persist_gl
         return
     if agent is not None:
         agent.reasoning_config = parsed
+        # Same provenance as _set_reasoning: a session/--once pick pins against adaptive adjustment
+        # (--once restores the prior flag with the snapshot); --global is a new baseline.
+        agent.reasoning_user_override = one_turn or not persist_global
     if one_turn or not isinstance(session, dict):
         return
     if persist_global:
         _write_config_key("agent.reasoning_effort", effort)
         session.pop("create_reasoning_override", None)  # global wins; see _set_reasoning
+        session.pop("reasoning_user_override", None)
+        # Same as _set_reasoning: a lazy resume must not resurrect its stored pin after a global reset.
+        resumed = session.get("resume_runtime_overrides")
+        if isinstance(resumed, dict):
+            resumed.pop("reasoning_config_override", None)
+            resumed.pop("reasoning_user_override", None)
     else:
         session["create_reasoning_override"] = parsed
+        session["reasoning_user_override"] = True
     if agent is not None:
         _persist_live_session_runtime(session)
         _emit_session_info(sid, session)  # the switch's own emit predates the effort change

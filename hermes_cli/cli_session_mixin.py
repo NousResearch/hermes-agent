@@ -537,6 +537,7 @@ class CLISessionMixin:
         # Session-scoped overrides (/model --session, /fast, one-turn restores) don't carry over.
         # Re-derive model/provider and service tier from config.yaml so a session-only switch never leaks
         # into the next session (#48055, #23131).
+        self._session_reasoning_override = False
         self._pending_one_turn_model_restore = None
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
         _reset_model_to_config_default(self, silent)
@@ -549,6 +550,9 @@ class CLISessionMixin:
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start
             self.agent.reasoning_config = self.reasoning_config
+            # /new drops the session pick, so the reused agent adapts again. Not in reset_session_state:
+            # /resume and /branch reuse it while the shell's pick stays active.
+            self.agent.reasoning_user_override = False
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0

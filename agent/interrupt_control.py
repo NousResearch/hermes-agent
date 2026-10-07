@@ -23,16 +23,6 @@ _REASON_NEW_MESSAGE = "user sent a new message"
 _REASON_USER_INTERRUPT = "user interrupt"
 USER_INTERRUPT_REASONS = frozenset({_REASON_HARD_STOP, _REASON_NEW_MESSAGE, _REASON_USER_INTERRUPT})
 
-# User-facing wording for a skipped/cancelled tool call, keyed by the recorded reason. System
-# producers (batch guards, watchdogs, lease loss) must never be rendered as a human stop — the
-# skipped-call notice previously hardcoded "User sent a new message" and blamed the user for a
-# stop they did not issue (#130207).
-_USER_STOP_WORDING = {
-    _REASON_HARD_STOP: "Explicit stop requested",
-    _REASON_NEW_MESSAGE: "User sent a new message",
-    _REASON_USER_INTERRUPT: "User interrupt",
-}
-
 
 def interrupt_issuer(agent) -> Optional[str]:
     """Slug of the system producer behind the pending interrupt, or ``None`` for a human stop."""
@@ -50,8 +40,8 @@ def interrupt_skip_wording(agent) -> str:
     reason = getattr(agent, "_tool_interrupt_reason", None)
     if not reason:
         return "Turn interrupted"
-    if reason in _USER_STOP_WORDING:
-        return _USER_STOP_WORDING[reason]
+    if reason in USER_INTERRUPT_REASONS:
+        return reason.capitalize()
     return f"Turn aborted — {str(reason).replace('_', ' ')}"
 
 

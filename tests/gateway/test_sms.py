@@ -319,6 +319,20 @@ class TestMultiplexProfileScope:
             reset_secret_scope(token)
         assert "TWILIO_PHONE_NUMBER required" in result["error"]
 
+    @pytest.mark.asyncio
+    async def test_standalone_send_with_a_non_string_or_blank_key_fails_closed(self):
+        """A YAML int api_key must not raise, and a blank one must not reach Twilio."""
+        from plugins.platforms.sms.adapter import _standalone_send
+
+        env = {"TWILIO_ACCOUNT_SID": "ACtest", "TWILIO_AUTH_TOKEN": "", "TWILIO_PHONE_NUMBER": "+15550001111"}
+        with patch.dict(os.environ, env):
+            result = await _standalone_send(PlatformConfig(enabled=True, api_key="   "), "+15550002222", "hi")
+            assert "not configured" in result["error"]
+            env["TWILIO_ACCOUNT_SID"] = ""  # keep the int case off the network
+            with patch.dict(os.environ, env):
+                result = await _standalone_send(PlatformConfig(enabled=True, api_key=123), "+15550002222", "hi")
+        assert "not configured" in result["error"]
+
 
 @pytest.mark.asyncio
 async def test_oversized_cron_output_reaches_twilio_in_1600_char_chunks():

@@ -3444,11 +3444,17 @@ class _StreamingCall(StreamingWaitMonitor):
             return _build_partial_stream_stub(
                 role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None,
                 clean_eof=True)
-        if finish_reason is None and (content_parts or reasoning_parts) and not tool_calls_acc and usage_obj is None:
+        if finish_reason is None and (content_parts or reasoning_parts) and not tool_calls_acc and (
+                usage_obj is None or not content_parts):
             # Text-only (or reasoning-only) drop: otherwise the partial text is stamped "stop"
             # and the next step is lost — for reasoning-only, the clean-stop promotion in
             # finish_text_response would then surface a truncated thought as the answer.
-            # A usage object proves the provider finished (include_usage's final chunk).
+            # A usage frame is not proof of completion for reasoning-channel turns: a cut
+            # around the tail delivers usage after the reasoning deltas with the finish
+            # chunk missing, and the promotion then ships the truncated thought (#132362).
+            # Text-only streams keep the #91373 shape: a healthy vLLM tail is a content
+            # chunk plus a choiceless usage frame with no finish chunk, wire-identical to
+            # a cut, so real content delivered before the usage frame still completes.
             logger.warning(
                 "Clean EOF, no finish_reason: server ended the stream (no transport exception) after delivering "
                 "text with no tool calls. The server or a proxy closed the stream cleanly.")

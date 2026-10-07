@@ -17,6 +17,7 @@ images natively.
 from __future__ import annotations
 
 import base64
+import json
 from types import SimpleNamespace
 
 
@@ -190,6 +191,13 @@ class TestNativeImageAttach:
         assert any("multiply any coordinates you report by 2.00" in t for t in texts)  # ... the map was not
         assert bounded["content"][-1]["type"] == "image_url"
 
+        # A tiny tool_budget.mcp_result_size_chars spills BOTH text parts: each gets its own file, so the notes'
+        # spill cannot overwrite the tool text's.
+        import re
+        both = _persist_multimodal_text_parts(out, "mcp__srv__snap", "call-2", None, BudgetConfig(mcp_result_size=50))
+        paths = {re.search(r"saved to: (\S+)", p["text"]).group(1) for p in both["content"] if p.get("type") == "text"}
+        assert len(paths) == 2
+
     def test_image_prep_sees_the_callers_runtime(self, tmp_path, monkeypatch):
         """The prep pool runs in the caller's context: a managed local runtime (stb_image, no WebP) set on the
         calling session converts a small WebP instead of attaching bytes its server silently cannot decode."""
@@ -237,6 +245,7 @@ class TestNativeImageAttach:
         assert isinstance(self._call(monkeypatch, tmp_path, capped), dict)
         repeat = self._call(monkeypatch, tmp_path, capped)
         assert isinstance(repeat, str) and "already in context" in repeat and "MEDIA:" in repeat
+        assert "already in context" in json.loads(repeat)["result"]  # still the handler's JSON envelope
         import io
         from PIL import Image
         # A valid JPEG header over a truncated pixel stream passes the cache's and the sniff's header checks.

@@ -3,6 +3,7 @@ capping, _meta filtering, image/audio caching to MEDIA tags, resource links and
 embedded resources."""
 
 import base64
+import json
 import logging
 import mimetypes
 from typing import Any, Dict, List, Optional, Tuple
@@ -217,7 +218,15 @@ def _mcp_result_with_native_images(text: str, image_paths: List[str]) -> Any:
             if note:
                 notes += f"\n- MEDIA:{path}: {note}"
     if not attached:
-        return text + notes
+        if not notes:
+            return text
+        # Keep the result valid JSON: the refusal lines ride inside the envelope, not after its closing brace.
+        try:
+            payload = json.loads(text)
+            payload["result"] = f"{payload.get('result') or ''}{notes}"
+            return json.dumps(payload, ensure_ascii=False)
+        except (TypeError, ValueError, AttributeError):
+            return text + notes
     # The header and the scale notes are their own short part: an oversized tool text gets spilled to a file and
     # replaced by its head, and the coordinate map must survive that next to the resized screenshot it describes.
     header = "The image(s) from this call are attached — inspect them with your native vision."

@@ -656,6 +656,36 @@ def test_runtime_provenance_is_independent_of_aliases_and_virtual_env(child_env,
     assert base["VIRTUAL_ENV"] == str(user_venv)
 
 
+def test_superseded_generation_site_packages_never_reaches_children(child_env, monkeypatch):
+    """Invariant: after an update commits a new generation, a process still booted on the old one
+    must not leak that generation's site-packages to children (system Python of another version
+    then imports the backend's C extensions). Only exact generation site-packages are owned."""
+    from pm.environments import runtime_facts_path
+    state = child_env / "state"
+    gens = state / "environments"
+    pyver = f"python{sys.version_info.major}.{sys.version_info.minor}"
+
+    def site(gen):
+        return gens / gen / "venv" / ("Lib/site-packages" if os.name == "nt" else f"lib/{pyver}/site-packages")
+
+    old, new = site("old"), site("new")
+    for sp in (old, new):
+        sp.mkdir(parents=True)
+        (sp.parents[1 if os.name == "nt" else 2] / "pyvenv.cfg").write_text("version = 3.14\n", encoding="utf-8")
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: state)
+    facts = runtime_facts_path(Path(__file__).resolve().parents[2])
+    facts.parent.mkdir(parents=True, exist_ok=True)
+    facts.write_text(json.dumps({"packages": {"venv": {"environment": str(new.parents[1 if os.name == "nt" else 2])}}}),
+                     encoding="utf-8")
+    monkeypatch.setattr(local, "_in_venv", False)
+    monkeypatch.setattr(local, "_hermes_site_packages", None)
+    collected = site("collected")  # a generation already garbage-collected is still Hermes-owned
+    user_entries = [str(gens / "old" / "venv"), str(old / "pkg"), str(child_env / "lib" / pyver / "site-packages")]
+    base = {"PYTHONPATH": os.pathsep.join([str(old), str(collected), *user_entries])}
+    result = local._sanitize_subprocess_env(base)
+    assert result["PYTHONPATH"].split(os.pathsep) == user_entries
+
+
 @pytest.mark.parametrize("existing,expected", [
     (["/usr/bin", "/bin"], ["/opt/hermes/bin", "/usr/bin", "/bin"]),
     (["/usr/bin", "/opt/hermes/bin"], ["/usr/bin", "/opt/hermes/bin"]),

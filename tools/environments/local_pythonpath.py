@@ -118,6 +118,45 @@ def _get_hermes_site_packages(env: dict) -> list[Path]:
     return result
 
 
+def _is_install_generation_site_packages(entry: Path) -> bool:
+    """Is ``entry`` exactly the site-packages of ANY PM dependency generation of this install?
+
+    ``activate_dependencies`` exports the generation a process booted on. A later ``hermes update``
+    commits a new generation, so a long-lived process (dashboard, gateway, kanban worker) keeps
+    exporting the previous one -- no longer the selection, yet still Hermes-owned by path
+    provenance: ``<install_state>/environments/<gen>/venv/{lib/pythonX.Y,Lib}/site-packages``.
+    Matched structurally, not by existence, so a collected generation is still recognised.
+    """
+    from pm.environments import install_state_dir, runtime_facts_path
+
+    root = Path(__file__).resolve().parents[2]
+    try:
+        # Same provenance gate as _validated_runtime_venv: only a PM-managed install (one that
+        # has committed a generation) owns its generations directory.
+        if not runtime_facts_path(root).is_file():
+            return False
+        generations = install_state_dir(root) / "environments"
+    except (OSError, RuntimeError, ValueError):
+        return False
+    parts = entry.parts
+    if len(parts) < 4 or os.path.normcase(parts[-1]) != os.path.normcase("site-packages"):
+        return False
+    if os.path.normcase(parts[-2]) == os.path.normcase("Lib"):
+        venv = entry.parent.parent
+    elif parts[-3] == "lib" and parts[-2].startswith("python"):
+        venv = entry.parent.parent.parent
+    else:
+        return False
+    if venv.name != "venv":
+        return False
+    candidates = {generations}
+    try:
+        candidates.add(generations.resolve())
+    except OSError:
+        pass
+    return any(_same_path(venv.parent.parent, g) for g in candidates)
+
+
 def _strip_hermes_owned_pythonpath_and_runtime_markers(env: dict) -> None:
     """Strip Hermes-owned PYTHONPATH entries, then the runtime marker vars. Order is
     load-bearing: PYTHONPATH filtering runs BEFORE the markers go so a validated Windows
@@ -141,7 +180,8 @@ def _strip_hermes_owned_pythonpath(env: dict) -> None:
         return
     owned_paths = [*_get_hermes_site_packages(env), *_state()._hermes_repo_root_aliases]
     entries = pp.split(os.pathsep)
-    stripped = [e for e in entries if e and any(_same_path(Path(e), p) for p in owned_paths)]
+    stripped = [e for e in entries if e and (any(_same_path(Path(e), p) for p in owned_paths)
+                                             or _is_install_generation_site_packages(Path(e)))]
     kept = [e for e in entries if e not in stripped]
     if kept:
         env["PYTHONPATH"] = os.pathsep.join(kept)

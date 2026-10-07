@@ -18,7 +18,6 @@ import re
 import secrets
 import time
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 from gateway.config import Platform, PlatformConfig
@@ -156,9 +155,8 @@ class RelayAdapter(DiscordInteractionMixin, BasePlatformAdapter):
         # store is known to hold, so a label costs a write only when it is new or changed.
         self._discord_chat_labels: Dict[tuple, tuple] = {}
         self._discord_labels_recorded: Dict[tuple, tuple] = {}
-        # Label writes run here one at a time, in observation order (_remember_discord_labels).
-        self._discord_labels_writer = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="relay-discord-labels")
+        # Label writes: one worker, started on first use and drained by disconnect().
+        self._discord_labels_writer = None
         # Live cards: draft_key -> draft_id of the OPEN native stream. Armed by
         # send_draft; consumed by send() to convert the turn-final into
         # draft(final=true) instead of a duplicate post. Keyed by _draft_key (chat +
@@ -1208,6 +1206,8 @@ class RelayAdapter(DiscordInteractionMixin, BasePlatformAdapter):
                     await asyncio.shield(_td)
                 except Exception:  # noqa: BLE001 - teardown must not block outer cancel propagation
                     logger.debug("relay transport disconnect failed during drain", exc_info=True)
+        # The reader is gone, so no label write starts now; let one still running finish first.
+        await self._drain_discord_label_writes(max(0.0, _budget - (time.monotonic() - _started)))
 
     async def go_dormant(self) -> bool:
         """Quiesce the relay for a scale-to-zero suspend. Unlike ``disconnect()`` this

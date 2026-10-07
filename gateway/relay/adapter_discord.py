@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
@@ -46,6 +47,9 @@ class DiscordInteractionMixin:
         # in observation order: a cancelled caller's write keeps running, and on a fresh thread the
         # replay's newer write could land first and be overwritten with the older labels.
         try:
+            if self._discord_labels_writer is None:
+                self._discord_labels_writer = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="relay-discord-labels")
             recorded = await asyncio.get_running_loop().run_in_executor(
                 self._discord_labels_writer, store.record_chat_labels, source)
         except Exception:
@@ -58,6 +62,19 @@ class DiscordInteractionMixin:
             return
         self._discord_labels_recorded[key] = labels
         self._evict_oldest(self._discord_labels_recorded, self._DISCORD_LABELS_MAX)
+
+    async def _drain_discord_label_writes(self, timeout: float) -> None:
+        """Wait (bounded) for a label write still running, e.g. one whose reader was cancelled.
+        Shutdown closes the session database right after the adapters disconnect and does not see
+        this worker; a write landing after that close reopens state.db behind its checkpoint."""
+        writer, self._discord_labels_writer = self._discord_labels_writer, None
+        if writer is None:
+            return
+        writer.shutdown(wait=False, cancel_futures=True)
+        try:
+            await asyncio.wait_for(asyncio.to_thread(writer.shutdown, wait=True), timeout)
+        except asyncio.TimeoutError:
+            logger.warning("relay: a Discord chat label write was still running at disconnect")
 
     async def _discord_chat_labels_for(self, scope: str, chat_id: str) -> tuple:
         """The text lane's last (chat_name, chat_topic) for a chat. After a restart (or eviction) the
@@ -86,8 +103,8 @@ class DiscordInteractionMixin:
     def _discord_interaction_to_event(self, forward):
         """Convert a forwarded Discord interaction body to a MessageEvent, or None for
         an unusable body (a PING is answered at the edge and never forwarded). The
-        session source mirrors the connector's ``interactionSessionSource`` so the
-        session key matches the one the follow-up capability was bound under."""
+        session source matches the relay text lane's session key, threads included (the
+        connector's capability binding must derive the same fields: relay-connector-contract.md)."""
         try:
             payload = json.loads(bytes(getattr(forward, "body", b"")).decode("utf-8"))
         except Exception:  # health: allow BLE001 -- moved from adapter.py unchanged; any undecodable body is unusable

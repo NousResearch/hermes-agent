@@ -1634,9 +1634,11 @@ class SessionDB(
             row = self._conn.execute("SELECT value FROM state_meta WHERE key = ?", (key,)).fetchone()
         return None if row is None else row[0]
 
-    def set_meta(self, key: str, value: str, *, cursor: Optional[sqlite3.Cursor] = None) -> None:
+    def set_meta(
+        self, key: str, value: str, *, cursor: Optional[sqlite3.Cursor] = None, patience_s: Optional[float] = None,
+    ) -> None:
         """Upsert state_meta[key]; with ``cursor`` the write is inline (the caller already holds a
-        transaction — nesting BEGIN IMMEDIATE would deadlock)."""
+        transaction — nesting BEGIN IMMEDIATE would deadlock). ``patience_s``: as ``_execute_write``."""
         sql = (
             "INSERT INTO state_meta (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
@@ -1644,7 +1646,7 @@ class SessionDB(
         if cursor is not None:
             cursor.execute(sql, (key, value))
         else:
-            self._write_sql(sql, (key, value))
+            self._write_sql(sql, (key, value), patience_s=patience_s)
 
     def retag_kanban_worker_sessions(self, workspaces_root: str) -> int:
         """Retag legacy kanban worker rows from ``cli`` to ``kanban`` by cwd under the board's workspaces

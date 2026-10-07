@@ -249,8 +249,13 @@ class SessionPersistenceMixin:
         setter = self._routing_db_method("set_meta")
         if setter is None:
             return False
+        from hermes_state import SessionDB
+
+        # An observation, not a transcript write: the relay reader waits on it before the next frame,
+        # so it takes the short activity budget; a busy database raises and the next message retries.
         setter(self._chat_labels_meta_key(source.platform, source.scope_id, source.chat_id),
-               json.dumps([source.chat_name, source.chat_topic]))
+               json.dumps([source.chat_name, source.chat_topic]),
+               patience_s=SessionDB._ACTIVITY_WRITE_PATIENCE_S)
         return True
 
     def chat_labels(self, platform, scope_id, chat_id) -> Optional[tuple]:

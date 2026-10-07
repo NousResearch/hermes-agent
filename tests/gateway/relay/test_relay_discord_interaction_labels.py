@@ -8,7 +8,9 @@ re-rendered the cached prefix and the next message rendered it back.
 
 import asyncio
 import json
+import sqlite3
 import threading
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -214,3 +216,62 @@ async def test_interaction_names_the_user_as_the_text_lane_would_now(member, exp
     adapter.handle_message = AsyncMock()
     await adapter._on_inbound(_message({"chat_id": "ch1", "chat_type": "group"}))
     assert (await _slash(adapter, member=member)).source.user_name == expected
+
+
+def _labelled_store(tmp_path):
+    config = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="x")})
+    store = SessionStore(tmp_path, config)
+    adapter, _stub = _adapter(platform="discord")
+    adapter.set_session_store(store)
+    adapter.handle_message = AsyncMock()
+    return store, adapter
+
+
+@pytest.mark.asyncio
+async def test_disconnect_waits_for_a_label_write_its_cancelled_reader_left_running(tmp_path):
+    """Cancelling the reader does not stop the label write's worker, and shutdown closes the
+    session database right after the adapters disconnect. disconnect() must not return while that
+    write is still running, or it lands after the close and reopens state.db."""
+    store, adapter = _labelled_store(tmp_path)
+    db, entered, held, done = store._routing_db, threading.Event(), threading.Event(), threading.Event()
+    real = db.set_meta
+
+    def held_write(key, *args, **kwargs):
+        entered.set()
+        held.wait(5)
+        try:
+            return real(key, *args, **kwargs)
+        finally:
+            done.set()
+
+    db.set_meta = held_write
+    intake = asyncio.create_task(adapter._on_inbound(_message({"chat_id": "ch1", "chat_type": "group"})))
+    await asyncio.to_thread(entered.wait, 5)
+    intake.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await intake
+    asyncio.get_running_loop().call_later(0.2, held.set)
+    await adapter.disconnect()
+    assert done.is_set()
+
+
+@pytest.mark.asyncio
+async def test_busy_database_delays_a_label_write_briefly_and_the_next_message_records_it(tmp_path):
+    """The relay reader awaits the label write before the next frame, so a busy state.db must cost
+    the short observation budget, not the routine 20 s one; the next message writes the labels."""
+    store, adapter = _labelled_store(tmp_path)
+    chat = {"chat_id": "ch1", "chat_type": "group"}
+    assert store.chat_labels(Platform.DISCORD, "g1", "ch1") is None
+    blocker = sqlite3.connect(store._routing_db.db_path, timeout=0)
+    blocker.execute("BEGIN IMMEDIATE")
+    try:
+        started = time.monotonic()
+        await adapter._on_inbound(_message(chat))
+        elapsed = time.monotonic() - started
+    finally:
+        blocker.rollback()
+        blocker.close()
+    assert elapsed < 5
+    adapter.handle_message.assert_awaited_once()
+    await adapter._on_inbound(_message(chat, "u2"))
+    assert store.chat_labels(Platform.DISCORD, "g1", "ch1") == ("Hermes Server / #ops", "Incident triage")

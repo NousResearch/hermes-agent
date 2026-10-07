@@ -296,7 +296,15 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
             continue
         if not stat.S_ISREG(st.st_mode):
             continue
-        os.chmod(path, 0o600)
+        try:
+            # Shared HERMES_HOME (operator + gateway service uid): only the
+            # inode owner can chmod. EPERM is expected when the other uid
+            # opened the DB; POSIX ACLs + HERMES_HOME_MODE=2770 already gate
+            # access. Propagating that error made desktop
+            # POST /api/sessions/owner-backfill return 500.
+            os.chmod(path, 0o600)
+        except PermissionError:
+            pass
 
 
 # Openings of the background-review harness prompts (agent/background_review.py).

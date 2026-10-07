@@ -165,6 +165,32 @@ class TestConnectionLifecycle:
         finally:
             session_db.close()
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_writable_state_db_tolerates_chmod_eperm(self, tmp_path, monkeypatch):
+        """Non-owner open of a shared HERMES_HOME store must not 500 on chmod EPERM.
+
+        Only the inode owner can chmod(2). On a dual-uid home (operator +
+        gateway service) the other uid still opens via ACL / group bits;
+        _secure_state_db_files must swallow PermissionError instead of
+        failing desktop POST /api/sessions/owner-backfill.
+        """
+        from hermes_state import _secure_state_db_files
+
+        db_path = tmp_path / "state.db"
+        SessionDB(db_path=db_path).close()
+
+        def _deny_chmod(path, mode):
+            raise PermissionError(1, "Operation not permitted", str(path))
+
+        monkeypatch.setattr(os, "chmod", _deny_chmod)
+        # Direct unit path — SessionDB open also calls this; assert no raise.
+        _secure_state_db_files(db_path)
+        session_db = SessionDB(db_path=db_path)
+        try:
+            assert session_db is not None
+        finally:
+            session_db.close()
+
     @pytest.mark.skipif(os.name == "nt", reason="POSIX fcntl locks")
     def test_writable_state_db_keeps_locks_across_second_open(self, tmp_path):
         """Opening a second SessionDB in this process must not unlink live sidecars.

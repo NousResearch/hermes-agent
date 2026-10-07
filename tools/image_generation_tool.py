@@ -802,7 +802,7 @@ def _fall_back_to_fal(raw: str, prompt: str, aspect_ratio: str, sources: dict[st
     Source images never fall back; FAL would route them to an edit endpoint with different semantics."""
     try:
         result = json.loads(raw)
-    except Exception:  # noqa: BLE001
+    except ValueError:
         return raw
     if not isinstance(result, dict) or result.get("success") or not result.get("fallback_eligible"):
         return raw

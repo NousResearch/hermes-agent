@@ -601,6 +601,28 @@ def _resolve_task_host_cwd(config: dict[str, Any], task_id: Optional[str]) -> Op
     # Top-level CLI parent ("default") is a single-session process — legacy behavior.
     if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":
         return config.get("host_cwd")
+    # Kanban workers are standalone CLI children, so they do not pass through a
+    # session adapter that can call register_task_env_overrides(). The trusted
+    # dispatcher pins BOTH values to the resolved task workspace before spawn.
+    # Accept that exact match without reopening the stale process-global cwd
+    # path that per-session isolation intentionally rejects.
+    kanban_task = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    kanban_workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()
+    configured_host_cwd = config.get("host_cwd")
+    if (
+        kanban_task
+        and kanban_workspace
+        and isinstance(configured_host_cwd, str)
+        and configured_host_cwd.strip()
+    ):
+        candidate = os.path.abspath(os.path.expanduser(kanban_workspace))
+        configured = os.path.abspath(os.path.expanduser(configured_host_cwd))
+        if (
+            candidate == configured
+            and os.path.isdir(candidate)
+            and not candidate.startswith(("/workspace", "/root"))
+        ):
+            return candidate
     overrides = resolve_task_overrides(task_id)
     candidate = overrides.get("cwd")
     if overrides.get("cwd_source") == "process" or not isinstance(candidate, str) or not candidate.strip():

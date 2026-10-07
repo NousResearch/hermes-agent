@@ -224,6 +224,25 @@ class TestSessionScopedMountResolution:
         cfg = self._config(host_cwd="/Users/prev/dev/oldrepo")
         assert terminal_tool._resolve_task_host_cwd(cfg, "tui:sess-new") == str(ws)
 
+    def test_isolation_mounts_dispatcher_pinned_kanban_workspace(self, monkeypatch, tmp_path):
+        """A Kanban CLI worker has no session adapter, so the dispatcher's two
+        matching workspace pins are its session-scoped mount authority."""
+        _enable_isolation(monkeypatch)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_123")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+        cfg = self._config(host_cwd=str(tmp_path))
+        assert terminal_tool._resolve_task_host_cwd(cfg, "kanban-session") == str(tmp_path)
+
+    def test_isolation_rejects_mismatched_kanban_workspace(self, monkeypatch, tmp_path):
+        """A stale or forged Kanban marker must not bless a different process cwd."""
+        _enable_isolation(monkeypatch)
+        workspace = tmp_path / "task"
+        workspace.mkdir()
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_123")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        cfg = self._config(host_cwd=str(tmp_path))
+        assert terminal_tool._resolve_task_host_cwd(cfg, "kanban-session") is None
+
     def test_isolation_rejects_nonexistent_session_dir(self, monkeypatch, tmp_path):
         _enable_isolation(monkeypatch)
         terminal_tool.register_task_env_overrides(

@@ -1,11 +1,29 @@
 """Tests for utils.atomic_json_write — crash-safe JSON file writes."""
 
 import json
+import os
 from unittest.mock import patch
 
 import pytest
 
 from utils import atomic_json_write
+
+
+@pytest.fixture
+def windows_text_mode(monkeypatch):
+    """Make a text file opened with the default ``newline=None`` write ``\\n`` as ``\\r\\n``.
+
+    That is what the default does on Windows. The fixture applies it on any host, so the tests can
+    tell a writer that opts out of the translation from one that leaves it on.
+    """
+    real_fdopen = os.fdopen
+
+    def fdopen(fd, mode="r", *args, **kwargs):
+        if "b" not in mode and kwargs.get("newline") is None:
+            kwargs["newline"] = "\r\n"
+        return real_fdopen(fd, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", fdopen)
 
 
 class TestAtomicJsonWrite:
@@ -17,10 +35,11 @@ class TestAtomicJsonWrite:
 
         atomic_json_write(target, {"a": 1})
 
-        text = target.read_text(encoding="utf-8")
-        assert text.endswith("}\n")
-        assert not text.endswith("\n\n")
-        assert json.loads(text) == {"a": 1}
+        # Raw bytes: ``read_text()`` turns a ``\r\n`` back into ``\n`` and would hide the difference.
+        data = target.read_bytes()
+        assert data.endswith(b"}\n")
+        assert not data.endswith(b"\n\n")
+        assert json.loads(data) == {"a": 1}
 
     def test_surrogate_fallback_also_ends_with_a_newline(self, tmp_path):
         """The ``ensure_ascii`` retry for non-UTF-8 strings writes the file too."""
@@ -28,7 +47,24 @@ class TestAtomicJsonWrite:
 
         atomic_json_write(target, {"path": "bad-\udcff-name"})
 
-        assert target.read_text(encoding="utf-8").endswith("}\n")
+        assert target.read_bytes().endswith(b"}\n")
+
+    def test_line_endings_are_lf_even_where_text_mode_translates(self, tmp_path, windows_text_mode):
+        """On Windows the default text mode would write ``\\r\\n``; the file must stay LF."""
+        target = tmp_path / "data.json"
+
+        atomic_json_write(target, {"a": 1})
+
+        assert target.read_bytes() == b'{\n  "a": 1\n}\n'
+
+    def test_surrogate_fallback_is_lf_where_text_mode_translates(self, tmp_path, windows_text_mode):
+        target = tmp_path / "data.json"
+
+        atomic_json_write(target, {"path": "bad-\udcff-name"})
+
+        data = target.read_bytes()
+        assert data.endswith(b"}\n")
+        assert b"\r" not in data
 
 
     def test_cleans_up_temp_file_on_baseexception(self, tmp_path):

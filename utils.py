@@ -288,7 +288,8 @@ def rmtree_readonly(path: Union[str, Path], *, ignore_errors: bool = False) -> N
 
 
 def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
-                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False) -> None:
+                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False,
+                  newline: "str | None" = None) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
 
     *write(f)* emits the payload into the open handle (text, or bytes when *binary*). The temp file
@@ -299,7 +300,9 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     gets what ``open(path, "w")`` would have given it (process umask) — the callers this replaced
     wrote at umask, and silently tightening every fresh cache/state file to 0600 breaks shared
     volume mounts; an existing target with no *mode* keeps mkstemp's bits, as before. *fsync_dir*
-    also fsyncs the resolved target's parent so the rename itself is durable. The temp file is
+    also fsyncs the resolved target's parent so the rename itself is durable. *newline* is the text
+    handle's own ``newline`` argument: ``None`` keeps the platform default (``\n`` becomes ``\r\n`` on
+    Windows), ``"\n"`` writes every line ending as ``\n`` on every platform. The temp file is
     removed on any failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still
     clean up.
     """
@@ -314,7 +317,8 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     original_owner = _preserve_file_owner(path) if preserve_owner else None
     fd, tmp_path = mkstemp_beside(path, prefix=prefix, suffix=".tmp")
     try:
-        with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding) as f:
+        with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding,
+                       newline=None if binary else newline) as f:
             if mode is not None and hasattr(os, "fchmod"):
                 os.fchmod(f.fileno(), mode)
             write(f)
@@ -393,7 +397,7 @@ def atomic_json_write(
     path = Path(path)
     _atomic_write(path, lambda f: _dump_json(data, f, indent=indent, ensure_ascii=ensure_ascii, dump_kwargs=dump_kwargs),
                   prefix=f".{path.stem}_", mode=mode if mode is not None else _preserve_file_mode(path),
-                  fsync_dir=fsync_dir)
+                  fsync_dir=fsync_dir, newline="\n")
 
 
 def read_json_or_empty(path: Union[str, Path]) -> dict:

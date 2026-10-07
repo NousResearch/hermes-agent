@@ -20,12 +20,12 @@ import pytest
 def _reset_backend(grant_computer_use_approvals):
     """Tear down the cached backend between tests; destructive actions get an interactive "once"
     through the shared approval gate (the tool fails closed with nobody to ask)."""
-    from tools.computer_use.tool import reset_backend_for_tests
-    reset_backend_for_tests()
+    from tools.computer_use import tool as cu_tool
+    cu_tool.reset_backend_for_tests()
     # Force the noop backend.
-    with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False):
+    with patch.object(cu_tool, "_new_backend", lambda mode: cu_tool._NoopBackend()):
         yield
-    reset_backend_for_tests()
+    cu_tool.reset_backend_for_tests()
 
 
 @pytest.fixture

@@ -166,7 +166,6 @@ def test_init_agent_forwards_single_query_flag(monkeypatch):
     cli._resumed = False
     cli.conversation_history = []
     cli._install_tool_callbacks = lambda: None
-    cli._ensure_tirith_security = lambda: None
     cli._ensure_runtime_credentials = lambda: True
     cli._single_query_mode = True
 
@@ -195,7 +194,6 @@ def test_init_agent_defaults_to_interactive(monkeypatch):
     cli._resumed = False
     cli.conversation_history = []
     cli._install_tool_callbacks = lambda: None
-    cli._ensure_tirith_security = lambda: None
     cli._ensure_runtime_credentials = lambda: True
 
     seen = {}

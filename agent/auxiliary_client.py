@@ -2198,12 +2198,11 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 api_key = runtime["api_key"]
             via = " (session endpoint)"
         logger.debug("Auxiliary text client: %s (%s)%s", pconfig.name, model, via)
-        # Native Gemini, else OpenAI-wire + Anthropic rewrap.
+        # The profile's own client (native transport), else the standard wire + Anthropic rewrap.
         base_url = _to_openai_base_url(raw_base_url)
-        if provider_id == "gemini":
-            from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-            if is_native_gemini_base_url(base_url):
-                return GeminiNativeClient(api_key=api_key, base_url=base_url), model
+        profile_client = _api_key_profile_supplied_client(provider_id, api_key=api_key, base_url=base_url)
+        if profile_client is not None:
+            return profile_client, model
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "githubcopilot.com"):
@@ -5267,6 +5266,8 @@ def _api_key_profile_supplied_client(provider: str, **client_kwargs: Any) -> Any
     try:
         return profile.create_client(**client_kwargs)
     except Exception:
+        if profile.strict_client:
+            raise
         logger.warning("resolve_provider_client: provider profile %r failed to create an "
                        "auxiliary client; falling back to the standard client path",
                        provider, exc_info=True)
@@ -5307,17 +5308,11 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     if req.explicit_base_url and provider != "actual":
         base_url = _to_openai_base_url(req.explicit_base_url.strip().rstrip("/"))
     final_model = _normalize_resolved_model(req.model or _get_aux_model_for_provider(provider), provider)
-    # Consulted before the built-in gemini/OpenAI ladder so a registered native transport wins (#112384).
+    # Consulted before the built-in client ladder so a registered native transport wins (#112384).
     profile_client = _api_key_profile_supplied_client(provider, api_key=api_key, base_url=base_url)
     if profile_client is not None:
         logger.debug("resolve_provider_client: %s native client from provider profile (%s)", provider, final_model)
         return _route_client(req, profile_client, final_model)
-    if provider == "gemini":
-        from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-        if is_native_gemini_base_url(base_url):
-            client = GeminiNativeClient(api_key=api_key, base_url=base_url)
-            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
-            return _route_client(req, client, final_model)
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
     client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
     # Copilot GPT-5+ models (except gpt-5-mini) are only reachable via the Responses API;

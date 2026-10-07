@@ -102,3 +102,34 @@ def test_skip_flags_replace_the_isinstance_checks_for_in_and_out_of_tree_clients
     client = _FakeClient()  # never imported by auxiliary_client
     assert _maybe_wrap_anthropic(client, "m", "k", "acp://seam-test") is client
     assert _to_async_client(client, "m")[0] is client
+
+
+def test_a_strict_client_is_reached_by_provider_name_only_and_its_errors_propagate(registered):
+    from openai import OpenAI
+
+    class _StrictProfile(ProviderProfile):
+        def create_client(self, **kwargs):
+            if kwargs.get("api_key") == "boom":
+                raise RuntimeError("strict client refused")
+            return _FakeClient(**kwargs)
+
+    registered(_StrictProfile(name="seam-strict", base_url="https://seam-strict.invalid", strict_client=True))
+    assert isinstance(_build("seam-strict", "https://seam-strict.invalid"), _FakeClient)
+    # Not through the base_url-prefix fallback, nor a padded name.
+    assert isinstance(_build("", "https://seam-strict.invalid/v1"), OpenAI)
+    assert isinstance(_build(" seam-strict", "https://seam-strict.invalid"), OpenAI)
+    from agent.agent_runtime_helpers import create_openai_client
+
+    with pytest.raises(RuntimeError, match="strict client refused"):
+        create_openai_client(_agent("seam-strict"), {"api_key": "boom", "base_url": "https://seam-strict.invalid"},
+                             reason="t", shared=False)
+
+
+def test_native_url_without_the_provider_name_keeps_the_standard_client():
+    from openai import OpenAI
+
+    client = _build("", "https://generativelanguage.googleapis.com/v1beta")
+    try:
+        assert isinstance(client, OpenAI)
+    finally:
+        client.close()

@@ -133,6 +133,11 @@ class ProviderProfile:
 
     # ── Client-level quirks (set once at client construction) ─
     default_headers: dict[str, str] = field(default_factory=dict)
+    # True when create_client() is this provider's own transport rather than an optional plugin
+    # client: the core consults it only when the runtime's provider name resolves to this profile
+    # (never through the base_url-prefix fallback), and its errors reach the caller instead of
+    # falling back to the standard client.
+    strict_client: bool = False
 
     # ── Request-level quirks ─────────────────────────────────
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send

@@ -30,12 +30,34 @@ class GeminiProfile(ProviderProfile):
             return {"extra_body": {"google": {"thinking_config": thinking_config}}} if thinking_config else {}
         return {"thinking_config": raw}
 
+    def create_client(self, **client_kwargs: Any) -> Any | None:
+        """Native REST client when ``base_url`` is the native surface, else None (the compat
+        surface and other hosts take the standard client). ``httpx_verify`` comes from the main
+        agent path only: it gets a keepalive transport carrying that TLS decision, while auxiliary
+        callers omit it and the client builds its own transport."""
+        from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+
+        base_url = str(client_kwargs.get("base_url", "") or "")
+        if not is_native_gemini_base_url(base_url):
+            return None
+        safe_kwargs = {
+            k: v for k, v in client_kwargs.items()
+            if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
+        }
+        if "http_client" not in safe_kwargs and "httpx_verify" in client_kwargs:
+            from agent.process_bootstrap import build_keepalive_http_client
+
+            keepalive_http = build_keepalive_http_client(base_url, verify=client_kwargs["httpx_verify"])
+            if keepalive_http is not None:
+                safe_kwargs["http_client"] = keepalive_http
+        return GeminiNativeClient(**safe_kwargs)
+
 
 gemini = GeminiProfile(
     name="gemini", aliases=("google", "google-gemini", "google-ai-studio"), api_mode="chat_completions",
     env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
     base_url="https://generativelanguage.googleapis.com/v1beta", auth_type="api_key",
-    default_aux_model="gemini-3.6-flash",
+    default_aux_model="gemini-3.6-flash", strict_client=True,
 )
 
 register_provider(gemini)

@@ -249,6 +249,11 @@ def test_skipped_oneshot_survives_recovery_by_any_save(cron_store, monkeypatch):
         assert [d["id"] for d in get_due_jobs()] == ["once"]
     save_jobs(load_jobs())  # second recovery
     assert [d["id"] for d in get_due_jobs()] == ["once"]
+    # Its fire claim never landed: the live run claim skips it (that saved scan ends the
+    # recovery window), and once the claim expires it still fires instead of staying stuck.
+    assert get_due_jobs() == []
+    clock["now"] += timedelta(minutes=31)
+    assert [d["id"] for d in get_due_jobs()] == ["once"]
     stale = dict(once, id="stale")  # due during the outage, first scanned after the recovery scan
     save_jobs(load_jobs() + [stale])
     assert "stale" not in [d["id"] for d in get_due_jobs()]

@@ -32,6 +32,7 @@ def _fake_mautrix_types():
 def fresh_dependency_boundary(monkeypatch):
     """Exercise the real importer after PM admits the SDK."""
     monkeypatch.setattr(pm_extras, "ensure_import", lambda *a, **kw: None)
+    monkeypatch.setattr(pm_extras, "missing", lambda extra: ("mautrix",))
     monkeypatch.delenv("MATRIX_E2EE_MODE", raising=False)
     monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
     # ensure_and_bind writes module globals; isolate even successful rebinding.

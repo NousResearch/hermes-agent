@@ -8,7 +8,8 @@ import {
   useEffect,
   useId,
   useMemo,
-  useRef
+  useRef,
+  useState
 } from 'react'
 
 import { useTourMarker } from '@/app/chat/tour-marker'
@@ -28,11 +29,21 @@ import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { sessionCompacting } from '@/store/compaction'
+import { freshDraftScope } from '@/store/composer'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
+import {
+  $activeGatewayProfile,
+  $newChatConnectionId,
+  $newChatProfile,
+  $newChatRoute,
+  normalizeProfileKey,
+  pinNewChatProfile,
+  resolveNewChatOwnerRoute
+} from '@/store/profile'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -83,6 +94,8 @@ import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
+import { type ProfilePillOwner } from './profile-pill'
+import { defaultNewChatProfile, useDraftProfileSelection } from './profile-selection'
 import { QueuePanel } from './queue-panel'
 import { RestoredDraftNotice } from './restored-draft-notice'
 import {
@@ -113,6 +126,23 @@ import {
 } from './url-refs'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
+function currentNewChatProfileOwner(): ProfilePillOwner {
+  if ($newChatProfile.get() === null && $newChatRoute.get() === null) {
+    // Match the L1 draft affordance: a generic new chat targets Default unless
+    // a profile was explicitly selected for this draft.
+    pinNewChatProfile(defaultNewChatProfile())
+  }
+
+  const route = resolveNewChatOwnerRoute()
+
+  return {
+    connectionId: route?.connectionId ?? $newChatConnectionId.get(),
+    profile: normalizeProfileKey(
+      route?.targetProfile || route?.profile || $newChatProfile.get() || $activeGatewayProfile.get()
+    )
+  }
+}
+
 export function ChatBar({
   busy,
   cwd,
@@ -122,6 +152,9 @@ export function ChatBar({
   gateway,
   maxRecordingSeconds = 120,
   profile,
+  profileOwnerConnectionId,
+  profileOwnerPersisted = false,
+  profileSessionStarted = false,
   queueSessionKey,
   sessionId,
   state,
@@ -140,6 +173,44 @@ export function ChatBar({
   onSubmit: onSubmitProp,
   onTranscribeAudio
 }: ChatBarProps) {
+  const draftKey = freshDraftKey || freshDraftScope()
+
+  const {
+    beginSubmission: beginProfileSubmission,
+    canSelectProfile,
+    cancelBeforeStart: cancelProfileSubmission,
+    markStarted: markProfileStarted,
+    mode: profileMode
+  } = useDraftProfileSelection({ draftKey, sessionStarted: profileSessionStarted })
+
+  const [frozenDraftProfileOwner, setFrozenDraftProfileOwner] = useState<null | {
+    draftKey: string
+    owner: ProfilePillOwner
+  }>(null)
+
+  const frozenDraftProfileOwnerRef = useRef(frozenDraftProfileOwner)
+
+  const freezeDraftProfileOwner = useCallback(
+    (owner: ProfilePillOwner) => {
+      const frozen = { draftKey, owner }
+      frozenDraftProfileOwnerRef.current = frozen
+      setFrozenDraftProfileOwner(frozen)
+    },
+    [draftKey]
+  )
+
+  const frozenOwnerForDraft =
+    frozenDraftProfileOwner?.draftKey === draftKey
+      ? frozenDraftProfileOwner.owner
+      : frozenDraftProfileOwnerRef.current?.draftKey === draftKey
+        ? frozenDraftProfileOwnerRef.current.owner
+        : null
+
+  const profilePillOwner =
+    !profileOwnerPersisted && frozenOwnerForDraft
+      ? frozenOwnerForDraft
+      : { profile: profile ?? 'default', connectionId: profileOwnerConnectionId }
+
   const hudMode = useStore($hudMode)
   const hudWindowing = window.hermesDesktop?.hud?.windowing
   const hudNativeDrag = hudMode && hudWindowing?.nativeDrag === true
@@ -175,15 +246,42 @@ export function ChatBar({
         return true
       }
 
-      const draft = await runComposerMiddleware({ text: value, attachments: options?.attachments })
+      const wasDraft = canSelectProfile
+      const submittedOwner = wasDraft ? currentNewChatProfileOwner() : undefined
+      beginProfileSubmission()
+      let draft
+
+      try {
+        draft = await runComposerMiddleware({ text: value, attachments: options?.attachments })
+      } catch (error) {
+        cancelProfileSubmission()
+        throw error
+      }
 
       if (!draft) {
+        cancelProfileSubmission()
+
         return false
+      }
+
+      if (submittedOwner) {
+        freezeDraftProfileOwner(submittedOwner)
+        // Drafts can have an internal preview/runtime id before a user turn is
+        // persisted. Freeze at the first accepted submission, before the create
+        // request can await its owner gateway or publish that preview.
+        markProfileStarted()
       }
 
       return onSubmitProp(draft.text, { ...options, attachments: draft.attachments })
     },
-    [onSubmitProp]
+    [
+      beginProfileSubmission,
+      canSelectProfile,
+      cancelProfileSubmission,
+      freezeDraftProfileOwner,
+      markProfileStarted,
+      onSubmitProp
+    ]
   )
 
   // Which live composer this instance IS (main | tile) — its attachment set,
@@ -1119,6 +1217,15 @@ export function ChatBar({
     target: scope.target
   })
 
+  const startVoiceConversation = useCallback(() => {
+    if (canSelectProfile) {
+      freezeDraftProfileOwner(currentNewChatProfileOwner())
+      markProfileStarted()
+    }
+
+    return startConversation()
+  }, [canSelectProfile, freezeDraftProfileOwner, markProfileStarted, startConversation])
+
   // Keep the typed-stop interceptor (see onSubmit above) in sync with the
   // live conversation state. Render-time ref assignment, same pattern as
   // dispatchSubmitRef — no effect needed for a plain mirror.
@@ -1148,7 +1255,7 @@ export function ChatBar({
         level: conversation.level,
         muted: conversation.muted,
         onEnd: endConversation,
-        onStart: startConversation,
+        onStart: startVoiceConversation,
         onStopTurn: conversation.stopTurn,
         onToggleMute: conversation.toggleMute,
         status: conversation.status
@@ -1161,6 +1268,8 @@ export function ChatBar({
       onDictate={dictate}
       onQueue={queueDraft}
       onToggleAutoSpeak={handleToggleAutoSpeak}
+      profileMode={profileMode}
+      profileOwner={profilePillOwner}
       state={state}
       voiceStatus={voiceStatus}
     />

@@ -33,7 +33,16 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, newSessionInProfile, selectProfile } = await import('./profile')
+const {
+  $activeGatewayProfile,
+  $newChatConnectionId,
+  $newChatProfile,
+  $newChatRoute,
+  newSessionInProfile,
+  pinNewChatProfile,
+  resolveNewChatOwnerRoute,
+  selectProfile
+} = await import('./profile')
 
 beforeEach(() => {
   ensureGatewayForProfile.mockClear()
@@ -42,6 +51,9 @@ beforeEach(() => {
   activeGatewayConnectionId.mockReturnValue(null)
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
+  $newChatConnectionId.set(null)
+  $newChatProfile.set(null)
+  $newChatRoute.set(null)
   // resolveConnectionForAgent is best-effort; without a bridge it resolves
   // null and the previous descriptor stays, which is fine here.
   ;(globalThis as { window?: unknown }).window = {}
@@ -110,6 +122,22 @@ describe('newSessionInProfile', () => {
     newSessionInProfile('default')
 
     await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('local', 'default'))
+    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
+  })
+})
+
+describe('pinNewChatProfile', () => {
+  it('pins a new-chat target to the visible gateway without switching the live profile or creating a session', () => {
+    activeGatewayConnectionId.mockReturnValue('mini')
+
+    pinNewChatProfile('researcher')
+
+    expect($newChatProfile.get()).toBe('researcher')
+    expect($newChatConnectionId.get()).toBe('mini')
+    expect($newChatRoute.get()).toBeNull()
+    expect(resolveNewChatOwnerRoute()).toEqual({ connectionId: 'mini', profile: 'researcher' })
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect(ensureGatewayForAgent).not.toHaveBeenCalled()
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
   })
 })

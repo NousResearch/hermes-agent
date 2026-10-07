@@ -72,18 +72,39 @@ async def _wait_for(predicate, timeout=2.0):
     return False
 
 
+class _StartingRunner:
+    """A gateway that has not finished starting. ``entered`` is set the first time the gate reads
+    ``_running``, so a test changes the runner only once the handler is actually waiting (no timers)."""
+
+    def __init__(self):
+        self._draining = False
+        self._external_drain_active = False
+        self.adapters = {}
+        self.started = False
+        self.entered = asyncio.Event()
+
+    @property
+    def _running(self):
+        self.entered.set()
+        return self.started
+
+
+async def _once_waiting(runner, change):
+    await asyncio.wait_for(runner.entered.wait(), timeout=10.0)
+    change()
+
+
 @pytest.mark.asyncio
 async def test_fire_during_startup_waits_and_receives_the_live_adapters(adapter, provider):
     """The cold-boot shape: api_server already accepting, adapters not yet published."""
     relay = object()
-    runner = SimpleNamespace(_draining=False, _external_drain_active=False, _running=False, adapters={})
+    runner = _StartingRunner()
 
-    async def _finish_startup():
-        await asyncio.sleep(0.3)
+    def _finish_startup():
         runner.adapters["relay"] = relay
-        runner._running = True
+        runner.started = True
 
-    finisher = asyncio.ensure_future(_finish_startup())
+    finisher = asyncio.ensure_future(_once_waiting(runner, _finish_startup))
     resp = await _post_fire(adapter, runner)
     await finisher
 
@@ -110,13 +131,8 @@ async def test_fire_is_retryable_and_never_claimed_when_startup_does_not_finish(
 async def test_gateway_that_starts_draining_mid_boot_is_refused_without_the_full_wait(
         adapter, provider, monkeypatch):
     monkeypatch.setattr(api_server_fire_startup, "FIRE_STARTUP_WAIT_SECONDS", 30.0)
-    runner = SimpleNamespace(_draining=False, _external_drain_active=False, _running=False, adapters={})
-
-    async def _stop_during_startup():
-        await asyncio.sleep(0.3)
-        runner._draining = True
-
-    stopper = asyncio.ensure_future(_stop_during_startup())
+    runner = _StartingRunner()
+    stopper = asyncio.ensure_future(_once_waiting(runner, lambda: setattr(runner, "_draining", True)))
     resp = await asyncio.wait_for(_post_fire(adapter, runner), timeout=10.0)
     await stopper
 
@@ -128,14 +144,13 @@ async def test_gateway_that_starts_draining_mid_boot_is_refused_without_the_full
 async def test_gateway_that_finishes_starting_into_a_drain_is_refused(adapter, provider, monkeypatch):
     """A restart drain keeps ``_running`` True, so readiness alone must not admit a fire that waited."""
     monkeypatch.setattr(api_server_fire_startup, "FIRE_STARTUP_WAIT_SECONDS", 30.0)
-    runner = SimpleNamespace(_draining=False, _external_drain_active=False, _running=False, adapters={})
+    runner = _StartingRunner()
 
-    async def _start_into_drain():
-        await asyncio.sleep(0.3)
-        runner._running = True
+    def _start_into_drain():
+        runner.started = True
         runner._draining = True
 
-    flipper = asyncio.ensure_future(_start_into_drain())
+    flipper = asyncio.ensure_future(_once_waiting(runner, _start_into_drain))
     resp = await asyncio.wait_for(_post_fire(adapter, runner), timeout=10.0)
     await flipper
 
@@ -156,20 +171,17 @@ async def test_started_gateway_is_accepted_immediately(adapter, provider):
 async def test_slow_token_verify_spends_the_startup_budget(adapter, provider, monkeypatch):
     """The budget runs from handler entry: a slow JWKS fetch plus a full wait would outlast the dashboard
     forwarder's timeout, NAS would retry while this handler still ran the job, and it would run twice."""
-    monkeypatch.setattr(api_server_fire_startup, "FIRE_STARTUP_WAIT_SECONDS", 0.3)
+    monkeypatch.setattr(api_server_fire_startup, "FIRE_STARTUP_WAIT_SECONDS", 0.2)
 
-    async def _slow_verifier(**_kw):
-        await asyncio.sleep(0.4)
+    async def _slow_verifier(**_kw):  # outlasts the whole budget; host load only makes it slower
+        await asyncio.sleep(0.5)
         return {"purpose": "cron_fire"}
 
     monkeypatch.setattr("plugins.cron_providers.chronos.verify.get_fire_verifier", lambda: _slow_verifier)
-    runner = SimpleNamespace(_draining=False, _external_drain_active=False, _running=False, adapters={})
-
-    async def _finish_startup():  # inside a wait measured from the gate, outside one measured from entry
-        await asyncio.sleep(0.5)
-        runner._running = True
-
-    finisher = asyncio.ensure_future(_finish_startup())
+    runner = _StartingRunner()
+    # Startup completes as soon as the gate first looks: a budget measured from the gate would then
+    # admit the fire on its next poll; one measured from entry is already spent and refuses at once.
+    finisher = asyncio.ensure_future(_once_waiting(runner, lambda: setattr(runner, "started", True)))
     resp = await _post_fire(adapter, runner)
     await finisher
 

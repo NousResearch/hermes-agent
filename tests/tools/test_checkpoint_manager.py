@@ -259,6 +259,30 @@ class TestRealPruning:
         assert "small.py" in names
         assert "weights.bin" not in names  # filtered by size cap
 
+    def test_oversize_blob_is_never_written_to_checkpoint_store(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        """Dropping a staged path still leaves its blob in the shared object store."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        wd = tmp_path / "proj"
+        wd.mkdir()
+        (wd / "small.py").write_text("tiny\n")
+        big = wd / "weights.bin"
+        big.write_bytes(b"x" * (2 * 1024 * 1024))
+        blob = subprocess.run(
+            ["git", "hash-object", "--", str(big)], capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        m = CheckpointManager(enabled=True, max_snapshots=5, max_file_size_mb=1)
+        assert m.ensure_checkpoint(str(wd), "initial") is True
+        store = _store_path(checkpoint_base)
+        ok, _, _ = _run_git(["cat-file", "-e", blob], store, str(wd), allowed_returncodes={1, 128})
+        assert not ok, "oversize blob was written to the checkpoint store"
+        ok, files, _ = _run_git(
+            ["ls-tree", "-r", "--name-only", _ref_name(_project_hash(str(wd)))], store, str(wd),
+        )
+        assert ok and "small.py" in files.splitlines() and "weights.bin" not in files.splitlines()
+
 
 # =========================================================================
 # CheckpointManager — restoring

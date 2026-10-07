@@ -128,7 +128,7 @@ export function ChatSidebar({
   // the gateway to replay the gap on the next `connect()`, which only works
   // when the SAME instance survives the drop.
   const [version, setVersion] = useState(0)
-  const gw = useMemo(() => new GatewayClient(), [])
+  const gw = useMemo(() => new GatewayClient({ replay: false }), [])
   const feed = useMemo(() => new EventsFeedClient(), [])
   // Sidecar auto-redial budget (#95951). A ref, NOT effect state: the counter
   // must survive the [gw, version] effect re-runs a redial triggers, or the
@@ -235,16 +235,30 @@ export function ChatSidebar({
     // the counter; unmount or a scope switch (version bump) cancels the
     // pending timer because this effect tears down with the old client.
     let redialTimer: ReturnType<typeof setTimeout> | null = null;
+    let stableTimer: ReturnType<typeof setTimeout> | null = null;
     const offRedial = gw.onState((s) => {
       if (s === "open") {
-        sidecarRedialAttemptRef.current = 0;
-        if (sidecarGaveUpRef.current) {
-          sidecarGaveUpRef.current = false;
-          setError((current) =>
-            current === SIDE_CAR_GAVE_UP_MESSAGE ? null : current,
-          );
+        if (stableTimer) {
+          clearTimeout(stableTimer);
         }
+        // Only reset the retry counter if the connection stays stably open.
+        // If it drops quickly (flapping), do not reset the counter so
+        // exponential backoff continues and the retry budget exhausts (#95951).
+        stableTimer = setTimeout(() => {
+          stableTimer = null;
+          sidecarRedialAttemptRef.current = 0;
+          if (sidecarGaveUpRef.current) {
+            sidecarGaveUpRef.current = false;
+            setError((current) =>
+              current === SIDE_CAR_GAVE_UP_MESSAGE ? null : current,
+            );
+          }
+        }, 5000);
         return;
+      }
+      if (stableTimer) {
+        clearTimeout(stableTimer);
+        stableTimer = null;
       }
       if (s !== "closed" && s !== "error") {
         return;
@@ -299,6 +313,10 @@ export function ChatSidebar({
 
     return () => {
       cancelled = true
+      if (stableTimer) {
+        clearTimeout(stableTimer)
+        stableTimer = null
+      }
       if (redialTimer) {
         clearTimeout(redialTimer)
         redialTimer = null
@@ -438,6 +456,8 @@ export function ChatSidebar({
     setError(null)
     setModelNotice(null)
     setPendingReloadModel(null)
+    sidecarRedialAttemptRef.current = 0
+    sidecarGaveUpRef.current = false
     setVersion(v => v + 1)
   }, [])
 

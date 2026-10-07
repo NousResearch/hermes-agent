@@ -17,6 +17,7 @@ const gatewayMocks = vi.hoisted(() => {
   const handlers = new Map<string, (event: unknown) => void>()
   return {
     constructed: 0,
+    options: undefined as unknown,
     close: vi.fn(),
     connect: vi.fn(async () => undefined),
     handlers,
@@ -52,8 +53,9 @@ vi.mock('@/lib/dashboard-auth-reload', () => ({
 }))
 vi.mock('@/lib/gatewayClient', () => ({
   GatewayClient: class {
-    constructor() {
+    constructor(options?: unknown) {
       gatewayMocks.constructed += 1
+      gatewayMocks.options = options
     }
     close = gatewayMocks.close
     connect = gatewayMocks.connect
@@ -296,6 +298,52 @@ describe('ChatSidebar event socket reconnect', () => {
 
       // One more drop with the budget spent: no further connect is
       // scheduled, and the banner reports give-up.
+      const finalHandler = stateHandlers[stateHandlers.length - 1];
+      await act(async () => {
+        finalHandler("closed");
+      });
+      await advance(4_000);
+      expect(gatewayMocks.connect).toHaveBeenCalledTimes(6);
+      expect(container?.textContent ?? "").toContain("gave up after 5 attempts");
+    } finally {
+      gatewayMocks.onState.mockImplementation(originalImpl!);
+    }
+  });
+
+  it("disables replay on the sidecar GatewayClient", async () => {
+    const { ChatSidebar } = await import("./ChatSidebar");
+    await render(<ChatSidebar channel="chat-1" />);
+    expect(gatewayMocks.options).toEqual({ replay: false });
+  });
+
+  it("exhausts the redial budget and does not reset attempt count on a flapping connection", async () => {
+    const originalImpl = gatewayMocks.onState.getMockImplementation();
+    const stateHandlers: Array<(s: string) => void> = [];
+    gatewayMocks.onState.mockImplementation((handler: (s: string) => void) => {
+      stateHandlers.push(handler);
+      return () => undefined;
+    });
+
+    try {
+      const { ChatSidebar } = await import("./ChatSidebar");
+      await render(<ChatSidebar channel="chat-1" />);
+
+      // A flapping connection opens briefly then drops before the 5s stability window.
+      // The attempt counter must not be wiped out on open.
+      for (let round = 0; round < 5; round += 1) {
+        const handler = stateHandlers[stateHandlers.length - 1];
+        await act(async () => {
+          handler("open");
+        });
+        await advance(100);
+        await act(async () => {
+          handler("closed");
+        });
+        await advance(4_000);
+        expect(gatewayMocks.connect).toHaveBeenCalledTimes(2 + round);
+      }
+
+      // Exhausted on 5 attempts
       const finalHandler = stateHandlers[stateHandlers.length - 1];
       await act(async () => {
         finalHandler("closed");

@@ -1896,22 +1896,26 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "border-t border-current/10",
             )}
           >
-            <div className="border-b border-current/10 px-1 py-2">
-              <ChatSidebar
-                channel={channel}
-                profile={scopedProfile}
-                onDashboardNewSessionRequest={startFreshDashboardChat}
-                onSessionTitleChange={handleSessionTitleChange}
-              />
-            </div>
-            <ChatSessionList
-              activeSessionId={resumeParam}
-              profile={scopedProfile}
-              onPicked={closeMobilePanel}
-              onNewChat={startFreshDashboardChat}
-              workspaceCwd={workspaceCwd}
-              onWorkspaceChange={setWorkspaceCwd}
-            />
+            {mobilePanelOpen && (
+              <>
+                <div className="border-b border-current/10 px-1 py-2">
+                  <ChatSidebar
+                    channel={channel}
+                    profile={scopedProfile}
+                    onDashboardNewSessionRequest={startFreshDashboardChat}
+                    onSessionTitleChange={handleSessionTitleChange}
+                  />
+                </div>
+                <ChatSessionList
+                  activeSessionId={resumeParam}
+                  profile={scopedProfile}
+                  onPicked={closeMobilePanel}
+                  onNewChat={startFreshDashboardChat}
+                  workspaceCwd={workspaceCwd}
+                  onWorkspaceChange={setWorkspaceCwd}
+                />
+              </>
+            )}
           </div>
         </div>
       </>,

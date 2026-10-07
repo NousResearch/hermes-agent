@@ -48,7 +48,7 @@ from hermes_constants import (
 from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_replace, fast_safe_load, file_signature, mkstemp_beside
 from hermes_cli.config_backend import (
-    config_exists, config_version, read_config_doc, supports_file_tooling, write_config_document)
+    config_version, read_config_doc, supports_file_tooling, write_config_document)
 from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
     _refuse_failed_read, _refuse_overwrite, _warn_config_parse_failure, _yaml_error_details,

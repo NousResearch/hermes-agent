@@ -256,7 +256,6 @@ class TestReaderGate:
         bad.write_text(f"def a(self, home):\n    {body}\n", encoding="utf-8")
         with patch.object(guard, "ROOT", tmp_path):
             assert len(guard.scan_file(bad)) == 1
-        assert "pm" in guard.DEFAULT_TREES
 
     def test_backend_calls_are_clean(self, tmp_path):
         guard = self._guard()

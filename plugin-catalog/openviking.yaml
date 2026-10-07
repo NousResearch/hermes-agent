@@ -1,13 +1,13 @@
 name: openviking
 title: OpenViking
 repo: https://github.com/volcengine/OpenViking
-sha: 3f08e40d4b2ae97d541cf499186ee6b980d81572
+sha: 674fa3fb6c7994e9c909e44562db3131cd1fc1ed
 subdir: examples/hermes-plugin
 version: "2.1.1"
-image: https://raw.githubusercontent.com/volcengine/OpenViking/3f08e40d4b2ae97d541cf499186ee6b980d81572/docs/images/openviking-social.jpg
+image: https://raw.githubusercontent.com/volcengine/OpenViking/674fa3fb6c7994e9c909e44562db3131cd1fc1ed/docs/images/openviking-social.jpg
 description: >-
   Long-term memory for Hermes. Capture conversations, recall useful facts across sessions
-  and search your knowledge. Choose Quick Local, OpenViking Service or your own server.
+  and search your knowledge. Choose Quick Local, OpenViking Service (managed cloud) or your own server.
   Disclosure - Sends conversation turns, tool results and memory-file edits to your
   OpenViking server. Quick Local downloads a server and local embedding model, saves
   your Hermes model credentials for extraction and runs after Hermes exits. Extraction
@@ -16,7 +16,7 @@ description: >-
 maintainer: volcengine
 tier: community
 category: memory
-docs_url: https://github.com/volcengine/OpenViking/tree/3f08e40d4b2ae97d541cf499186ee6b980d81572/examples/hermes-plugin#readme
+docs_url: https://github.com/volcengine/OpenViking/tree/674fa3fb6c7994e9c909e44562db3131cd1fc1ed/examples/hermes-plugin#readme
 capabilities:
   provides_tools: []
   provides_hooks:

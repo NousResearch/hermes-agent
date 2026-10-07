@@ -486,17 +486,18 @@ def _configure_quiet_agent(agent) -> None:
     agent.tool_progress_mode = "off"
 
 
-def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool = False):
+def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool = False, run_command: bool = False):
     """``-q``/``--image`` entry: seed an interactive session on a TTY, else run the one-shot turn and exit.
     ``stream_json`` (implies quiet) swaps the plain-text final answer for the JSONL event protocol."""
     from cli import _SeededQueryMessage, _collect_kanban_task_images, _collect_query_images, _configure_quiet_agent, _finalize_single_query, _route_single_query_images, _run_kanban_goal_loop_chat, _run_quiet_single_query, _should_seed_interactive, _single_query_exit_code
-    if _should_seed_interactive(query, image, quiet, oneshot):
+    if run_command or _should_seed_interactive(query, image, quiet, oneshot):
         seeded_query, seeded_images = _collect_query_images(query, image)
         logger.info(
-            "Seeding interactive session with -q prompt (%d chars, %d images)",
-            len(seeded_query or ""), len(seeded_images),
+            "Seeding interactive session with -q prompt (%d chars, %d images, run_command=%s)",
+            len(seeded_query or ""), len(seeded_images), run_command,
         )
-        cli._seeded_first_message = _SeededQueryMessage(seeded_query, seeded_images)
+        cli._seeded_first_message = _SeededQueryMessage(
+            seeded_query, seeded_images, run_command=run_command)
         return cli.run()
     cli._single_query_mode = True  # agent waits the full MCP cold-start before its only tool snapshot
     # Only the interactive run loop set this, so plugin tools dispatched from a `-q`/`-Q` turn got no

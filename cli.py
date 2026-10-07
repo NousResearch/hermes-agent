@@ -839,13 +839,22 @@ class _VoiceInputMessage:
 
 
 class _SeededQueryMessage:
-    """Sentinel for a ``-q`` prompt seeded into an interactive session; treated LITERALLY (no slash/!/file-drop)."""
+    """Sentinel for a ``-q`` prompt seeded into an interactive session; treated LITERALLY (no slash/!/file-drop).
 
-    __slots__ = ("text", "images")
+    ``run_command`` is the one opt-out, set only by ``--run-command`` (#109971): the text is
+    dispatched as a slash command instead of being sent to the model, so a plugin author can
+    drive a ``register_command`` handler from a script or CI. It does NOT relax the other two:
+    ``!`` still never reaches a shell and a path still never becomes a file drop, because the
+    literal treatment of those is a security property (`test_seeded_interactive_query`), not an
+    artefact of the same branch.
+    """
 
-    def __init__(self, text: str, images=None):
+    __slots__ = ("text", "images", "run_command")
+
+    def __init__(self, text: str, images=None, *, run_command: bool = False):
         self.text = text or ""
         self.images = list(images or [])
+        self.run_command = bool(run_command)
 
     def __str__(self) -> str:
         return self.text
@@ -1646,6 +1655,7 @@ def main(
     query: str = None,
     q: str = None,
     oneshot: bool = False,
+    run_command: str = None,
     image: str = None,
     toolsets: str = None,
     skills: str | list[str] | tuple[str, ...] = None,
@@ -1764,6 +1774,11 @@ def main(
     atexit.register(_run_cleanup)  # interactive mode registers again in run() (idempotent)
     _install_single_query_signal_handlers(cli)
 
+    if run_command:
+        # Dispatched as a slash command, not sent to the model, and never on the one-shot
+        # path: a command handler runs inside the session it is registered against (#109971).
+        _run_single_query_mode(cli, run_command, None, quiet, False, run_command=True)
+        return
     if query or image:
         _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json=output_format == "stream-json")
         return

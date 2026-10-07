@@ -100,8 +100,11 @@ class CLITuiRuntimeMixin:
             if self._pending_resume_sessions and self._consume_pending_resume_selection(user_input):
                 return
             if not is_seeded_query:
+                # `!` stays literal for every seeded prompt, --run-command included: a seeded
+                # shell escape is the injection this sentinel exists to prevent.
                 if self.handle_bang_shell(user_input):
                     return
+            if not is_seeded_query or getattr(self, "_seeded_runs_command", False):
                 if _looks_like_slash_command(user_input):
                     user_input = self._tui_run_slash_input(user_input)
                     if user_input is None:

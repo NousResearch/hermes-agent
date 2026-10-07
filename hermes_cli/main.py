@@ -1797,6 +1797,7 @@ def cmd_chat(args):
         "reasoning": getattr(args, "reasoning", None),
         "toolsets": args.toolsets,
         "query": args.query,
+        "run_command": getattr(args, "run_command", None),
         "oneshot": bool(getattr(args, "oneshot_exit", False)),
         "run_budget": getattr(args, "run_budget", None),
         "output_format": getattr(args, "output_format", "text"),

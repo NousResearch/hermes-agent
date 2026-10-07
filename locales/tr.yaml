@@ -170,9 +170,9 @@ gateway:
     denied_reason_singular: "❌ Komut reddedildi. Gerekçe ajana iletildi: \"{reason}\""
     denied_reason_plural: "❌ Komutlar reddedildi ({count} komut). Gerekçe ajana iletildi: \"{reason}\""
   fast:
-    not_supported: "⚡ /fast yalnızca Priority Processing destekleyen OpenAI modellerinde kullanılabilir."
-    status: "⚡ Priority Processing\n\nMevcut mod: `{mode}`\n\n_Kullanım:_ `/fast <normal|fast|status>`"
-    unknown_arg: "⚠️ Bilinmeyen argüman: `{arg}`\n\n**Geçerli seçenekler:** normal, fast, status"
+    not_supported: "⚡ /fast yalnızca bu oturumun modeli ve rotası hızlı modu desteklediğinde kullanılabilir (OpenAI, Anthropic, xAI veya OpenRouter)."
+    status: "⚡ Priority Processing\n\nMevcut mod: `{mode}`\n\n_Kullanım:_ `/fast <normal|fast|flex|auto|cold|ultrafast|status>`"
+    unknown_arg: "⚠️ Bilinmeyen argüman: `{arg}`\n\n**Geçerli seçenekler:** normal, fast, flex, auto, cold, ultrafast, status"
     saved: "⚡ ✓ Priority Processing: **{label}** (yapılandırmaya kaydedildi)\n_(sonraki mesajda geçerli olur)_"
     session_only: "⚡ ✓ Priority Processing: **{label}** (yalnızca bu oturum)"
     label_fast: "HIZLI"
@@ -184,6 +184,8 @@ gateway:
     choice_normal: "normal — standart işleme"
     choice_auto: "auto — her turun ilk saniyelerinde hızlı"
     choice_cold: "cold — yalnızca oturumun ilk turunda hızlı"
+    status_flex: "flex"
+    choice_flex: "flex — OpenRouter Flex işleme"
     choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, 6 kat fiyat)"
     ultrafast_not_supported: "⚡ Ultrafast yalnızca GPT-6 Astra için kullanılabilir (geçerli model: `{model}`)."
   footer:
@@ -1598,7 +1600,7 @@ slash:
   reasoning:
     description: "Akıl yürütme düzeyini ve gösterimini yönet"
   fast:
-    description: "Hızlı mod — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
+    description: "Hızlı mod — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/flex/auto/cold/ultrafast)"
   skin:
     description: "Görüntü görünümünü/temasını göster veya değiştir"
   indicator:
@@ -2654,7 +2656,7 @@ cli:
       feature_openai: "Priority Processing"
       feature_ultrafast: "OpenAI Ultrafast"
       ultrafast_not_supported: "(._.) Ultrafast yalnızca GPT-6 Astra için kullanılabilir (geçerli model: {model})."
-      usage: "Kullanım: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
+      usage: "Kullanım: /fast [normal|fast|flex|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} {value} olarak ayarlandı {scope}"
     hatch:

@@ -170,9 +170,9 @@ gateway:
     denied_reason_singular: "❌ 命令已拒绝。 已将原因转达给代理: \"{reason}\""
     denied_reason_plural: "❌ 命令已拒绝（{count} 条命令）。 已将原因转达给代理: \"{reason}\""
   fast:
-    not_supported: "⚡ /fast 仅适用于支持优先处理（Priority Processing）的 OpenAI 模型。"
-    status: "⚡ 优先处理\n\n当前模式：`{mode}`\n\n_用法：_ `/fast <normal|fast|status>`"
-    unknown_arg: "⚠️ 未知参数：`{arg}`\n\n**有效选项：** normal、fast、status"
+    not_supported: "⚡ /fast 仅在当前会话的模型与路由支持快速模式时可用（OpenAI、Anthropic、xAI 或 OpenRouter）。"
+    status: "⚡ 优先处理\n\n当前模式：`{mode}`\n\n_用法：_ `/fast <normal|fast|flex|auto|cold|ultrafast|status>`"
+    unknown_arg: "⚠️ 未知参数：`{arg}`\n\n**有效选项：** normal、fast、flex、auto、cold、ultrafast、status"
     saved: "⚡ ✓ 优先处理：**{label}**（已保存到配置）\n_（下一条消息生效）_"
     session_only: "⚡ ✓ 优先处理：**{label}**（仅本次会话）"
     label_fast: "FAST"
@@ -184,6 +184,8 @@ gateway:
     choice_normal: "normal — 标准处理"
     choice_auto: "auto — 每轮的前几秒快速"
     choice_cold: "cold — 仅会话的第一轮快速"
+    status_flex: "flex"
+    choice_flex: "flex — OpenRouter 弹性处理"
     choice_ultrafast: "ultrafast — OpenAI Ultrafast（GPT-6 Astra，6 倍价格）"
     ultrafast_not_supported: "⚡ Ultrafast 仅适用于 GPT-6 Astra（当前模型：`{model}`）。"
   footer:
@@ -1598,7 +1600,7 @@ slash:
   reasoning:
     description: "管理推理力度与显示"
   fast:
-    description: "快速模式 — OpenAI Priority Processing / Anthropic Fast Mode（normal/fast/auto/cold）"
+    description: "快速模式 — OpenAI Priority Processing / Anthropic Fast Mode（normal/fast/flex/auto/cold）"
   skin:
     description: "显示或更换显示主题"
   indicator:
@@ -2654,7 +2656,7 @@ cli:
       feature_openai: "Priority Processing"
       feature_ultrafast: "OpenAI Ultrafast"
       ultrafast_not_supported: "(._.) Ultrafast 仅适用于 GPT-6 Astra（当前模型：{model}）。"
-      usage: "用法：/fast [normal|fast|auto|cold|ultrafast|status] [--global]"
+      usage: "用法：/fast [normal|fast|flex|auto|cold|ultrafast|status] [--global]"
       status: "{feature}：{status}"
       set_to: "✓ {feature} 已设为 {value} {scope}"
     hatch:

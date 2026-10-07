@@ -170,9 +170,9 @@ gateway:
     denied_reason_singular: "❌ Команда отклонена. Причина передана агенту: \"{reason}\""
     denied_reason_plural: "❌ Команды отклонены ({count} команд). Причина передана агенту: \"{reason}\""
   fast:
-    not_supported: "⚡ /fast доступен только для моделей OpenAI, поддерживающих Priority Processing."
-    status: "⚡ Priority Processing\n\nТекущий режим: `{mode}`\n\n_Использование:_ `/fast <normal|fast|status>`"
-    unknown_arg: "⚠️ Неизвестный аргумент: `{arg}`\n\n**Допустимые варианты:** normal, fast, status"
+    not_supported: "⚡ /fast доступен только когда модель и маршрут этой сессии поддерживают быстрый режим (OpenAI, Anthropic, xAI или OpenRouter)."
+    status: "⚡ Priority Processing\n\nТекущий режим: `{mode}`\n\n_Использование:_ `/fast <normal|fast|flex|auto|cold|ultrafast|status>`"
+    unknown_arg: "⚠️ Неизвестный аргумент: `{arg}`\n\n**Допустимые варианты:** normal, fast, flex, auto, cold, ultrafast, status"
     saved: "⚡ ✓ Priority Processing: **{label}** (сохранено в конфигурации)\n_(вступит в силу со следующего сообщения)_"
     session_only: "⚡ ✓ Priority Processing: **{label}** (только этот сеанс)"
     label_fast: "БЫСТРЫЙ"
@@ -184,6 +184,8 @@ gateway:
     choice_normal: "normal — стандартная обработка"
     choice_auto: "auto — быстро в первые секунды каждого хода"
     choice_cold: "cold — быстро только на первом ходе сессии"
+    status_flex: "flex"
+    choice_flex: "flex — гибкая обработка OpenRouter"
     choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, цена ×6)"
     ultrafast_not_supported: "⚡ Ultrafast доступен только для GPT-6 Astra (текущая модель: `{model}`)."
   footer:
@@ -1598,7 +1600,7 @@ slash:
   reasoning:
     description: "Управлять уровнем и отображением рассуждений"
   fast:
-    description: "Быстрый режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
+    description: "Быстрый режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/flex/auto/cold/ultrafast)"
   skin:
     description: "Показать или сменить скин/тему оформления"
   indicator:
@@ -2654,7 +2656,7 @@ cli:
       feature_openai: "Priority Processing"
       feature_ultrafast: "OpenAI Ultrafast"
       ultrafast_not_supported: "(._.) Ultrafast доступен только для GPT-6 Astra (текущая модель: {model})."
-      usage: "Использование: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
+      usage: "Использование: /fast [normal|fast|flex|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature}: установлено {value} {scope}"
     hatch:

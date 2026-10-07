@@ -61,7 +61,8 @@ def test_desktop_surfaces_carry_the_exact_tier_ultrafast_is_never_plain_fast():
     assert caps["gpt-6-astra-900k"]["fast"] and caps["gpt-6-astra-900k"].get("ultrafast")
     assert caps["gpt-6-sol"]["fast"] and not caps["gpt-6-sol"].get("ultrafast")
     assert caps["gpt-daybreak-blue-latest-900k"]["fast"] and not caps["gpt-daybreak-blue-latest-900k"].get("ultrafast")
-    assert not caps["openai/gpt-6-astra"]["fast"] and not caps["openai/gpt-6-astra"].get("ultrafast")  # proxy route
+    # OpenRouter accepts flex/priority for the catalog; ultrafast stays first-party only.
+    assert caps["openai/gpt-6-astra"]["fast"] and not caps["openai/gpt-6-astra"].get("ultrafast")
     for params, tier in (({"fast": True, "service_tier": "ultrafast"}, "ultrafast"),
                          ({"fast": True, "service_tier": "normal"}, ""), ({"fast": True}, "priority"), ({}, None)):
         assert create_overrides(params)[2] == tier, params
@@ -97,6 +98,34 @@ def test_cli_refuses_ultrafast_on_a_model_without_it(monkeypatch):
     stub.model = stub.agent.model = "gpt-6-astra"
     cli_mod.HermesCLI._handle_fast_command(stub, "/fast ultrafast")
     assert stub.service_tier == "ultrafast"
+
+
+def test_constructor_keeps_ultrafast(monkeypatch):
+    from run_agent import AIAgent
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config_readonly",
+        lambda: {"agent": {"service_tier": "", "service_tier_overrides": {}}},
+    )
+    agent = AIAgent(
+        api_key="k",
+        base_url="https://api.openai.com/v1",
+        provider="openai-api",
+        api_mode="chat_completions",
+        model="gpt-6-astra",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        save_trajectories=False,
+        enabled_toolsets=["file"],
+        service_tier="ultrafast",
+    )
+    try:
+        assert agent.service_tier == "ultrafast"
+    finally:
+        agent.close()
 
 
 def _usage(prompt_uncached: int, served_tier=None) -> CanonicalUsage:

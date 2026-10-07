@@ -151,9 +151,18 @@ DEFAULT_CONFIG = {
             # drops from 3 to 1. Unknown pricing / missing usage leaves it untouched.
             "cost_threshold_usd": 0.25,
         },
-        # Fast mode: "" / "normal" (off), "fast" (always), "auto" (first fast_auto_seconds of every
-        # turn), "cold" (first turn of a session only).
+        # Fast mode: "" / "normal" (off), "fast" (always), "flex" (OpenRouter), "auto" (first
+        # fast_auto_seconds of every turn), "cold" (first turn of a session only).
         "service_tier": "",
+        # Per-model overlay: {"<model-id>": "flex"|"priority"|...}. Request-time; spelling-tolerant.
+        "service_tier_overrides": {},
+        # Opt-in per-turn OpenRouter service-tier climb on slow TTFT.
+        # Off by default. Does not persist; resets at each user turn.
+        "service_tier_escalation": {
+            "enabled": False,
+            "ttft_threshold_seconds": 8.0,
+            "consecutive_slow_requests": 1,
+        },
         "fast_auto_seconds": 60,
         # Responses API final-answer length (`text.verbosity`): "" = not sent (provider default),
         # or low | medium | high. Responses-family transports only; chat_completions never sends it.

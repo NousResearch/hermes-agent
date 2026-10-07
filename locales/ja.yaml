@@ -170,9 +170,9 @@ gateway:
     denied_reason_singular: "❌ コマンドを拒否しました。 理由をエージェントに伝達しました: \"{reason}\""
     denied_reason_plural: "❌ コマンドを拒否しました ({count} 件)。 理由をエージェントに伝達しました: \"{reason}\""
   fast:
-    not_supported: "⚡ /fast は Priority Processing をサポートする OpenAI モデルでのみ利用できます。"
-    status: "⚡ Priority Processing\n\n現在のモード: `{mode}`\n\n_使い方:_ `/fast <normal|fast|status>`"
-    unknown_arg: "⚠️ 不明な引数: `{arg}`\n\n**有効なオプション:** normal、fast、status"
+    not_supported: "⚡ /fast は、このセッションのモデルとルートが高速モードに対応している場合のみ利用できます（OpenAI、Anthropic、xAI、または OpenRouter）。"
+    status: "⚡ Priority Processing\n\n現在のモード: `{mode}`\n\n_使い方:_ `/fast <normal|fast|flex|auto|cold|ultrafast|status>`"
+    unknown_arg: "⚠️ 不明な引数: `{arg}`\n\n**有効なオプション:** normal、fast、flex、auto、cold、ultrafast、status"
     saved: "⚡ ✓ Priority Processing: **{label}** (設定に保存しました)\n_(次のメッセージから有効)_"
     session_only: "⚡ ✓ Priority Processing: **{label}** (このセッションのみ)"
     label_fast: "高速"
@@ -184,6 +184,8 @@ gateway:
     choice_normal: "normal — 標準処理"
     choice_auto: "auto — 各ターンの最初の数秒間だけ高速"
     choice_cold: "cold — セッションの最初のターンのみ高速"
+    status_flex: "flex"
+    choice_flex: "flex — OpenRouter Flex 処理"
     choice_ultrafast: "ultrafast — OpenAI Ultrafast（GPT-6 Astra、料金 6 倍）"
     ultrafast_not_supported: "⚡ Ultrafast は GPT-6 Astra でのみ利用できます（現在のモデル: `{model}`）。"
   footer:
@@ -1598,7 +1600,7 @@ slash:
   reasoning:
     description: "推論の強度と表示を管理"
   fast:
-    description: "高速モード — OpenAI Priority Processing / Anthropic Fast Mode（normal/fast/auto/cold）"
+    description: "高速モード — OpenAI Priority Processing / Anthropic Fast Mode（normal/fast/flex/auto/cold）"
   skin:
     description: "表示スキン/テーマを表示または変更"
   indicator:
@@ -2654,7 +2656,7 @@ cli:
       feature_openai: "Priority Processing"
       feature_ultrafast: "OpenAI Ultrafast"
       ultrafast_not_supported: "(._.) Ultrafast は GPT-6 Astra でのみ利用できます（現在のモデル: {model}）。"
-      usage: "使い方: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
+      usage: "使い方: /fast [normal|fast|flex|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} を {value} に設定しました {scope}"
     hatch:

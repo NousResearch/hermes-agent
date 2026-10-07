@@ -206,6 +206,35 @@ def test_inherit_branch_without_key_stays_none():
     assert creds["request_overrides"] is None
 
 
+def test_inherit_branch_strips_parent_framework_baked_tier():
+    """A parent's /fast bake must not reach the child as an unmarked raw key."""
+    parent = _parent(
+        request_overrides={
+            "service_tier": "priority",
+            "extra_body": {"thinking": {"type": "disabled"}},
+        },
+    )
+    parent._framework_baked_tier_keys = frozenset({"service_tier"})
+    creds = _resolve_delegation_credentials({"model": "", "provider": ""}, parent)
+    assert "service_tier" not in (creds["request_overrides"] or {})
+    assert creds["request_overrides"]["extra_body"]["thinking"]["type"] == "disabled"
+
+
+def test_inherit_branch_explicit_tier_survives_parent_bake():
+    """Explicit delegation.request_overrides.service_tier is user config and must pass."""
+    parent = _parent(request_overrides={"service_tier": "priority"})
+    parent._framework_baked_tier_keys = frozenset({"service_tier"})
+    creds = _resolve_delegation_credentials(
+        {
+            "model": "",
+            "provider": "",
+            "request_overrides": {"service_tier": "flex"},
+        },
+        parent,
+    )
+    assert creds["request_overrides"]["service_tier"] == "flex"
+
+
 def test_inherit_branch_deep_copies_parent_overrides():
     """Parent's nested overrides must be deep-copied on the inherit branch."""
     parent_overrides = {"extra_body": {"thinking": {"type": "disabled"}}}

@@ -562,6 +562,9 @@ class TestValidateConfigKey:
         "mcp_servers.foo.command",
         "providers.openrouter.api_key",
         "gateway.platforms.my_platform.extra.token",
+        "approvals.mode",
+        "agent.service_tier_overrides",
+        "agent.service_tier_escalation",
         # _EXTRA_KNOWN_ROOT_KEYS: read by the runtime (setup wizard / tools_config save flow)
         # but absent from DEFAULT_CONFIG; they used to trip the false "not a recognized config
         # key" notice with a bogus near-miss suggestion (platform_hints.cli).

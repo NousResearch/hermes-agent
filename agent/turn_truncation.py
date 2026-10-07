@@ -579,11 +579,12 @@ def continue_codex_incomplete(
     whole budget), the next attempt goes out with reasoning off and a doubled output
     cap — the same one-shot overrides the chat-completions length path uses — because
     re-sending the identical budget and effort re-burns the budget identically (#90393)."""
-    from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+    from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE, _try_accept_logical_request
     from agent.turn_response_check import _codex_finish_reason
 
     agent._codex_incomplete_retries += 1
     n = agent._codex_incomplete_retries
+    _codex_history_mutated = False
 
     interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
     interim_has_content = bool((interim_msg.get("content") or "").strip())
@@ -626,6 +627,7 @@ def continue_codex_incomplete(
         else:
             append_message(messages, interim_msg)
             agent._emit_interim_assistant_message(interim_msg)
+            _codex_history_mutated = True
 
     if reasoning_only and streak >= 3:
         if agent._try_activate_fallback(reason=FailoverReason.incomplete_response):
@@ -640,7 +642,10 @@ def continue_codex_incomplete(
                     f"{agent.log_prefix}↻ Codex reasoning-only stall after {streak} attempts — "
                     f"switching to fallback {agent.model} ({agent.provider})", diagnostic=True,
                 )
-            agent._emit_diagnostic_wait("↻ model stuck on internal reasoning — switching to fallback provider")
+            # * Optional on SimpleNamespace tests; production agents always bind it.
+            emit_wait = getattr(agent, "_emit_diagnostic_wait", None)
+            if emit_wait is not None:
+                emit_wait("↻ model stuck on internal reasoning — switching to fallback provider")
             agent._session_messages = messages
             return CODEX_FALLBACK_ACTIVATED
         # No fallback left: fall through to the terminal sentinel.
@@ -660,6 +665,7 @@ def continue_codex_incomplete(
                 # Alternation guard: the nudge may only follow an assistant row.
                 if not _already_nudged and _last_msg.get("role") == "assistant":
                     append_message(messages, {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE})
+                    _codex_history_mutated = True
         if not interim_has_content and _codex_finish_reason(response) == "incomplete":
             agent._ephemeral_reasoning_off = True
             # No configured cap means the provider's own ceiling was hit: the observed
@@ -681,10 +687,15 @@ def continue_codex_incomplete(
         # Surface the continuation on the live spinner/status line (CLI/TUI/Desktop) and gateway heartbeat:
         # each of these retries can spend minutes waiting on the provider, and without a distinct notice the
         # user only sees a generic thinking spinner ("infinite thinking", #64434).
-        agent._emit_diagnostic_wait(
-            f"↻ model returned reasoning with no final answer — asking it to continue ({n}/3)"
-        )
+        # * Optional on SimpleNamespace tests; production agents always bind it.
+        emit_wait = getattr(agent, "_emit_diagnostic_wait", None)
+        if emit_wait is not None:
+            emit_wait(
+                f"↻ model returned reasoning with no final answer — asking it to continue ({n}/3)"
+            )
         agent._session_messages = messages
+        if _codex_history_mutated:
+            _try_accept_logical_request(agent)
         return None
 
     agent._codex_incomplete_retries = 0

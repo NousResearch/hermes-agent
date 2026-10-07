@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 os.environ["HERMES_QUIET"] = "1"  # suppress our modules' startup chatter
 
-
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
 from hermes_cli.cli_billing_mixin import CLIBillingMixin
@@ -239,7 +238,6 @@ except Exception:
 import threading
 import queue
 
-
 def _lazy_shim(module: str, name: str, alias: str | None = None):
     """Import ``module.name`` on first call; keeps heavy imports off startup while ``cli.<name>`` stays patchable."""
     import importlib
@@ -249,7 +247,6 @@ def _lazy_shim(module: str, name: str, alias: str | None = None):
 
     shim.__name__ = shim.__qualname__ = alias or name
     return shim
-
 
 def format_duration_compact(*args, **kwargs):
     seconds = float(args[0] if args else kwargs.get("seconds", 0.0))
@@ -265,10 +262,8 @@ def format_duration_compact(*args, **kwargs):
     days = hours / 24
     return f"{days:.1f}d"
 
-
 # model id -> shortest configured alias (process-lifetime cache; config is read once).
 _REVERSE_ALIAS_CACHE: dict[str, str] | None = None
-
 
 def _reverse_alias_for_display(model_name: str) -> str:
     """Shortest alias for ``model_name`` from ``model_aliases:`` or ``model.aliases:``, else ``model_name``."""
@@ -303,7 +298,6 @@ def _reverse_alias_for_display(model_name: str) -> str:
         _REVERSE_ALIAS_CACHE = rmap
     return _REVERSE_ALIAS_CACHE.get(model_name, model_name)
 
-
 def format_token_count_compact(*args, **kwargs):
     value = int(args[0] if args else kwargs.get("value", 0))
     abs_value = abs(value)
@@ -322,11 +316,9 @@ def format_token_count_compact(*args, **kwargs):
 
     return f"{value:,}"
 
-
 realign_markdown_tables = _lazy_shim("agent.markdown_tables", "realign_markdown_tables")
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-
 
 # ~/.hermes/.env first, project .env as dev fallback; user env files override stale shell exports.
 from hermes_constants import get_hermes_home
@@ -337,9 +329,7 @@ _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 
-
 CLI_CONFIG = load_cli_config()
-
 
 _init_logging_and_display_from_config()
 
@@ -388,7 +378,6 @@ try:
 except Exception:
     pass
 
-
 # Agent/tool systems load lazily: bare startup only needs the prompt.
 def get_tool_definitions(*args, **kwargs):
     from hermes_cli.mcp_startup import wait_for_mcp_discovery
@@ -397,9 +386,7 @@ def get_tool_definitions(*args, **kwargs):
     wait_for_mcp_discovery()
     return _get_tool_definitions(*args, **kwargs)
 
-
 validate_toolset = _lazy_shim("toolsets", "validate_toolset")
-
 
 _cleanup_all_terminals = _lazy_shim("tools.terminal_tool", "cleanup_all_environments", "_cleanup_all_terminals")
 set_sudo_password_callback = _lazy_shim("tools.terminal_tool", "set_sudo_password_callback")
@@ -427,7 +414,6 @@ _deferred_agent_startup_done = False
 # terminal reset so non-TUI one-shot runs never emit codes for modes they never enabled.
 _tui_input_modes_active = False
 
-
 # Set True once the TUI's prompt_toolkit app starts (which enables focus reporting + mouse tracking). Gates
 # the on-exit terminal reset so non-TUI one-shot CLI runs — which also register _run_cleanup via atexit —
 # don't emit escape codes for modes they never enabled (#36823).
@@ -435,7 +421,6 @@ def _mark_tui_input_modes_active() -> None:
     """Record that the TUI app started, so _run_cleanup resets input modes."""
     global _tui_input_modes_active
     _tui_input_modes_active = True
-
 
 def _prepare_deferred_agent_startup() -> None:
     """Run Termux-deferred agent discovery before the first real agent turn."""
@@ -469,9 +454,7 @@ def _prepare_deferred_agent_startup() -> None:
     except Exception:
         logger.debug("shell-hook registration failed at deferred CLI startup", exc_info=True)
 
-
 _signal_watchdog_armed = False
-
 
 def _arm_exit_watchdog_on_shutdown_signal() -> None:
     """Arm the exit backstop the moment a termination signal arrives (idempotent; never raises).
@@ -497,7 +480,6 @@ def _arm_exit_watchdog_on_shutdown_signal() -> None:
         return  # explicitly disabled
     with suppress(Exception):  # never let the backstop break signal handling
         _arm_exit_watchdog(timeout_s=base * 2, from_signal=True)
-
 
 def _run_cleanup(*, notify_session_finalize: bool = True):
     """Run resource cleanup exactly once."""
@@ -528,7 +510,6 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
     finally:
         _cleanup_in_progress = False
 
-
 def _reset_terminal_input_modes_on_exit() -> None:
     """Disable focus reporting + mouse tracking on TUI exit (best-effort).
 
@@ -558,7 +539,6 @@ def _reset_terminal_input_modes_on_exit() -> None:
         tty.write(_TERMINAL_INPUT_MODE_RESET_SEQ)
         tty.flush()
 
-
 from hermes_cli.worktree_ops import (
     _git_quiet,
     _git_repo_root,
@@ -574,7 +554,6 @@ from hermes_cli.worktree_ops import (
 # ============================================================================= Git Worktree Isolation
 # (#652) =============================================================================
 _active_worktree: Optional[Dict[str, str]] = None
-
 
 def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     """Remove a clean worktree and its branch on exit; preserve recoverable work."""
@@ -611,12 +590,10 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     _git_quiet(["branch", "-D", branch], repo_root, log=f"Failed to delete branch {branch}")
     _cprint(f"\033[32m{_t('cli.worktree.cleaned_up', path=wt_path)}\033[0m")
 
-
 # Light/dark terminal detection (mirrors ui-tui/src/theme.ts detectLightMode()). Priority:
 # HERMES_LIGHT/HERMES_TUI_LIGHT env, HERMES_TUI_THEME, HERMES_TUI_BACKGROUND, COLORFGBG
 # (bg slot 7/15 = light), OSC 11 query, default dark. Cached so the terminal is queried once.
 _LIGHT_MODE_CACHE: bool | None = None
-
 
 def _detect_light_mode() -> bool:
     global _LIGHT_MODE_CACHE
@@ -629,15 +606,12 @@ def _detect_light_mode() -> bool:
     _LIGHT_MODE_CACHE = result
     return result
 
-
 _install_skin_light_mode_hook()
-
 
 # Prime the light-mode cache when interactive so OSC 11 happens before prompt_toolkit owns the tty.
 with suppress(Exception):
     if sys.stdin.isatty() and sys.stdout.isatty():
         _detect_light_mode()
-
 
 _OUTPUT_HISTORY_ENABLED = True
 _OUTPUT_HISTORY_REPLAYING = False
@@ -645,14 +619,12 @@ _OUTPUT_HISTORY_SUPPRESSED = False
 _OUTPUT_HISTORY_MAX_LINES = 200
 _OUTPUT_HISTORY = deque(maxlen=_OUTPUT_HISTORY_MAX_LINES)
 
-
 def _configure_output_history(enabled: bool, max_lines=200) -> None:
     """Configure recent CLI output replayed after terminal redraws."""
     global _OUTPUT_HISTORY_ENABLED, _OUTPUT_HISTORY_MAX_LINES, _OUTPUT_HISTORY
     _OUTPUT_HISTORY_ENABLED = bool(enabled)
     _OUTPUT_HISTORY_MAX_LINES = _coerce_output_history_limit(max_lines)
     _OUTPUT_HISTORY = deque(maxlen=_OUTPUT_HISTORY_MAX_LINES)
-
 
 @contextmanager
 def _suspend_output_history():
@@ -663,7 +635,6 @@ def _suspend_output_history():
         yield
     finally:
         _OUTPUT_HISTORY_SUPPRESSED = old_value
-
 
 def _replay_output_history(fit=None, output=None) -> None:
     """Repaint recent output above the prompt after a full screen clear.
@@ -708,15 +679,12 @@ def _replay_output_history(fit=None, output=None) -> None:
     finally:
         _OUTPUT_HISTORY_REPLAYING = False
 
-
 _strip_leaked_bracketed_paste_wrappers = _lazy_shim(
     "hermes_cli.input_sanitize", "strip_leaked_bracketed_paste_wrappers", "_strip_leaked_bracketed_paste_wrappers"
 )
 
-
 # OSC sequences (e.g. OSC-8 links): pt's ANSI parser strips the ESC but leaks the payload as text.
 _OSC_ESCAPE_RE = re.compile(r"\x1b\][\s\S]*?(?:\x07|\x1b\\)")
-
 
 def _looks_like_slash_command(text: str) -> bool:
     """``/help`` yes, ``/Users/x/file.md`` no: a command's first word has no further ``/``."""
@@ -724,16 +692,13 @@ def _looks_like_slash_command(text: str) -> bool:
         return False
     return "/" not in text.split()[0][1:]
 
-
 _skill_commands = None
 _skill_bundles = None
-
 
 def _slash_args(cmd: str) -> str:
     """Text after the slash-command word, stripped ("" when absent)."""
     parts = cmd.split(None, 1)
     return parts[1].strip() if len(parts) > 1 else ""
-
 
 def _ensure_skill_commands() -> dict:
     if _skill_commands is not None:
@@ -741,14 +706,11 @@ def _ensure_skill_commands() -> dict:
     from agent.skill_commands import get_interactive_skill_commands
     return get_interactive_skill_commands()
 
-
 def get_skill_commands() -> dict:
     return _ensure_skill_commands()
 
-
 build_skill_invocation_message = _lazy_shim("agent.skill_commands", "build_skill_invocation_message")
 build_preloaded_skills_prompt = _lazy_shim("agent.skill_commands", "build_preloaded_skills_prompt")
-
 
 def get_skill_bundles() -> dict:
     global _skill_bundles
@@ -758,9 +720,7 @@ def get_skill_bundles() -> dict:
         _skill_bundles = _impl()
     return _skill_bundles
 
-
 build_bundle_invocation_message = _lazy_shim("agent.skill_bundles", "build_bundle_invocation_message")
-
 
 def _get_plugin_cmd_handler_names() -> set:
     """Return plugin command names (without slash prefix) for dispatch matching."""
@@ -770,7 +730,6 @@ def _get_plugin_cmd_handler_names() -> set:
     except Exception:
         return set()
 
-
 def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> list[str]:
     """Normalize a CLI skills flag into a deduplicated list of skill identifiers."""
     if not skills:
@@ -778,7 +737,6 @@ def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> 
     raw_values = [str(item) for item in skills if item is not None] if isinstance(skills, (list, tuple)) else [str(skills)]
     parts = (p.strip() for raw in raw_values for p in raw.split(","))
     return list(dict.fromkeys(p for p in parts if p))
-
 
 def save_config_value(key_path: str, value: any) -> bool:
     """Persist dot-separated ``key_path`` = value into HERMES_HOME/config.yaml; True on success.
@@ -801,7 +759,6 @@ def save_config_value(key_path: str, value: any) -> bool:
         logger.error("Failed to save config: %s", e)
         return False
 
-
 def _normalize_moa_model(model: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     """``moa:<preset>`` -> ``("moa", preset)`` (same routing as ``/moa``); anything else -> ``(None, model)``.
 
@@ -820,7 +777,6 @@ def _normalize_moa_model(model: Optional[str]) -> tuple[Optional[str], Optional[
 
 _split_model_config_default = _lazy_shim("hermes_cli.config", "split_model_config_default", "_split_model_config_default")
 
-
 class _VoiceInputMessage:
     """Sentinel for voice-transcribed input so the concise voice prefix never applies to typed text.
 
@@ -837,7 +793,6 @@ class _VoiceInputMessage:
     def __str__(self) -> str:
         return self.text
 
-
 class _SeededQueryMessage:
     """Sentinel for a ``-q`` prompt seeded into an interactive session; treated LITERALLY (no slash/!/file-drop)."""
 
@@ -850,7 +805,6 @@ class _SeededQueryMessage:
     def __str__(self) -> str:
         return self.text
 
-
 def _should_seed_interactive(query, image, quiet: bool, oneshot: bool) -> bool:
     """``-q`` seeds an interactive session only on a real TTY without ``--oneshot``/``-Q`` (automation answers and exits)."""
     if not (query or image) or oneshot or quiet:
@@ -859,7 +813,6 @@ def _should_seed_interactive(query, image, quiet: bool, oneshot: bool) -> bool:
         return bool(sys.stdin.isatty() and sys.stdout.isatty())
     except Exception:
         return False
-
 
 @dataclass
 class _ChatTurn:
@@ -882,9 +835,7 @@ class _ChatTurn:
     voice_prefix: str = ""
 from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 
-
 _PASTE_REF_RE = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
-
 
 class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
     """Interactive REPL for the Hermes Agent."""
@@ -917,7 +868,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         self._init_model_routing(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
                                  checkpoints, pass_session_id, ignore_rules)
         self._init_runtime_state(resume)
-
 
     def _claim_active_session(self, surface: str = "cli", *, stderr: bool = False) -> bool:
         """Claim a global active-session slot for this CLI process."""
@@ -1389,7 +1339,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
     # #33961.)
     _DESTRUCTIVE_SKIP_TOKENS = frozenset({"now", "--yes", "-y"})
 
-
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         if not self._claim_active_session("cli"):
@@ -1499,7 +1448,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             from hermes_cli.relaunch import relaunch
             relaunch(self._pending_relaunch, preserve_inherited=False)
 
-
 def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills):
     """Resolve the toolset list (explicit / coding posture / platform default), construct HermesCLI, and start the background skills preload."""
     toolsets_list = None
@@ -1575,7 +1523,6 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
         cli._preload_skills_thread.start()
     return cli
 
-
 def _run_legacy_gateway():
     """Legacy `cli.py --gateway` entry: arm the startup watchdog (before importing the gateway graph), then run it."""
     import asyncio
@@ -1585,7 +1532,6 @@ def _run_legacy_gateway():
     from gateway.run import start_gateway
     print(_t("cli.gateway.starting"))
     asyncio.run(start_gateway())
-
 
 def _start_worktree_setup(list_tools, list_toolsets, worktree, w):
     """Start isolated-worktree creation (+ tool prewarm) in the background.
@@ -1640,7 +1586,6 @@ def _start_worktree_setup(list_tools, list_toolsets, worktree, w):
         return info
 
     return _join_worktree
-
 
 def main(
     query: str = None,
@@ -1768,7 +1713,6 @@ def main(
         _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json=output_format == "stream-json")
         return
     cli.run()
-
 
 if __name__ == "__main__":
     import fire

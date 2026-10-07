@@ -138,3 +138,81 @@ def test_session_override_absent_is_noop():
     model, out = runner._apply_session_model_override("nope", "keepme", rk)
     assert model == "keepme"
     assert out["request_overrides"] == PROVIDER_OVERRIDES
+
+
+def _empty_agent_tier_cfg(monkeypatch):
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config_readonly",
+        lambda: {"agent": {"service_tier": "", "service_tier_overrides": {}}},
+    )
+
+
+def _openrouter_agent(**extra):
+    from run_agent import AIAgent
+
+    kwargs = dict(
+        api_key="k",
+        base_url="https://openrouter.ai/api/v1",
+        provider="openrouter",
+        api_mode="chat_completions",
+        model="openai/gpt-5",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        save_trajectories=False,
+        enabled_toolsets=["file"],
+    )
+    kwargs.update(extra)
+    return AIAgent(**kwargs)
+
+
+def test_user_raw_tier_survives_gateway_chain_without_framework(monkeypatch):
+    """Route → merge → api kwargs: unmarked user flex survives when /fast is off."""
+    from gateway.run_turn_runner import TurnRunner
+
+    _empty_agent_tier_cfg(monkeypatch)
+    runner = _runner(service_tier=None)
+    rk = _runtime_kwargs(
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        request_overrides={"service_tier": "flex"},
+    )
+    route = runner._resolve_turn_agent_config("hi", "openai/gpt-5", rk)
+    assert route.get("framework_baked_tier_keys") in (None, {})
+    agent = _openrouter_agent()
+    try:
+        TurnRunner._merge_turn_request_overrides(agent, route)
+        agent.service_tier = runner._service_tier
+        agent._service_tier_session_pinned = False
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["service_tier"] == "flex"
+    finally:
+        agent.close()
+
+
+def test_gateway_pin_replaces_user_raw_tier_on_wire(monkeypatch):
+    """Route → merge → api kwargs: session /fast priority replaces user flex."""
+    from gateway.run_turn_runner import TurnRunner
+
+    _empty_agent_tier_cfg(monkeypatch)
+    runner = _runner(service_tier="priority")
+    rk = _runtime_kwargs(
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        request_overrides={"service_tier": "flex"},
+    )
+    route = runner._resolve_turn_agent_config("hi", "openai/gpt-5", rk)
+    assert route["request_overrides"]["service_tier"] == "priority"
+    assert "service_tier" in (route.get("framework_baked_tier_keys") or {})
+    agent = _openrouter_agent()
+    try:
+        TurnRunner._merge_turn_request_overrides(agent, route)
+        agent.service_tier = runner._service_tier
+        agent._service_tier_session_pinned = True
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["service_tier"] == "priority"
+    finally:
+        agent.close()

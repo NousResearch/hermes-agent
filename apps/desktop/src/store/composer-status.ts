@@ -1,8 +1,10 @@
 import { atom, computed } from 'nanostores'
 
+import type { ClientSessionState } from '@/app/types'
 import { translateNow } from '@/i18n'
 import { stableArray } from '@/lib/stable-array'
 import { type TodoItem, type TodoStatus, todoTree } from '@/lib/todos'
+import type { SessionInfo } from '@/types/hermes'
 
 import { $gateway } from './gateway'
 import { $goalsBySession, type GoalStatus } from './goals'
@@ -51,6 +53,65 @@ export interface ComposerStatusItem {
 // Writable source for background work, synced from the gateway's process
 // registry (`terminal(background=true)` spawns) via `process.list`.
 export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem[]>>({})
+
+/** Shared cadence for composer and Agents-panel background process reconciliation. */
+export const BACKGROUND_POLL_MS = 5_000
+
+export interface BackgroundProcessOverviewItem extends ComposerStatusItem {
+  /** Runtime id required by process.kill/process.list. */
+  runtimeSessionId: string
+  /** Durable session id used by session-oriented UI. */
+  sessionId: string
+}
+
+/** Flatten process rows across sessions for the Agents panel, translating the
+ * runtime registry key to the durable session identity used for navigation. */
+export function allBackgroundProcesses(
+  bySession: Record<string, ComposerStatusItem[]>,
+  states: Record<string, Pick<ClientSessionState, 'storedSessionId'>> = $sessionStates.get(),
+  sessions: readonly Pick<SessionInfo, '_lineage_ids' | '_lineage_root_id' | 'id'>[] = $sessions.get()
+): BackgroundProcessOverviewItem[] {
+  return Object.entries(bySession).flatMap(([runtimeSessionId, items]) => {
+    const storedId = states[runtimeSessionId]?.storedSessionId ?? runtimeSessionId
+    const sessionId = lineageAliases(storedId, sessions).find(id => sessions.some(session => session.id === id)) ?? storedId
+
+    return items.map(item => ({ ...item, runtimeSessionId, sessionId }))
+  })
+}
+
+const BACKGROUND_RECENT_ACTIVITY_MS = 5 * 60_000
+
+/** Runtime sessions worth polling while Agents is visible: known-running work
+ * plus live or recently active sessions. This bounds idle historical sessions
+ * while still discovering background work started outside the focused tab. */
+export function backgroundProcessPollingSessionIds(
+  bySession: Record<string, ComposerStatusItem[]>,
+  states: Record<string, Pick<ClientSessionState, 'storedSessionId'>>,
+  sessions: readonly Pick<SessionInfo, '_lineage_ids' | '_lineage_root_id' | 'id' | 'is_active' | 'last_active'>[],
+  now = Date.now()
+): string[] {
+  const activeStoredIds = new Set(
+    sessions
+      .filter(session => session.is_active || session.last_active >= now - BACKGROUND_RECENT_ACTIVITY_MS)
+      .flatMap(session => lineageAliases(session.id, sessions))
+  )
+
+  const runtimeIds = new Set(
+    Object.entries(bySession)
+      .filter(([, items]) => items.some(item => item.state === 'running'))
+      .map(([runtimeSessionId]) => runtimeSessionId)
+  )
+
+  for (const [runtimeSessionId, state] of Object.entries(states)) {
+    const storedId = state.storedSessionId ?? runtimeSessionId
+
+    if (lineageAliases(storedId, sessions).some(id => activeStoredIds.has(id))) {
+      runtimeIds.add(runtimeSessionId)
+    }
+  }
+
+  return [...runtimeIds]
+}
 
 // Stored session ids that have at least one RUNNING background process. The
 // sidebar row reads this for a hollow dot — distinct from the filled dot of an

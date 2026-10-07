@@ -218,8 +218,11 @@ def _mcp_result_with_native_images(text: str, image_paths: List[str]) -> Any:
                 notes += f"\n- MEDIA:{path}: {note}"
     if not attached:
         return text + notes
-    header = "\n\nThe image(s) from this call are attached — inspect them with your native vision."
-    return {"_multimodal": True, "content": [{"type": "text", "text": text + header + notes}, *attached],
+    # The header and the scale notes are their own short part: an oversized tool text gets spilled to a file and
+    # replaced by its head, and the coordinate map must survive that next to the resized screenshot it describes.
+    header = "The image(s) from this call are attached — inspect them with your native vision."
+    return {"_multimodal": True,
+            "content": [{"type": "text", "text": text}, {"type": "text", "text": header + notes}, *attached],
             "text_summary": text}
 
 

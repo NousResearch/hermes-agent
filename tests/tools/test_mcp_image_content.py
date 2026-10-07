@@ -168,13 +168,27 @@ class TestNativeImageAttach:
     def test_vision_route_gets_a_resized_envelope_and_keeps_the_media_path(self, tmp_path, monkeypatch):
         out = self._call(monkeypatch, tmp_path, {})
         assert isinstance(out, dict) and out["_multimodal"] is True
-        url = out["content"][1]["image_url"]["url"]
+        url = out["content"][2]["image_url"]["url"]
         from tools.vision_tools_history_budget import resolve_embed_target_bytes
         assert url.startswith("data:image/jpeg;base64,") and len(url) <= resolve_embed_target_bytes()
         assert "MEDIA:" in out["text_summary"]
         # Screenshot pixels are screen coordinates: the model is told how to map the embed back.
-        assert "downscaled from 3000x2000 to 1500x1000" in out["content"][0]["text"]
-        assert "multiply any coordinates you report by 2.00" in out["content"][0]["text"]
+        assert "downscaled from 3000x2000 to 1500x1000" in out["content"][1]["text"]
+        assert "multiply any coordinates you report by 2.00" in out["content"][1]["text"]
+
+    def test_scale_note_survives_spilling_an_oversized_tool_text(self, tmp_path, monkeypatch):
+        """The agent loop spills an over-limit text part to a file and keeps only its head. The coordinate map
+        is its own part, so it stays next to the resized screenshot (else the model clicks the wrong pixel)."""
+        from agent.tool_executor import _persist_multimodal_text_parts
+        from tools.budget_config import BudgetConfig
+        out = self._call(monkeypatch, tmp_path, {})
+        first_text = next(p for p in out["content"] if p.get("type") == "text")
+        first_text["text"] = first_text["text"].replace("snapshot", "snapshot" + "x" * 200_000, 1)
+        bounded = _persist_multimodal_text_parts(out, "mcp__srv__snap", "call-1", None, BudgetConfig())
+        texts = [p["text"] for p in bounded["content"] if p.get("type") == "text"]
+        assert len(texts[0]) < 50_000  # the tool text was spilled ...
+        assert any("multiply any coordinates you report by 2.00" in t for t in texts)  # ... the map was not
+        assert bounded["content"][-1]["type"] == "image_url"
 
     def test_image_prep_sees_the_callers_runtime(self, tmp_path, monkeypatch):
         """The prep pool runs in the caller's context: a managed local runtime (stb_image, no WebP) set on the
@@ -190,7 +204,7 @@ class TestNativeImageAttach:
         finally:
             reset_runtime_main(token)
         assert isinstance(out, dict)
-        assert not out["content"][1]["image_url"]["url"].startswith("data:image/webp")
+        assert not out["content"][2]["image_url"]["url"].startswith("data:image/webp")
 
     def test_skipped_images_free_their_slot_and_the_byte_budget_is_the_configured_one(self, tmp_path, monkeypatch):
         """Four damaged images ahead of a good fifth: the fifth still attaches. An embed the resizer could not
@@ -202,7 +216,7 @@ class TestNativeImageAttach:
         Image.new("RGB", (32, 32), (10, 200, 10)).save(good, "PNG")
         broken = (jpeg.getvalue()[: len(jpeg.getvalue()) // 2], "image/jpeg")
         out = self._call(monkeypatch, tmp_path, {}, images=[broken] * 4 + [(good.getvalue(), "image/png")])
-        assert isinstance(out, dict) and len(out["content"]) == 2
+        assert isinstance(out, dict) and [p["type"] for p in out["content"]] == ["text", "text", "image_url"]
 
         noise = io.BytesIO()
         Image.new("RGB", (64, 64), (10, 10, 200)).save(noise, "PNG")

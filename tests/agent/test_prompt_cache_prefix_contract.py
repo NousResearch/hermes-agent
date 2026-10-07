@@ -8,9 +8,8 @@ the same content as the plain string it decorates (production telemetry: plain s
 full previous prefix on 99.5% of consecutive calls). Splitting one string into several parts is a
 content change.
 
-The cells mirror what real sessions do on the two cache layouts Hermes emits (OpenAI-wire envelope
-markers: OpenRouter / Nous Portal / custom relays; native Anthropic Messages content-block markers)
-and were chosen from per-call cache telemetry (``agent.log`` ``cache=R/T write=W``): consecutive
+The cells run the OpenAI-wire envelope layout (OpenRouter / Nous Portal / custom relays) and were
+chosen from per-call cache telemetry (``agent.log`` ``cache=R/T write=W``): consecutive
 calls in one session reuse the whole previous prefix except where these cells say otherwise.
 
 Regression pinned here (#133715): a skill turn's first user message must go out as the same
@@ -47,8 +46,9 @@ def _cache_content(value: Any) -> Any:
 
 
 def _prefix_breaks(requests: list[dict[str, Any]]) -> list[tuple[int, str]]:
-    """``prefix_breaks`` over what the cache keys on, after asserting markers reached the wire."""
-    assert any("cache_control" in canon(r) for r in requests), "caching route sent no cache_control markers"
+    """``prefix_breaks`` over what the cache keys on, after asserting every request carried markers."""
+    unmarked = [i for i, r in enumerate(requests) if "cache_control" not in canon(r)]
+    assert not unmarked, f"caching route sent requests without cache_control markers: {unmarked}"
     return prefix_breaks([_cache_content(r) for r in requests])
 
 

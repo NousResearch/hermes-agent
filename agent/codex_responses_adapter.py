@@ -1157,6 +1157,16 @@ class _OutputScan:
         ))
 
 
+def _safe_response_output_text(response: Any) -> str:
+    """Malformed output items can make the SDK convenience accessor raise."""
+    try:
+        text = getattr(response, "output_text", None)
+    except (AttributeError, TypeError) as exc:
+        logger.debug("Codex output_text accessor failed (%s)", type(exc).__name__)
+        return ""
+    return text.strip() if isinstance(text, str) else ""
+
+
 def _normalize_codex_response(
     response: Any, *, issuer_kind: Optional[str] = None, issuer_model: Optional[str] = None,
     recover_leaked_tool_call: bool = True,
@@ -1171,8 +1181,7 @@ def _normalize_codex_response(
     output = getattr(response, "output", None)
     if not isinstance(output, list) or not output:
         # Codex can deliver the whole answer via stream events with an empty output.
-        out_text = getattr(response, "output_text", None)
-        out_text = out_text.strip() if isinstance(out_text, str) else ""
+        out_text = _safe_response_output_text(response)
         if out_text:
             msg = "Codex response has empty output but output_text is present (%d chars); synthesizing output item."
             logger.debug(msg, len(out_text))
@@ -1192,8 +1201,7 @@ def _normalize_codex_response(
     tool_calls, reasoning_parts = scan.tool_calls, scan.reasoning_parts
     final_text = "\n".join(scan.content_parts).strip()
     if not final_text and (scan.saw_final_answer_phase or not scan.saw_commentary_phase):
-        out_text = getattr(response, "output_text", "")
-        final_text = out_text.strip() if isinstance(out_text, str) else final_text
+        final_text = _safe_response_output_text(response)
     # Tool-call leak recovery: gpt-5.x sometimes emits the intended ``function_call`` as plain Harmony text
     # (``to=functions.foo {json}``) or Codex-CLI shell JSON (``{"cmd": ...}``). Treat as incomplete so the
     # continuation re-elicits a real call; clear the garbage.

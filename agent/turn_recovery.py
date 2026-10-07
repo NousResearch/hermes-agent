@@ -1586,8 +1586,9 @@ def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]
             )
             return True, [f"response.status={_codex_resp_status}: {_codex_error_msg}"]
         # Stream backfill may have failed but normalize can still recover from output_text.
-        _out_text = getattr(response, "output_text", None)
-        _out_text_stripped = _out_text.strip() if isinstance(_out_text, str) else ""
+        from agent.codex_responses_adapter import _safe_response_output_text
+
+        _out_text_stripped = _safe_response_output_text(response)
         if _out_text_stripped:
             logger.debug(
                 "Codex response.output is empty but output_text is present "

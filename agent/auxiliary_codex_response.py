@@ -13,7 +13,9 @@ def _parse_codex_final_response(
     final: Any, *, issuer_kind: Optional[str] = None, issuer_model: Optional[str] = None,
 ) -> Tuple[List[str], List[Any], Any, str]:
     """Normalize Responses output without losing phase or completion state for aux callers."""
-    from agent.codex_responses_adapter import _lower_or_none, _normalize_codex_response
+    from agent.codex_responses_adapter import (
+        _lower_or_none, _normalize_codex_response, _safe_response_output_text,
+    )
 
     # The shared normalizer reads SDK-style items. Keep support for compatible hosts
     # returning dict items, and the aux adapter's legacy empty completed response.
@@ -23,7 +25,7 @@ def _parse_codex_final_response(
     ]
     normalized_final = SimpleNamespace(
         output=output or [SimpleNamespace(type="message", content=[])],
-        output_text=getattr(final, "output_text", None),
+        output_text=_safe_response_output_text(final),
         status=getattr(final, "status", None),
         incomplete_details=getattr(final, "incomplete_details", None),
         error=getattr(final, "error", None),
@@ -52,4 +54,3 @@ def _parse_codex_final_response(
             prompt_tokens=_u("input_tokens"), completion_tokens=_u("output_tokens"),
             total_tokens=_u("total_tokens"))
     return text_parts, tool_calls_raw, usage, finish_reason
-

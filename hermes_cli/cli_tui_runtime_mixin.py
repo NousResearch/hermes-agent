@@ -400,7 +400,7 @@ class CLITuiRuntimeMixin:
             import signal as _signal
             _signal.signal(_signal.SIGTERM, self._tui_signal_handler)
             if hasattr(_signal, 'SIGHUP'):
-                _signal.signal(_signal.SIGHUP, self._tui_signal_handler)
+                _signal.signal(_signal.SIGHUP, self._tui_signal_handler)  # windows-footgun: ok — guarded by the hasattr above
 
             # Windows: absorb SIGINT. Win32 delivers spurious CTRL_C_EVENT when children spawn
             # from background threads, which would unwind app.run() mid-turn. Real Ctrl+C is

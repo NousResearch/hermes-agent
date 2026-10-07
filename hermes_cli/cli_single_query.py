@@ -453,7 +453,7 @@ def _install_single_query_signal_handlers(cli):
         if os.environ.get("HERMES_KANBAN_TASK"):
             with suppress(Exception):
                 if hasattr(_signal, "SIGALRM"):
-                    _signal.signal(_signal.SIGALRM, _kill_foreground_and_exit)
+                    _signal.signal(_signal.SIGALRM, _kill_foreground_and_exit)  # windows-footgun: ok — guarded by the hasattr above
                     _signal.alarm(5)
             with suppress(Exception):
                 # Durable flush FIRST: memory-provider shutdown inside _run_cleanup can issue aux-LLM calls,

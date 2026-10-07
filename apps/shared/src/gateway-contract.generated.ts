@@ -2704,7 +2704,7 @@ export interface PromptSubmitResult {
   survivor_row_id_map?: Record<string, number | null> | null
   turn_isolation?: boolean | null
 }
-export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected'
+export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected' | 'clarify_answered' | 'clarify_retry'
 export interface ClipboardPasteParams {
   session_id: string
   profile?: string | null

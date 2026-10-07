@@ -121,7 +121,6 @@ def test_install_reports_acl_reset_failure_without_publishing(tmp_path, monkeypa
 
     monkeypatch.setattr(store_module.subprocess, "run", failing)
     monkeypatch.setattr(install_module, "_settle_previous_entry", lambda *args: None)
-    monkeypatch.setattr(install_module, "_reclaim_set_aside", lambda *args: 0)
     monkeypatch.setattr(install_module, "_entry_current", lambda *args: False)
     staged = []
 

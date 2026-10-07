@@ -1159,7 +1159,14 @@ export PYTHONUNBUFFERED=1
 # absent and the helper no-ops.
 export HERMES_UPDATE_STATUS_FILE="$STATUS"
 # `hermes update` runs under OUR marker claim (contract C1 rule 4/6).
-export HERMES_UPDATE_HANDOFF_PID="$$"
+# The claim's owner is not this script. marker_refresher_start hands line 1 to a custodian
+# subshell that outlives us, so the owner is a *sibling* of this script: never our own pid,
+# and never an ancestor of the `hermes update` we spawn. update_lock._is_partner can only
+# match it through this variable, so exporting `$$` left the custodian unrecognisable and
+# every desktop-initiated update refused its own claim with exit code 2
+# ("Another Hermes update is already running (started Ns ago, process <custodian>)").
+# $MY_PID is the custodian once the handover succeeded, and our own pid when it did not.
+export HERMES_UPDATE_HANDOFF_PID="$MY_PID"
 # The update's receipt carries this id (update_receipt._launcher_correlation_id),
 # which is how update_committed_after_exit finds THIS run's receipt.
 export HERMES_UPDATE_CORRELATION_ID="$UPDATE_CORRELATION"

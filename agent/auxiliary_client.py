@@ -4805,12 +4805,12 @@ def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_ba
 
 
 def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: bool) -> Tuple[Optional[Any], Optional[str]]:
-    """AWS Bedrock: Claude → Anthropic Bedrock SDK (prompt caching, thinking); OpenAI models
-    (GPT-5.5/5.6) → Bedrock Mantle's OpenAI Responses endpoint; everything else → Converse API."""
+    """AWS Bedrock: Claude → Anthropic Bedrock SDK (prompt caching, thinking); bare in-Region OpenAI IDs
+    → Mantle Responses; everything else, incl. OpenAI ``us.``/``global.`` profiles, → Converse API."""
     try:
         from agent.bedrock_adapter import (
             has_aws_credentials, is_anthropic_bedrock_model, resolve_bedrock_runtime_region,
-            is_openai_bedrock_model, bedrock_openai_base_url, resolve_bedrock_bearer_token,
+            bedrock_openai_uses_mantle, bedrock_openai_base_url, resolve_bedrock_bearer_token,
             configure_bedrock_openai_client_kwargs,
         )
         from agent.anthropic_adapter import build_anthropic_bedrock_client
@@ -4826,7 +4826,7 @@ def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: boo
     region = resolve_bedrock_runtime_region()
     default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
     final_model = _normalize_resolved_model(model or default_model, provider) or default_model
-    if is_openai_bedrock_model(final_model):
+    if bedrock_openai_uses_mantle(final_model):
         # Module-level lazy ``OpenAI`` proxy on purpose so tests can patch("agent.auxiliary_client.OpenAI").
         client_kwargs: Dict[str, Any] = {
             "api_key": resolve_bedrock_bearer_token() or "aws-sdk",

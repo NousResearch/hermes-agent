@@ -2,7 +2,10 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
+import { frBoot } from './fr_boot'
+import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
+import { frNotices } from './fr_notices'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { introFr } from './intro-fr'
 
@@ -406,83 +409,7 @@ export const frOverrides = {
     revealUnavailable:
       "Ce chemin n'est pas sur cet ordinateur : il se trouve sur la machine du backend. Utilisez « Afficher dans l'arborescence »."
   },
-  boot: {
-    ready: 'Hermes Desktop est prêt',
-    desktopBootFailedWithMessage: message => `Échec du démarrage : ${message}`,
-    steps: {
-      connectingGateway: 'Connexion au gateway desktop',
-      loadingSettings: 'Chargement des paramètres Hermes',
-      loadingSessions: 'Chargement des sessions récentes',
-      retryingRemoteBackend: 'Reconnexion au backend Hermes distant…',
-      startingDesktopConnection: 'Démarrage de la connexion desktop',
-      startingHermesDesktop: 'Démarrage de Hermes Desktop…'
-    },
-    errors: {
-      backgroundExited: "Le processus en arrière-plan de Hermes s'est arrêté.",
-      backgroundExitedDuringStartup: "Le processus en arrière-plan de Hermes s'est arrêté pendant le démarrage.",
-      backendStopped: 'Backend arrêté',
-      restartHermes: 'Redémarrer Hermes',
-      openLogs: 'Ouvrir les journaux',
-      desktopBootFailed: 'Échec du démarrage',
-      gatewayConnectionLost: 'Connexion au gateway perdue',
-      gatewayConnectionLostDetail:
-        'Nouvelle tentative en arrière-plan. Vous pouvez continuer à lire et rédiger — ouvrez les paramètres du gateway si le problème persiste.',
-      reconnectNow: 'Se reconnecter maintenant',
-      connectionSettings: 'Paramètres de connexion',
-      gatewaySignInRequired: 'Connexion au gateway requise',
-      gatewaySignInRequiredDetail:
-        'Reconnectez-vous pour rétablir la connexion. Vos conversations et paramètres sont en sécurité.',
-      signInAgain: 'Se reconnecter',
-      ipcBridgeUnavailable: 'Le pont IPC du desktop est indisponible.'
-    },
-    causes: {
-      exitedEarly: "Le service en arrière-plan de Hermes s'est arrêté juste après son démarrage.",
-      timedOut: "Le service en arrière-plan de Hermes n'a pas répondu à temps.",
-      permission: "Hermes n'a pas pu écrire dans son dossier de données (problème d'autorisation).",
-      diskFull: "Le disque est plein ; Hermes n'a donc pas pu démarrer.",
-      portInUse: 'Un autre programme utilise le port réseau nécessaire à Hermes.',
-      installMissing:
-        "Une partie de l'installation de Hermes est manquante. Choisissez Réparer l'installation pour la restaurer."
-    },
-    failure: {
-      title: "Hermes n'a pas pu démarrer",
-      description:
-        "Le gateway en arrière-plan n'a pas pu se lancer. Essayez l'une des étapes de récupération ci-dessous. Rien ici ne supprime vos conversations ou paramètres.",
-      details: 'Détails',
-      remoteTitle: 'Connexion au gateway distante requise',
-      remoteDescription:
-        'Votre session de gateway distante a expiré. Connectez-vous à nouveau pour vous reconnecter. Rien ici ne supprime vos conversations ou paramètres.',
-      retry: 'Réessayer',
-      repairInstall: "Réparer l'installation",
-      useLocalGateway: 'Utiliser le gateway local',
-      gatewaySettings: 'Paramètres du gateway',
-      back: 'Retour',
-      openLogs: 'Ouvrir les journaux',
-      repairHint: "La réparation relance l'installateur et peut prendre quelques minutes sur une machine neuve.",
-      remoteSignInHint: signInLabel =>
-        `Déconnecte la session navigateur distante enregistrée, puis ouvre ${signInLabel}. Utilisez le gateway local pour passer au backend intégré.`,
-      signOutAndSignIn: 'Se déconnecter et se reconnecter',
-      remoteFailureHint:
-        "Vérifiez l'URL du gateway et la connexion dans les paramètres du gateway, ou passez au gateway local.",
-      cloudDownTitle: "L'agent Nous Cloud est indisponible",
-      cloudDownDescription:
-        "L'agent cloud géré par Nous auquel ce gateway se connecte renvoie une erreur serveur. Il ne peut pas être redémarré depuis ici — vérifiez son état, passez au gateway local ou contactez l'assistance.",
-      cloudDownHint:
-        "Les boutons ci-dessous ouvrent le portail Nous, pour consulter et contrôler l'instance, ainsi que notre Discord pour obtenir de l'aide.",
-      cloudDownCheckPortal: "Vérifier l'état sur le portail",
-      cloudDownDiscord: "Obtenir de l'aide sur Discord",
-      hideRecentLogs: 'Masquer les journaux récents',
-      showRecentLogs: 'Afficher les journaux récents',
-      signedInTitle: 'Connecté',
-      signedInMessage: 'Reconnexion au gateway distante…',
-      signInIncompleteTitle: 'Connexion incomplète',
-      signInIncompleteMessage: "La fenêtre de connexion s'est fermée avant la fin de l'authentification.",
-      signInFailed: 'Échec de la connexion',
-      signInToRemoteGateway: 'Se connecter au gateway distante',
-      signInWithProvider: provider => `Se connecter avec ${provider}`,
-      identityProvider: "votre fournisseur d'identité"
-    }
-  },
+  boot: frBoot.boot,
   notifications: {
     region: 'Notifications',
     hide: 'Masquer',
@@ -584,10 +511,7 @@ export const frOverrides = {
       creditsTitle: 'Crédits'
     }
   },
-  remoteDisplayBanner: {
-    message: reason =>
-      `Rendu logiciel actif — affichage distant détecté (${reason}). L'accélération GPU est désactivée pour éviter les scintillements.`
-  },
+  ...frNotices,
   billingBlock: {
     titleNous: 'Plus de crédits Nous',
     titleProvider: provider => `Plus de crédits — ${provider}`,
@@ -2113,128 +2037,7 @@ export const frOverrides = {
       moaReferenceHint: 'donne un avis une fois par tour par défaut',
       tasks: frAuxTasks
     },
-    localModels: {
-      connectionChanged: 'La connexion des modèles locaux a changé',
-      title: 'Modèles locaux',
-      runtimeTitle: 'Moteur local',
-      runtimeReady: backend => `Prêt · ${backend}`,
-      serverRunning: 'En cours',
-      runtimeInstalled: 'Moteur llama.cpp installé',
-      runtimeInstalledDetail: (tag, backend) =>
-        `Build ${tag}, backend ${backend}. Hermes démarre et gère le serveur pour vous.`,
-      installTitle: 'Installer le moteur local',
-      installDetail:
-        "Télécharge le moteur d'inférence llama.cpp (quelques centaines de Mo). Les modèles téléchargés s'exécutent entièrement sur cette machine : aucun compte requis et aucune donnée ne quitte votre ordinateur.",
-      installAction: 'Installer le moteur',
-      installing: 'Installation du moteur…',
-      installFailed: "Échec de l'installation du moteur",
-      hardwareTitle: 'Cette machine',
-      hardwareLoading: 'Analyse de votre matériel…',
-      vram: label => `${label} de mémoire GPU`,
-      ram: label => `${label} de RAM`,
-      unifiedMemory: 'Mémoire unifiée',
-      modelsTitle: 'Modèles',
-      recommended: 'Recommandé',
-      recommendedReason: {
-        'best-quality-resident':
-          "Le modèle de meilleure qualité qui tient entièrement dans votre GPU et s'exécute à pleine vitesse. La sélection équilibre qualité et vitesse prévue sur ce matériel.",
-        'speed-gated-quality':
-          'Un modèle de meilleure qualité tient sur cette machine, mais sa bande passante mémoire le rendrait trop lent. Celui-ci est le meilleur modèle qui reste rapide.',
-        'fastest-resident':
-          "Aucun modèle n'atteint sa pleine vitesse sur ce matériel. Celui-ci s'en approche le plus tout en tenant entièrement dans la mémoire GPU."
-      },
-      noRecommendationTitle: 'Aucune recommandation automatique pour cette machine',
-      noRecommendationDetail:
-        "La configuration automatique nécessite un modèle présélectionné qui tient entièrement dans la mémoire GPU ou unifiée. Vous pouvez toujours choisir un modèle ci-dessous ou parcourir d'autres modèles.",
-      noRecommendationAction: 'Parcourir les modèles',
-      downloaded: 'Téléchargé',
-      downloadAction: size => `Télécharger · ${size}`,
-      downloadProgress: (done, total) => `Téléchargement de ${done} sur ${total}`,
-      downloadDoneToast: model => `${model} est prêt.`,
-      installDoneToast: 'Le moteur local est installé et prêt.',
-      quickstartTitle: 'Exécuter un modèle sur cette machine',
-      quickstartDetail: (model, size) =>
-        `Un clic configure tout : le moteur local, ${model} (téléchargement de ${size}) et votre modèle par défaut pour les nouvelles conversations. Aucune donnée ne quitte cet ordinateur.`,
-      quickstartDetailReady: model =>
-        `Un clic définit ${model} comme modèle par défaut pour les nouvelles conversations. Tout s'exécute sur cette machine.`,
-      quickstartAction: 'Configurer pour moi',
-      quickstartConfigure: 'Configuration…',
-      quickstartDoneToast: model =>
-        `${model} est configuré : les nouvelles conversations s'exécutent sur cette machine.`,
-      quickstartFailed: 'Échec de la configuration du modèle local',
-      quickstartStageEngine: 'Moteur',
-      quickstartStageModel: 'Modèle',
-      quickstartStageFinish: 'Terminer',
-      useAction: 'Utiliser',
-      activePill: 'Par défaut',
-      updateTitle: 'Mise à jour du moteur disponible',
-      updateDetail: (next, current) =>
-        `Une nouvelle build llama.cpp (${next}) est prête à être installée. Vous utilisez ${current}. Les modèles continuent de fonctionner pendant le téléchargement.`,
-      updateAction: 'Mettre à jour le moteur',
-      updating: 'Mise à jour du moteur…',
-      upToDateTitle: 'Moteur à jour',
-      upToDateDetail: (tag, backend) =>
-        `llama.cpp ${tag} (${backend}) est en cours d'exécution : il s'agit de la dernière build fournie par Hermes.`,
-      activeDetail:
-        "Les nouvelles conversations utilisent ce modèle. Il se charge lors de l'envoi de votre premier message.",
-      activeNotLoaded: 'Se charge avec votre premier message',
-      loadedPill: 'En mémoire',
-      placementResident: 'entièrement sur le GPU',
-      placementSpilled: 'partiellement dans la RAM',
-      placementResidentTip:
-        'S’exécute entièrement dans la mémoire GPU avec cette fenêtre de contexte, à pleine vitesse.',
-      placementSpilledTip:
-        'Une partie de ce modèle s’exécute depuis la RAM système. Il fonctionne, mais plus lentement. Une build plus compacte ou un contexte plus petit tiendrait entièrement dans le GPU.',
-      loadingPill: 'Chargement…',
-      ejectTip: 'Libérer la mémoire GPU (le modèle se rechargera au prochain message)',
-      ejected: 'Modèle déchargé : mémoire GPU libérée.',
-      ejectFailed: 'Impossible de décharger le modèle',
-      stopServer: 'Désactiver',
-      startServer: 'Activer',
-      runtimeRunningDetail:
-        "Le serveur local est en cours d'exécution. Le désactiver libère toute la mémoire GPU et empêche les nouvelles conversations d'utiliser les modèles locaux jusqu'à sa réactivation.",
-      serverStopped: 'Serveur local arrêté : mémoire GPU libérée.',
-      serverStarted: 'Serveur local en cours d’exécution.',
-      serverStopFailed: "Impossible d'arrêter le serveur local",
-      serverStartFailed: 'Impossible de démarrer le serveur local',
-      activating: 'Démarrage…',
-      activateFailed: model => `Impossible de passer à ${model}`,
-      activateDoneToast: model => `Les nouvelles conversations utilisent ${model}.`,
-      downloadFailed: model => `Échec du téléchargement de ${model}`,
-      pillFitsGpu: 'Tient dans votre GPU',
-      pillUsesRam: 'Utilise la RAM système',
-      pillTooBig: 'Trop volumineux pour cette machine',
-      browseTitle: 'Trouver davantage de modèles',
-      browseHint:
-        'Recherchez dans tout Hugging Face. La taille des modèles téléchargés ici est automatiquement adaptée à votre machine, mais ils ne sont pas testés par notre équipe.',
-      browsePlaceholder: 'Rechercher un modèle par nom ou auteur…',
-      browseSearching: 'Recherche dans Hugging Face',
-      browseListing: 'Lecture des fichiers du modèle',
-      browseShowFiles: 'Afficher les fichiers',
-      browseRefresh: 'Actualiser',
-      browseDownloads: 'téléchargements',
-      browseLikes: "mentions J'aime",
-      browseGated: 'nécessite une connexion à Hugging Face',
-      browseNoGguf: 'Aucun fichier de modèle compatible trouvé.',
-      browseFitUnknown: 'Compatibilité inconnue',
-      browseAlreadyDownloaded: 'Déjà téléchargé.',
-      addedByYou: 'Ajouté par vous',
-      browseDownloadStarted: 'Téléchargement de {name}',
-      browseDownloadAria: 'Télécharger {name}',
-      sideloadButton: 'Ajouter un fichier de modèle',
-      sideloadTitle: 'Choisir un fichier de modèle GGUF',
-      sideloadDone: '{name} ajouté.',
-      sideloadAlreadyPresent: 'Déjà présent dans votre bibliothèque.',
-      pillFullContext: max => `Contexte complet de ${max}`,
-      pillFullContextTip: 'Utilise dès le départ la fenêtre de contexte complète du modèle',
-      pillUpTo: max => `Contexte jusqu’à ${max}`,
-      pillGrowsTip: 'Augmente automatiquement lorsque votre conversation a besoin de plus de place',
-      pillVision: 'Comprend les images',
-      deleteAction: 'Supprimer le modèle',
-      deleteConfirm: model => `Supprimer ${model} du disque ?`,
-      deleted: model => `${model} supprimé.`,
-      deleteFailed: 'Échec de la suppression'
-    },
+    localModels: frLocalModels,
     billing: {
       perMonth: (amount: string) => `${amount}/mois`,
       creditsPerMonth: (amount: string) => `${amount} crédits/mois`,

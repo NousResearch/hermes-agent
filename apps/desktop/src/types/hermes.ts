@@ -1,4 +1,4 @@
-import type { ConnectionRequestPayload, ToolLabel } from '@hermes/shared'
+import type { ConnectionRequestPayload, FreeTierChallengePayload, ToolLabel } from '@hermes/shared'
 
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 
@@ -181,6 +181,8 @@ export interface FreeTierStatus {
   error_code?: string
   retryable?: boolean
   retry_after?: number
+  /** Present while the backend is waiting on a browser challenge. */
+  challenge?: FreeTierChallengePayload | null
 }
 
 export interface MemoryProviderOAuthStatus {
@@ -1039,6 +1041,7 @@ export interface CronJobCreatePayload {
   name?: string
   prompt: string
   provider?: string
+  repeat?: number
   schedule: string
 }
 
@@ -1257,6 +1260,9 @@ export interface ToolProvider {
   /** Web toolset only: capabilities this backend can serve. Search-only
    *  providers (ddgs, brave-free) report ['search']. */
   capabilities?: WebCapability[]
+  /** Set on the "Nous Subscription" rows (e.g. 'web'): served through the
+   *  Nous Tool Gateway rather than the user's own key. */
+  managed_nous_feature?: null | string
 }
 
 /** A web toolset capability — the runtime dispatches web_search and
@@ -1274,6 +1280,10 @@ export interface ToolsetConfig {
   active_search_backend?: string | null
   /** Web toolset only: backend the web_extract tool resolves to right now. */
   active_extract_backend?: string | null
+  /** Web toolset only: web_search / web_extract currently go through the Nous
+   *  Tool Gateway (billed to the subscription) instead of the user's own key. */
+  search_via_nous?: boolean
+  extract_via_nous?: boolean
 }
 
 /** Health status of a terminal execution backend row.
@@ -1484,7 +1494,7 @@ export interface LocalCatalogModel {
   native_context_label: string
   recommended: boolean
   /** Why the resolver picked this entry (recommended rows only):
-   *  best-quality-resident | speed-gated-quality | fastest-resident |
+   *  product-default | best-quality-resident | speed-gated-quality | fastest-resident |
    *  least-painful-spilled. Renders as the Recommended badge's tooltip. */
   recommended_reason?: string | null
   downloaded: boolean
@@ -1550,6 +1560,11 @@ export interface UpdateReceiptSummary {
   post_sha: string | null
   post_version: string | null
   fleet_states: string[]
+  /** Post-commit steps a committed (successful) update still owes. */
+  followups?: Array<{ step: string; reason: string }>
+  user_action?: { step: string; reason: string } | null
+  /** Dashboard action that wrote the receipt; null for a CLI-run update. */
+  action_id?: string | null
 }
 
 export interface ActionStatusResponse {

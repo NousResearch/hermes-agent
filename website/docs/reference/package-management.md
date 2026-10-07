@@ -189,22 +189,20 @@ requires trust in that plugin and its dependencies.
 
 ## Optional security tools
 
-PM owns the pinned `bws`, `tirith`, and `iron-proxy` packages in
+PM owns the pinned `bws` and `iron-proxy` packages in
 `pm/security_packages.py`. Their versions, artifact URLs, and SHA-256 hashes
 come from `pm/lock.json`. Downloads and publication use the shared tool store,
 not private installers under `$HERMES_HOME/bin`.
 
-For Tirith and iron-proxy, PM also acquires pinned signature files and checks
-that the release checksums cover the pinned archive. Package staging calls the
-integration's signature checker. Cosign and GPG checks remain conditional on
-available executables. Locked provenance files must still be available and
+For iron-proxy, PM also acquires pinned signature files and checks that the
+release checksums cover the pinned archive. Package staging calls the
+integration's signature checker. The GPG check remains conditional on an
+available executable. Locked provenance files must still be available and
 match their hashes. An explicit signature rejection aborts installation.
 External executables remain outside PM's hash and signature guarantees.
 
 `bws` and iron-proxy honor an executable on `PATH` before checking PM selection.
-Tirith honors `security.tirith_path`, then uses `PATH` before its PM selection
-for the default name. An explicit Tirith path never triggers a replacement
-download. Lazy installation obeys PM policy. Explicit install commands check
+Lazy installation obeys PM policy. Explicit install commands check
 and repair managed entries, including requests with `--force`.
 
 ## Developer workflow {#developer-workflow}

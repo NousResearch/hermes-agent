@@ -1263,7 +1263,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # Strip a leading BOM (a phantom U+FEFF defeats an exact first-line match);
         # write_file re-probes disk and restores it.
         raw_content, _ = _strip_bom(data.decode("utf-8", "surrogateescape"))
-        return ReadResult(content=raw_content, file_size=file_size)
+        return ReadResult(content=raw_content, file_size=file_size,
+                          _content_sha256=hashlib.sha256(data).hexdigest())
 
     def read_file_bytes(self, path: str, max_bytes: Optional[int] = None) -> ReadResult:
         """Read binary-safe bytes (as base64) from any shell-backed environment."""
@@ -1639,7 +1640,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             success=True, diff=self._unified_diff(content, new_content, path), files_modified=[path],
             lint=lint_result.to_dict() if lint_result else None,
             # From the internal write_file call, whose baseline was the pre-patch content.
-            lsp_diagnostics=write_result.lsp_diagnostics)
+            lsp_diagnostics=write_result.lsp_diagnostics,
+            _writes=[(path, hashlib.sha256(data).hexdigest(), write_result._content_sha256)])
 
     def patch_v4a(self, patch_content: str) -> PatchResult:
         """Apply a V4A format patch (``*** Begin Patch`` / ``*** Update File:`` /

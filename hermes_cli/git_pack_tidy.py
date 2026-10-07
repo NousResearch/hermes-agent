@@ -25,6 +25,7 @@ import mmap
 import os
 import shutil
 import struct
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,7 +33,6 @@ from typing import Dict, Iterable, Iterator, List, Optional
 
 from hermes_cli._subprocess_compat import (
     NO_LAZY_FETCH_ENV,
-    bounded_probe_run,
     noninteractive_git_env,
     windows_hide_flags,
 )
@@ -266,6 +266,26 @@ def _erase_redundant_packs(pack_dir: Path, deadline: float, result: TidyResult, 
             index.close()
 
 
+def _merge_git(repo_root: Path, staging: Path, batch: List[Path], timeout: float):
+    """``git pack-objects --stdin-packs`` over *batch* into *staging*, in the update's custody (a
+    mutator: it holds the checkout lock fd, and inside an update it is job-bound on Windows).
+
+    ``None`` when it ran out of time or could not start; a custody refusal propagates, so an update
+    stops the way it does for any updater git Windows will not bind."""
+    from hermes_cli.update_custody import CustodyRefused, run_git
+
+    try:
+        return run_git(
+            ["git"], ["-c", "pack.packSizeLimit=0", "pack-objects", "-q", "--stdin-packs", str(staging / "pack")],
+            cwd=str(repo_root), env=_git_env(), input="".join(p.name + "\n" for p in batch),
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+            creationflags=windows_hide_flags())
+    except CustodyRefused:
+        raise
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def _merge_smallest_packs(repo_root: Path, pack_dir: Path, deadline: float, result: TidyResult,
                           state: dict) -> None:
     """Merge the smallest promisor packs, a batch at a time, until the count is under target."""
@@ -290,10 +310,7 @@ def _merge_smallest_packs(repo_root: Path, pack_dir: Path, deadline: float, resu
         try:
             # packSizeLimit=0 whatever the user's config says: inputs retire only after everything
             # they held is published, and that is one output pack.
-            done = bounded_probe_run(
-                ["git", "-c", "pack.packSizeLimit=0", "pack-objects", "-q", "--stdin-packs", str(staging / "pack")],
-                timeout=left, cwd=str(repo_root), env=_git_env(),
-                input="".join(p.name + "\n" for p in batch))
+            done = _merge_git(repo_root, staging, batch, left)
             if done is None:
                 result.out_of_time = True
                 state["merge_bytes"] = max(state["merge_bytes"] // 2, 1)  # next update tries a smaller batch

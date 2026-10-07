@@ -9,7 +9,8 @@ export const zhSharedMetrics = {
   collectedModels: '模型路由和 token 总量',
   collectedNames: '内置工具、命令和目录项名称',
   collectedMilestones: '分桶的设置计数',
-  collectedReliability: '更新和安装的结果与耗时（失败时包括来自固定列表的原因和所在阶段；全新安装记录在本机，仅在你同意后计入）、崩溃、启动与回复速度、消息平台状态',
+  collectedReliability:
+    '更新和安装的结果与耗时（失败时包括来自固定列表的原因和所在阶段；全新安装记录在本机，仅在你同意后计入）、崩溃、启动与回复速度、消息平台状态',
   collectedUsage:
     'Hermes 的使用方式：代理的准确度与效率（编辑是否成功、循环、错误后的恢复、每个任务的 token 与工具调用数、缓存中断），各界面与 Desktop 模式的活跃时间，哪些应用区域、操作与设置被使用、很快关闭或被关闭，以及提供商设置的结果',
   collectedMachine:

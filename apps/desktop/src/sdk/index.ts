@@ -1298,7 +1298,9 @@ export const host = {
    *  the generic main-view door for plugins whose surface is not a stored
    *  session (`openSession` stays the door for those). Re-opening the same
    *  `id` refreshes `render`/`title` in place and fronts the existing tab
-   *  instead of stacking a duplicate. Returns a disposer that closes the tab;
+   *  instead of stacking a duplicate. `activate: false` registers a new tab
+   *  silently, leaving the current workspace active (for background events).
+   *  Returns a disposer that closes the tab;
    *  the tab's own Close (⌘W / strip ✕) routes through the same teardown and
    *  fires `onClose`. Feature-detect on older desktops
    *  (`typeof host.openWorkspace === 'function'`) and keep an in-panel
@@ -1306,6 +1308,7 @@ export const host = {
   openWorkspace: (
     id: string,
     options: {
+      activate?: boolean
       dock?: { before?: null | string; pane: string; pos: 'bottom' | 'center' | 'left' | 'right' | 'top' }
       headerVeto?: boolean
       minWidth?: string
@@ -1350,7 +1353,10 @@ export const host = {
     // core-sourced contributed pane only dismisses it and the registration
     // would leak past the plugin surface that owns it.
     registerPaneCloser(paneId, close)
-    revealTreePane(paneId)
+
+    if (options.activate !== false) {
+      revealTreePane(paneId)
+    }
 
     return close
   },

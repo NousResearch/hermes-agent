@@ -19,7 +19,10 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
-from agent.memory_manager import build_memory_context_block
+from agent.memory_manager import (
+    build_memory_context_block,
+    neutralize_user_forged_memory_context,
+)
 from agent.memory_provider import is_trivial_prompt
 from agent.message_content import flatten_message_text
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
@@ -121,12 +124,22 @@ def compose_user_api_content(
     """Compose the API-bound content of the current turn's string user message.
 
     Single source for the ``api_content`` sidecar and the wire bytes so they never drift
-    (what turn N sends is what turn N+1 replays). ``None`` when nothing is injected or the
-    content is not a string (list content takes the text-part path)."""
+    (what turn N sends is what turn N+1 replays). ``None`` when neither runtime
+    context nor reserved-fence neutralization changes the user content. List content takes
+    the multimodal text-part path.
+
+    Runtime memory and plugin context are appended only to the API copy; stored
+    transcript content remains clean. A user-authored reserved fence receives an
+    ``api_content`` sidecar even without runtime context, so it cannot impersonate
+    Hermes' injected memory boundary on the provider wire.
+    """
     if not isinstance(content, str):
         return None
     injection = compose_multimodal_context_part(ext_prefetch_cache, plugin_user_context)
-    return None if injection is None else content + "\n\n" + injection
+    neutralized_content = neutralize_user_forged_memory_context(content)
+    if injection is None:
+        return neutralized_content if neutralized_content != content else None
+    return neutralized_content + "\n\n" + injection
 
 
 def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:

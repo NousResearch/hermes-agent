@@ -34,13 +34,15 @@ RESULT_FIELDS = ('final_response', 'failed', 'interrupted', 'completed', 'partia
                  'estimated_cost_usd', 'cost_status', 'cost_source', 'service_tier', 'failure_reason',
                  'session_id', 'requested_model', 'served_model', '_turn_input_tokens', '_turn_output_tokens',
                  'failure_retryable', 'failure_resets_at', 'billing_block', 'free_tier', 'usage_window_message',
-                 'refused_turn_boundary_row_id')
+                 'refused_turn_boundary_row_id', 'refused_turn_artifacts')
 # The structured fields and their allowed keys: ``billing_block`` (``agent/billing_links.BillingBlock``
 # plus ``unverified``) and ``free_tier`` (``agent/turn_recovery._stamp_free_tier``). With
 # ``failure_reason``, ``failure_retryable`` and ``failure_resets_at`` they are what
 # ``agent.error_surface.build_error_surface_from_result`` reads for the owner's error card.
 BILLING_FIELDS = ('provider', 'provider_label', 'model', 'billing_url', 'is_nous', 'message', 'unverified')
 STRUCTURED_FIELDS = {'billing_block': BILLING_FIELDS, 'free_tier': ('kind', 'message')}
+# Artifact refs use the existing bounded frame, never a 4-KiB scalar truncation.
+TEXT_FIELDS = ('final_response', 'refused_turn_artifacts')
 
 
 def _scalar(value):
@@ -53,7 +55,7 @@ def _structured(key, value):
 
 def result_frame(result):
     """Worker side: the receipt fields of ``run_conversation``'s result, scalars only, text bounded."""
-    frame = {k: (v[:4096] if isinstance(v, str) and k != 'final_response' else v) for k, v in result.items()
+    frame = {k: (v[:4096] if isinstance(v, str) and k not in TEXT_FIELDS else v) for k, v in result.items()
              if k in RESULT_FIELDS and k not in STRUCTURED_FIELDS and (v is None or type(v) in (bool, int, float, str))}
     for key, fields in STRUCTURED_FIELDS.items():
         if isinstance(block := result.get(key), dict):
@@ -67,8 +69,9 @@ def accept_result(result):
     (gateway projection: prompt/completion tokens as input/output), or ValueError."""
     if (not isinstance(result, dict) or set(result) - set(RESULT_FIELDS) or not isinstance(result.get('final_response'), str)
             or any(result.get(key) is not None and not _structured(key, result[key]) for key in STRUCTURED_FIELDS)
+            or ('refused_turn_artifacts' in result and not isinstance(result['refused_turn_artifacts'], str))
             or any(not _scalar(value) for key, value in result.items()
-                   if key != 'final_response' and key not in STRUCTURED_FIELDS)):
+                   if key not in TEXT_FIELDS and key not in STRUCTURED_FIELDS)):
         raise ValueError('invalid_worker_result')
     accepted = dict(result)
     for key in STRUCTURED_FIELDS:

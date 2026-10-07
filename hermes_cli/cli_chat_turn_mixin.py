@@ -387,11 +387,11 @@ class CLIChatTurnMixin:
             # refused notice. The in-memory history (result["messages"]) is already the clean
             # pre-refusal history; this makes the durable model read match it.
             if (turn.result or {}).get("failure_reason") == "content_policy_blocked":
-                from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+                from agent.turn_failure_copy import content_policy_retention_notice
                 from hermes_state_rewind import retain_refused_turn_for_display
                 retain_refused_turn_for_display(
                     getattr(self.agent, "_session_db", None), getattr(self.agent, "session_id", None),
-                    notice=CONTENT_REFUSED_NOTICE,
+                    notice=content_policy_retention_notice(turn.result or {}),
                     boundary_row_id=(turn.result or {}).get("refused_turn_boundary_row_id"))
             # A reused thread must never hold stale references to a disposed CLI instance.
             try:

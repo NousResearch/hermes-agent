@@ -103,6 +103,79 @@ def _absorb_continuation_fragments(final_response: Any, parts: Any, messages: An
     return _join_truncated_parts([*parts, (final_response, False)]), True
 
 
+def _promote_final_reasoning(agent: Any, assistant_message: Any, finish_reason: Any, messages: Any, api_call_count: int) -> Any:
+    """Existing trusted-route promotion, after native artifacts have made content visible."""
+    content = assistant_message.content
+    promoted = None
+    if (
+        finish_reason == "stop"
+        and not assistant_message.tool_calls
+        and (content is None or (isinstance(content, str) and not content.strip()))
+        and not any(
+            isinstance(d, dict) and (
+                (d.get("type") in ("thinking", "redacted_thinking") and (d.get("signature") or d.get("data")))
+                or str(d.get("type") or "").endswith(".native_assistant")
+            )
+            for d in getattr(assistant_message, "reasoning_details", None) or ()
+        )
+        and answer_in_reasoning_capability(agent)
+    ):
+        promoted = agent._extract_reasoning(assistant_message) or None
+        if promoted:
+            # A model ending on planning-only reasoning can be stalled despite a clean stop.
+            logger.warning(
+                "Reasoning-only clean stop (%d chars) — returning the reasoning as the final "
+                "response (model=%s provider=%s api_calls=%d tool_turns=%d)",
+                len(promoted), agent.model, agent.provider, api_call_count,
+                sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
+            )
+    return promoted
+
+
+def _finish_image_error(
+    agent, assistant_message, finish_reason, messages, conversation_history,
+    api_call_count, effective_task_id, image_artifacts, image_errors,
+):
+    """Settle a paid image-error final through the same transform as an ordinary reply, before writing it."""
+    from agent.turn_finalizer import apply_llm_output_transform, public_pre_transform
+
+    final_response = assistant_message.content
+    transformed, pre_transform = False, None
+    if getattr(agent, "_hold_stream", False) is True or not getattr(agent, "_interrupt_requested", False):
+        final_response, transformed, pre_transform = apply_llm_output_transform(
+            agent, final_response, turn_id=getattr(agent, "_current_turn_id", "") or "", logger=logger,
+        )
+    assistant_message.content = final_response
+    final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+    publish_held_final_row(agent, final_msg, final_response, False)
+    append_message(messages, final_msg)
+    agent._cleanup_task_resources(effective_task_id)
+    agent._persist_session(messages, conversation_history)
+    result = stamp_failure(partial_result(
+        messages, api_call_count, final_response, "Image output error: " + "; ".join(image_errors),
+        failed=not any(item.get("path") for item in image_artifacts),
+    ), "image_artifact_error", False)
+    result.update(response_transformed=transformed, pre_transform_response=public_pre_transform(agent, pre_transform))
+    return result
+
+
+def _finish_repetition(agent, messages, conversation_history, api_call_count, effective_task_id, finish_reason):
+    """Discard runaway text without discarding or bypassing policy for an already paid image."""
+    line, user_response, error = _REPETITION_STOPPED
+    agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
+    transformed, pre_transform = False, None
+    if getattr(agent, "_responses_image_artifacts", None):
+        from agent.responses_images import preserve_recovery_response_images
+        user_response, transformed, pre_transform = preserve_recovery_response_images(
+            agent, messages, user_response, finish_reason,
+        )
+    agent._cleanup_task_resources(effective_task_id)
+    agent._persist_session(messages, conversation_history)
+    result = stamp_failure(partial_result(messages, api_call_count, user_response, error), "truncated", True)
+    result.update(response_transformed=transformed, pre_transform_response=pre_transform)
+    return result
+
+
 def finish_text_response(
     agent: Any, *, assistant_message: Any, response: Any, finish_reason: Any, messages: Any,
     api_messages: Any, conversation_history: Any, api_call_count: Any, user_message: Any,
@@ -146,38 +219,33 @@ def finish_text_response(
     # Anthropic thinking (signed ``thinking`` block, or a plugin's ``*.native_assistant`` carrier
     # of native Claude turns) is a summary written by a separate model, never the answer: it
     # takes the empty-response continuation below instead.
-    _content = assistant_message.content
-    _promoted = None
-    if (
-        finish_reason == "stop"
+    from agent.responses_images import append_pending_response_images
+    append_pending_response_images(agent, assistant_message)
+    image_artifacts = list(getattr(agent, "_responses_image_artifacts", {}).values())
+    image_errors = [item["error"] for item in image_artifacts if item.get("error")]
+    if image_errors:
+        # A paid generation already completed. Delivery failures must not take the
+        # empty-response ladder (or prevent ordinary function calls in earlier rounds).
+        return _verdict("return", _finish_image_error(
+            agent, assistant_message, finish_reason, messages, conversation_history,
+            api_call_count, effective_task_id, image_artifacts, image_errors,
+        ))
+    delivered_image_only = (
+        finish_reason == "stop" and getattr(response, "status", None) == "completed"
         and not assistant_message.tool_calls
-        and (_content is None or (isinstance(_content, str) and not _content.strip()))
-        and not any(
-            isinstance(d, dict) and (
-                (d.get("type") in ("thinking", "redacted_thinking") and (d.get("signature") or d.get("data")))
-                or str(d.get("type") or "").endswith(".native_assistant")
-            )
-            for d in getattr(assistant_message, "reasoning_details", None) or ()
-        )
-        and answer_in_reasoning_capability(agent)
-    ):
-        _promoted = agent._extract_reasoning(assistant_message) or None
-        if _promoted:
-            # WARNING, not INFO: a model that keeps ending turns this way is stalled
-            # (planning monologue, zero tool calls) while the turn reports "complete".
-            logger.warning(
-                "Reasoning-only clean stop (%d chars) — returning the reasoning as the final "
-                "response (model=%s provider=%s api_calls=%d tool_turns=%d)",
-                len(_promoted), agent.model, agent.provider, api_call_count,
-                sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
-            )
+        and any(item.get("path") and item.get("delivered") for item in image_artifacts)
+        and not agent._has_content_after_think_block(assistant_message.content or "")
+    )
+    _promoted = None if delivered_image_only else _promote_final_reasoning(
+        agent, assistant_message, finish_reason, messages, api_call_count,
+    )
     final_response = _promoted or assistant_message.content or ""
     # Unmute: _mute_post_response from a housekeeping tool turn must not silence
     # empty-response warnings on the final response path.
     agent._mute_post_response = False
 
     # Think-block-only / empty content: recovery path.
-    if not agent._has_content_after_think_block(final_response):
+    if not delivered_image_only and not agent._has_content_after_think_block(final_response):
         _ev = recover_empty_response(
             agent, assistant_message, response, finish_reason, final_response=final_response,
             messages=messages, api_messages=api_messages, conversation_history=conversation_history,
@@ -315,12 +383,8 @@ def finish_text_response(
         and len(final_response) >= STOP_PATH_MIN_CHARS
         and is_runaway_repetition(final_response)
     ):
-        line, user_response, error = _REPETITION_STOPPED
-        agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
-        agent._cleanup_task_resources(effective_task_id)
-        agent._persist_session(messages, conversation_history)
-        return _verdict("return", stamp_failure(
-            partial_result(messages, api_call_count, user_response, error), "truncated", True,
+        return _verdict("return", _finish_repetition(
+            agent, messages, conversation_history, api_call_count, effective_task_id, finish_reason,
         ))
 
     final_msg = agent._build_assistant_message(assistant_message, finish_reason)

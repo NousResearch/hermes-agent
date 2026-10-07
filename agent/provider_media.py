@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import base64
 import datetime
+import os
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -52,6 +54,21 @@ def save_bytes(kind: str, raw: bytes, *, prefix: str, extension: str) -> Path:
 def save_b64(kind: str, b64_data: str, *, prefix: str, extension: str) -> Path:
     """Decode base64 data into the cache and return the absolute path."""
     return save_bytes(kind, base64.b64decode(b64_data), prefix=prefix, extension=extension)
+
+
+def save_bytes_atomic(kind: str, raw: bytes, *, prefix: str, extension: str) -> Path:
+    """Publish a complete artifact; a write/rename failure leaves no partial deliverable."""
+    path = cache_path(kind, prefix, extension)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".image-", delete=False) as handle:
+            temporary = Path(handle.name)
+            handle.write(raw)
+        os.replace(temporary, path)
+        return path
+    finally:
+        if temporary is not None:
+            _unlink_quiet(temporary)
 
 
 def save_url(

@@ -90,6 +90,15 @@ CONTENT_REFUSED_NOTICE = (
 CONTENT_REFUSED_METADATA_KEY = "content_refused"
 
 
+def content_policy_retention_notice(result: dict) -> str:
+    """Keep ordinary refusals generic; native finals carry permitted refs/display text only."""
+    refs, final = result.get("refused_turn_artifacts"), result.get("final_response")
+    if not isinstance(refs, str) or not isinstance(final, str) or not final:
+        return CONTENT_REFUSED_NOTICE
+    extra = [line for line in refs.splitlines() if line not in final.splitlines()]
+    return final + "\n" + "\n".join(extra) if extra else final
+
+
 def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
     """``FAILED_TURN_DISPLAY_KIND`` for a boundary row persisted before the closers typed it
     (exact notice text, so a real reply quoting it stays a reply); read-side only."""

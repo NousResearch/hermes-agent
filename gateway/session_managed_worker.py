@@ -641,7 +641,7 @@ async def _finalize_managed_refusal(authority, session_id, accepted):
         return
     with suppress(Exception):
         await authority.runner._hmwa_retain_content_policy_refused_turn(
-            session_id, None, accepted.get('refused_turn_boundary_row_id'))
+            session_id, None, accepted.get('refused_turn_boundary_row_id'), result=accepted)
 
 
 async def execute_managed(authority, ref, row, policy):

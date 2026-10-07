@@ -181,6 +181,9 @@ def normalize_model_response(
     if assistant_message.content is not None and not isinstance(assistant_message.content, str):
         assistant_message.content = _coerce_content_text(assistant_message.content)
 
+    from agent.responses_images import materialize_response_images
+    materialize_response_images(agent, assistant_message)
+
     # Agent-as-provider projection: splice the provider-agent's own tool work in as
     # call/result rows before this turn's assistant message; no-op for ordinary providers.
     splice_provider_projection(agent, response, messages)
@@ -216,11 +219,21 @@ def normalize_model_response(
         agent._vprint(f"{agent.log_prefix}❌ Max retries (2) for incomplete scratchpad. Saving as partial.", force=True, diagnostic=True)
         agent._incomplete_scratchpad_retries = 0
         rolled_back_messages = agent._get_messages_up_to_last_assistant(messages)
+        terminal = "Incomplete REASONING_SCRATCHPAD after 2 retries"
+        transformed, pre_transform = False, None
+        if getattr(agent, "_responses_image_artifacts", None):
+            from agent.responses_images import preserve_recovery_response_images
+            terminal, transformed, pre_transform = preserve_recovery_response_images(
+                agent, messages, terminal, finish_reason,
+            )
+            # Keep the SAME terminal row in the rollback list; a second publication
+            # after the first durable flush would duplicate the artifact final.
+            rolled_back_messages.append(messages[-1])
         agent._cleanup_task_resources(effective_task_id)
         agent._persist_session(messages, conversation_history)
-        return _verdict("return", partial_result(
-            rolled_back_messages, api_call_count, "Incomplete REASONING_SCRATCHPAD after 2 retries"
-        ))
+        result = partial_result(rolled_back_messages, api_call_count, terminal)
+        result.update(response_transformed=transformed, pre_transform_response=pre_transform)
+        return _verdict("return", result)
     agent._incomplete_scratchpad_retries = 0
 
     if agent.api_mode == "codex_responses" and finish_reason == "incomplete":

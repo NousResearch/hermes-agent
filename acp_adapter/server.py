@@ -1012,11 +1012,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 if (result.get("failure_reason") == "content_policy_blocked"
                         and _adb is not None and _adb is self.session_manager._get_db()
                         and getattr(state.agent, "_session_db_created", False)):
-                    from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+                    from agent.turn_failure_copy import content_policy_retention_notice
                     from hermes_state_rewind import retain_refused_turn_for_display
                     retain_refused_turn_for_display(
                         _adb, getattr(state.agent, "session_id", session_id),
-                        notice=CONTENT_REFUSED_NOTICE,
+                        notice=content_policy_retention_notice(result),
                         boundary_row_id=result.get("refused_turn_boundary_row_id"))
 
             # Head rotated (compression split): emit provenance so clients can render the boundary.

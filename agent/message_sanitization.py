@@ -302,16 +302,11 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
         return False
     text = final_response if isinstance(final_response, str) else ""
     from agent.message_metadata import append_message
-    from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
+    from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER, hidden_interrupt_placeholder_row
 
     stripped = text.strip()
     if not stripped or stripped == _INTERRUPTED_PLACEHOLDER:
-        append_message(messages, {
-            "role": "assistant",
-            "content": "",
-            "display_kind": "hidden",
-            "api_content": _INTERRUPTED_PLACEHOLDER,
-        })
+        append_message(messages, hidden_interrupt_placeholder_row())
     else:
         append_message(messages, {"role": "assistant", "content": stripped})
     return True

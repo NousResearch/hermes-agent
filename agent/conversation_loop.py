@@ -343,15 +343,10 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     # preserves alternation only — scaffold bytes must never land in it, since api_content
     # is substituted back into content on replay (#81841).
     if not (messages and messages[-1].get("role") == "assistant"):
-        placeholder: Dict[str, Any] = {"role": "assistant", "content": visible or ""}
-        if not visible:
-            placeholder["display_kind"] = "hidden"
-            # Hidden row, but a non-empty neutral api_content so the pre-call sanitizer
-            # does not re-heal it every call (#88955). Never _INTERRUPT_SCAFFOLD_MARKER:
-            # as assistant text the model echoes it (#81841).
-            from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
-            placeholder["api_content"] = _INTERRUPTED_PLACEHOLDER
-        append_message(messages, placeholder)
+        # Hidden row with a neutral api_content (#88955). Never _INTERRUPT_SCAFFOLD_MARKER:
+        # as assistant text the model echoes it (#81841).
+        from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
+        append_message(messages, {"role": "assistant", "content": visible} if visible else hidden_interrupt_placeholder_row())
     # Transcript shows the user's own words; the provider replays the scaffolded form.
     append_message(messages, {"role": "user", "content": text, "api_content": correction})
 

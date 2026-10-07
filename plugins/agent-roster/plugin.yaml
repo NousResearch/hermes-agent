@@ -1,0 +1,8 @@
+name: agent-roster
+version: 0.1.0
+description: "Role registry, Kanban gate drift checks, and profile-role tool policy enforcement."
+author: NousResearch / Hermes Agent
+hooks:
+  - pre_llm_call
+  - pre_tool_call
+  - post_tool_call

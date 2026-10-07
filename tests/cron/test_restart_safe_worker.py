@@ -926,6 +926,42 @@ def test_marked_worker_exits_before_cron_jobs_when_activation_fails():
     assert result["jobs"] is False
 
 
+_NO_COMMITTED_REAL_BOOT_PROBE = """
+import json, sys
+try:
+    import cron
+    print(json.dumps({"ok": True, "jobs": "cron.jobs" in sys.modules}))
+except RuntimeError as exc:
+    print(json.dumps({"ok": False, "error": str(exc), "jobs": "cron.jobs" in sys.modules}))
+"""
+
+
+def test_marked_worker_without_committed_generation_keeps_venv_dependencies():
+    """A marked worker with no committed generation keeps its venv dependencies
+    through the real ``worker_bootstrap()`` and loads ``cron.jobs``."""
+    import cron.worker_bootstrap as worker_bootstrap
+    import pm.environments as pm_env
+
+    repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
+    # Hermetic no-committed-generation premise: the suite isolates HERMES_HOME per test,
+    # so this checkout has no selection record here.
+    assert not pm_env.runtime_facts_path(repo_root).exists()
+    assert pm_env.committed_venv(repo_root) is None
+    # Supported-layout premise, via the REAL ownership check (not mocked): this
+    # interpreter keeps its booted packages, so the child below does too.
+    pm_env._require_own_dependencies(repo_root)
+
+    env = {k: v for k, v in os.environ.items() if k != worker_bootstrap.WORKER_MARKER}
+    env["PYTHONPATH"] = str(repo_root)
+    env[worker_bootstrap.WORKER_MARKER] = "1"
+    child = subprocess.run(
+        [sys.executable, "-c", _NO_COMMITTED_REAL_BOOT_PROBE],
+        cwd=repo_root, env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert child.returncode == 0, child.stderr
+    assert json.loads(child.stdout.strip().splitlines()[-1]) == {"ok": True, "jobs": True}
+
+
 def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
     import cron.scheduler as scheduler
 

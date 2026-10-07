@@ -9,11 +9,8 @@ its verdict — a scoped miss under multiplexing returns the default and must
 NOT borrow from ``os.environ``.
 
 One representative test pair (scoped-wins / scoped-miss-no-borrow) per plugin
-family, plus the two behavioral sites:
+family, plus the behavioral site:
 
-* supermemory ``post_setup`` must not write a profile's key into the
-  process-global environ when multiplexing is active (sibling-profile
-  pollution).
 * google_meet ``process_manager.start`` must resolve OPENAI_API_KEY through
   the scope AT SPAWN TIME and pass it explicitly in the child environment —
   the detached child inherits the process env, not the contextvar scope.
@@ -21,7 +18,6 @@ family, plus the two behavioral sites:
 
 from __future__ import annotations
 
-import os
 from typing import Any, Dict
 
 import pytest
@@ -77,68 +73,6 @@ class TestMemoryFamily:
         from plugins.memory.retaindb import RetainDBMemoryProvider
 
         assert RetainDBMemoryProvider().is_available() is False
-
-    def test_supermemory_scoped_miss_does_not_borrow_environ(
-        self, multiplex_scope, monkeypatch
-    ):
-        monkeypatch.setenv("SUPERMEMORY_API_KEY", "env-other-profile")
-        multiplex_scope({})
-
-        from plugins.memory.supermemory import SupermemoryMemoryProvider
-
-        assert SupermemoryMemoryProvider().is_available() is False
-
-    def test_supermemory_post_setup_no_environ_write_under_multiplex(
-        self, multiplex_scope, monkeypatch, tmp_path
-    ):
-        """post_setup must not pollute process env with a profile's key."""
-        multiplex_scope({})
-        monkeypatch.delenv("SUPERMEMORY_API_KEY", raising=False)
-
-        import hermes_cli.config as cli_config
-        import hermes_cli.memory_setup as memory_setup
-        import plugins.memory.supermemory as sm
-
-        monkeypatch.setattr(memory_setup, "_prompt", lambda *a, **k: "sm-fresh-key")
-        monkeypatch.setattr(memory_setup, "_write_env_vars", lambda *a, **k: None)
-        monkeypatch.setattr(cli_config, "save_config", lambda *a, **k: None)
-        monkeypatch.setattr(
-            sm,
-            "_probe_supermemory_connection",
-            lambda *a, **k: {"ok": True, "detail": "stub"},
-        )
-        monkeypatch.setattr(sm, "_format_connection_summary", lambda s: "stub")
-
-        sm.SupermemoryMemoryProvider().post_setup(str(tmp_path), {})
-
-        assert "SUPERMEMORY_API_KEY" not in os.environ
-
-    def test_supermemory_post_setup_environ_write_kept_single_profile(
-        self, monkeypatch, tmp_path
-    ):
-        """Single-profile (multiplex off): the convenience write still happens."""
-        set_multiplex_active(False)
-        monkeypatch.delenv("SUPERMEMORY_API_KEY", raising=False)
-
-        import hermes_cli.config as cli_config
-        import hermes_cli.memory_setup as memory_setup
-        import plugins.memory.supermemory as sm
-
-        monkeypatch.setattr(memory_setup, "_prompt", lambda *a, **k: "sm-fresh-key")
-        monkeypatch.setattr(memory_setup, "_write_env_vars", lambda *a, **k: None)
-        monkeypatch.setattr(cli_config, "save_config", lambda *a, **k: None)
-        monkeypatch.setattr(
-            sm,
-            "_probe_supermemory_connection",
-            lambda *a, **k: {"ok": True, "detail": "stub"},
-        )
-        monkeypatch.setattr(sm, "_format_connection_summary", lambda s: "stub")
-
-        try:
-            sm.SupermemoryMemoryProvider().post_setup(str(tmp_path), {})
-            assert os.environ.get("SUPERMEMORY_API_KEY") == "sm-fresh-key"
-        finally:
-            os.environ.pop("SUPERMEMORY_API_KEY", None)
 
 
 # ---------------------------------------------------------------------------

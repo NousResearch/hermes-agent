@@ -33,7 +33,7 @@ test('atomic spawn command stays under the cmd.exe length budget', async () => {
   // cmd.exe rejects commands at 8191 chars — the atomic spawn command carries
   // the full lock record and helper paths, so it is the tightest budget.
   assert.ok(command.length > 0)
-  const script = Buffer.from(stdinData, 'base64').toString('utf8')
+  const script = Buffer.from(stdinData, 'base64').toString('utf16le')
   assert.ok(script.includes('test-session-token'))
   assert.ok(script.includes('long-name'.repeat(25)))
   assert.ok(command.length < 8191, `atomic spawn command is too long: ${command.length}`)

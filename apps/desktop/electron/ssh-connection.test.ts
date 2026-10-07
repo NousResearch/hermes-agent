@@ -1553,6 +1553,28 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
   }
 })
 
+test('exec wraps POSIX payloads in sh -c so a fish login shell never parses them', async () => {
+  const spawnFn = scriptedSpawn((args: any) =>
+    args.at(-1) === 'uname -s' ? { code: 0, stdout: 'Linux\n' } : { code: 0, stdout: 'OK\n' }
+  )
+
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+  await conn.exec('help="$(true)"; echo "${X:-y}"')
+  const cmd = spawnFn.calls[1].at(-1)
+  assert.match(cmd, /^sh -c '/)
+  assert.match(cmd, /help="\$\(true\)"/)
+})
+
+test('exec leaves Windows PowerShell payloads unwrapped', async () => {
+  const spawnFn = scriptedSpawn((args: any) =>
+    args.at(-1) === 'uname -s' ? { code: 1, stderr: 'uname: command not found' } : { code: 0 }
+  )
+
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+  await conn.exec('powershell.exe -NoProfile -Command "echo hi"')
+  assert.equal(spawnFn.calls[1].at(-1), 'powershell.exe -NoProfile -Command "echo hi"')
+})
+
 // #97264: every attempt for one scope/host/identity hashes to the same
 // ControlPath, so a stale attempt's `-O exit` used to kill the master its
 // successor had attached to (the live backend's forward died ~40s after

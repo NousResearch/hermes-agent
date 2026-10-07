@@ -586,6 +586,13 @@ class CLIModalMixin:
 
         _run_on_app_loop(app, _emit)
 
+    def _clarify_teardown(self) -> None:
+        self._clarify_state = None
+        self._clarify_freetext = False
+        self._clarify_deadline = None
+        self._clarify_multi_base = None
+        self._paint_now()
+
     # --- Connection setup --------------------------------------------------
     def _connection_operation(self, payload):
         from tools.connectors import live
@@ -991,9 +998,13 @@ class CLIModalMixin:
 
     def _clarify_callback(self, questions):
         """Clarify-tool platform callback (agent thread, #18450): the batch panel (A-compact) shows
-        all questions, one active, and blocks until the key bindings lock every answer — no deadline;
-        the user is at this terminal. Returns ``{"answers": {qid: raw | None}, "outcome"}`` (None =
-        skipped): ``submitted`` when every question is locked, ``cancelled`` on an interrupt."""
+        all questions, one active, and blocks until the key bindings lock every answer. Returns
+        ``{"answers": {qid: raw | None}, "outcome"}`` (None = skipped): ``submitted`` when every
+        question is locked, ``timed_out`` when the deadline expires, ``cancelled`` on an interrupt."""
+        from cli import CLI_CONFIG, _DIM, _RST, _cprint
+        from tools.clarify_gateway import resolve_clarify_timeout
+
+        timeout = resolve_clarify_timeout(CLI_CONFIG)
         response_queue = queue.Queue()
         state = {
             "questions": list(questions),
@@ -1009,13 +1020,19 @@ class CLIModalMixin:
             "selected_indices": None}
         self._clarify_state = state
         self._clarify_batch_set_active(state, 0)
-        self._clarify_deadline = None
+        self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
         self._ring_bell(prompt=True, context=t("cli.clarify.bell_context"))
         self._paint_now()
 
         result = self._poll_modal_queue(response_queue, "_clarify_deadline")
-        outcome = "cancelled" if result is None else "submitted"
-        return {"answers": dict(state["answers"]), "outcome": outcome}
+        if result is not _TIMED_OUT:
+            self._clarify_deadline = None
+            outcome = "cancelled" if result is None else "submitted"
+            return {"answers": dict(state["answers"]), "outcome": outcome}
+        partial = dict(state["answers"])
+        self._clarify_teardown()
+        _cprint(f"\n{_DIM}{t('cli.clarify.timed_out_locked_answers', timeout=timeout)}{_RST}")
+        return {"answers": partial, "outcome": "timed_out"}
 
     def _sudo_password_callback(self) -> str:
         """Prompt for a sudo password through the prompt_toolkit UI (agent thread); clarify-style
@@ -1050,11 +1067,13 @@ class CLIModalMixin:
         """Dangerous-command approval through the prompt_toolkit UI (agent thread).
 
         Choices: once / session / always / deny (see ``_approval_choices``), plus 'view' for long
-        commands. The panel stays up until the user answers (Ctrl+C interrupts the turn).
-        ``_approval_lock`` serializes concurrent requests (parallel delegation subtasks) so the
-        shared ``_approval_state`` isn't clobbered.
+        commands. ``_approval_lock`` serializes concurrent requests (parallel delegation subtasks)
+        so the shared ``_approval_state`` / ``_approval_deadline`` aren't clobbered.
         """
+        from cli import CLI_CONFIG, _DIM, _RST, _cprint
+
         with self._approval_lock:
+            timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 300))
             response_queue = queue.Queue()
             self._approval_state = {
                 "command": command,
@@ -1066,7 +1085,7 @@ class CLIModalMixin:
                     smart_denied=smart_denied),
                 "selected": 0,
                 "response_queue": response_queue}
-            self._approval_deadline = None
+            self._approval_deadline = _time.monotonic() + timeout
             self._ring_bell(prompt=True, context=t("cli.approval.bell_context"), detail=command)
             self._paint_now()
 
@@ -1074,6 +1093,11 @@ class CLIModalMixin:
             self._approval_state = None
             self._approval_deadline = 0
             self._paint_now()
+            if result is _TIMED_OUT:
+                _cprint(f"\n{_DIM}  {t('cli.approval.timeout_denying')}{_RST}")
+                self._persist_prompt_summary(
+                    "⚠", t("cli.approval.label"), command, t("cli.approval.timed_out_no_response"))
+                return "timeout"
             self._persist_prompt_summary(
                 "⚠", t("cli.approval.label"), command, _approval_outcome_label(result))
             return result
@@ -1082,7 +1106,7 @@ class CLIModalMixin:
                           allow_session: bool = True,
                           smart_denied: bool = False) -> list[str]:
         """Smart-DENY overrides and re-ask-every-time gates (allow_session=False) show only
-        once/deny; ``allow_permanent=False`` for another reason (e.g. tirith) hides only 'always'."""
+        once/deny; ``allow_permanent=False`` for another reason hides only 'always'."""
         if smart_denied or not allow_session:
             choices = ["once", "deny"]
         elif allow_permanent:

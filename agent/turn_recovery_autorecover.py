@@ -46,23 +46,11 @@ def auto_recovery_cycles(agent: Any) -> int:
     return max(int(getattr(agent, "_auto_recovery_cycles", 0) or 0), 0)
 
 
-def _retry_after_seconds(api_error: Any) -> Optional[float]:
-    """Provider-declared cooldown from the ``Retry-After`` header or a ``retry_after`` body field."""
-    from agent.retry_utils import parse_retry_after_seconds
-    value = parse_retry_after_seconds(getattr(getattr(api_error, "response", None), "headers", None))
-    if value is None:
-        body = getattr(api_error, "body", None)
-        if isinstance(body, dict):
-            nested = body.get("error")
-            value = parse_retry_after_seconds((nested if isinstance(nested, dict) else body).get("retry_after"))
-    return value if value is not None and value > 0 else None
-
-
 def ladder_wait_seconds(cycle: int, api_error: Any) -> float:
     """Wait before recovery ``cycle`` (1-based): jittered 15/30/60/60/60 s, or the provider's
     ``Retry-After`` when present (honoured past the 60 s cap, up to 120 s)."""
-    from agent.retry_utils import jittered_backoff
-    retry_after = _retry_after_seconds(api_error)
+    from agent.retry_utils import jittered_backoff, provider_retry_after_seconds
+    retry_after = provider_retry_after_seconds(api_error)
     if retry_after is not None:
         return min(retry_after, _RETRY_AFTER_CAP_S)
     return jittered_backoff(cycle, base_delay=_LADDER_BASE_DELAY_S, max_delay=_LADDER_CAP_S, jitter_ratio=0.2)

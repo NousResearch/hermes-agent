@@ -99,6 +99,7 @@ Full definition in `providers/base.py`. The most useful ones:
 | `display_name` | str | Human label shown in `hermes model` picker |
 | `description` | str | Picker subtitle |
 | `signup_url` | str | Shown during first-run setup ("get an API key here") |
+| `hidden` | bool | Pre-release: kept off every discovery surface (provider pickers, setup list, dashboard accounts tab) until `listed()` is true — by default once the user signs in by name (`hermes auth add <name>` writes a pool row). Resolution by name is never gated |
 | `env_vars` | `tuple[str, ...]` | API-key env vars in priority order; a final `*_BASE_URL` entry is used as the user base-URL override |
 | `base_url` | str | Default inference endpoint |
 | `models_url` | str | Explicit catalog URL (falls back to `{base_url}/models`) |
@@ -478,6 +479,13 @@ the listener binds the literal `127.0.0.1`; tokens, `state` and the PKCE verifie
 Optional fields: `audience`, `extra_authorize_params`, `extra_token_params`, `redirect_path`,
 `timeout_seconds`, `label`.
 
+A confidential client whose secret lives behind your own broker sets `token_request` instead of
+`token_url`: Hermes calls it with the grant fields (`grant_type`, `code` / `refresh_token`,
+`redirect_uri`, `code_verifier`) and stores whatever token-endpoint JSON it returns, keeping the old
+`refresh_token` when the response omits one. Raise `AuthError(..., relogin_required=True)` for a grant
+the broker reports dead. Rows rotate ahead of their stored `expires_at_ms`, so opaque (non-JWT) access
+tokens refresh on time; the auxiliary client (compression, titles) leases the same pooled row.
+
 ## Recovery and error classification
 
 A `kind: model-provider` plugin is loaded by provider discovery, **not** by the generic plugin manager, so
@@ -501,7 +509,7 @@ register_provider(ProviderProfile(name="example-oauth", auth_type="oauth_externa
 |---|---|
 | `classify_api_error(error, *, status_code, error_code, message, body, model)` | Consulted by `agent.error_classifier.classify_api_error` for failures of **this provider only**, after any generic `transform_api_error_classification` hooks and before the built-in pipeline. `message` is the lower-cased error text, `body` the parsed JSON body (may be empty). Return `{"reason": <FailoverReason name>}` plus optional `retryable` / `should_compress` / `should_rotate_credential` / `should_fallback` / `error_context` to override (for terminal reasons — billing, auth, model_not_found … — `should_fallback: True` implies `retryable: False` unless you set it, because the fallback chain only runs for non-retryable verdicts; rate-limit reasons keep the built-in retry-then-fallback shape); `None` (or an unknown reason) leaves the built-in verdict. Exceptions are swallowed and logged at DEBUG. The verdict drives the same recovery as for built-ins — e.g. `billing` benches the credential for the billing TTL instead of the transient 403 cooldown. |
 | 401 on a plugin credential | Handled by the credential pool, no core edit: the failing pooled row is refreshed through `refresh_credential` once per attempt (capped at two refreshes per row per session), the client is rebuilt with the rotated token and the request retried. A `None`/empty return or an exception benches the row — the request then rotates or falls to the generic "sign in again: `hermes auth add <name>`" copy, never to a built-in provider's guidance. |
-| Auxiliary calls | Auxiliary-client 401s take the same pool refresh (`try_refresh_current` → `refresh_credential`). |
+| Auxiliary calls | An `oauth_external` / `oauth_device_code` plugin that ships `create_client` serves auxiliary tasks on its pooled row (an expiring row is rotated first); auxiliary 401s take the same pool refresh (`try_refresh_current` → `refresh_credential`). |
 
 Recovery that remains name-keyed in core is behaviour with no safe generic shape (a provider-specific
 token store to re-sync, a plan-tier entitlement wall, a single-use refresh-token quarantine). A plugin

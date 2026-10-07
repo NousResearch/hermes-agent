@@ -189,7 +189,7 @@ class CLITuiMixin:
         """Render the dangerous-command approval panel.
 
         Layout priority: title + command + choices must always render, even in a short terminal
-        or with a long (tirith multi-paragraph) description. The description sits at the bottom
+        or with a long multi-paragraph description. The description sits at the bottom
         and is truncated to the remaining row budget, so HSplit never clips approve/deny off-screen.
         """
         from cli import _panel_box_width, _wrap_panel_text_keep_ws
@@ -479,6 +479,8 @@ class CLITuiMixin:
 
         def _status_rows(width):
             rows = []
+            # End of the active question block and the row span of its selected choice.
+            focus = {}
             for idx, entry in enumerate(questions_list):
                 answered = entry["qid"] in answers
                 marker = "✓" if answered else ("▸" if idx == active else "·")
@@ -498,8 +500,11 @@ class CLITuiMixin:
                     cb = ("[x] " if i in selected_indices else "[ ] ") if multi_select else ""
                     style = 'class:clarify-selected' if i == selected and not freetext else 'class:clarify-choice'
                     label = f"  {cursor} {cb}{_num_prefix(i)}. {choice}"
+                    first = len(rows)
                     for wrapped in _wrap_panel_text(label, width, subsequent_indent="      "):
                         rows.append((style, wrapped))
+                    if i == selected and not freetext:
+                        focus["selected"] = (first, len(rows))
                 if choices:
                     other_idx = len(choices)
                     mid = _num_prefix(other_idx)
@@ -518,17 +523,31 @@ class CLITuiMixin:
                     else:
                         other_label = f"    {mid}. " + (other_suffix or t("cli.tui.clarify_other_type_answer"))
                         other_style = 'class:clarify-choice'
+                    first = len(rows)
                     for wrapped in _wrap_panel_text(other_label, width, subsequent_indent="      "):
                         rows.append((other_style, wrapped))
+                    if freetext or selected == other_idx:
+                        focus["selected"] = (first, len(rows))
                 elif freetext:
                     guidance = "  " + t("cli.tui.clarify_guidance")
                     for wrapped in _wrap_panel_text(guidance, width):
                         rows.append(('class:clarify-active-other', wrapped))
-            return rows
+                focus["end"] = len(rows)
+            return rows, focus
 
-        preview_rows = _status_rows(60)
+        preview_rows, _ = _status_rows(60)
         box_width = _panel_box_width(title, [header] + [text for _, text in preview_rows])
-        rows = _status_rows(max(8, box_width - 2))
+        rows, focus = _status_rows(max(8, box_width - 2))
+        # The panel is an unsized Window, so rows past the viewport are clipped from the
+        # bottom, which is where the active question's choices sit. When the body does not
+        # fit, show the slice that ends with those choices and always holds the selected one.
+        # Top rule, header and bottom rule take three rows.
+        budget = max(1, _term_rows() - _PANEL_RESERVED_BELOW - 3)
+        if len(rows) > budget and "end" in focus:
+            sel_start, _sel_end = focus.get("selected", (focus["end"] - 1, focus["end"]))
+            first = min(sel_start, focus["end"] - budget)
+            first = max(0, min(first, len(rows) - budget))
+            rows = rows[first:first + budget]
 
         panel = _Panel('class:clarify-border', box_width, title, 'class:clarify-title')
         panel.row('class:clarify-question', header)
@@ -754,17 +773,19 @@ class CLITuiMixin:
                                                     or self._sudo_state.get("vault_code")):
                     hint_key = "cli.tui.hint_vault_username"
                 hint = "  " + t(hint_key)
-                deadline = getattr(self, deadline_attr)
-                # None deadline = waits until answered → no countdown.
-                countdown = '' if deadline is None else f'  ({max(0, int(deadline - time.monotonic()))}s)'
-                return [('class:hint', hint), ('class:clarify-countdown', countdown)]
+                remaining = max(0, int(getattr(self, deadline_attr) - time.monotonic()))
+                return [('class:hint', hint), ('class:clarify-countdown', f'  ({remaining}s)')]
         if self._clarify_state:
-            # Clarify waits until answered → no countdown.
+            # None deadline = unlimited wait → hide the countdown entirely.
+            if self._clarify_deadline is None:
+                countdown = ''
+            else:
+                countdown = f'  ({max(0, int(self._clarify_deadline - time.monotonic()))}s)'
             if self._clarify_freetext:
                 hint = "  " + t("cli.tui.hint_clarify_freetext")
             else:
                 hint = "  " + t("cli.tui.hint_clarify_batch")
-            return [('class:hint', hint), ('class:clarify-countdown', '')]
+            return [('class:hint', hint), ('class:clarify-countdown', countdown)]
         if self._command_running:
             frame = self._command_spinner_frame()
             if self._command_blocks_input:
@@ -775,10 +796,10 @@ class CLITuiMixin:
         return []
 
     def _tui_placeholder_text(self):
-        if self._voice_recording:
-            return t("cli.tui.placeholder_recording", shortcut=self._voice_record_key_label())
+        if self._voice_recording:  # live STT partial text (stt.streaming) replaces the hint
+            return self._voice_live_text or t("cli.tui.placeholder_recording", shortcut=self._voice_record_key_label())
         if self._voice_processing:
-            return t("cli.tui.placeholder_transcribing")
+            return self._voice_live_text or t("cli.tui.placeholder_transcribing")
         if self._sudo_state:
             if (self._sudo_state.get("vault_save") or {}).get("step") == "identifier":
                 return t("cli.tui.placeholder_vault_username")
@@ -1877,7 +1898,7 @@ class CLITuiMixin:
         self._voice_tts = False
         self._voice_recorder = None     # AudioRecorder (lazy init)
         self._voice_recording = False
-        self._voice_processing = False  # STT in progress
+        self._voice_processing, self._voice_live_text = False, ""  # STT in progress; live partial text
         self._voice_continuous = False  # auto-restart after the agent responds
         self._voice_tts_done = threading.Event()  # TTS playback finished
         self._voice_tts_done.set()  # initially "done" (no TTS pending)
@@ -1888,7 +1909,6 @@ class CLITuiMixin:
 
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             self._install_tool_callbacks()
-            self._ensure_tirith_security()
 
     def _tui_build_key_bindings(self):
         """Build the prompt_toolkit KeyBindings for the REPL input area.

@@ -14,7 +14,6 @@ import { defineLocale } from './define-locale'
 export const ar = defineLocale({
   sharedMetrics: arCommon.sharedMetrics,
   externalOpenFailed: arChrome.externalOpenFailed,
-  catalog: arCapabilities.catalog,
   sessionImport: arConnectors.sessionImport,
   sendDiagnostics: arDiagnostics.sendDiagnostics,
   common: arCommon.common,
@@ -22,6 +21,7 @@ export const ar = defineLocale({
   boot: arBoot.boot,
   notifications: arDiagnostics.notifications,
   remoteDisplayBanner: arBoot.remoteDisplayBanner,
+  butterbar: arBoot.butterbar,
   titlebar: arChrome.titlebar,
   keybinds: arChrome.keybinds,
   language: arSettings.language,

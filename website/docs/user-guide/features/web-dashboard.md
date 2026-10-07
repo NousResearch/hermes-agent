@@ -451,7 +451,7 @@ The management endpoint families — `/api/config`, `/api/env`, `/api/skills`,
 `/api/tools/toolsets`, `/api/mcp`,
 `/api/model/{info,options,auxiliary,set,recommended-default}`,
 `/api/cron/{delivery-targets,blueprints}`, `/api/audio/voice-config`,
-`/api/ops/debug-share`, `/api/learning/graph`, and `/api/dashboard/plugins/hub` —
+`/api/ops/debug-share`, `/api/learning/{graph,node}`, and `/api/dashboard/plugins/hub` —
 accept an optional `?profile=<name>` query parameter (or `"profile"` in the
 JSON body for writes) that scopes the read/write to that profile's
 `HERMES_HOME`. Omitted = the dashboard's own profile. Unknown profile names
@@ -690,6 +690,7 @@ The plugin reads from two surfaces, with the environment variable winning when s
 dashboard:
   oauth:
     client_id: agent:01HXYZ…             # required to engage the gate
+    token_leeway: 60                     # optional; seconds of clock-skew tolerance
 ```
 
 **Environment variables** — operator overrides:
@@ -701,6 +702,8 @@ dashboard:
 Per the Hermes Agent convention (`~/.hermes/.env` is for API keys / secrets only), **`config.yaml` is the recommended place to set these values** for local dev, on-prem, and any deployment you control directly. The environment-variable path exists so a hosting platform's secret injection can push per-deploy `client_id`s without anyone having to edit `config.yaml` inside the image — that's its primary purpose.
 
 Empty environment values are treated as unset, so a provisioned-but-not-populated platform secret can't accidentally shadow a valid `config.yaml` entry.
+
+`dashboard.oauth.token_leeway` (config.yaml only) is the clock-skew tolerance — in seconds — applied to the Portal access token's `exp`/`nbf`/`iat` claims during JWT verification. The default is `60` (RFC 7519 §4.1.4-4.1.6), so a host whose clock lags the Portal's doesn't fail login; `0` restores strict verification, and an invalid value (unparseable / negative / non-finite) fails closed to `0`. The self-hosted OIDC provider has the equivalent `dashboard.oauth.self_hosted.id_token_leeway` knob.
 
 If neither source provides a client_id, the plugin reports the specific reason and the dashboard's fail-closed bind error tells you exactly what to fix:
 
@@ -854,6 +857,7 @@ dashboard:
       issuer: https://auth.example.com/application/o/hermes/   # required
       client_id: hermes-dashboard                              # required
       scopes: "openid profile email"                           # optional (this is the default)
+      id_token_leeway: 60                                      # optional; seconds of clock-skew tolerance
 ```
 
 **Environment variables** — operator overrides (env wins over `config.yaml` when set non-empty; an empty value is treated as unset):
@@ -868,7 +872,7 @@ In your IDP, register a **public** application/client with the authorization-cod
 
 #### What it verifies
 
-The provider verifies the OpenID Connect **ID token** (RS256/ES256) against the discovered `jwks_uri`, with the `iss` and `aud` claims pinned to your configured `issuer` and `client_id`. Standard OIDC claims map onto the dashboard session:
+The provider verifies the OpenID Connect **ID token** (RS256/ES256) against the discovered `jwks_uri`, with the `iss` and `aud` claims pinned to your configured `issuer` and `client_id`. The time claims (`exp`/`nbf`/`iat`) are verified with a 60-second clock-skew leeway (RFC 7519 §4.1.4-4.1.6), so a dashboard host whose clock lags the IDP's doesn't fail login; tune it with `dashboard.oauth.self_hosted.id_token_leeway` in `config.yaml` (any value below `60` tightens it, `0` restores strict verification, and an invalid value fails closed to `0`). Standard OIDC claims map onto the dashboard session:
 
 | Session field | Claim(s) |
 |---------------|----------|
@@ -1000,7 +1004,9 @@ Only listed peers may supply `X-Forwarded-Proto` and `X-Forwarded-For`.
 Hermes always preserves loopback trust and rejects `*`, `0.0.0.0/0`, and
 `::/0`. Trusting a network means every container or machine on that network
 can supply forwarding metadata, so prefer an exact proxy IP or a dedicated
-proxy-only network.
+proxy-only network. Without a trusted-proxy entry, clients behind that proxy
+share its password-login rate limit and native sign-in cap, and auth audit
+events record the proxy's address.
 
 ```bash
 # Backend remains reachable only on this machine.

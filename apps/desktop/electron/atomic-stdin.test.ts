@@ -86,24 +86,34 @@ describe.skipIf(!hasPowershell())('buffered PowerShell transport: live execution
       exec: async value => {
         command = value
 
-        return '{"os":"Windows"}'
+        return '{"os":"Windows","arch":"AMD64"}'
       }
     })
     assert.ok(command.length < 8191)
     const script = 'Write-Output "José"\n#' + 'long-script-padding'.repeat(500)
 
     const output = execFileSync(POWERSHELL_BIN, command.split(' ').slice(1), {
-      input: Buffer.from(script, 'utf8').toString('base64'),
+      input: Buffer.from(script, 'utf16le').toString('base64'),
       encoding: 'utf8',
       timeout: 30000,
       stdio: 'pipe'
     })
 
     assert.equal(output.trim(), 'José')
+
+    const outerShellOutput = execFileSync(POWERSHELL_BIN, ['-NoProfile', '-NonInteractive', '-Command', command], {
+      input: Buffer.from(script, 'utf16le').toString('base64'),
+      encoding: 'utf8',
+      timeout: 30000,
+      stdio: 'pipe'
+    })
+
+    assert.equal(outerShellOutput.trim(), 'José', 'a PowerShell outer SSH shell must pass the encoded wrapper intact')
+
     assert.throws(
       () =>
         execFileSync(POWERSHELL_BIN, command.split(' ').slice(1), {
-          input: Buffer.from('exit 23', 'utf8').toString('base64'),
+          input: Buffer.from('exit 23', 'utf16le').toString('base64'),
           timeout: 30000,
           stdio: 'pipe'
         }),

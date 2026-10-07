@@ -36,6 +36,7 @@ from typing import List, Dict, Any, Optional, Callable
 from datetime import datetime
 from pathlib import Path
 
+from agent.session_source import CLI_FAMILY_SOURCES, session_source_for
 from hermes_constants import get_hermes_home
 
 
@@ -51,34 +52,6 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
         return os.getcwd()
     except OSError:  # cwd was unlinked out from under us
         return None
-
-
-# Sources that label the human conversation an interactive UI transport hosts. A finite ``hermes chat -q`` /
-# one-shot child spawned from such a session inherits HERMES_SESSION_SOURCE (the terminal tool bridges the
-# session env into child processes) but is NOT that conversation: labelling it ``tui``/``desktop`` lists it
-# in the TUI/WebUI pickers as a resumable chat and lets ``hermes -c`` in the TUI continue it (#112550).
-# Automation sources (kanban, tool, cron, a2a, ...) are inherited on purpose.
-_UI_TRANSPORT_SOURCES = frozenset({"tui", "desktop"})
-
-# Finite non-interactive CLI runs (``hermes chat -q``/``--oneshot``, ``hermes -z``) get their own source so human
-# pickers hide them without title/cwd heuristics; ``hermes -c`` still treats them as CLI history.
-ONESHOT_SOURCE = "oneshot"
-CLI_FAMILY_SOURCES = frozenset({"cli", ONESHOT_SOURCE})
-
-
-def _session_source_for_agent(platform: Optional[str]) -> str:
-    try:
-        from gateway.session_context import get_session_env
-    except Exception:
-        get_session_env = os.environ.get
-    source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
-    single_query = get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
-    explicit = get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") == "1"
-    if single_query and not explicit and source in _UI_TRANSPORT_SOURCES:
-        source = ""
-    if single_query and not source and (platform or "cli") == "cli":
-        return ONESHOT_SOURCE
-    return source or platform or "cli"
 
 
 def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
@@ -350,7 +323,7 @@ class AIAgent(
         """Create the session DB row on first use; a transient failure leaves it to retry next turn."""
         if getattr(self, "_persist_disabled", False) or self._session_db_created or not self._session_db:
             return
-        source = _session_source_for_agent(self.platform)
+        source = session_source_for(self.platform)
         try:
             # Persist the profile name explicitly, including "default": profile-keyed consumers treat NULL
             # as unowned.
@@ -401,7 +374,7 @@ class AIAgent(
         if should_start and target_session_id and hasattr(engine, "on_session_start"):
             start_context = {
                 "old_session_id": old_session_id, "carry_over_context": carry_over_context,
-                "platform": _session_source_for_agent(getattr(self, "platform", None)),
+                "platform": session_source_for(getattr(self, "platform", None)),
                 "model": getattr(self, "model", ""), "context_length": getattr(engine, "context_length", None),
                 "conversation_id": getattr(self, "_gateway_session_key", None), **extra_context,
             }
@@ -496,9 +469,12 @@ class AIAgent(
 
     switch_model = _forward("agent.agent_runtime_helpers", "switch_model")
 
-    def _disable_codex_reasoning_replay(self, messages: Optional[List[Dict[str, Any]]] = None) -> Dict[str, int]:
-        """On HTTP 400 ``invalid_encrypted_content``: disable Responses reasoning replay and pop
-        ``codex_reasoning_items`` from every assistant message. Returns ``{"messages", "items"}`` counts."""
+    def _disable_codex_reasoning_replay(
+        self, messages: Optional[List[Dict[str, Any]]] = None, *, keep_replay: bool = False,
+    ) -> Dict[str, int]:
+        """On HTTP 400 ``invalid_encrypted_content``: pop ``codex_reasoning_items`` from every assistant
+        message and, unless ``keep_replay``, disable Responses reasoning replay. Returns
+        ``{"messages", "items"}`` counts."""
         stripped_messages = stripped_items = 0
         for msg in (messages if isinstance(messages, list) else []):
             if not isinstance(msg, dict) or msg.get("role") != "assistant":
@@ -507,7 +483,8 @@ class AIAgent(
             if isinstance(items, list) and items:
                 stripped_messages += 1
                 stripped_items += len(items)
-        self._codex_reasoning_replay_enabled = False
+        if not keep_replay:
+            self._codex_reasoning_replay_enabled = False
         return {"messages": stripped_messages, "items": stripped_items}
 
     _stream_diag_init = _forward_static("agent.stream_diag", "stream_diag_init")

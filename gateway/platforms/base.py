@@ -434,6 +434,7 @@ from hermes_cli.observability.shared_metrics_gateway import records_delivery, st
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
+from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
 
 if TYPE_CHECKING:
     from agent.display import ToolPreview
@@ -588,7 +589,7 @@ async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
 def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_name: str):
     """``(get_<kind>_cache_dir, cleanup_<kind>_cache)`` pair. The getter resolves fresh via
     get_hermes_dir (active profile) unless a test monkeypatched the module constant away from
-    its import-time default, and creates the directory; ``cleanup(max_age_hours=24)`` deletes
+    its import-time default, and creates the directory; ``cleanup(max_age_hours=MEDIA_CACHE_MAX_AGE_HOURS)`` deletes
     older files and returns the count."""
     def get_dir() -> Path:
         d = get_hermes_dir(new_subpath, old_name)
@@ -599,7 +600,7 @@ def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_na
         _secure_media_cache_dir(d)
         return d
 
-    def cleanup(max_age_hours: int = 24) -> int:
+    def cleanup(max_age_hours: int = MEDIA_CACHE_MAX_AGE_HOURS) -> int:
         return _cleanup_cache_dir(get_dir(), max_age_hours)
     get_dir.__name__ = get_dir.__qualname__ = f"get_{kind}_cache_dir"
     cleanup.__name__ = cleanup.__qualname__ = f"cleanup_{kind}_cache"
@@ -810,7 +811,8 @@ MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV = "HERMES_MEDIA_TRUST_RECENT_SECONDS"
 # credential / system paths). Set true on public-facing gateways.
 MEDIA_DELIVERY_STRICT_ENV = "HERMES_MEDIA_DELIVERY_STRICT"
 # Canonical cache subdirs of deliverable artifacts; also enumerates per-profile cache roots.
-_MEDIA_DELIVERY_CACHE_SUBDIRS = ("images", "audio", "videos", "documents", "screenshots")
+_MEDIA_DELIVERY_CACHE_SUBDIRS = (
+    "images", "audio", "videos", "documents", "screenshots", GENERATED_SUBDIR)
 MEDIA_DELIVERY_SAFE_ROOTS = (
     IMAGE_CACHE_DIR, AUDIO_CACHE_DIR, VIDEO_CACHE_DIR, DOCUMENT_CACHE_DIR, SCREENSHOT_CACHE_DIR,
     *(_HERMES_HOME / d for d in (
@@ -1878,19 +1880,18 @@ def resolve_channel_skills(
     bindings = config_extra.get("channel_skill_bindings") or []
     if not isinstance(bindings, list) or not bindings:
         return None
-    ids_to_check = {str(key) for key in (channel_id, parent_id) if key}
-    if not ids_to_check:
-        return None
-    for entry in bindings:
-        if not isinstance(entry, dict) or str(entry.get("id", "")) not in ids_to_check:
-            continue
-        skills = entry.get("skills") or entry.get("skill")
-        if isinstance(skills, str):
-            return [skills.strip()] if skills.strip() else None
-        if isinstance(skills, list) and skills:
-            seen = dict.fromkeys(
-                nm for name in skills if isinstance(name, str) and (nm := name.strip()))
-            return list(seen) or None
+    # One pass per id, not one pass matching either: the parent's entry may be listed first.
+    for wanted in (str(key) for key in (channel_id, parent_id) if key):
+        for entry in bindings:
+            if not isinstance(entry, dict) or str(entry.get("id", "")) != wanted:
+                continue
+            skills = entry.get("skills") or entry.get("skill")
+            if isinstance(skills, str):
+                return [skills.strip()] if skills.strip() else None
+            if isinstance(skills, list) and skills:
+                seen = dict.fromkeys(
+                    nm for name in skills if isinstance(name, str) and (nm := name.strip()))
+                return list(seen) or None
     return None
 
 
@@ -4136,10 +4137,30 @@ class BasePlatformAdapter(ABC):
             # base path instead (returned False, or raised before storing it) and nothing is
             # queued, start this event.
             if session_key not in self._active_sessions:
-                orphan = self._pending_messages.pop(session_key, None)
-                if orphan is not None:
-                    self._start_session_processing(orphan, session_key)
-                elif not handled:
+                # Busy admission queues through the delivery adapter resolved when it stored the
+                # event; a reconnect during the handler's later awaits can replace that adapter.
+                # Recover from whichever slot actually holds it — this one, or the replacement —
+                # and start it on that slot's owner. A replacement with a live guard drains its
+                # own slot, so leave that one alone.
+                owners = [self]
+                runner = getattr(self, "gateway_runner", None)
+                if runner is not None:
+                    try:
+                        delivery_adapter = runner._delivery_adapter_for(event.source)
+                    except Exception:
+                        delivery_adapter = None
+                        logger.debug("[%s] Delivery-adapter lookup failed during pending recovery",
+                                     self.name, exc_info=True)
+                    if (delivery_adapter is not None and delivery_adapter is not self
+                            and session_key not in delivery_adapter._active_sessions):
+                        owners.append(delivery_adapter)
+                orphan = None
+                for owner in owners:
+                    orphan = owner.get_pending_message(session_key)
+                    if orphan is not None:
+                        owner._start_session_processing(orphan, session_key)
+                        break
+                if orphan is None and not handled:
                     event._gateway_accepted = self._start_session_processing(event, session_key)
                     return
             if handled:

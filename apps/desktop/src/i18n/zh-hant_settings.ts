@@ -86,6 +86,14 @@ export const zhHantSettings = {
     resetConfirm: '要將所有設定恢復為 Hermes 預設值嗎？',
     exportFailed: '匯出失敗',
     resetFailed: '重設失敗',
+    pluginPages: {
+      blurb: '已安裝外掛程式加入的選項。每個外掛程式都有自己的頁面，有些還有子頁面。',
+      empty: '還沒有外掛程式提供設定。',
+      manage: '管理外掛程式',
+      agentSettings: '代理程式設定',
+      pageCount: (n: number) => `${n} 個頁面`,
+      missing: '這個外掛程式沒有設定頁面，可能已停用或解除安裝。'
+    },
     nav: {
       providers: '提供方',
       providerAccounts: '帳號',
@@ -103,7 +111,8 @@ export const zhHantSettings = {
       about: '關於',
       billing: '帳單',
       notifications: '通知',
-      vault: '密碼與登入'
+      vault: '密碼與登入',
+      plugins: '外掛程式'
     },
     vault: {
       title: '密碼與登入',
@@ -608,7 +617,7 @@ export const zhHantSettings = {
       fileReadMaxChars: 'Hermes 單次檔案讀取可讀取的最大字元數。',
       approvals: {
         mode: 'Hermes 如何處理需要明確批准的指令。',
-        timeout: '訊息平台上的批准提示逾時前等待的時間。App 與終端機會一直等到你回覆。'
+        timeout: '批准提示逾時前等待的時間。'
       },
       security: {
         redactSecrets: '盡可能從模型可見內容中隱藏偵測到的密鑰。'
@@ -776,7 +785,11 @@ export const zhHantSettings = {
       imported: '設定已匯入',
       invalidJson: '設定 JSON 無效',
       keepAwakeTitle: '保持電腦喚醒',
-      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
+      keepAwakeDesc:
+        '阻止本機睡眠。「執行期間」僅在有回合進行時生效，整夜執行得以持續，又不會讓筆電整週保持喚醒。螢幕仍可變暗。',
+      keepAwakeOff: '關閉',
+      keepAwakeWhileWorking: '執行期間',
+      keepAwakeAlways: '一律',
       voiceShortcutHintTitle: '語音錄製快捷鍵',
       voiceShortcutHintDesc:
         '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
@@ -947,6 +960,8 @@ export const zhHantSettings = {
       sshErrPlatform: '不支援的遠端平台。Hermes Desktop 的 SSH 模式支援 Linux、macOS 和 Windows 遠端主機。',
       sshErrTimeout: 'SSH 連線逾時。主機可能無法存取或處於睡眠狀態。',
       sshErrUpdateRequired: '使用 Desktop SSH 連線前，請更新遠端主機上的 Hermes。',
+      sshErrInteractiveAuth:
+        'Tailscale SSH 需要互動式瀏覽器驗證。請在終端機執行 `ssh <host> true` 完成驗證後重試——Hermes 以非互動方式執行 SSH。',
       sshErrUnknown: 'SSH 連線失敗。'
     },
     keys: {
@@ -1035,6 +1050,8 @@ export const zhHantSettings = {
       change: '變更',
       autoUseMain: '自動 · 使用主要模型',
       inheritMainEffort: '繼承 · 主要模型推理強度',
+      inheritsFrom: task => `繼承 ${task}`,
+      followTask: task => `跟隨 ${task}`,
       providerDefault: '(提供方預設)',
       moaTitle: '混合代理（Mixture of Agents）',
       moaPreset: '預設',
@@ -1051,6 +1068,7 @@ export const zhHantSettings = {
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '標題生成', hint: '工作階段標題' },
         review: { label: '評審', hint: '/review 評審子代理' },
+        voice_chat: { label: '語音聊天', hint: '語音模式回覆' },
         triage_specifier: { label: '分類指定', hint: '看板任務規格補全' },
         kanban_decomposer: { label: '看板分解', hint: '任務拆解' },
         profile_describer: { label: '設定檔描述', hint: '自動生成設定檔描述' },
@@ -1078,6 +1096,7 @@ export const zhHantSettings = {
       modelsTitle: '模型',
       recommended: '推薦',
       recommendedReason: {
+        'product-default': '這台機器的預設模型，由其製造商選定。',
         'best-quality-resident': '在完全駐留 GPU 且保持全速的模型中品質最高。推薦會在品質與該硬體的預計速度之間權衡。',
         'speed-gated-quality':
           '有更高品質的模型可以裝入這台機器，但受記憶體頻寬限制回應會太慢——這是保持流暢的最佳模型。',

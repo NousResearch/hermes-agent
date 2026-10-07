@@ -14,6 +14,84 @@ function compilerPreset() {
   return preset
 }
 
+/** The React Compiler babel pass is ~85% of a production renderer build (≈13 s over ~770
+ *  files), and every source update rebuilt all of it for a one-file change. Its output is a
+ *  pure function of the module text, its id and the compiler/babel versions, so memoize it on
+ *  disk by that content key: an update that touched three components re-runs babel on three
+ *  files. A missing or corrupt entry is just a miss. The cache lives under node_modules
+ *  (ignored, outside every freshness hash) and is keyed by every input, so it never needs
+ *  invalidating. */
+async function cachedCompilerPass() {
+  const plugin = await babel({ presets: [compilerPreset()] })
+
+  // The lockfile pins every babel/compiler/plugin version this pass runs, and this config file
+  // holds the preset and its filter: together they are the whole toolchain identity.
+  const toolchain = crypto.createHash('sha256')
+    .update(fs.readFileSync(path.resolve(__dirname, '../../package-lock.json')))
+    .update(fs.readFileSync(fileURLToPath(import.meta.url)))
+    .digest('hex')
+    .slice(0, 16)
+
+  const root = path.join(__dirname, 'node_modules/.cache/hermes-react-compiler')
+  const dir = path.join(root, toolchain)
+  const used = new Set<string>()
+  const handler = plugin.transform.handler
+
+  plugin.transform.handler = async function (code: string, id: string, opts: unknown) {
+    const key = crypto.createHash('sha256').update(`${path.relative(__dirname, id)}\0${code}`).digest('hex')
+    const file = path.join(dir, `${key}.json`)
+    used.add(file)
+
+    try {
+      return JSON.parse(fs.readFileSync(file, 'utf8'))
+    } catch {
+      // miss (or a torn entry): compile and store below
+    }
+
+    const result = await handler.call(this, code, id, opts)
+
+    if (result) {
+      try {
+        fs.mkdirSync(dir, { recursive: true })
+        const temp = `${file}.${process.pid}.tmp`
+        fs.writeFileSync(temp, JSON.stringify({ code: result.code, map: result.map }))
+        fs.renameSync(temp, file)
+      } catch {
+        // a read-only or full disk only costs the next build this file's compile
+      }
+    }
+
+    return result
+  }
+
+  // Keep exactly what this build used: entries for since-edited files and other toolchains would
+  // otherwise accumulate one generation per update. A dev server never prunes (partial graph).
+  plugin.closeBundle = function () {
+    if (this.meta?.watchMode) {
+      return
+    }
+
+    try {
+      for (const name of fs.readdirSync(root)) {
+        if (name !== toolchain) {
+          fs.rmSync(path.join(root, name), { recursive: true, force: true })
+        }
+      }
+
+      for (const name of fs.readdirSync(dir)) {
+        if (!used.has(path.join(dir, name))) {
+          fs.rmSync(path.join(dir, name), { force: true })
+        }
+      }
+    } catch {
+      // nothing cached yet, or a read-only tree
+    }
+  }
+
+  return plugin
+}
+
+import crypto from 'crypto'
 import fs from 'fs'
 import { createRequire } from 'module'
 import path from 'path'
@@ -91,10 +169,12 @@ const emojibaseAssets = () => ({
       if (!emojibaseDir || !EMOJIBASE_PATH.test(rel)) {
         return next()
       }
+
       fs.readFile(path.join(emojibaseDir, rel), (err: unknown, buf: Buffer) => {
         if (err) {
           return next()
         }
+
         res.setHeader('Content-Type', 'application/json')
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
         res.end(buf)
@@ -118,7 +198,7 @@ const emojibaseAssets = () => ({
 
 export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [react(), babel({ presets: [compilerPreset()] }), tailwindcss(), emojibaseAssets()],
+  plugins: [react(), cachedCompilerPass(), tailwindcss(), emojibaseAssets()],
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and

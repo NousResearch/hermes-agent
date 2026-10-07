@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import AsyncSessionStore, SessionSource, SessionStore
 from hermes_cli import anon_auth
@@ -42,7 +43,7 @@ def _runner(monkeypatch, *, extra=None):
 
 
 def _event(**source_kwargs):
-    return SimpleNamespace(source=_source(**source_kwargs))
+    return MessageEvent(text="/login", source=_source(**source_kwargs))
 
 
 async def _finish_tasks(runner):

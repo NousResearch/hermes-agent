@@ -29,6 +29,7 @@ class _SignInAttempt:
     key: tuple
     source: Any
     cancelled: bool = False
+    provider: str = "nous"
 
 
 # These adapters use "dm" for a broadcast topic, a channel, or an agent peer. Sending a consent
@@ -76,6 +77,13 @@ class GatewayLoginCommandsMixin:
         if policy.enabled and not policy.is_admin(getattr(src, "user_id", None)):
             return anon_auth.LOGIN_NOT_ALLOWED
 
+        provider = event.get_command_args().strip().lower()
+        if provider in {"codex", "openai-codex", "openai_codex"}:
+            async with self._async_profile_scope_for_source(src):
+                return self._start_codex_login(src)
+        if provider not in {"", "nous"}:
+            return "Usage: /login [nous|codex]"
+
         key = (str(getattr(src.platform, "value", src.platform)), str(src.chat_id),
                str(getattr(src, "user_id", "") or ""))
         lock, attempts = self._login_registry()
@@ -84,6 +92,8 @@ class GatewayLoginCommandsMixin:
         # replacement command would wait behind the very attempt it needs to stop.
         with lock:
             live = attempts.get(_LOGIN_SINGLE)
+            if live is not None and live.provider == "openai-codex":
+                return anon_auth.LOGIN_BUSY_ELSEWHERE
             if live is not None and live.key != key:
                 return anon_auth.LOGIN_BUSY_ELSEWHERE
             if live is not None:
@@ -95,6 +105,8 @@ class GatewayLoginCommandsMixin:
 
         with lock:
             live = attempts.get(_LOGIN_SINGLE)
+            if live is not None and live.provider == "openai-codex":
+                return anon_auth.LOGIN_BUSY_ELSEWHERE
             if live is not None and live.key != key:
                 return anon_auth.LOGIN_BUSY_ELSEWHERE
             if live is not None:
@@ -105,6 +117,71 @@ class GatewayLoginCommandsMixin:
 
         self._retain_background_task(asyncio.create_task(self._run_login(attempt)))
         return anon_auth.UPGRADE_START
+
+    async def _busy_login_command(self, event, quick_key, source):
+        provider = event.get_command_args().strip().lower()
+        if provider in {"codex", "openai-codex", "openai_codex"}:
+            return t("gateway.busy.slash_rejected", command="login")
+        async with self._async_profile_scope_for_source(source):
+            return await self._handle_login_command(event)
+
+    def _start_codex_login(self, source) -> str:
+        from hermes_constants import get_hermes_home
+        lock, attempts = self._login_registry()
+        with lock:
+            if _LOGIN_SINGLE in attempts:
+                return "A login is already active. Complete it or wait for it to expire."
+            attempt = _SignInAttempt(
+                uuid4().hex[:8], (str(get_hermes_home()),), source, provider="openai-codex")
+            attempts[_LOGIN_SINGLE] = attempt
+        self._retain_background_task(asyncio.create_task(self._run_codex_login(attempt)))
+        return "Codex sign-in started. Watch this DM for the link and code."
+
+    async def _run_codex_login(self, attempt) -> None:
+        from agent.credential_pool import load_pool
+        from hermes_cli import auth
+        from hermes_cli.auth_commands import persist_oauth_credential
+
+        loop = asyncio.get_running_loop()
+
+        async def deliver(link, code):
+            for text in (link, code, "Never share this code. Waiting for Codex sign-in..."):
+                if not await self._deliver_platform_notice(attempt.source, text):
+                    raise RuntimeError("Private code delivery failed")
+
+        def login():
+            def verification(link, code):
+                future = asyncio.run_coroutine_threadsafe(deliver(link, code), loop)
+                try:
+                    future.result(timeout=30)
+                except concurrent.futures.TimeoutError:
+                    future.cancel()
+                    raise
+            creds = auth._codex_device_code_login(on_verification=verification)
+            persist_oauth_credential("openai-codex", creds, load_pool("openai-codex"))
+
+        def release(worker):
+            lock, attempts = self._login_registry()
+            with lock:
+                if attempts.get(_LOGIN_SINGLE) is attempt:
+                    attempts.pop(_LOGIN_SINGLE)
+            if not worker.cancelled():
+                worker.exception()
+
+        worker = asyncio.create_task(self._run_login_blocking(login))
+        worker.add_done_callback(release)
+        try:
+            # A cancelled handler must not free the slot while the device-login thread still runs.
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Keep the failure location without logging provider/transport exception text.
+            logger.warning("Codex /login failed", exc_info=(
+                RuntimeError, RuntimeError("Codex sign-in did not complete"), exc.__traceback__))
+            await self._push_login(attempt, "Codex login did not complete. Retry with /login codex.")
+        else:
+            await self._push_login(attempt, "Codex login complete. The account was added to this profile.")
 
     async def _run_login(self, attempt: _SignInAttempt) -> None:
         lock, attempts = self._login_registry()
@@ -153,8 +230,9 @@ class GatewayLoginCommandsMixin:
         """Push one notice without allowing a transport failure to abort the state drain."""
         try:
             await self._deliver_platform_notice(attempt.source, text)
-        except Exception:
-            logger.warning("/login %s: push failed", attempt.attempt_id, exc_info=True)
+        except Exception as exc:
+            logger.warning("/login %s: push failed", attempt.attempt_id, exc_info=(
+                RuntimeError, RuntimeError("Login notice delivery failed"), exc.__traceback__))
 
     async def _render_login_state(self, attempt: _SignInAttempt, state) -> None:
         if isinstance(state, anon_auth.Code):

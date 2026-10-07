@@ -1760,6 +1760,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     def _handle_login_command(self, cmd_original: str) -> None:
         """Start an in-chat sign-in without blocking the input loop while approval is pending."""
+        if (provider := _command_arg(cmd_original, lower=True)) not in {"", "nous"}:
+            return _cp(f"  {_t('login.codex_terminal')}" if provider == "codex" else "  Usage: /login [nous|codex]")
         from hermes_cli import anon_auth
         # Pin the output target now. Under the live TUI ``self.console`` writes straight to
         # patch_stdout's StdoutProxy, which mangles Rich's escapes — there ``None`` keeps the
@@ -1780,13 +1782,11 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         anon_auth.render_sign_in_cli_code(first, chat=True, printer=_cp)
 
         def _settle_session_model(state) -> None:
-            """A completed sign-in moved this profile onto the account: the welcome host is gone and
-            the portal serves ``nous/welcome`` as a paid model, so a session still carrying it must
-            move too — the CLI counterpart of the gateway's on-``Completed`` sweep. Only the free
-            tier's own model is replaced; a model the user picked while the sign-in was pending
-            stands. Writing ``self.model`` is enough: ``chat()`` compares the turn-route signature
-            and rebuilds the agent on the next turn, so a turn already in flight keeps the agent it
-            started with. ``getattr``: tests drive this handler with minimal shells.
+            """A completed sign-in moved this profile onto the account and the portal serves
+            ``nous/welcome`` as a paid model, so a session still carrying it moves too (the CLI side of
+            the gateway's on-``Completed`` sweep). Only the free tier's model is replaced; a model picked
+            while the sign-in was pending stands. Writing ``self.model`` is enough: ``chat()`` rebuilds
+            the agent next turn, so a turn in flight keeps its agent. ``getattr``: minimal test shells.
             """
             if state.kind != "completed" or not getattr(state, "model_changed", False):
                 return

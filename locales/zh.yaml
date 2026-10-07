@@ -1663,7 +1663,7 @@ slash:
   subscription:
     description: "查看你的 Nous 套餐并在浏览器中更改"
   login:
-    description: "使用 Nous 账号登录（保留你的连接器）"
+    description: "使用 Nous 或 Codex 账号登录"
   topup:
     description: "显示你的 Nous 余额并在门户中管理账单"
   platforms:
@@ -2932,6 +2932,7 @@ cli:
       complete: "{label} 已完成"
       failed: "❌ {label} 失败：{error}"
     login:
+      codex_terminal: "要登录 Codex，请在终端执行 hermes auth add openai-codex。"
       label: "登录"
       title_suffix: "(登录)"
       no_result: "(无结果)"

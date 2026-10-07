@@ -1663,7 +1663,7 @@ slash:
   subscription:
     description: "Nous planınızı görüntüleyin ve tarayıcıda değiştirin"
   login:
-    description: "Nous hesabıyla giriş yap (bağlayıcılarınız korunur)"
+    description: "Nous veya Codex hesabıyla giriş yap"
   topup:
     description: "Nous bakiyenizi göster ve faturalandırmayı portalda yönet"
   platforms:
@@ -2932,6 +2932,7 @@ cli:
       complete: "{label} tamamlandı"
       failed: "❌ {label} başarısız oldu: {error}"
     login:
+      codex_terminal: "Codex girişi için terminalde hermes auth add openai-codex komutunu çalıştırın."
       label: "Giriş"
       title_suffix: "(giriş)"
       no_result: "(Sonuç yok)"

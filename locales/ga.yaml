@@ -1663,7 +1663,7 @@ slash:
   subscription:
     description: "Féach ar do phlean Nous agus athraigh é sa bhrabhsálaí"
   login:
-    description: "Sínigh isteach le cuntas Nous (coinníonn sé do nascóirí)"
+    description: "Sínigh isteach le cuntas Nous nó Codex"
   topup:
     description: "Taispeáin d'iarmhéid Nous agus bainistigh billeáil ar an bportal"
   platforms:
@@ -2932,6 +2932,7 @@ cli:
       complete: "{label} críochnaithe"
       failed: "❌ Theip ar {label}: {error}"
     login:
+      codex_terminal: "Chun síniú isteach le Codex, rith hermes auth add openai-codex i dteirminéal."
       label: "Síniú isteach"
       title_suffix: "(síniú isteach)"
       no_result: "(Gan toradh)"

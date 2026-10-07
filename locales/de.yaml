@@ -1663,7 +1663,7 @@ slash:
   subscription:
     description: "Ihren Nous-Plan ansehen und im Browser ändern"
   login:
-    description: "Mit einem Nous-Konto anmelden (behält Ihre Connectors)"
+    description: "Mit einem Nous- oder Codex-Konto anmelden"
   topup:
     description: "Ihr Nous-Guthaben anzeigen und Abrechnung im Portal verwalten"
   platforms:
@@ -2932,6 +2932,7 @@ cli:
       complete: "{label} abgeschlossen"
       failed: "❌ {label} fehlgeschlagen: {error}"
     login:
+      codex_terminal: "Für die Codex-Anmeldung hermes auth add openai-codex im Terminal ausführen."
       label: "Anmeldung"
       title_suffix: "(Anmeldung)"
       no_result: "(Kein Ergebnis)"

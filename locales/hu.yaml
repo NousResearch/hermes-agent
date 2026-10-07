@@ -1680,7 +1680,7 @@ slash:
   subscription:
     description: "A Nous csomagod megtekintése és módosítása a böngészőben"
   login:
-    description: "Bejelentkezés Nous fiókkal (a csatlakoztatott appjaid megmaradnak)"
+    description: "Bejelentkezés Nous vagy Codex fiókkal"
   topup:
     description: "A Nous egyenleged megjelenítése és a számlázás kezelése a portálon"
   platforms:
@@ -2949,6 +2949,7 @@ cli:
       complete: "{label} kész"
       failed: "❌ {label} sikertelen: {error}"
     login:
+      codex_terminal: "Codex bejelentkezéshez futtasd a hermes auth add openai-codex parancsot egy terminálban."
       label: "Bejelentkezés"
       title_suffix: "(bejelentkezés)"
       no_result: "(Nincs eredmény)"

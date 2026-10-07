@@ -1663,7 +1663,7 @@ slash:
   subscription:
     description: "عرض خطة Nous الخاصة بك وتغييرها في المتصفح"
   login:
-    description: "تسجيل الدخول بحساب Nous (مع الاحتفاظ بموصّلاتك)"
+    description: "تسجيل الدخول بحساب Nous أو Codex"
   topup:
     description: "عرض رصيد Nous الخاص بك وإدارة الفوترة على البوابة"
   platforms:
@@ -2932,6 +2932,7 @@ cli:
       complete: "اكتمل {label}"
       failed: "❌ فشل {label}: {error}"
     login:
+      codex_terminal: "لتسجيل الدخول إلى Codex، شغّل hermes auth add openai-codex في الطرفية."
       label: "تسجيل الدخول"
       title_suffix: "(تسجيل الدخول)"
       no_result: "(لا توجد نتيجة)"

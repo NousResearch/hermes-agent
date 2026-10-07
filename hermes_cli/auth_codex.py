@@ -18,7 +18,7 @@ import threading
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Tuple
 from hermes_cli.auth_constants import (
     _decode_jwt_claims, AUTH_LOCK_TIMEOUT_SECONDS, AuthError,
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
@@ -1105,20 +1105,24 @@ def _codex_exchange_authorization_code(
     return tokens
 
 
-def _codex_device_code_login() -> Dict[str, Any]:
-    """Run the OpenAI device code login flow and return credentials dict."""
+def _codex_device_code_login(
+    *, on_verification: Optional[Callable[[str, str], None]] = None,
+) -> Dict[str, Any]:
+    """Return credentials after delivering the code; a failed delivery aborts before polling."""
     from hermes_cli.auth import _utc_now_z
     issuer, client_id = "https://auth.openai.com", CODEX_OAUTH_CLIENT_ID
     device_data = _codex_request_device_code(issuer, client_id)
     user_code = device_data["user_code"]
 
-    # Step 2: Show user the code
-    print("To continue, follow these steps:\n")
-    print("  1. Open this URL in your browser:")
-    print(f"     \033[94m{issuer}/codex/device\033[0m\n")
-    print("  2. Enter this code:")
-    print(f"     \033[94m{user_code}\033[0m\n")
-    print("Waiting for sign-in... (press Ctrl+C to cancel)")
+    if on_verification is not None:
+        on_verification(f"{issuer}/codex/device", user_code)
+    else:
+        print("To continue, follow these steps:\n")
+        print("  1. Open this URL in your browser:")
+        print(f"     \033[94m{issuer}/codex/device\033[0m\n")
+        print("  2. Enter this code:")
+        print(f"     \033[94m{user_code}\033[0m\n")
+        print("Waiting for sign-in... (press Ctrl+C to cancel)")
     code_resp = _codex_poll_authorization_code(
         issuer, device_auth_id=device_data["device_auth_id"], user_code=user_code,
         poll_interval=device_data["interval"])

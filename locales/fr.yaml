@@ -1915,7 +1915,7 @@ slash:
   subscription:
     description: "Voir votre forfait Nous et le modifier dans le navigateur"
   login:
-    description: "Se connecter avec un compte Nous (conserve vos connecteurs)"
+    description: "Se connecter avec un compte Nous ou Codex"
   topup:
     description: "Afficher votre solde Nous et gérer la facturation sur le portail"
   platforms:
@@ -3233,6 +3233,7 @@ cli:
       complete: "{label} terminée"
       failed: "❌ {label} a échoué : {error}"
     login:
+      codex_terminal: "Pour se connecter à Codex, exécutez hermes auth add openai-codex dans un terminal."
       label: "Connexion"
       title_suffix: "(connexion)"
       no_result: "(Aucun résultat)"

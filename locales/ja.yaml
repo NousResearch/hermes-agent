@@ -1663,7 +1663,7 @@ slash:
   subscription:
     description: "Nous プランを確認し、ブラウザで変更"
   login:
-    description: "Nous アカウントでサインイン（コネクターは維持）"
+    description: "Nous または Codex アカウントでサインイン"
   topup:
     description: "Nous の残高を表示し、ポータルで請求を管理"
   platforms:
@@ -2932,6 +2932,7 @@ cli:
       complete: "{label} が完了しました"
       failed: "❌ {label} が失敗しました: {error}"
     login:
+      codex_terminal: "Codex にサインインするには、ターミナルで hermes auth add openai-codex を実行してください。"
       label: "サインイン"
       title_suffix: "(サインイン)"
       no_result: "(結果なし)"

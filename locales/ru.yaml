@@ -1663,7 +1663,7 @@ slash:
   subscription:
     description: "Посмотреть ваш тариф Nous и изменить его в браузере"
   login:
-    description: "Войти с аккаунтом Nous (ваши коннекторы сохраняются)"
+    description: "Войти с аккаунтом Nous или Codex"
   topup:
     description: "Показать ваш баланс Nous и управлять оплатой на портале"
   platforms:
@@ -2932,6 +2932,7 @@ cli:
       complete: "{label} завершено"
       failed: "❌ {label} не удалось: {error}"
     login:
+      codex_terminal: "Для входа в Codex выполните hermes auth add openai-codex в терминале."
       label: "Вход"
       title_suffix: "(вход)"
       no_result: "(Нет результата)"

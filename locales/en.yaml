@@ -1734,7 +1734,7 @@ slash:
   subscription:
     description: "View your Nous plan and change it in the browser"
   login:
-    description: "Sign in with a Nous account (keeps your connectors)"
+    description: "Sign in with a Nous or Codex account"
   topup:
     description: "Show your Nous balance and manage billing on the portal"
   platforms:
@@ -3032,6 +3032,7 @@ cli:
       complete: "{label} complete"
       failed: "❌ {label} failed: {error}"
     login:
+      codex_terminal: "For Codex sign-in, run hermes auth add openai-codex in a terminal."
       label: "Sign-in"
       title_suffix: "(sign-in)"
       no_result: "(No result)"

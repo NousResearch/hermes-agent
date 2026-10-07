@@ -1663,7 +1663,7 @@ slash:
   subscription:
     description: "Bekyk jou Nous-plan en verander dit in die blaaier"
   login:
-    description: "Meld aan met 'n Nous-rekening (behou jou koppelaars)"
+    description: "Meld aan met 'n Nous- of Codex-rekening"
   topup:
     description: "Wys jou Nous-saldo en bestuur fakturering op die portaal"
   platforms:
@@ -2932,6 +2932,7 @@ cli:
       complete: "{label} voltooi"
       failed: "❌ {label} het misluk: {error}"
     login:
+      codex_terminal: "Vir Codex-aanmelding, voer hermes auth add openai-codex in 'n terminaal uit."
       label: "Aanmelding"
       title_suffix: "(aanmelding)"
       no_result: "(Geen resultaat nie)"

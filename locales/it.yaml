@@ -1663,7 +1663,7 @@ slash:
   subscription:
     description: "Vedi il tuo piano Nous e modificalo nel browser"
   login:
-    description: "Accedi con un account Nous (mantiene i tuoi connettori)"
+    description: "Accedi con un account Nous o Codex"
   topup:
     description: "Mostra il tuo saldo Nous e gestisci la fatturazione sul portale"
   platforms:
@@ -2932,6 +2932,7 @@ cli:
       complete: "{label} completata"
       failed: "❌ {label} non riuscita: {error}"
     login:
+      codex_terminal: "Per accedere a Codex, esegui hermes auth add openai-codex in un terminale."
       label: "Accesso"
       title_suffix: "(accesso)"
       no_result: "(Nessun risultato)"

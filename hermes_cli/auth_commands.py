@@ -425,8 +425,20 @@ def _add_credential(args, provider: str, pool, requested_type: str) -> PooledCre
         raise SystemExit(f"`hermes auth add {provider}` is not implemented for auth type {requested_type} yet.")
 
     creds = spec.login(args)
+    existing = pool.entries()
+    entry = persist_oauth_credential(
+        provider, creds, pool, label=(getattr(args, "label", None) or "").strip())
+    print(f'Added {provider} OAuth credential #{len(load_pool(provider).entries())}: "{entry.label}"')
+    if provider == "openai-codex":
+        _warn_same_codex_account(spec.token(creds), existing)
+    return entry
+
+
+def persist_oauth_credential(provider: str, creds: dict, pool, *, label: str = "") -> PooledCredential:
+    """Append a profile-owned OAuth account without rewriting a singleton or switching providers."""
+    spec = _OAUTH_ADD_SPECS[provider]
     token = spec.token(creds)
-    label = (getattr(args, "label", None) or "").strip() or label_from_token(
+    label = label.strip() or label_from_token(
         token, f"{provider}-oauth-{len(pool.entries()) + 1}")
     # Every account gets a distinct, self-contained pool entry instead of routing through a
     # singleton save path (which collapsed every added account into the latest login).
@@ -436,14 +448,17 @@ def _add_credential(args, provider: str, pool, requested_type: str) -> PooledCre
         source=spec.source(creds) if callable(spec.source) else spec.source,
         access_token=token, **spec.fields(creds, provider))
     existing = pool.entries()
-    entry = pool.add_entry(entry)
-    # The first Codex/xAI credential becomes the active provider (as the old singleton save path
-    # did implicitly); subsequent adds leave the active provider as-is.
-    if spec.activate_first and not existing:
+    if provider == "openai-codex" and not existing:
+        # An empty named profile has nothing to borrow. The pool's update-only root flush
+        # cannot add an account there; claim the new grant in this profile explicitly.
+        auth_mod.write_credential_pool(provider, [entry.to_dict()])
+    else:
+        entry = pool.add_entry(entry)
+    # A borrowed root Codex grant is not a profile-owned account. Activate only when unset,
+    # including that case; retain the first-account behavior for other providers.
+    if spec.activate_first and (not existing or provider == "openai-codex"):
         auth_mod.mark_provider_active_if_unset(provider)
-    print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
-    if provider == "openai-codex":
-        _warn_same_codex_account(token, existing)
+    auth_mod.unsuppress_credential_source(provider, entry.source)
     return entry
 
 

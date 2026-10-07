@@ -312,6 +312,17 @@ briefs are labelled user turns appended at a turn boundary, preserving role alte
 conversation — ntfy, raft and a2a all report `chat_type="dm"` for a broadcast topic, a channel and
 an agent peer, so posting a consent link there would publish it.
 
+`/login codex` (also `openai-codex` / `openai_codex`) enrolls a Codex account through those same
+DM/admin gates, registry and private executor. It rejects mid-turn, acknowledges immediately,
+and delivers the link and code as separate private messages before polling. Failed delivery aborts
+the login. The worker inherits the source runtime profile's scope across its thread hop and uses
+the same pooled persistence as `hermes auth add openai-codex`: a distinct `manual:device_code` row,
+no singleton overwrite or root-account copy, and activation only if no active provider is set.
+An active Codex login cannot be replaced, including after cancellation of its background handler;
+the slot is released when its worker exits. On Slack use `/hermes login codex`. Shared gateways must set `allow_admin_from` for `/login codex` too: otherwise any paired DM user can add an account to the pool serving every chat of that profile.
+
+Bare `/login` and `/login nous` retain the Nous sign-in behavior below.
+
 **It binds the whole install.** The sign-in writes the singleton `providers.nous`, so whoever
 approves the code owns this gateway's inference and connectors for every chat it serves. Slash
 gating is opt-in (`gateway/slash_access.py`): with no `allow_admin_from` set, every user allowed to

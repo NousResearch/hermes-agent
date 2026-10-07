@@ -5,6 +5,8 @@ listing/browsing stored rows, spawn-tree snapshots, event replay and the statele
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
@@ -507,6 +509,57 @@ class SessionUsageResult(Usage):
 
 method("session.usage", params=SessionUsageParams, result=SessionUsageResult,
        doc="Token / context / cost counters for the session (+ Nous credit lines when available).")
+
+
+class SessionAccountUsageParams(SessionParams):
+    pass
+
+
+class AccountUsageRow(Result):
+    """One localizable ``details`` counterpart from ``serialize_account_usage_snapshot``."""
+
+    key: str
+    args: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class AccountUsageWindow(Result):
+    """One quota window on the secret-free account-usage wire."""
+
+    label: str
+    used_percent: float | None = None
+    reset_at: str | None = None  # * ISO-8601 from serialize; omitted fields stay optional
+    detail: str | None = None
+    label_key: str | None = None
+    limit: float | None = None
+    limit_remaining: float | None = None
+    reset_interval: str | None = None
+
+
+class AccountUsageSnapshot(Result):
+    """Wire shape of ``agent.account_usage.serialize_account_usage_snapshot`` (never includes ``raw``)."""
+
+    available: bool
+    provider: str
+    source: str
+    fetched_at: str  # * ISO-8601
+    title: str
+    plan: str | None = None
+    windows: list[AccountUsageWindow]
+    details: list[str]
+    unavailable_reason: str | None = None
+    credits_balance: float | None = None
+    rows: list[AccountUsageRow] | None = None
+    details_structured: bool | None = None
+
+
+class SessionAccountUsageResult(Result):
+    status: Literal["ok", "unsupported", "unavailable"]
+    account_usage: AccountUsageSnapshot | None = None
+    reason: str | None = None
+
+
+method("session.account_usage", params=SessionAccountUsageParams, result=SessionAccountUsageResult,
+       doc="Secret-free provider quota snapshot for the session route.")
 
 
 class SessionContextBreakdownParams(SessionParams):

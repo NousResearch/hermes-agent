@@ -57,6 +57,11 @@ def server():
     __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
 
 
+def test_session_account_usage_is_pool_routed(server):
+    """Desktop polls ``session.account_usage``; blocking provider HTTP must not starve the WS reader."""
+    assert "session.account_usage" in server._LONG_HANDLERS
+
+
 def test_dispatch_inline_rpc_does_not_block_under_gil_pressure(server):
     """A slow inline-turned-long handler must not prevent a concurrent fast
     handler from completing. This is the core invariant: dispatch() must

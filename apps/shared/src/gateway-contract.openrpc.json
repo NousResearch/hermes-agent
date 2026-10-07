@@ -3013,6 +3013,24 @@
       }
     },
     {
+      "name": "session.account_usage",
+      "summary": "Secret-free provider quota snapshot for the session route.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionAccountUsageParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionAccountUsageResult"
+        }
+      }
+    },
+    {
       "name": "session.activate",
       "summary": "Attach the frontend to a live session without closing the previously focused one.",
       "params": [
@@ -4558,6 +4576,239 @@
           "type"
         ],
         "title": "AccountOwner",
+        "type": "object"
+      },
+      "AccountUsageRow": {
+        "additionalProperties": false,
+        "description": "One localizable ``details`` counterpart from ``serialize_account_usage_snapshot``.",
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "args": {
+            "additionalProperties": true,
+            "title": "Args",
+            "type": "object"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "title": "AccountUsageRow",
+        "type": "object"
+      },
+      "AccountUsageSnapshot": {
+        "additionalProperties": false,
+        "description": "Wire shape of ``agent.account_usage.serialize_account_usage_snapshot`` (never includes ``raw``).",
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "fetched_at": {
+            "title": "Fetched At",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plan"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/AccountUsageWindow"
+            },
+            "title": "Windows",
+            "type": "array"
+          },
+          "details": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Details",
+            "type": "array"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unavailable Reason"
+          },
+          "credits_balance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Credits Balance"
+          },
+          "rows": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/AccountUsageRow"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rows"
+          },
+          "details_structured": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Details Structured"
+          }
+        },
+        "required": [
+          "available",
+          "provider",
+          "source",
+          "fetched_at",
+          "title",
+          "windows",
+          "details"
+        ],
+        "title": "AccountUsageSnapshot",
+        "type": "object"
+      },
+      "AccountUsageWindow": {
+        "additionalProperties": false,
+        "description": "One quota window on the secret-free account-usage wire.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "used_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Used Percent"
+          },
+          "reset_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reset At"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
+          },
+          "label_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label Key"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limit"
+          },
+          "limit_remaining": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limit Remaining"
+          },
+          "reset_interval": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reset Interval"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "title": "AccountUsageWindow",
         "type": "object"
       },
       "ActiveIdResult": {
@@ -28683,6 +28934,74 @@
           "role"
         ],
         "title": "SeedMessage",
+        "type": "object"
+      },
+      "SessionAccountUsageParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionAccountUsageParams",
+        "type": "object"
+      },
+      "SessionAccountUsageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "ok",
+              "unsupported",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "account_usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccountUsageSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "SessionAccountUsageResult",
         "type": "object"
       },
       "SessionActivateParams": {

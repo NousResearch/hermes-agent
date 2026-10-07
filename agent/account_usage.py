@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import httpx
 
 from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
-from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
+from hermes_cli.auth import (
+    AuthError,
+    _decode_jwt_claims,
+    _read_codex_tokens,
+    resolve_codex_runtime_credentials,
+)
 from hermes_cli.auth_codex import _codex_pool_route_base_url
 from hermes_cli.runtime_provider import resolve_runtime_provider
 from hermes_time import safe_strftime
@@ -27,14 +32,31 @@ def _utc_now() -> datetime:
 
 
 @dataclass(frozen=True)
+class AccountUsageRow:
+    """Structured, localizable counterpart of a `details` line.
+
+    `key` is an open string (e.g. "credits_balance"); `args` carries raw
+    numbers/strings so UI clients can localize and format. Telegram/CLI never
+    read rows — they render `details` instead.
+    """
+
+    key: str
+    args: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class AccountUsageWindow:
     label: str
     used_percent: Optional[float] = None
     reset_at: Optional[datetime] = None
     detail: Optional[str] = None
-    # ``account``: exhausting this window exhausts the whole login (Codex session/weekly).
-    # ``model``: the window caps only one model family (Anthropic Opus/Sonnet weekly) and can
-    # never imply the account itself is out of quota.
+    label_key: Optional[str] = None  # * Open string; UI maps known keys to localized labels
+    limit: Optional[float] = None  # * e.g. OpenRouter key quota limit
+    limit_remaining: Optional[float] = None
+    reset_interval: Optional[str] = None  # * Raw API value, e.g. "daily"
+    # * ``account``: exhausting this window exhausts the whole login (Codex session/weekly).
+    # * ``model``: the window caps only one model family (Anthropic Opus/Sonnet weekly) and can
+    # * never imply the account itself is out of quota.
     scope: str = "account"
 
 
@@ -48,9 +70,12 @@ class AccountUsageSnapshot:
     windows: tuple[AccountUsageWindow, ...] = ()
     details: tuple[str, ...] = ()
     unavailable_reason: Optional[str] = None
-    # Stable account identity of the credential the snapshot was fetched with (e.g. a decoded
-    # Codex JWT principal), when the provider supports one. Never a secret; ``None`` = the
-    # fetcher cannot tell accounts apart, so the snapshot belongs to the provider's legacy slot.
+    credits_balance: Optional[float] = None
+    rows: tuple[AccountUsageRow, ...] = ()
+    details_structured: bool = False  # * True ⇒ rows fully cover every `details` line
+    # * Stable account identity of the credential the snapshot was fetched with (e.g. a decoded
+    # * Codex JWT principal), when the provider supports one. Never a secret; ``None`` = the
+    # * fetcher cannot tell accounts apart, so the snapshot belongs to the provider's legacy slot.
     identity: Optional[str] = None
     # Exact decoded provider response body (no headers/credentials) for integrations that need
     # fields Hermes does not normalize yet. Only populated by providers that fetch a JSON body.
@@ -121,6 +146,77 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
     if snapshot.unavailable_reason:
         lines.append(f"Unavailable: {snapshot.unavailable_reason}")
     return lines
+
+
+def serialize_account_usage_snapshot(snapshot: AccountUsageSnapshot) -> dict[str, Any]:
+    """Return the secret-free JSON wire shape used by UI clients.
+
+    Datetimes are normalized to ISO-8601 strings here instead of asking each
+    surface to understand Python objects.  The snapshot never contains the
+    credential used to fetch it, so this is safe to send across the gateway to
+    an unprivileged renderer.
+    """
+    windows: list[dict[str, Any]] = []
+    for window in snapshot.windows:
+        item: dict[str, Any] = {
+            "label": window.label,
+            "used_percent": (
+                max(0.0, min(100.0, float(window.used_percent)))
+                if _is_finite_num(window.used_percent)
+                else None
+            ),
+            "reset_at": window.reset_at.isoformat() if window.reset_at else None,
+            "detail": window.detail,
+        }
+        # * New localization fields use presence semantics: omit empty/None.
+        if window.label_key:
+            item["label_key"] = window.label_key
+        if _is_finite_num(window.limit):
+            item["limit"] = float(window.limit)
+        if _is_finite_num(window.limit_remaining):
+            item["limit_remaining"] = float(window.limit_remaining)
+        if window.reset_interval:
+            item["reset_interval"] = window.reset_interval
+        windows.append(item)
+
+    payload: dict[str, Any] = {
+        "available": snapshot.available,
+        "provider": snapshot.provider,
+        "source": snapshot.source,
+        "fetched_at": snapshot.fetched_at.isoformat(),
+        "title": snapshot.title,
+        "plan": snapshot.plan,
+        "windows": windows,
+        "details": list(snapshot.details),
+        "unavailable_reason": snapshot.unavailable_reason,
+        "credits_balance": (
+            round(float(snapshot.credits_balance), 2)
+            if _is_finite_num(snapshot.credits_balance)
+            else None
+        ),
+    }
+    serialized_rows = _serialize_account_usage_rows(snapshot.rows)
+    if serialized_rows:
+        payload["rows"] = serialized_rows
+    if snapshot.details_structured:
+        payload["details_structured"] = True
+    return payload
+
+
+def _serialize_account_usage_rows(
+    rows: tuple[AccountUsageRow, ...],
+) -> list[dict[str, Any]]:
+    serialized: list[dict[str, Any]] = []
+    for row in rows:
+        args = {
+            key: value
+            for key, value in dict(row.args).items()
+            if not (isinstance(value, float) and not math.isfinite(value))
+        }
+        if row.key == "credits_balance" and "value" not in args:
+            continue
+        serialized.append({"key": row.key, "args": args})
+    return serialized
 
 
 def _fmt_usd(d: float) -> str:
@@ -322,6 +418,27 @@ def _codex_backend_urls(base_url: str) -> tuple[str, str, str]:
     return (prefix + "/usage", prefix + "/rate-limit-reset-credits", prefix + "/rate-limit-reset-credits/consume")
 
 
+def codex_account_id_from_token(token: Any) -> Optional[str]:
+    """Return the ChatGPT account selected by an OAuth token, if present.
+
+    Codex logins can coexist in the credential pool.  Account-scoped requests
+    must derive this header from the same token they send, rather than pairing
+    a selected token with the legacy singleton store's account id.
+    """
+    claims = _decode_jwt_claims(token)
+    auth_claim = claims.get("https://api.openai.com/auth")
+    candidates = [
+        auth_claim.get("chatgpt_account_id") if isinstance(auth_claim, dict) else None,
+        claims.get("https://api.openai.com/auth.chatgpt_account_id"),
+        claims.get("chatgpt_account_id"),
+    ]
+    for candidate in candidates:
+        account_id = str(candidate or "").strip()
+        if account_id:
+            return account_id
+    return None
+
+
 def _resolve_codex_usage_credentials(
     base_url: Optional[str], api_key: Optional[str], *, force_refresh: bool = False,
 ) -> tuple[str, str, Optional[str]]:
@@ -329,7 +446,7 @@ def _resolve_codex_usage_credentials(
     pool select. Native OAuth stores device-code logins in the pool, so the singleton store alone is not enough."""
     explicit_key = str(api_key or "").strip()
     if explicit_key and not force_refresh:
-        return explicit_key, str(base_url or "").strip(), None
+        return explicit_key, str(base_url or "").strip(), codex_account_id_from_token(explicit_key)
     if explicit_key:
         # Forced retry for a live agent's own credential: refresh THAT credential (singleton or the
         # pool entry that issued it), never re-resolve — that would render another pool account's usage.
@@ -342,7 +459,15 @@ def _resolve_codex_usage_credentials(
             entry = load_pool("openai-codex").try_refresh_matching(api_key_hint=explicit_key)
             if entry is None:
                 raise RuntimeError("Could not refresh the Codex credential this session runs on")
-            return entry.runtime_api_key, _codex_pool_route_base_url(entry.runtime_base_url or base_url), None
+            refreshed_key = entry.runtime_api_key
+            # * Account id comes from the refreshed token so a 401 retry keeps ChatGPT-Account-ID.
+            # * Pool rows keep the canonical URL; a gateway key must go to its route host (#121486).
+            return (
+                refreshed_key,
+                _codex_pool_route_base_url(entry.runtime_base_url or base_url),
+                codex_account_id_from_token(refreshed_key),
+            )
+        # * Singleton matches the live key: fall through to tier 2 with force_refresh.
     # Only AuthError is caught so tier 3 can run: a broad except would mask a transient refresh/network failure
     # and hand back a DIFFERENT pool account's usage; such errors must propagate to the fail-open outer guard.
     # account_id is best-effort: a partial singleton store must not sink a usable credential.
@@ -356,23 +481,32 @@ def _resolve_codex_usage_credentials(
         if force_refresh:
             resolve_kwargs["force_refresh"] = True
         creds = resolve_codex_runtime_credentials(**resolve_kwargs)
-        account_id: Optional[str] = None
-        try:
-            tokens = _read_codex_tokens().get("tokens") or {}
-            account_id = str(tokens.get("account_id", "") or "").strip() or None
-        except AuthError:
-            # Pool-only creds carry no singleton account_id; header is optional.
-            logger.debug("codex ▸ /usage account_id read failed (best-effort)", exc_info=True)
-        return creds["api_key"], str(creds.get("base_url", "") or "").strip(), account_id
+        selected_key = creds["api_key"]
+        account_id = codex_account_id_from_token(selected_key)
+        selected_from_pool = str(creds.get("source", "") or "").strip() == "credential_pool"
+        if account_id is None and not selected_from_pool:
+            try:
+                tokens = _read_codex_tokens().get("tokens") or {}
+                account_id = str(tokens.get("account_id", "") or "").strip() or None
+            except AuthError:
+                # Opaque/legacy tokens may need the singleton account id. A JWT
+                # selected from the pool carries its own identity above.
+                logger.debug("codex ▸ /usage account_id read failed (best-effort)", exc_info=True)
+        return selected_key, str(creds.get("base_url", "") or "").strip(), account_id
     except AuthError:
         logger.debug("codex ▸ /usage runtime resolver returned no creds; trying pool", exc_info=True)
-    # Tier 3: pool credentials have no account_id concept → header omitted.
+    # Tier 3: JWT pool credentials carry their own account claim; opaque pool tokens omit the header.
     from agent.credential_pool import load_pool
     entry = load_pool("openai-codex").select()
     if entry is None:
         raise RuntimeError("No available openai-codex credential in credential pool")
-    # Pool rows keep the canonical URL; a gateway key must go to its route host, not chatgpt.com (#121486).
-    return entry.runtime_api_key, _codex_pool_route_base_url(entry.runtime_base_url or base_url), None
+    # * Pool rows keep the canonical URL; a gateway key must go to its route host, not chatgpt.com (#121486).
+    selected_key = entry.runtime_api_key
+    return (
+        selected_key,
+        _codex_pool_route_base_url(entry.runtime_base_url or base_url),
+        codex_account_id_from_token(selected_key),
+    )
 
 
 def _codex_banked_resets(payload: dict) -> int:
@@ -383,8 +517,20 @@ def _codex_banked_resets(payload: dict) -> int:
 def _codex_headers(token: str, account_id: Optional[str]) -> dict[str, str]:
     """auth.json's ``account_id`` wins over the JWT claim; the JWT still supplies the residency header."""
     from agent.codex_headers import codex_account_headers
-    return {"Authorization": f"Bearer {token}", "Accept": "application/json", "User-Agent": "codex-cli",
-            **codex_account_headers(token), **({"ChatGPT-Account-ID": account_id} if account_id else {})}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": "codex-cli",
+        **codex_account_headers(token),
+        **({"ChatGPT-Account-ID": account_id} if account_id else {}),
+    }
+    # * HTTP names are case-insensitive. Keep the canonical ChatGPT-Account-ID key
+    # * and the historical ChatGPT-Account-Id spelling so lookups of either form
+    # * agree; httpx collapses the pair on the wire.
+    account_header = headers.get("ChatGPT-Account-ID")
+    if account_header:
+        headers["ChatGPT-Account-Id"] = account_header
+    return headers
 
 
 def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
@@ -395,13 +541,13 @@ def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
 
 
 def _usage_windows(
-    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False,
+    source: dict, mapping: tuple[tuple[str, str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False,
     model_scoped: frozenset[str] | set[str] = frozenset(),
 ) -> list[AccountUsageWindow]:
     """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent.
     ``model_scoped`` keys build windows that cap only a model family, never the account."""
     windows: list[AccountUsageWindow] = []
-    for key, label in mapping:
+    for key, label, label_key in mapping:
         window = source.get(key) or {}
         used = window.get(used_key)
         if used is None:
@@ -410,18 +556,21 @@ def _usage_windows(
         if fraction and used <= 1:
             used *= 100
         windows.append(AccountUsageWindow(
-            label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key)),
+            label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key)), label_key=label_key,
             scope="model" if key in model_scoped else "account",
         ))
     return windows
 
 
 # Published Codex quota windows by ``limit_window_seconds``: 5h session and 7-day weekly.
-_CODEX_WINDOW_LABELS_BY_SECONDS = {18000: "Session", 604800: "Weekly"}
-_CODEX_WINDOW_POSITIONAL_LABELS = (("primary_window", "Session"), ("secondary_window", "Weekly"))
+_CODEX_WINDOW_LABELS_BY_SECONDS = {18000: ("Session", "session"), 604800: ("Weekly", "weekly")}
+_CODEX_WINDOW_POSITIONAL_LABELS = (
+    ("primary_window", "Session", "session"),
+    ("secondary_window", "Weekly", "weekly"),
+)
 
 
-def _codex_window_labels(rate_limit: dict) -> tuple[tuple[str, str], ...]:
+def _codex_window_labels(rate_limit: dict) -> tuple[tuple[str, str, str], ...]:
     """Label Codex windows by their published duration, not response position (#65387).
 
     The usage API keys windows ``primary_window``/``secondary_window`` by position; when only the
@@ -430,11 +579,14 @@ def _codex_window_labels(rate_limit: dict) -> tuple[tuple[str, str], ...]:
     positional label so duration-less payloads render exactly as before.
     """
     labels = []
-    for key, fallback in _CODEX_WINDOW_POSITIONAL_LABELS:
+    for key, fallback, fallback_key in _CODEX_WINDOW_POSITIONAL_LABELS:
         window = rate_limit.get(key) or {}
         seconds = window.get("limit_window_seconds") if isinstance(window, dict) else None
-        label = _CODEX_WINDOW_LABELS_BY_SECONDS.get(int(seconds), fallback) if _is_num(seconds) else fallback
-        labels.append((key, label))
+        if _is_num(seconds) and int(seconds) in _CODEX_WINDOW_LABELS_BY_SECONDS:
+            label, label_key = _CODEX_WINDOW_LABELS_BY_SECONDS[int(seconds)]
+        else:
+            label, label_key = fallback, fallback_key
+        labels.append((key, label, label_key))
     return tuple(labels)
 
 
@@ -481,16 +633,26 @@ def _fetch_codex_account_usage_impl(
     rate_limit = payload.get("rate_limit") or {}
     windows = _usage_windows(rate_limit, _codex_window_labels(rate_limit), "used_percent", "reset_at")
     details: list[str] = []
+    rows: list[AccountUsageRow] = []
     count = _codex_banked_resets(payload)
     if count > 0:
         details.append(f"You have {count} reset{_plural(count)} banked - use /usage reset to activate")
+        rows.append(AccountUsageRow("banked_resets", {"count": count}))
     credits, balance = payload.get("credits") or {}, (payload.get("credits") or {}).get("balance")
+    credits_balance: Optional[float] = None
     if credits.get("has_credits") and _is_num(balance):
-        details.append(f"Credits balance: ${float(balance):.2f}")
+        credits_balance = float(balance)
+        details.append(f"Credits balance: ${credits_balance:.2f}")
+        rows.append(AccountUsageRow("credits_balance", {"value": credits_balance, "currency": "USD"}))
     elif credits.get("has_credits") and credits.get("unlimited"):
         details.append("Credits balance: unlimited")
-    return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")),
-                     identity=_codex_snapshot_identity(token), raw=payload)
+        rows.append(AccountUsageRow("credits_unlimited"))
+    return _snapshot(
+        "openai-codex", "usage_api", windows, details,
+        plan=_title_case_slug(payload.get("plan_type")),
+        credits_balance=credits_balance, rows=tuple(rows), details_structured=True,
+        identity=_codex_snapshot_identity(token), raw=payload,
+    )
 
 
 def _codex_snapshot_identity(token: str) -> Optional[str]:
@@ -631,10 +793,10 @@ def redeem_codex_reset_credit(
 def _fetch_anthropic_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None
 ) -> Optional[AccountUsageSnapshot]:
-    # An explicit api_key (live agent / per-credential pool read) must not be shadowed by
-    # the ambient OAuth singleton: fetch_account_usage(base_url, api_key) promises to
-    # report THAT credential's usage. An API key answers the OAuth usage endpoint with
-    # 401, so only an OAuth-shaped token reaches the fetch.
+    # * An explicit api_key (live agent / per-credential pool read) must not be shadowed by
+    # * the ambient OAuth singleton: fetch_account_usage(base_url, api_key) promises to
+    # * report THAT credential's usage. An API key answers the OAuth usage endpoint with
+    # * 401, so only an OAuth-shaped token reaches the fetch.
     explicit = str(api_key or "").strip()
     token = explicit or (resolve_anthropic_token() or "").strip()
     if not token:
@@ -646,16 +808,24 @@ def _fetch_anthropic_account_usage(
                "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-code/2.1.0"}
     payload = _get_json("https://api.anthropic.com/api/oauth/usage", headers, timeout=15.0)
     windows = _usage_windows(
-        payload, (("five_hour", "Current session"), ("seven_day", "Current week"), ("seven_day_opus", "Opus week"),
-                  ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at", fraction=True,
+        payload,
+        (("five_hour", "Current session", "current_session"), ("seven_day", "Current week", "current_week"),
+         ("seven_day_opus", "Opus week", "opus_week"), ("seven_day_sonnet", "Sonnet week", "sonnet_week")),
+        "utilization", "resets_at", fraction=True,
         model_scoped={"seven_day_opus", "seven_day_sonnet"},
     )
     details: list[str] = []
+    rows: list[AccountUsageRow] = []
     extra = payload.get("extra_usage") or {}
     used_credits, monthly_limit = extra.get("used_credits"), extra.get("monthly_limit")
     if extra.get("is_enabled") and _is_num(used_credits) and _is_num(monthly_limit):
-        details.append(f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {extra.get('currency') or 'USD'}")
-    return _snapshot("anthropic", "oauth_usage_api", windows, details)
+        currency = extra.get("currency") or "USD"
+        details.append(f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {currency}")
+        rows.append(AccountUsageRow(
+            "extra_usage",
+            {"used": float(used_credits), "limit": float(monthly_limit), "currency": str(currency)},
+        ))
+    return _snapshot("anthropic", "oauth_usage_api", windows, details, rows=tuple(rows), details_structured=True)
 
 
 def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
@@ -675,30 +845,44 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
             key_data = _data("key")
         except Exception:
             key_data = {}
-    balance = float(credits.get("total_credits") or 0.0) - float(credits.get("total_usage") or 0.0)
-    details = [f"Credits balance: ${max(0.0, balance):.2f}"]
+    credits_balance = max(0.0, float(credits.get("total_credits") or 0.0) - float(credits.get("total_usage") or 0.0))
+    details = [f"Credits balance: ${credits_balance:.2f}"]
+    rows: list[AccountUsageRow] = [
+        AccountUsageRow("credits_balance", {"value": credits_balance, "currency": "USD"}),
+    ]
     windows: list[AccountUsageWindow] = []
     limit, limit_remaining, usage = key_data.get("limit"), key_data.get("limit_remaining"), key_data.get("usage")
     limit_reset = str(key_data.get("limit_reset") or "").strip()
     if _is_num(limit) and float(limit) > 0 and _is_num(limit_remaining) and 0 <= float(limit_remaining) <= float(limit):
         limit_value, remaining_value = float(limit), float(limit_remaining)
         detail_parts = [f"${remaining_value:.2f} of ${limit_value:.2f} remaining", *([f"resets {limit_reset}"] if limit_reset else [])]
-        windows.append(AccountUsageWindow(label="API key quota", used_percent=((limit_value - remaining_value) / limit_value) * 100,
-                                          detail=" • ".join(detail_parts)))
+        windows.append(AccountUsageWindow(
+            label="API key quota", used_percent=((limit_value - remaining_value) / limit_value) * 100,
+            detail=" • ".join(detail_parts), label_key="api_key_quota",
+            limit=limit_value, limit_remaining=remaining_value, reset_interval=limit_reset or None,
+        ))
     if _is_num(usage):
         usage_parts = [f"API key usage: ${float(usage):.2f} total"]
-        for key, label in (("usage_daily", "today"), ("usage_weekly", "this week"), ("usage_monthly", "this month")):
+        usage_args: dict[str, Any] = {"total": float(usage)}
+        for key, label, arg_name in (("usage_daily", "today", "daily"), ("usage_weekly", "this week", "weekly"),
+                                     ("usage_monthly", "this month", "monthly")):
             value = key_data.get(key)
             if _is_num(value) and float(value) > 0:
                 usage_parts.append(f"${float(value):.2f} {label}")
+                usage_args[arg_name] = float(value)
         details.append(" • ".join(usage_parts))
-    return _snapshot("openrouter", "credits_api", windows, details)
+        rows.append(AccountUsageRow("api_key_usage", usage_args))
+    return _snapshot(
+        "openrouter", "credits_api", windows, details,
+        credits_balance=credits_balance, rows=tuple(rows), details_structured=True,
+    )
 
 
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
     "openrouter": _fetch_openrouter_account_usage,
 }
+SUPPORTED_ACCOUNT_USAGE_PROVIDERS = frozenset(_USAGE_FETCHERS)
 
 # Picker per-credential variants: same parsers/fetch shape, but a failure is never repaired by
 # rotating/refreshing a credential (see ``fetch_account_usage(read_only=True)``).

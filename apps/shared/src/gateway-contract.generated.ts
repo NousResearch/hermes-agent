@@ -3427,6 +3427,46 @@ export interface SessionUsageResult {
   credits_lines?: string[] | null
   [key: string]: unknown
 }
+export interface SessionAccountUsageParams {
+  session_id: string
+  profile?: string | null
+}
+export interface SessionAccountUsageResult {
+  status: 'ok' | 'unsupported' | 'unavailable'
+  account_usage?: AccountUsageSnapshot | null
+  reason?: string | null
+}
+/** Wire shape of ``agent.account_usage.serialize_account_usage_snapshot`` (never includes ``raw``). */
+export interface AccountUsageSnapshot {
+  available: boolean
+  provider: string
+  source: string
+  fetched_at: string
+  title: string
+  plan?: string | null
+  windows: AccountUsageWindow[]
+  details: string[]
+  unavailable_reason?: string | null
+  credits_balance?: number | null
+  rows?: AccountUsageRow[] | null
+  details_structured?: boolean | null
+}
+/** One quota window on the secret-free account-usage wire. */
+export interface AccountUsageWindow {
+  label: string
+  used_percent?: number | null
+  reset_at?: string | null
+  detail?: string | null
+  label_key?: string | null
+  limit?: number | null
+  limit_remaining?: number | null
+  reset_interval?: string | null
+}
+/** One localizable ``details`` counterpart from ``serialize_account_usage_snapshot``. */
+export interface AccountUsageRow {
+  key: string
+  args?: Record<string, unknown>
+}
 export interface SessionContextBreakdownParams {
   session_id: string
   profile?: string | null
@@ -5292,6 +5332,8 @@ export interface RpcMethods {
   'rollback.list': { params: RollbackListParams; result: RollbackListResult }
   /** Restore the working tree (or one file) to a checkpoint by hash or 1-based index. */
   'rollback.restore': { params: RollbackRestoreParams; result: RollbackRestoreResult }
+  /** Secret-free provider quota snapshot for the session route. */
+  'session.account_usage': { params: SessionAccountUsageParams; result: SessionAccountUsageResult }
   /** Attach the frontend to a live session without closing the previously focused one. */
   'session.activate': { params: SessionActivateParams; result: SessionActivateResult }
   /** Live sessions in this process, insertion order (not a DB browser). */
@@ -5632,6 +5674,7 @@ export const RPC_METHODS = [
   'rollback.diff',
   'rollback.list',
   'rollback.restore',
+  'session.account_usage',
   'session.activate',
   'session.active_list',
   'session.archive',

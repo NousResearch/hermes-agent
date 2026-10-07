@@ -290,6 +290,18 @@ _YAML_ASSIGN_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+# Browser accessibility-snapshot valued lines: ``- textbox "Password" [ref=e4]: hunter2``.
+# The assignment passes see identifier-shaped keys only; on a snapshot line the text before
+# the value is the whole ``role "label" [ref=eN]`` rich shape, so a password the page
+# prefilled or the agent typed reached the model context unmasked (issue #134715).
+_SNAPSHOT_LINE_RE = re.compile(
+    r"(?m)^(?P<head>[ \t]*(?:[-*][ ]+)?[A-Za-z][\w-]*"
+    r"(?:[ ]+\"[^\n]+\")?[ ]+\[(?:ref=)?[A-Za-z0-9_]+][^:\n]*):[ ]+(?P<value>[^\n]+)$"
+)
+# Credential labels seen in real snapshots beyond _KEY_KEYWORD_RE's English list (the
+# «Пароль» line in #134715); kept local because the global list also gates prose passes.
+_SNAPSHOT_LABEL_KEYWORD_RE = re.compile(r"пароль|токен|секрет|пин|ключ", re.IGNORECASE)
+
 # Word-boundary validation for the key patterns above: their classes allow
 # arbitrary affixes (``client_secret``, ``s3.secret-key``), which also matched
 # prose CONTAINING a keyword (``Secretary:``, ``tokenizer:``). A keyword counts
@@ -804,6 +816,32 @@ def _mask_token_nonreusable(token: str) -> str:
     return f"«redacted:{label}…»" if label else "«redacted-secret»"
 
 
+def _redact_snapshot_lines(text: str) -> str:
+    """Mask the value of accessibility-snapshot lines whose quoted label is credential-bearing.
+
+    The keyword check runs against the quoted *label* (``"Password"``), not the whole
+    ``role "label" [ref]`` line — that rich shape is what blinded the assignment passes.
+    Lines without a quoted label (``button [ref=e3]: Copy``) keep their text: there is no
+    field name to attest sensitivity, and masking every value would erase the snapshot's
+    usefulness for page navigation."""
+    def _sub(m):
+        head, value = m.group("head"), m.group("value")
+        label = re.search(r'"([^"\n]+)"', head)
+        if not label:
+            return m.group(0)
+        name = label.group(1)
+        sensitive = _key_has_secret_keyword(name) or _has_word_bounded_keyword(
+            name, _SNAPSHOT_LABEL_KEYWORD_RE
+        )
+        if not sensitive:
+            return m.group(0)
+        # an earlier pass already masked the value; re-masking only erases its vendor label
+        if value == "***" or value.startswith("«redacted"):
+            return m.group(0)
+        return f"{head}: ***"
+    return _SNAPSHOT_LINE_RE.sub(_sub, text)
+
+
 def _assignment_sub(render, *, check_keyword: bool):
     """re.sub callback: keep the match unless the key/value pair (groups[0], groups[-1]) needs redaction."""
     def _sub(m):
@@ -953,6 +991,11 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)
+
+    # Accessibility-snapshot lines carry the credential behind a rich ``role "label" [ref]``
+    # key no assignment pass recognizes — mask by the label, not the whole line (#134715).
+    if ": " in text and "[" in text:
+        text = _redact_snapshot_lines(text)
 
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)

@@ -119,11 +119,96 @@ def _lint_python_inproc(content: str) -> tuple[bool, str]:
         return False, f"{type(e).__name__}: {e}"
 
 
+def _nb_uint(v) -> bool:
+    return type(v) is int and v >= 0
+
+
+def _nb_source(v) -> bool:
+    return isinstance(v, str) or (isinstance(v, list) and all(isinstance(s, str) for s in v))
+
+
+def _nb_object(v) -> bool:
+    return isinstance(v, dict)
+
+
+def _nb_outputs(v) -> bool:
+    return isinstance(v, list) and all(isinstance(o, dict) and isinstance(o.get("output_type"), str) for o in v)
+
+
+# Required fields per cell type, by nbformat major version — the ``required`` lists of nbformat's
+# v4 and v3 JSON schemas (v4.5's cell ``id`` excepted: nbformat generates a missing one on read).
+_NB_CELL_REQUIRED: Dict[int, Dict[str, Dict[str, Callable[[object], bool]]]] = {
+    4: {
+        'code': {'metadata': _nb_object, 'source': _nb_source, 'outputs': _nb_outputs,
+                 'execution_count': lambda v: v is None or _nb_uint(v)},
+        'markdown': {'metadata': _nb_object, 'source': _nb_source},
+        'raw': {'metadata': _nb_object, 'source': _nb_source},
+    },
+    3: {
+        'code': {'input': _nb_source, 'outputs': _nb_outputs, 'language': lambda v: isinstance(v, str)},
+        'markdown': {'source': _nb_source},
+        'html': {'source': _nb_source},
+        'raw': {'source': _nb_source},
+        'heading': {'source': _nb_source, 'level': lambda v: _nb_uint(v) and v >= 1},
+    },
+}
+
+
+def _notebook_schema_error(nb) -> str:
+    """``""`` when ``nb`` carries every field nbformat's schema requires for the major version it
+    declares (cells under ``cells`` for v4, under ``worksheets[].cells`` for v3), else what is wrong."""
+    if not isinstance(nb, dict):
+        return "the root is not a JSON object"
+    major = nb.get("nbformat")
+    cell_required = _NB_CELL_REQUIRED.get(major) if type(major) is int else None
+    if cell_required is None:
+        return f"'nbformat' must be 4 (or 3 for a legacy worksheets notebook), got {major!r}"
+    if not _nb_uint(nb.get("nbformat_minor")):
+        return "'nbformat_minor' must be a non-negative integer"
+    if not isinstance(nb.get("metadata"), dict):
+        return "'metadata' must be an object"
+    if major == 4:
+        if not isinstance(nb.get("cells"), list):
+            return "nbformat 4 needs a 'cells' list"
+        cells = [(f"cells[{i}]", c) for i, c in enumerate(nb["cells"])]
+    else:
+        sheets = nb.get("worksheets")
+        if not isinstance(sheets, list) or not all(isinstance(ws, dict) and isinstance(ws.get("cells"), list)
+                                                   for ws in sheets):
+            return "nbformat 3 needs a 'worksheets' list, each with a 'cells' list"
+        cells = [(f"worksheets[{w}].cells[{i}]", c) for w, ws in enumerate(sheets) for i, c in enumerate(ws["cells"])]
+    for where, cell in cells:
+        cell_type = cell.get("cell_type") if isinstance(cell, dict) else None
+        fields = cell_required.get(cell_type) if isinstance(cell_type, str) else None
+        if fields is None:
+            return f"{where} must be an object whose 'cell_type' is one of {', '.join(cell_required)}"
+        bad = [key for key, ok in fields.items() if key not in cell or not ok(cell[key])]
+        if bad:
+            return f"{where} ({cell_type}) is missing or has an invalid {', '.join(repr(k) for k in bad)}"
+    return ""
+
+
 # In-process linters, preferred over shell linters (no subprocess). Each returns
 # (ok, error); error ``"__SKIP__"`` = unavailable dependency, counts as "no linter".
+def _lint_notebook_inproc(content: str) -> tuple[bool, str]:
+    """A notebook write must be what nbformat accepts for the version it declares. read_file shows
+    a text rendering, not the JSON, so a write of the rendering — or of JSON that only looks like a
+    notebook (``{"cells": []}``) — must fail here, not replace the notebook."""
+    ok, err = _lint_json_inproc(content)
+    if not ok:
+        return ok, err
+    problem = _notebook_schema_error(json.loads(content))
+    if not problem:
+        return True, ""
+    return False, (f"not a valid nbformat notebook: {problem}; read_file showed a text rendering, not "
+                   "the file — write complete nbformat JSON, or edit the notebook with jq / nbformat "
+                   "via the terminal")
+
+
 LINTERS_INPROC: Dict[str, Callable[[str], tuple[bool, str]]] = {
     '.py': _lint_python_inproc,
     '.json': _lint_json_inproc,
+    '.ipynb': _lint_notebook_inproc,
     '.yaml': _lint_yaml_inproc,
     '.yml': _lint_yaml_inproc,
     '.toml': _lint_toml_inproc,
@@ -131,8 +216,9 @@ LINTERS_INPROC: Dict[str, Callable[[str], tuple[bool, str]]] = {
 
 # Extensions where write_file REFUSES on a parse failure. ``.py`` is excluded on
 # purpose: test fixtures use ``*.py`` paths as a stand-in for arbitrary text, so
-# Python keeps the non-blocking lint-delta report.
-_FAIL_CLOSED_INPROC_EXTS = frozenset({'.json', '.yaml', '.yml', '.toml'})
+# Python keeps the non-blocking lint-delta report. ``.ipynb`` is nbformat JSON that read_file only
+# shows as an extracted rendering — the one extracted format with no other write guard.
+_FAIL_CLOSED_INPROC_EXTS = frozenset({'.json', '.yaml', '.yml', '.toml', '.ipynb'})
 
 
 class LintMixin:

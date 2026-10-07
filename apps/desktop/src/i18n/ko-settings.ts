@@ -1401,6 +1401,9 @@ export const koSettings: NonNullable<TranslationOverrides['settings']> = {
     }
   },
   uninstallSection: {
+    managedBody: '이 설치본은 운영체제 또는 패키지 관리자가 관리하므로 Hermes에서 직접 제거할 수 없습니다.',
+    dataKept: path => `설정, 대화, 인증 정보는 ${path}에 보관됩니다. 앱을 제거해도 이 데이터는 삭제되지 않습니다.`,
+    openAppsSettings: '앱 설정 열기',
     ...settingsRiskCopyKo.uninstallSection,
     dangerZone: '주의가 필요한 작업',
     confirmUninstall: '제거 확인',

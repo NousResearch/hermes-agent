@@ -1,9 +1,10 @@
-import { type ReactNode, useId } from 'react'
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
+import { isSubmitEnter } from '@/lib/ime'
 import { prettyName } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import type { ConfigFieldSchema } from '@/types/hermes'
@@ -14,6 +15,13 @@ import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FREE_INPUT_KEYS } from './constants'
 import { FallbackModelsField } from './fallback-models-field'
 import { ListRow, ToggleRow } from './primitives'
 import { SearchableSelect } from './searchable-select'
+
+export function parseListFieldDraft(raw: string): string[] {
+  return raw
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean)
+}
 
 /**
  * One generic config row: label + description resolved from the i18n field
@@ -189,22 +197,7 @@ export function ConfigField({
   }
 
   if (schema.type === 'list') {
-    return row(
-      <Input
-        {...accessibility}
-        className={CONTROL_TEXT}
-        onChange={e =>
-          onChange(
-            e.target.value
-              .split(',')
-              .map(s => s.trim())
-              .filter(Boolean)
-          )
-        }
-        placeholder={c.commaSeparated}
-        value={Array.isArray(value) ? value.join(', ') : String(value ?? '')}
-      />
-    )
+    return row(<ListField {...accessibility} onChange={onChange} placeholder={c.commaSeparated} value={value} />)
   }
 
   if (typeof value === 'object' && value !== null) {
@@ -247,4 +240,52 @@ export function ConfigField({
           value={String(value ?? '')}
         />
       )
+}
+
+interface ListFieldProps {
+  value: unknown
+  onChange: (value: unknown) => void
+  placeholder: string
+  'aria-labelledby'?: string
+  'aria-describedby'?: string
+}
+
+function ListField({ value, onChange, placeholder, ...accessibility }: ListFieldProps) {
+  const normalizedValue = Array.isArray(value) ? value.join(', ') : String(value ?? '')
+  const [draft, setDraft] = useState(normalizedValue)
+  const focusedRef = useRef(false)
+
+  useEffect(() => {
+    if (!focusedRef.current) {
+      setDraft(normalizedValue)
+    }
+  }, [normalizedValue])
+
+  const commitDraft = () => {
+    const parsed = parseListFieldDraft(draft)
+    setDraft(parsed.join(', '))
+    onChange(parsed)
+  }
+
+  return (
+    <Input
+      {...accessibility}
+      className={CONTROL_TEXT}
+      onBlur={() => {
+        focusedRef.current = false
+        commitDraft()
+      }}
+      onChange={e => setDraft(e.target.value)}
+      onFocus={() => {
+        focusedRef.current = true
+      }}
+      onKeyDown={e => {
+        if (isSubmitEnter(e)) {
+          e.currentTarget.blur()
+        }
+      }}
+      placeholder={placeholder}
+      value={draft}
+    />
+  )
 }

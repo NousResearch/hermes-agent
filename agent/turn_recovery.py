@@ -593,6 +593,7 @@ def _recover_format_errors(
 _WELCOME_ROUTE_HEAL_COPY = {
     "anon_on_paid_host": "Reconnected to the free model's own route.",
     "named_on_welcome_host": "Reconnected to your Nous account's own route.",
+    "session_expired": "Renewed the connection to the free model.",
 }
 
 
@@ -604,7 +605,8 @@ def _recover_welcome_tier(agent: Any, classified: Any, _retry: TurnRetryState) -
     turn. ``anon_on_paid_host`` / ``named_on_welcome_host``: this process is pointed at the other
     identity's host (a stale route); re-read the credentials, which heals the URL, and retry. The
     refresh reports False when the store yields the same route, so a user-set
-    ``NOUS_INFERENCE_BASE_URL`` falls straight through to the terminal copy.
+    ``NOUS_INFERENCE_BASE_URL`` falls straight through to the terminal copy. ``session_expired``
+    (403 ``invalid jwt``): the same forced refresh re-exchanges the free credential.
 
     Reads the CLASSIFIER's context (``classified.error_context``): that is where
     ``_nous_welcome_tier`` parks ``welcome_refusal`` / ``welcome_route``. The turn's other context
@@ -949,6 +951,9 @@ def _welcome_surface_kind(classified: Any) -> str:
     route = ctx.get("welcome_route") if isinstance(ctx, dict) else None
     if route == "tier_disabled":
         return "disabled"
+    # The renewal failed but the tier is up: a plain Retry mints a new credential.
+    if route == "session_expired":
+        return "outage"
     # A named account on the welcome host has already signed in: no sign-in card, copy only.
     if route == "named_on_welcome_host":
         return ""
@@ -962,21 +967,16 @@ def _stamp_free_tier(result: Dict[str, Any], kind: str, message: str) -> Dict[st
     return result
 
 
-def _welcome_outage_copy(base_url: Any, classified: Any, *, anonymous: bool = False) -> str:
+def _welcome_outage_copy(agent: Any, base_url: Any, classified: Any) -> str:
     """On the Nous free tier, a transport / server failure that outlived every retry reads as one
     plain sentence (the free model is having trouble) rather than the technical summary. Empty
     for every other route and for rate limits / billing, which have their own copy."""
-    try:
-        from hermes_cli.anon_auth import FREE_TIER_OUTAGE_COPY, route_is_welcome_host
-        # Both: an anonymous JWT sent to a user-overridden paid host never reached the free model.
-        if not anonymous or not route_is_welcome_host(base_url):
-            return ""
-        # Not ``unknown``: that is the classifier's catch-all for status-less local failures, which
-        # are not the free model's trouble.
-        if classified.reason in (FailoverReason.timeout, FailoverReason.overloaded, FailoverReason.server_error):
-            return FREE_TIER_OUTAGE_COPY
-    except Exception:
-        pass
+    from hermes_cli.anon_auth import FREE_TIER_OUTAGE_COPY, on_free_model
+    # Not ``unknown``: that is the classifier's catch-all for status-less local failures, which
+    # are not the free model's trouble.
+    if on_free_model(agent, base_url) and classified.reason in (
+            FailoverReason.timeout, FailoverReason.overloaded, FailoverReason.server_error):
+        return FREE_TIER_OUTAGE_COPY
     return ""
 
 
@@ -1138,7 +1138,7 @@ _STREAM_DROP_MARKERS = (
 
 
 def max_retries_exhausted_result(
-    agent: Any, api_error: Exception, classified: Any, *, max_retries: int, is_rate_limited: bool,
+    agent: Any, api_error: Exception, classified: Any, *, attempts: int, is_rate_limited: bool,
     error_msg: str, api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]],
     conversation_history: Any, api_call_count: int, approx_tokens: int, provider: Any,
     base_url: Any, model: Any, delivered: str = "",
@@ -1148,7 +1148,6 @@ def max_retries_exhausted_result(
     guidance (the latter wins), persist, build the result with ``failure_reason`` /
     ``failure_retryable`` / ``billing_block``."""
     # Result/guidance helpers stay in the loop module (tests import + patch them there).
-    from hermes_cli.anon_auth import is_anonymous_agent
     from agent.conversation_loop import (
         _billing_block_dict, _billing_or_entitlement_message, _billing_terminal_label,
         _print_billing_or_entitlement_guidance,
@@ -1176,11 +1175,11 @@ def max_retries_exhausted_result(
     elif is_rate_limited:
         _reset = reset_hint(api_error)
         agent._emit_diagnostic_status(
-            f"❌ Rate limited after {max_retries} retries — {_final_summary}"
+            f"❌ Rate limited after {attempts} {'attempt' if attempts == 1 else 'retries'} — {_final_summary}"
             f"{f' (resets in {_reset})' if _reset else ''}"
         )
     else:
-        agent._emit_diagnostic_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
+        agent._emit_diagnostic_status(f"❌ API failed after {attempts} retries — {_final_summary}")
     _vlines(agent, f"   💀 Final error: {_final_summary}")
     _welcome_hint = _welcome_tier_guidance(classified, model=model, in_chat=False)
     if _welcome_hint:
@@ -1209,7 +1208,7 @@ def max_retries_exhausted_result(
 
     logger.error(
         "%sAPI call failed after %s retries. %s | provider=%s model=%s msgs=%s tokens=~%s",
-        agent.log_prefix, max_retries, _final_summary,
+        agent.log_prefix, attempts, _final_summary,
         provider, model, len(api_messages), f"{approx_tokens:,}",
     )
     if api_kwargs is not None:
@@ -1232,13 +1231,13 @@ def max_retries_exhausted_result(
         # text carries the plain what-happened + next step itself.
         _reset_at = classified.error_context.get("reset_at")
         _final_response = exhausted_copy(
-            classified.reason.value, label=provider_label_for(provider), attempts=max_retries,
+            classified.reason.value, label=provider_label_for(provider), attempts=attempts,
             summary=_final_summary, reset_seconds=_reset_at - time.time() if _reset_at else None,
         )
         if _welcome_hint:
             _final_response = _welcome_tier_guidance(classified, model=model, in_chat=True)
             _free_tier_kind = _welcome_surface_kind(classified)
-        elif _outage := _welcome_outage_copy(base_url, classified, anonymous=is_anonymous_agent(agent)):
+        elif _outage := _welcome_outage_copy(agent, base_url, classified):
             _final_response, _free_tier_kind = _outage, "outage"
     if _is_thinking_timeout:
         # Thinking-timeout guidance overrides stream-drop guidance, which would wrongly
@@ -1390,6 +1389,9 @@ def interruptible_backoff_sleep(
         _touch_counter += 1
         if _touch_counter % 150 == 0:  # 150 × 0.2s = 30s
             agent._touch_activity(f"{activity_label}, {int(sleep_end - time.time())}s remaining")
+    # A long wait can outlive a short-lived credential (the free tier's JWT lives 15 minutes), and
+    # the per-iteration pre-expiry adoption does not run between retries.
+    agent._adopt_nous_key_before_expiry()
     return None
 
 
@@ -1419,39 +1421,25 @@ def compute_error_backoff(
     is_zai_coding_overload: bool, base_url: Any, model: Any,
 ) -> float:
     """Pick the wait before the next API retry and announce it. Retry-After wins for
-    rate limits and any other retryable error (capped at 600s: Anthropic Tier 1 buckets
-    reset in ~171s, so a 120s cap re-tripped the limit); otherwise jittered backoff,
-    replaced by the adaptive policy for 429s / Z.AI overloads. Normal retries are
-    buffered; long Z.AI Coding waits surface immediately."""
+    rate limits and any other retryable error (capped at ``RETRY_AFTER_CAP_S``); otherwise
+    jittered backoff, replaced by the adaptive policy for 429s / Z.AI overloads. Retries are
+    buffered (replayed only if every retry fails); a long Z.AI Coding wait or a non-rate-limit
+    ``Retry-After`` over ``LIVE_RETRY_WAIT_CAP_S`` is announced when it starts."""
     # Imported lazily so tests that patch ``agent.retry_utils.jittered_backoff`` /
     # ``adaptive_rate_limit_backoff`` (incl. the run_agent conftest fast-backoff fixture) intercept.
-    from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff, parse_retry_after_seconds
+    from agent.retry_utils import (
+        LIVE_RETRY_WAIT_CAP_S, RETRY_AFTER_CAP_S, adaptive_rate_limit_backoff, jittered_backoff,
+        provider_retry_after_seconds,
+    )
+    from hermes_cli.anon_auth import on_free_model
 
     # Respect Retry-After on every retryable provider error, not just 429s. Retryable
     # 5xx responses (e.g. Cloudflare 520/524) also carry the header or a structured
     # ``retry_after`` problem-detail body field; ignoring either turns an origin
     # outage into a retry storm.
-    _retry_after = parse_retry_after_seconds(
-        getattr(getattr(api_error, "response", None), "headers", None)
-    )
-    if _retry_after is None:
-        _error_body = getattr(api_error, "body", None)
-        if isinstance(_error_body, dict):
-            # Some providers nest it as error.retry_after (the same unwrap
-            # extract_api_error_context uses), others put it at the top level.
-            _nested = _error_body.get("error")
-            _payload = _nested if isinstance(_nested, dict) else _error_body
-            _retry_after = parse_retry_after_seconds(_payload.get("retry_after"))
+    _retry_after = provider_retry_after_seconds(api_error)
     if _retry_after is not None:
-        # Cap at 10 minutes. Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap
-        # caused us to retry before the actual reset window and re-trip the limit. 600s covers all
-        # realistic provider reset windows while still rejecting pathological values. (#26293)
-        _retry_after = min(_retry_after, 600)
-        if _retry_after <= 0:
-            # A zero/expired cooldown (retry-after: 0, or an HTTP-date in the
-            # past, which the parser clamps to 0.0) carries no usable wait —
-            # treat it as absent so we never hot-loop the provider.
-            _retry_after = None
+        _retry_after = min(_retry_after, RETRY_AFTER_CAP_S)
     wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
     _backoff_policy = None
     _adaptive = is_rate_limited or is_zai_coding_overload
@@ -1460,36 +1448,30 @@ def compute_error_backoff(
             retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
         )
     _reset = reset_hint(api_error) if _adaptive else ""
-    _wait_reason = "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited"
+    _free_busy = is_rate_limited and on_free_model(agent, base_url)
+    _wait_reason = ("The free model is busy" if _free_busy
+                    else "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited")
     if _adaptive:
         _policy_note = _ZAI_POLICY_NOTES.get(_backoff_policy or "", "")
-        _rate_limit_status = (
-            f"⏱️ {_wait_reason}.{f' Resets in {_reset}.' if _reset else ''} Waiting {wait_time:.1f}s "
-            f"(attempt {retry_count + 1}/{max_retries}){_policy_note}..."
-        )
-        if _backoff_policy == "zai_coding_overload_long":
-            agent._emit_diagnostic_status(_rate_limit_status)
-        else:
-            agent._buffer_diagnostic_status(_rate_limit_status)
+        _status = (f"⏱️ {_wait_reason}.{f' Resets in {_reset}.' if _reset else ''} Waiting {wait_time:.1f}s "
+                   f"(attempt {retry_count + 1}/{max_retries}){_policy_note}...")
+        _announce_now = _backoff_policy == "zai_coding_overload_long"
     else:
-        _retry_status = (
-            f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})..."
-        )
-        if _retry_after is not None and _retry_after > 60:
-            # A 5xx Retry-After can now reach the 600s cap; buffering that wait
-            # would leave the user silent for minutes, so surface long provider
-            # cooldowns immediately (mirrors the zai_coding_overload_long path).
-            agent._emit_diagnostic_status(_retry_status)
-        else:
-            agent._buffer_diagnostic_status(_retry_status)
-    # The buffered line only replays if every retry fails; the live status
-    # line is the one thing the user sees meanwhile. Name the wait there so a
-    # 60s backoff after a 5xx is not an anonymous spinner — this is transient
-    # (rewritten by the next frame, cleared on recovery), so it does not add
-    # the transcript chatter the buffer exists to avoid. The reset window
-    # belongs here too: during the wait this line is the only place the user
-    # can learn whether to sit it out or switch models.
-    _live_reason = f"{_wait_reason.lower()} — resets in {_reset}," if _reset else "waiting on provider —"
+        _status = f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})..."
+        # A 5xx Retry-After can reach the cap; buffering it would leave the user silent for minutes.
+        _announce_now = _retry_after is not None and _retry_after > LIVE_RETRY_WAIT_CAP_S
+    if _announce_now:
+        agent._emit_diagnostic_status(_status)
+    else:
+        agent._buffer_diagnostic_status(_status)
+    # The buffered line replays only if every retry fails; the live status line is transient
+    # (rewritten by the next frame, cleared on recovery), so it names the wait on every retry
+    # without adding transcript chatter. The reset window belongs here too: during the wait this
+    # line is where the user learns whether to sit it out or switch models.
+    if _reset:
+        _live_reason = f"{_wait_reason.lower()} — resets in {_reset},"
+    else:
+        _live_reason = "the free model is busy —" if _free_busy else "waiting on provider —"
     agent._emit_diagnostic_wait(
         f"⏳ {_live_reason} retrying in {wait_time:.0f}s (attempt {retry_count}/{max_retries})"
     )
@@ -1499,6 +1481,22 @@ def compute_error_backoff(
         _backoff_policy or "default", api_error,
     )
     return wait_time
+
+
+def free_tier_cooldown_ends_turn(agent: Any, api_error: Exception, base_url: Any) -> bool:
+    """True when an attended session on the free model meets a cooldown longer than a person
+    sits through. The free tier's pause is service-wide: a 600 s retry met a second 429 while its
+    1069 s window ran, so the caller ends the attempt cycle now (fallback, or the reset time and
+    the sign-in / model doors). Every other provider, and every unattended run (cron, messaging,
+    ``hermes chat -q``), waits out its ``Retry-After``: a paid bucket reopens on time, and
+    ``fallback.min_switch_reset_seconds`` relies on that wait."""
+    from agent.retry_utils import LIVE_RETRY_WAIT_CAP_S, provider_retry_after_seconds
+    from agent.session_source import is_attended
+    from hermes_cli.anon_auth import on_free_model
+    if not (on_free_model(agent, base_url) and is_attended(agent)):
+        return False
+    cooldown = provider_retry_after_seconds(api_error)
+    return cooldown is not None and cooldown > LIVE_RETRY_WAIT_CAP_S
 
 
 def _codex_soft_failure_error(response: Any) -> Dict[str, Any]:

@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional
 
 from tools.transcription_audio import _find_whisper_binary, _prepare_local_audio, _run_quiet
 from tools.transcription_common import (
-    DEFAULT_LOCAL_MODEL, DEFAULT_LOCAL_STT_LANGUAGE, GROQ_MODELS, LOCAL_STT_COMMAND_ENV,
+    DEFAULT_LOCAL_MODEL, DEFAULT_LOCAL_STT_LANGUAGE, GROQ_MODELS, LOCAL_STT_COMMAND_ENV, RETIRED_GROQ_MODELS,
     OPENAI_MODELS, _config_number, _error_result, _log_prompt_unsupported, _ok_result,
     _process_error_detail)
 
@@ -80,7 +80,7 @@ def _normalize_local_model(model_name: Optional[str]) -> str:
     """Return a valid faster-whisper size; cloud-only names (``whisper-1`` …) fall back to the default with a warning."""
     if not model_name:
         return DEFAULT_LOCAL_MODEL
-    if model_name in OPENAI_MODELS | GROQ_MODELS:
+    if model_name in OPENAI_MODELS | GROQ_MODELS | RETIRED_GROQ_MODELS:
         logger.warning(
             "STT model '%s' is a cloud-only name and cannot be used with the local "
             "provider. Falling back to '%s'. Set stt.local.model to a valid "

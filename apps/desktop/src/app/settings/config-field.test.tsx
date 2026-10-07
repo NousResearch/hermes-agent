@@ -1,5 +1,5 @@
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, expect, test } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, expect, test, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 import { ko } from '@/i18n/ko'
@@ -87,3 +87,29 @@ test('still omits a schema description that only repeats its Korean label with p
   expect(screen.getByText(label)).toBeTruthy()
   expect(screen.queryByText(description)).toBeNull()
 })
+
+test.each([{ isComposing: true }, { keyCode: 229 }])(
+  'keeps a Korean list draft focused until a non-IME Enter commits it (%j)',
+  ime => {
+    const onChange = vi.fn()
+    render(
+      <I18nProvider configClient={null} initialLocale="ko">
+        <ConfigField onChange={onChange} schema={{ type: 'list' }} schemaKey="terminal.docker_image" value={['첫째']} />
+      </I18nProvider>
+    )
+
+    const field = screen.getByRole('textbox', {
+      name: ko.settings.fieldLabels['terminal.dockerImage']
+    }) as HTMLInputElement
+
+    field.focus()
+    fireEvent.change(field, { target: { value: '첫째, 둘째,' } })
+    expect(field.value).toBe('첫째, 둘째,')
+    expect(onChange).not.toHaveBeenCalled()
+    fireEvent.keyDown(field, { key: 'Enter', ...ime })
+    expect(field.ownerDocument.activeElement).toBe(field)
+    expect(onChange).not.toHaveBeenCalled()
+    fireEvent.keyDown(field, { key: 'Enter' })
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(['첫째', '둘째'])
+  }
+)

@@ -47,9 +47,15 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     if not _GATEWAY_HEALTH_URL:
         return False, None
     base = re.sub(r"/health(/detailed)?$", "", _GATEWAY_HEALTH_URL.rstrip("/"))
+    # Bearer credential for an auth-protected gateway (issue #76051): sent to the
+    # authenticated /health/detailed probe ONLY — never to the public /health fallback,
+    # which is unauthenticated by design.
+    api_key = os.environ.get("API_SERVER_KEY", "").strip()
     for path in (f"{base}/health/detailed", f"{base}/health"):
         try:
             req = urllib.request.Request(path, method="GET")
+            if api_key and path.endswith("/health/detailed"):
+                req.add_header("Authorization", f"Bearer {api_key}")
             with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
                 if resp.status == 200:
                     return True, _read_dashboard_json_response(resp)

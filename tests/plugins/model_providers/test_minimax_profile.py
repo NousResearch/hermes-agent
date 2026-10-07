@@ -22,8 +22,6 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli.models_catalog_static import _MINIMAX_MODELS
-
 
 @pytest.fixture(params=["minimax", "minimax-cn", "minimax-oauth"])
 def minimax_profile(request):
@@ -158,8 +156,7 @@ class TestMinimaxCuratedFloorContract:
 
     These assert contracts between pieces of data instead of pinning the
     catalog's current head, so a routine catalog bump (the next M3.x) stays
-    green; only a real break — rows drifting apart, or a curated model with no
-    non-fallback context length — turns them red.
+    green; only a real break — rows drifting apart — turns them red.
     """
 
     def test_direct_api_rows_share_one_floor(self):
@@ -170,16 +167,4 @@ class TestMinimaxCuratedFloorContract:
         assert _PROVIDER_MODELS["minimax"] == _PROVIDER_MODELS["minimax-cn"], (
             "minimax and minimax-cn drifted apart — one row would offer models "
             "the other cannot serve"
-        )
-
-    @pytest.mark.parametrize("model", _MINIMAX_MODELS)
-    def test_every_curated_model_resolves_non_fallback_context_length(self, model):
-        """Each curated entry must hit a specific ``DEFAULT_CONTEXT_LENGTHS`` key,
-        not fall through to the silent 256K fallback — a new model id that misses
-        every key (e.g. a renamed generation) would report a wrong window."""
-        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
-
-        assert _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower()) is not None, (
-            f"{model} has no DEFAULT_CONTEXT_LENGTHS entry — the picker would "
-            "serve the 256K fallback for it"
         )

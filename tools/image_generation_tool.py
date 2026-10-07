@@ -909,6 +909,14 @@ _CREATIVE_CONTROL_PARAMS = {
     },
 }
 
+_STYLE_PROMPT_PARAM = {
+    "type": "string",
+    "description": (
+        "The subject and scene to generate. Be detailed and descriptive; "
+        "reference images supply only the look."
+    ),
+}
+
 _STYLE_IMAGE_URL_PARAM = {
     "type": "string",
     "description": (
@@ -948,6 +956,7 @@ def _build_dynamic_image_schema() -> dict[str, Any]:
     if can_edit:
         if style_refs:
             edit_clause = ", or copy the look of reference images passed in image_url"
+            properties["prompt"] = _STYLE_PROMPT_PARAM
             properties["image_url"] = _STYLE_IMAGE_URL_PARAM
             refs_desc = f"Up to {max_refs} more style references. URLs or absolute local paths."
         else:

@@ -140,7 +140,9 @@ class TestDynamicParamGating(unittest.TestCase):
         self.assertIs(krea["parameters"]["properties"]["image_url"], ig._STYLE_IMAGE_URL_PARAM)
         self.assertIs(fal["parameters"]["properties"]["image_url"], ig._IMAGE_URL_PARAM)
         self.assertNotIn("edit", krea["parameters"]["properties"]["reference_image_urls"]["description"])
+        self.assertNotIn("edit", krea["parameters"]["properties"]["prompt"]["description"])
         self.assertIn("edit", fal["parameters"]["properties"]["reference_image_urls"]["description"])
+        self.assertIn("edit", fal["parameters"]["properties"]["prompt"]["description"])
 
     def test_static_schema_carries_no_capability_args(self):
         """The registration-time placeholder must stay minimal — dynamic

@@ -25,6 +25,13 @@ UNDELIVERED_NO_SURFACE = "[clarify prompt could not be delivered: no chat surfac
 SEND_ACK_WINDOW = 15
 
 
+# Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
+# Slack click handler shows on a dead entry).
+def _clarify_expired_notice() -> str:
+    from agent.i18n import t
+    return t("gateway.clarify.expired")
+
+
 def text_fallback_coro(adapter, **send_kwargs):
     """The base numbered-text ``send_clarify`` as a fresh coroutine, or ``None`` when the adapter has
     no native override — its ``send_clarify`` already IS the text path, so retrying it would only

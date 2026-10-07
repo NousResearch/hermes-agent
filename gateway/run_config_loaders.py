@@ -198,6 +198,17 @@ class GatewayConfigLoadersMixin:
             None if reasoning_config is None else dict(reasoning_config)
         )
 
+    def _session_reasoning_override_active(self, session_key: Optional[str]) -> bool:
+        """True when a session-scoped ``/reasoning`` override is set.
+
+        Used to suppress adaptive reasoning escalation: an explicit user pick always wins over the
+        classifier.
+        """
+        if not session_key:
+            return False
+        state = self._peek_session_state(session_key)
+        return state is not None and state.conversation.reasoning_override is not None
+
     def _resolve_session_service_tier(self, source=None, session_key: Optional[str] = None) -> Optional[str]:
         """Effective service tier: a session-scoped /fast override beats the config default.
 

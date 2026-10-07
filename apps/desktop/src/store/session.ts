@@ -11,6 +11,7 @@ import {
   connectionScopeSuffix,
   rescopeConnectionScopedStores
 } from '@/lib/connection-scoped'
+import { isInheritedEffortSelection } from '@/lib/reasoning-effort'
 import { isMessagingSource } from '@/lib/session-source'
 import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
@@ -1744,6 +1745,20 @@ export const setCurrentReasoningEffortWire = (next: string) => {
 export const $defaultReasoningEffort = atom('')
 
 export const setDefaultReasoningEffort = (next: string) => updateAtom($defaultReasoningEffort, next)
+
+// The composer effort to ship on `session.create`, or '' when it only mirrors
+// the profile default. useHermesConfig seeds the composer from that default,
+// so sending the seed as an explicit per-session override would (a) disable
+// adaptive reasoning escalation for every ordinary new chat and (b) clobber
+// per-model `agent.reasoning_overrides`. Only a distinct pick rides the wire;
+// the gateway `/reasoning <level>` path stays the explicit force-baseline
+// escape hatch (an explicit pick equal to the default is indistinguishable
+// from the seed here, by design).
+export function explicitEffortPick(): string {
+  const effort = $currentReasoningEffort.get().trim()
+
+  return isInheritedEffortSelection(effort, $defaultReasoningEffort.get()) ? '' : effort
+}
 
 export const setCurrentServiceTier = (next: Updater<string>) => {
   updateAtom($currentServiceTier, next)

@@ -1963,6 +1963,151 @@ A custom `base_url` (`http://localhost:11434/v1`, a vLLM, SGLang or router endpo
 
 The override applies automatically everywhere: CLI startup, `hermes -p` one-shots, messaging gateway, Desktop/TUI, ACP sessions, cron jobs, `/model` mid-session switches (including a switch issued before the first message), session resume (`--resume`, `/resume`), `/new`, and fallback model activation.
 
+#### Adaptive Reasoning (opt-in)
+
+Hermes can automatically adjust the reasoning effort for individual tasks
+that warrant it, while keeping your configured baseline for everything else:
+
+```yaml
+agent:
+  reasoning_effort: "medium"   # your baseline — required for adaptive to be active
+  adaptive_reasoning:
+    enabled: true              # off by default
+    max_effort: "xhigh"        # adjustment ceiling: "high" or "xhigh"
+    min_effort: "low"          # optional floor; omit for escalation-only
+```
+
+When enabled, each message is classified by a **deterministic local
+heuristic** — no extra LLM call, no new model tools, and no changes to the
+conversation the model sees. Ordinary and ambiguous turns stay at your
+baseline, including `minimal`, `low`, `high` or `xhigh`; substantial multi-step coding/debugging, consequential
+infrastructure changes, and in-depth research escalate to `high`. A single
+keyword never reaches `xhigh`. Two cases do: coding or debugging work with
+one corroborating signal (error output, a second coding signal,
+infrastructure or production impact, a numbered/bulleted step list, a code
+block, or a request over 500 characters), and architecture/security/
+high-stakes work with enough corroborating signals. A bare `implement X` or
+`why does Y keep failing?` stays at `high`.
+
+Short turns are judged with context. "go ahead" inherits a previous
+escalation. After a turn that ran at `high` or `xhigh`, a short follow-up
+from a fixed set ("fix it", "try again", "no, do it properly", "why?",
+"still broken", "redo it", "same error") keeps that level instead of
+dropping. It is never raised further and never exceeds `max_effort`.
+Without an escalated previous turn these phrases keep the baseline.
+Unrelated trivial turns ("thanks", "hi") are classified from scratch and
+return to the baseline unless an opted-in downshift applies.
+
+Only what you wrote is classified. On messaging platforms that is your
+message as sent, before Hermes adds auto-loaded skills, sender names, reply
+quotes or channel context. For a `/skill` or bundle invocation it is the
+instruction you typed after the command, and a bare invocation keeps the
+baseline. Completion notices Hermes sends itself (finished background
+processes, async delegation results) never adjust effort.
+
+**Downshift is opt-in and conservative.** Without `min_effort`, adaptive is
+escalation-only and your baseline is the floor. With `min_effort: "low"`,
+turns matching a small set of complete simple-request shapes — casual
+chatter such as `hi how are you`, concrete factual lookups, or single
+read-only retrievals — can run at `low`. For example, `What is the capital of France?`, `Which tests failed?`,
+and `list the files in /tmp` qualify when no complexity signal is present. <!-- no-tmp: ok — quotes a user request the classifier accepts, not a scratch path -->
+A question word or read-only verb alone is not enough: the entire request
+must match, including its subject/operand. Compound requests such as
+`Which tests failed — fix them?` or `Which tests failed: fix them?` retain
+baseline or above; unrecognized wording also retains baseline rather than
+being assumed simple. Error output, code, multi-step structure, joining
+words (`and`, `then`, `before`…), `,` `;` `&`, a line break inside the
+message, and infrastructure/debugging keywords block downshift. A doubled
+question mark or a trailing newline does not, and a second question still
+has to match a shape on its own, so `What is the port? And where is the
+config?` keeps the baseline.
+
+Simple turns never raise a lower baseline: `minimal` plus `hello` stays
+`minimal`, even with `min_effort: "low"`. The bounds constrain adjustments,
+not the baseline itself: a floor above the baseline does not raise it, and
+a ceiling below the baseline does not force ordinary or complex work down.
+
+This heuristic is not a natural-language parser or a proof of simplicity.
+It intentionally misses many genuinely simple questions (including unsupported
+subjects, multiword place names and retrieval paths containing spaces).
+It cannot determine the actual cost of a lookup from its wording or infer all
+implicit context. Leave `min_effort` unset for a strict no-downshift guarantee,
+or use an explicit `/reasoning` pin for a particular session.
+
+`none` is never selected: thinking stays enabled at every adaptive level. An invalid
+floor (an unknown level, `none`, or a floor above `max_effort`) is ignored
+and the feature stays escalation-only.
+
+**An explicit baseline is required.** If `agent.reasoning_effort` is unset
+(no baseline, provider default), adaptive stays inert: installing a
+reasoning config for a single turn would toggle thinking presence on/off
+mid-conversation. With a baseline set, only the effort *level* changes across
+turns and thinking stays enabled at every level, which avoids the larger cache
+invalidation a thinking on/off toggle causes (it can reach the tool and system
+blocks). A level change still costs a cache miss on some providers; see the
+warning below.
+
+:::warning Prompt-cache cost on direct Anthropic API routes
+On direct Messages API requests, changing `output_config.effort` invalidates
+the cached message blocks. The first API call of a turn whose level differs
+from the previous call (an adjusted turn, or the first turn back at your
+baseline) therefore re-keys the message cache and re-writes the conversation
+at cache-write price instead of reading it at cache-read price. Hermes holds
+the level for the whole tool loop, so that is one miss per level change, not
+one per tool call, but in a long conversation it can add up. Anthropic
+documents that on models with per-message effort, an effort change carried in
+a `role: "system"` message leaves the cached prefix intact; Hermes's direct
+Anthropic adapter sets effort at request level, so assume the miss applies
+there. Providers with content-keyed prefix caching (typical for
+OpenAI-compatible endpoints) are not affected. If cost matters more than
+latency on a direct Anthropic route, leave `adaptive_reasoning` off or use a
+fixed `agent.reasoning_effort`.
+:::
+
+The adjusted effort applies for the **full tool-calling loop of that turn
+only** — your configured `agent.reasoning_effort` is restored afterwards and
+is never rewritten. Adjustment starts after turn admission and the background-review
+fence; rejected turns do not change effort or emit an adjustment notice.
+When the level changes, Hermes shows a one-line notice
+so you know it's active (a console line in the CLI, a toast in the desktop
+app, a short message on messaging platforms):
+
+> 🧠 Reasoning raised to High for this task — debugging/diagnosis and an error trace.
+
+> 🧠 Reasoning lowered to Low for this task — simple factual request.
+
+Consecutive adjusted turns at the same level notify only once.
+
+**Explicit choices always win.** A session-scoped `/reasoning <level>` pick,
+a desktop effort selection **distinct from your profile default**, or the
+`--reasoning` CLI flag disables adaptive adjustment for that session;
+`/reasoning <level> --global` sets a new baseline that adaptive continues to
+work around. (The desktop composer pre-fills your profile default for new
+chats; leaving it there counts as inherited, so adaptive stays active —
+picking the default level on purpose is indistinguishable from that pre-fill.
+Use `/reasoning <level>` in the chat when you want to pin the effort
+explicitly, even before the first prompt.) Desktop comparisons use the global
+composer default, not a per-model override. TUI/Desktop session pins retain
+that explicit intent across deferred builds and subsequent resumes; older
+saved sessions without intent metadata retain their effort snapshot but need
+a fresh `/reasoning <level>` command to establish a pin. `/new` clears the pin.
+Adaptive never re-enables thinking you disabled
+(`reasoning_effort: none`), and provider/model-specific effort clamps (e.g.
+models without `xhigh`) still apply to the wire request as usual.
+
+**Subagents inherit and re-adapt.** A delegate subagent spawned during an
+adaptive turn starts from the parent's *effective* level at that moment (an
+escalated parent hands its child the escalated baseline) and receives the
+same adaptive policy, so the child independently reclassifies its own
+delegated goal — a demanding subtask can escalate to `xhigh` even when the
+parent ran at `medium`. An explicit `delegation.reasoning_effort` is a hard
+pin: it sets the child's level (including `false` to disable thinking) and
+turns the child's adaptive classification off, as does an explicit parent
+session override. Cron jobs, batch runs, and auxiliary tasks keep their own
+configured effort.
+
+
+
 ## Fast Mode
 
 Fast mode asks the provider for faster output at a premium price: OpenAI [Priority Processing](https://openai.com/api-priority-processing/) (`service_tier: priority`) and Ultrafast (`service_tier: ultrafast`) on supported OpenAI models, xAI Priority Processing on Grok 4.6, and Anthropic [Fast Mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode) (`speed: fast`, Opus 4.8 / Opus 5 / Opus 5.5 only). The `openai` and `openai-api` providers use the first-party OpenAI endpoint. It is **off by default**.

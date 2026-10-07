@@ -613,17 +613,35 @@ def heartbeat_worker(
     *,
     note: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    progress: Optional[Any] = None,
 ) -> bool:
     """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
 
     Liveness signal orthogonal to the PID check: a worker whose forked child
     (train loop, crawl) is stuck can still have a live Python process.
     Returns False if the task is not running or its claim expired.
+
+    ``progress`` (a ``kanban_progress.ProgressSnapshot``, a mapping or None)
+    carries the forward-progress columns alongside the heartbeat so a worker
+    looping on the same tool call is distinguishable from one making progress:
+    the heartbeat stays fresh either way, only ``last_progress_at`` stops
+    advancing. Omitted / empty = leave the columns untouched (an explicit
+    ``kanban_heartbeat`` tool call from the model writes no signal of its own).
     """
     now = int(time.time())
+    progress_cols = _progress_columns(progress)
     with _kb.write_txn(conn):
-        sql = "UPDATE tasks SET last_heartbeat_at = ? WHERE id = ? AND status = 'running'"
-        params: tuple = (now, task_id)
+        sets = "last_heartbeat_at = ?"
+        params: tuple = (now,)
+        if progress_cols:
+            sets += ", last_progress_at = ?, progress_repeat_count = ?, tool_calls_total = ?"
+            params += (
+                progress_cols["last_progress_at"],
+                progress_cols["progress_repeat_count"],
+                progress_cols["tool_calls_total"],
+            )
+        sql = f"UPDATE tasks SET {sets} WHERE id = ? AND status = 'running'"
+        params += (task_id,)
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params += (int(expected_run_id),)
@@ -636,13 +654,52 @@ def heartbeat_worker(
             else _kb._current_run_id(conn, task_id)
         )
         if run_id is not None:
-            conn.execute("UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?", (now, run_id))
+            run_sets = "last_heartbeat_at = ?"
+            run_params: tuple = (now,)
+            if progress_cols:
+                run_sets += ", last_progress_at = ?, progress_repeat_count = ?, tool_calls_total = ?"
+                run_params += (
+                    progress_cols["last_progress_at"],
+                    progress_cols["progress_repeat_count"],
+                    progress_cols["tool_calls_total"],
+                )
+            run_params += (run_id,)
+            conn.execute(f"UPDATE task_runs SET {run_sets} WHERE id = ?", run_params)
+        event_payload: dict = {}
+        if note:
+            event_payload["note"] = note
+        if progress_cols:
+            event_payload.update(progress_cols)
         _kb._append_event(
             conn, task_id, "heartbeat",
-            {"note": note} if note else None,
+            event_payload or None,
             run_id=run_id,
         )
     return True
+
+
+def _progress_columns(progress: Optional[Any]) -> Optional[dict]:
+    """Normalise a progress snapshot/mapping to the three board columns.
+
+    Returns None when the caller supplied nothing, so an unrelated heartbeat
+    never zeroes a live signal. Accepts the dataclass from
+    ``hermes_cli.kanban_progress`` and plain dicts (tests, other embedders).
+    """
+    if progress is None:
+        return None
+    if hasattr(progress, "as_heartbeat_payload"):
+        data = progress.as_heartbeat_payload()
+    elif isinstance(progress, Mapping):
+        data = dict(progress)
+    else:
+        return None
+    if not data:
+        return None
+    return {
+        "last_progress_at": _kb._opt_int(data.get("last_progress_at")),
+        "progress_repeat_count": int(data.get("progress_repeat_count") or 0),
+        "tool_calls_total": int(data.get("tool_calls_total") or 0),
+    }
 
 
 def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:

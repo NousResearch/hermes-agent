@@ -647,6 +647,10 @@ class Task:
     last_failure_error: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
     last_heartbeat_at: Optional[int] = None
+    # Forward-progress rollup (kanban_progress); None/0 = legacy row or unknown.
+    last_progress_at: Optional[int] = None
+    progress_repeat_count: int = 0
+    tool_calls_total: int = 0
     current_run_id: Optional[int] = None
     workflow_template_id: Optional[str] = None
     current_step_key: Optional[str] = None
@@ -693,7 +697,8 @@ _TASK_REQUIRED_COLUMNS = (
 # Later-added columns read as NULL when absent from the row.
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
-    "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
+    "max_runtime_seconds", "last_heartbeat_at", "last_progress_at", "progress_repeat_count",
+    "tool_calls_total", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
 )
 # Text columns where "" is stored/read as "not set".
@@ -723,6 +728,10 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    # Forward-progress rollup mirrored from tasks (kanban_progress); None/0 = unknown.
+    last_progress_at: Optional[int] = None
+    progress_repeat_count: int = 0
+    tool_calls_total: int = 0
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
@@ -734,6 +743,9 @@ class Run:
                 )
             },
             id=int(row["id"]),
+            last_progress_at=_opt_int(_row_get(row, "last_progress_at")),
+            progress_repeat_count=int(_row_get(row, "progress_repeat_count") or 0),
+            tool_calls_total=int(_row_get(row, "tool_calls_total") or 0),
             started_at=int(row["started_at"]),
             ended_at=_opt_int(row["ended_at"]),
             metadata=_json_or(_lossy_text(row["metadata"])),
@@ -839,6 +851,16 @@ CREATE TABLE IF NOT EXISTS tasks (
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
     last_heartbeat_at    INTEGER,
+    -- Forward-progress signal (see hermes_cli/kanban_progress.py). The
+    -- heartbeat above answers "is the process making API traffic?"; these
+    -- answer "is it getting anywhere?". ``last_progress_at`` is stamped only
+    -- when a tool call's signature differs from the previous one, so a worker
+    -- looping on the same call stops refreshing it while ``last_heartbeat_at``
+    -- stays fresh. NULL/0 on legacy rows and on workers that predate the
+    -- signal; readers treat absence as unknown, never as stalled.
+    last_progress_at     INTEGER,
+    progress_repeat_count INTEGER NOT NULL DEFAULT 0,
+    tool_calls_total     INTEGER NOT NULL DEFAULT 0,
     -- Pointer into task_runs for the currently-active run (NULL if no
     -- run is in-flight). Denormalised for cheap reads.
     current_run_id       INTEGER,
@@ -948,6 +970,11 @@ CREATE TABLE IF NOT EXISTS task_runs (
     worker_started_at   INTEGER,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
+    -- Per-run mirror of the task's forward-progress columns (kanban_progress),
+    -- so a finished run keeps the state it ended with. NULL/0 = unknown.
+    last_progress_at    INTEGER,
+    progress_repeat_count INTEGER NOT NULL DEFAULT 0,
+    tool_calls_total    INTEGER NOT NULL DEFAULT 0,
     started_at          INTEGER NOT NULL,
     ended_at            INTEGER,
     outcome             TEXT,

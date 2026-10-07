@@ -36,6 +36,7 @@ from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_diagnostics as kd
+from hermes_cli import kanban_progress as kprog
 from hermes_cli.kanban_db import KANBAN_ATTACHMENT_MAX_BYTES, _collision_free_path, _safe_attachment_name
 
 log = logging.getLogger(__name__)
@@ -925,12 +926,31 @@ def list_active_workers(board: Optional[str] = _BOARD_Q):
         rows = conn.execute(
             "SELECT r.id AS run_id, r.task_id, t.title AS task_title, t.status AS task_status, "
             "t.assignee AS task_assignee, r.profile, r.worker_pid, r.started_at, r.claim_lock, "
-            "r.claim_expires, r.last_heartbeat_at, r.max_runtime_seconds "
+            "r.claim_expires, r.last_heartbeat_at, r.max_runtime_seconds, "
+            "r.worker_started_at, r.last_progress_at, r.progress_repeat_count, r.tool_calls_total "
             "FROM task_runs r JOIN tasks t ON t.id = r.task_id "
             "WHERE r.ended_at IS NULL AND r.worker_pid IS NOT NULL AND t.status = 'running' "
             "ORDER BY r.started_at ASC").fetchall()
-        workers = [dict(row) for row in rows]
-        return {"workers": workers, "count": len(workers), "checked_at": int(time.time())}
+        now = int(time.time())
+        workers = []
+        for row in rows:
+            worker = dict(row)
+            fingerprint = kanban_db._row_get(row, "worker_started_at")
+            pid_alive: Optional[bool] = None
+            if row["worker_pid"] is not None:
+                with contextlib.suppress(Exception):
+                    pid_alive = bool(kanban_db._worker_alive(row["worker_pid"], fingerprint))
+            worker["liveness"] = kprog.classify_liveness(
+                now=now,
+                status=row["task_status"],
+                pid_alive=pid_alive,
+                started_at=row["started_at"],
+                last_heartbeat_at=kanban_db._row_get(row, "last_heartbeat_at"),
+                last_progress_at=kanban_db._row_get(row, "last_progress_at"),
+                progress_repeat_count=kanban_db._row_get(row, "progress_repeat_count"),
+            ).as_dict()
+            workers.append(worker)
+        return {"workers": workers, "count": len(workers), "checked_at": now}
 
 
 @router.get("/runs/{run_id}")

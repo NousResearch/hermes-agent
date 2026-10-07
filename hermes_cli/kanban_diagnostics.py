@@ -15,6 +15,8 @@ from typing import Any, Callable, Iterable, Optional
 import json
 import time
 
+from hermes_cli import kanban_progress as kprog
+
 
 # Least → most urgent; sorted outputs put critical first.
 SEVERITY_ORDER = ("warning", "error", "critical")
@@ -557,6 +559,61 @@ def _rule_review_dependency_deadlock(task, events, runs, now, cfg) -> list[Diagn
     )]
 
 
+def _rule_worker_not_progressing(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A ``running`` worker whose forward progress has stopped.
+
+    ``last_heartbeat_at`` stays fresh while a worker loops on one tool call,
+    retries a provider, or reconnects a stream, so a heartbeat-only view reads
+    "alive" for hours. ``kanban_progress`` records when the tool-call signature
+    last *changed*; this rule names the stall, the repeat loop, and the
+    heartbeat-with-no-signal case. Indeterminate workers produce nothing (a
+    legacy row with no progress columns is not evidence of a stall).
+    """
+    if _task_field(task, "status") != "running":
+        return []
+    liveness = kprog.classify_liveness(
+        now=now,
+        status="running",
+        started_at=_task_field(task, "started_at"),
+        last_heartbeat_at=_task_field(task, "last_heartbeat_at"),
+        last_progress_at=_task_field(task, "last_progress_at"),
+        progress_repeat_count=_task_field(task, "progress_repeat_count"),
+        stall_seconds=cfg.get("worker_stall_seconds"),
+        loop_repeat_limit=cfg.get("worker_loop_repeat_limit"),
+        zombie_seconds=cfg.get("worker_zombie_seconds"),
+    )
+    if liveness.state not in (kprog.STALLED, kprog.LOOPING, kprog.ZOMBIE):
+        return []
+    task_id = str(_task_field(task, "id") or "")
+    total = int(_task_field(task, "tool_calls_total") or 0)
+    actions: list[DiagnosticAction] = []
+    if task_id:
+        actions.append(_log_hint_action(task_id))
+    severity = "error" if liveness.state == kprog.ZOMBIE else "warning"
+    return [Diagnostic(
+        kind=f"worker_{liveness.state}",
+        severity=severity,
+        title=f"Worker {liveness.state}: {liveness.reason}",
+        detail=(
+            f"The worker for this running card is not making forward progress: {liveness.reason}. "
+            f"Heartbeat age {liveness.heartbeat_age_s}s, last new tool call {liveness.progress_age_s}s ago, "
+            f"{total} tool call(s) this run. A fresh heartbeat alone does not mean the worker is working — "
+            f"read the worker log before deciding; if the work is genuinely long-running, raise "
+            f"HERMES_KANBAN_PROGRESS_STALL_SECONDS or give the card an explicit runtime."
+        ),
+        actions=actions,
+        first_seen_at=int(_task_field(task, "last_progress_at", 0) or 0) or now,
+        last_seen_at=now,
+        data={
+            "state": liveness.state,
+            "heartbeat_age_s": liveness.heartbeat_age_s,
+            "progress_age_s": liveness.progress_age_s,
+            "repeat_count": liveness.repeat_count,
+            "tool_calls_total": total,
+        },
+    )]
+
+
 def _rule_running_with_open_parents(task, events, runs, now, cfg) -> list[Diagnostic]:
     """A ``running`` card with a direct parent that is not ``done``/``archived``:
     the dependency gate is not holding it (the parent reopened mid-run, or the
@@ -745,6 +802,7 @@ _RULES: list[RuleFn] = [
     _rule_repeated_crashes,
     _rule_review_dependency_deadlock,
     _rule_running_with_open_parents,
+    _rule_worker_not_progressing,
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
@@ -762,6 +820,10 @@ DEFAULT_CONFIG = {
     # Below 30 min the signal is dominated by tasks about to be claimed on
     # the next dispatcher tick.
     "stranded_threshold_seconds": 30 * 60,
+    # Worker forward-progress rule (kanban_progress); None = the module default.
+    "worker_stall_seconds": None,
+    "worker_loop_repeat_limit": None,
+    "worker_zombie_seconds": None,
 }
 
 

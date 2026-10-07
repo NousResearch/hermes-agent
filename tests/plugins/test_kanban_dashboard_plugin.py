@@ -1174,3 +1174,54 @@ def test_board_card_exposes_current_run_start(client):
     # The detail endpoint carries the same contract.
     detail = client.get(f"/api/plugins/kanban/tasks/{t}").json()["task"]
     assert detail["current_run_started_at"] == retry_start
+
+
+# ---------------------------------------------------------------------------
+# PR #123964 review (Enough1122): the tenant-scoped health signal
+# ---------------------------------------------------------------------------
+
+def test_health_and_board_dispatch_health_honour_tenant(client, monkeypatch):
+    """A ``?tenant=`` view must read its OWN starved-vs-idle verdict.
+
+    ``board_health`` scanned every ready row on the board, so a tenant with a
+    held ready row read "idle" and a tenant with no ready rows read "starved" —
+    both wrong, on exactly the multi-tenant surface ``/board`` already scopes.
+    The scoped receipt names the tenant it measured, so the unscoped tuple and
+    a tenant-scoped one cannot be mistaken for each other.
+    """
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+
+    with kbc.connect() as conn:
+        held = kb.create_task(conn, title="held", assignee="dev", tenant="BETA")
+        kb.add_comment(
+            conn, held, author="dev",
+            body="Opened https://github.com/example/repo/pull/77 for review.",
+        )
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_comments SET created_at = created_at - 60 WHERE task_id = ?",
+                (held,),
+            )
+
+    unscoped = client.get("/api/plugins/kanban/health").json()
+    assert unscoped["state"] == "starved"
+    assert "tenant" not in unscoped
+
+    alpha = client.get("/api/plugins/kanban/health", params={"tenant": "ALPHA"}).json()
+    assert alpha["state"] == "idle"
+    assert alpha["tenant"] == "ALPHA"
+
+    beta = client.get("/api/plugins/kanban/health", params={"tenant": "BETA"}).json()
+    assert beta["state"] == "starved"
+
+    # /board embeds the SAME scoped tuple.
+    board_alpha = client.get(
+        "/api/plugins/kanban/board", params={"tenant": "ALPHA"}
+    ).json()
+    assert board_alpha["dispatch_health"]["state"] == "idle"
+    board_beta = client.get(
+        "/api/plugins/kanban/board", params={"tenant": "BETA"}
+    ).json()
+    assert board_beta["dispatch_health"]["state"] == "starved"

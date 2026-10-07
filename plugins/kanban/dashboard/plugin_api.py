@@ -344,7 +344,10 @@ def get_board(
         assignees = [entry["name"] for entry in kanban_db.known_assignees(conn)]
         return {
             "columns": [{"name": name, "tasks": columns[name]} for name in columns], "tenants": tenants,
-            "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time())}
+            "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time()),
+            # Board health travels WITH the board so a starved queue cannot render
+            # like a quiet one: `state=starved` is the operator-visible difference.
+            "dispatch_health": kbd.board_health(conn, board=board, tenant=tenant).as_dict()}
 
 
 _read_board = coalesced_read(get_board)
@@ -366,6 +369,26 @@ async def get_board_endpoint(
         workflow_template_id=workflow_template_id,
         current_step_key=current_step_key,
     )
+
+
+@router.get("/health")
+def get_board_health(
+    board: Optional[str] = _BOARD_Q,
+    tenant: Optional[str] = Query(None, description="Restrict the ready-queue read to this tenant"),
+):
+    """Board health on demand: the same tuple ``/board`` embeds, for a monitor
+    that must not page the whole board to ask whether the queue is moving.
+
+    ``tenant`` scopes the ready-lane read to one tenant, mirroring the
+    ``?tenant=`` view the ``/board`` payload already honours, so the two
+    receipts cannot disagree. Deliberately NOT coalesced: a stalled board has to
+    be readable the moment it stalls, not one cache window later.
+    """
+    with _board_conn(board) as (board, conn):
+        payload = {"board": board, **kbd.board_health(conn, board=board, tenant=tenant).as_dict()}
+    if tenant is not None:
+        payload["tenant"] = tenant
+    return payload
 
 
 # --- GET /tasks/:id ---------------------------------------------------------

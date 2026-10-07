@@ -226,7 +226,7 @@ def test_gated_out_fail_open_tick_leaves_the_gateway_store_status_alone(tmp_path
     monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", InProcessCronScheduler)
     ticked, beats, cleared = [], [], []
     monkeypatch.setattr("cron.scheduler.tick", lambda **_kw: ticked.append(True))
-    monkeypatch.setattr(jobs, "record_ticker_heartbeat", lambda success=False: beats.append(success))
+    monkeypatch.setattr(jobs, "record_ticker_heartbeat", lambda success=False, **_kw: beats.append(success))
     monkeypatch.setattr(jobs, "clear_ticker_error", lambda: cleared.append(True))
     stop = threading.Event()
     # One real scheduler cycle, with no wall-clock wait.

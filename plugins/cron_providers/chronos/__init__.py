@@ -72,7 +72,7 @@ class ChronosCronScheduler(CronScheduler):
         except Exception as e:
             log("Chronos %s reconcile failed: %s", what, e)
 
-    def start(self, stop_event, *, adapters=None, loop=None, interval=60):
+    def start(self, stop_event, *, adapters=None, loop=None, interval=None):
         """Arm all enabled jobs via NAS, then RETURN — no loop, no periodic wake (scale-to-zero)."""
         # Kept so a later identity rejection (boot or mid-life re-arm) can hand this process's
         # fires to the built-in ticker with the gateway's own adapters/loop.

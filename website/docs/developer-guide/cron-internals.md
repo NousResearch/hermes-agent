@@ -94,7 +94,10 @@ Older jobs may have a single `skill` field instead of the `skills` array. The sc
 
 ### Tick Cycle
 
-The scheduler runs on a periodic tick (default: every 60 seconds):
+The scheduler runs on a periodic tick (default: every 60 seconds; set `cron.tick_interval_seconds`
+in `config.yaml` to change it, minimum 5). One ticker serves every profile in the process, so the
+launch profile's value applies to all of them. The heartbeat records the interval so
+`hermes cron status` judges staleness against the ticker's real cadence:
 
 ```text
 tick()

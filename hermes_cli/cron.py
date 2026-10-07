@@ -407,9 +407,13 @@ _FD_EXHAUSTION_HINT = ("  Hint: the ticker hit file-descriptor exhaustion (EMFIL
                        "persists, restart the gateway to recover scheduling.")
 
 
+def _ticker_stale_after_seconds() -> float:
+    from cron.jobs import get_ticker_interval_seconds
+    return get_ticker_interval_seconds() * 3 + 20
+
+
 def _ticker_age_is_fresh(age: Optional[float]) -> bool:
-    from cron.jobs import TICKER_INTERVAL_SECONDS
-    return age is not None and age <= TICKER_INTERVAL_SECONDS * 3 + 20
+    return age is not None and age <= _ticker_stale_after_seconds()
 
 
 def _store_unwritable_report() -> Optional[dict]:
@@ -592,9 +596,9 @@ def cron_status():
             # When scheduling last worked before the host went away: without this, a
             # 7h-overdue job still reads as a normal upcoming "Next run" (#114309).
             with contextlib.suppress(Exception):
-                from cron.jobs import TICKER_INTERVAL_SECONDS, get_ticker_heartbeat_age
+                from cron.jobs import get_ticker_heartbeat_age
                 hb_age = get_ticker_heartbeat_age()
-                if hb_age is not None and hb_age > TICKER_INTERVAL_SECONDS * 3 + 20:
+                if hb_age is not None and hb_age > _ticker_stale_after_seconds():
                     print(color("  Scheduler last ticked "
                                 f"{_format_lateness(hb_age)} ago — jobs that came due "
                                 "since then have not fired.", Colors.YELLOW))

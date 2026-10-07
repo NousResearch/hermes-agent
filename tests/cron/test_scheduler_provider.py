@@ -438,7 +438,7 @@ def test_failing_tick_records_liveness_but_not_success():
     prov = InProcessCronScheduler()
     with patch("cron.scheduler.tick", side_effect=RuntimeError("every tick fails")), \
          patch("cron.jobs.record_ticker_heartbeat",
-               side_effect=lambda success=False: beats.append(success)):
+               side_effect=lambda success=False, **_kw: beats.append(success)):
         t = threading.Thread(target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True)
         t.start()
         # Wait for the pre-loop beat + at least one post-tick beat (was flaky

@@ -87,7 +87,7 @@ def _gateway_owns_cron(name: str, home) -> bool:
         name != "default" and _served_by_running_multiplexer(name))
 
 
-def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
+def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: "int | None" = None) -> None:
     """Tick the cron scheduler from inside the desktop dashboard backend.
 
     The desktop spawns a ``hermes dashboard`` backend, not a gateway, so without

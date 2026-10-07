@@ -1816,11 +1816,11 @@ DEFAULT_CONFIG = {
         # Inference provider paired with cron.model (NOT the scheduler provider below). "" = resolve
         # from global config.
         "model_provider": "",
-        # Cron SCHEDULER provider (WHEN a due job fires). "" = built-in in-process 60s ticker. Name
-        # an installed provider (plugins/cron_providers/<name>/ or $HERMES_HOME/plugins/ <name>/),
-        # e.g. "chronos" (NAS-mediated managed cron for scale-to-zero). An unknown or unavailable
-        # provider falls back to the built-in so cron never loses its trigger.
+        # Cron SCHEDULER provider (WHEN a due job fires). "" = built-in in-process ticker. Name an
+        # installed provider (plugins/cron_providers/<name>/ or $HERMES_HOME/plugins/<name>/), e.g.
+        # "chronos" (NAS-mediated managed cron for scale-to-zero); unknown/unavailable -> built-in.
         "provider": "",
+        "tick_interval_seconds": 60,  # Built-in ticker cadence (floor 5); launch profile's value ticks all.
         # Chronos settings; consulted only when provider == "chronos". All non-secret — the agent
         # holds NO scheduler credentials (provision reuses the Nous Portal token).
         "chronos": {

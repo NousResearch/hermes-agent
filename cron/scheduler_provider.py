@@ -149,10 +149,11 @@ class CronScheduler(ABC):
     @abstractmethod
     def start(
         self, stop_event: threading.Event, *, adapters: Any = None, loop: Any = None,
-        interval: int = 60,
+        interval: "int | None" = None,
     ) -> None:
         """Begin firing due jobs. Built-in BLOCKS until stop_event is set (run in a daemon thread);
-        an external provider may return immediately but must still honor stop_event."""
+        an external provider may return immediately but must still honor stop_event. ``interval``
+        None = ``cron.tick_interval_seconds`` (``resolve_tick_interval``)."""
 
     def stop(self) -> None:
         """Optional eager teardown; stop_event is the primary signal."""
@@ -384,6 +385,37 @@ def fire_overdue_jobs(
     return fired
 
 
+# Below this a tick (per-home lock + store read for every served profile) would run back-to-back.
+_MIN_TICK_INTERVAL_SECONDS = 5
+
+
+def resolve_tick_interval() -> int:
+    """``cron.tick_interval_seconds`` for the built-in ticker; invalid/missing -> the 60s default."""
+    from cron.jobs import TICKER_INTERVAL_SECONDS
+
+    from hermes_cli.config import cfg_get, load_config
+
+    try:
+        cfg = load_config()
+    except Exception:
+        # The ticker must start even on an unreadable config (like resolve_cron_scheduler below).
+        logger.warning("Could not load config for cron.tick_interval_seconds; using %ds",
+                       TICKER_INTERVAL_SECONDS, exc_info=True)
+        return TICKER_INTERVAL_SECONDS
+    raw = cfg_get(cfg, "cron", "tick_interval_seconds", default=TICKER_INTERVAL_SECONDS)
+    try:
+        interval = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("Invalid cron.tick_interval_seconds %r; using %ds", raw, TICKER_INTERVAL_SECONDS)
+        return TICKER_INTERVAL_SECONDS
+    if interval < _MIN_TICK_INTERVAL_SECONDS:
+        logger.warning(
+            "cron.tick_interval_seconds=%d is below the %ds floor; using %ds",
+            interval, _MIN_TICK_INTERVAL_SECONDS, _MIN_TICK_INTERVAL_SECONDS)
+        return _MIN_TICK_INTERVAL_SECONDS
+    return interval
+
+
 def resolve_cron_scheduler() -> "CronScheduler":
     """Resolve ``cron.provider``; missing/failing/unavailable providers fall back to the built-in
     with a warning — cron must never be left without a trigger."""
@@ -428,15 +460,16 @@ def scheduler_for_profile_mode(
 
 
 class InProcessCronScheduler(CronScheduler):
-    """Default in-process 60s ticker; ``start()`` blocks until ``stop_event``. ``can_dispatch`` is
-    an optional drain gate; skipped ticks leave due jobs intact for the next allowed tick."""
+    """Default in-process ticker (``cron.tick_interval_seconds``, 60s by default); ``start()`` blocks
+    until ``stop_event``. ``can_dispatch`` is an optional drain gate; skipped ticks leave due jobs
+    intact for the next allowed tick."""
 
     @property
     def name(self) -> str:
         return "builtin"
 
     def start(
-        self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None,
+        self, stop_event, *, adapters=None, loop=None, interval=None, can_dispatch=None,
         profile_homes=None, profile_adapters=None, default_profile=None, profile_gate=None,
     ):
         from cron.scheduler import CronTickYielded
@@ -445,6 +478,8 @@ class InProcessCronScheduler(CronScheduler):
         from cron.scheduler_ownership import register_ticked_homes
         from hermes_constants import get_process_hermes_home
 
+        if interval is None:
+            interval = resolve_tick_interval()
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
 
         # Multiplex: tick EACH profile's store every cycle, heartbeats/recovery scoped per profile.
@@ -475,7 +510,7 @@ class InProcessCronScheduler(CronScheduler):
                 )
             # Heartbeat before the first sleep so `hermes cron status` sees a live ticker
             # immediately.
-            record_ticker_heartbeat()
+            record_ticker_heartbeat(interval=interval)
         except BaseException as e:
             logger.error("Cron startup recovery error: %s", e, exc_info=True)
             _guarded_store_write(
@@ -518,7 +553,7 @@ class InProcessCronScheduler(CronScheduler):
             # store while it has no chance of making progress (#87644).
             # Record liveness every iteration; bump the success marker only on a clean tick, so status can
             # tell "alive but failing every tick" from "actually firing jobs" (#32612, #32895).
-            _guarded_store_write(record_ticker_heartbeat, "heartbeat", success=ok)
+            _guarded_store_write(record_ticker_heartbeat, "heartbeat", success=ok, interval=interval)
             if ok:
                 _guarded_store_write(clear_ticker_error, "error clear")
                 consecutive_failures = 0
@@ -579,7 +614,7 @@ class InProcessCronScheduler(CronScheduler):
                             "Marked %d interrupted cron execution(s) for profile at %s",
                             recovered, home,
                         )
-                    record_ticker_heartbeat()
+                    record_ticker_heartbeat(interval=interval)
             except BaseException as e:
                 logger.error(
                     "Cron startup recovery error for profile at %s: %s", home, e, exc_info=True
@@ -648,7 +683,7 @@ class InProcessCronScheduler(CronScheduler):
                 with _profile_cron_scope(home):
                     _home_ok = _tick_error is None and str(home) not in _profile_errors
                     _guarded_store_write(
-                        record_ticker_heartbeat, "heartbeat", success=_home_ok
+                        record_ticker_heartbeat, "heartbeat", success=_home_ok, interval=interval
                     )
                     if _home_ok:
                         _guarded_store_write(clear_ticker_error, "error clear")

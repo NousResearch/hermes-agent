@@ -94,8 +94,8 @@ JOBS_FILE = CRON_DIR / "jobs.json"
 # inside a live gateway would otherwise report healthy (#32612, #32895).
 TICKER_HEARTBEAT_FILE = CRON_DIR / "ticker_heartbeat"
 TICKER_SUCCESS_FILE = CRON_DIR / "ticker_last_success"
-# Single source of truth for the ticker interval (scheduler_provider.py) and the staleness
-# threshold in `hermes cron status` (hermes_cli/cron.py), so they never drift apart.
+# Default ticker interval (``cron.tick_interval_seconds``); the live value rides in the heartbeat so
+# the staleness threshold in `hermes cron status` (hermes_cli/cron.py) never drifts from it.
 TICKER_INTERVAL_SECONDS = 60
 
 # In-process lock for load_jobs→modify→save_jobs cycles; without it, parallel tick threads'
@@ -1249,7 +1249,7 @@ def _write_marker(name: str, text: str, tmp_prefix: str) -> None:
         pass
 
 
-def record_ticker_heartbeat(success: bool = False) -> None:
+def record_ticker_heartbeat(success: bool = False, interval: Optional[float] = None) -> None:
     """Record ticker liveness (+ last-success marker when ``success``) so `cron status` can tell
     "alive but failing" from "firing"; scoped per profile store.
 
@@ -1261,9 +1261,14 @@ def record_ticker_heartbeat(success: bool = False) -> None:
     Resolution uses ``_current_cron_store()`` so the heartbeat is correctly scoped to the active profile's
     store — critical under multiplex_profiles where each profile needs its own liveness signal (#69377).
     """
-    # ``<epoch> <pid>``: a killed ticker's last stamp reads fresh for ~3 minutes, so a reader with no
-    # other proof of the scheduler (the in-process serve/Desktop ticker) checks the writer is alive.
-    _write_marker("ticker_heartbeat", f"{time.time()} {os.getpid()}", ".hb_")
+    # ``<epoch> <pid> [<interval>]``: a killed ticker's last stamp reads fresh for ~3 intervals, so a
+    # reader with no other proof of the scheduler (the in-process serve/Desktop ticker) checks the
+    # writer is alive. The interval is the WRITER's: one ticker serves many profiles with the launch
+    # profile's ``cron.tick_interval_seconds``, so a reader's own config can't say what's stale.
+    stamp = f"{time.time()} {os.getpid()}"
+    if interval:
+        stamp += f" {interval:g}"
+    _write_marker("ticker_heartbeat", stamp, ".hb_")
     if success:
         _write_marker("ticker_last_success", str(time.time()), ".hb_")
 
@@ -1303,6 +1308,15 @@ def get_ticker_heartbeat_age() -> Optional[float]:
     (#69377).
     """
     return _epoch_file_age("ticker_heartbeat")
+
+
+def get_ticker_interval_seconds() -> float:
+    """Tick interval of the ticker that last heartbeated this store; ``TICKER_INTERVAL_SECONDS`` for
+    a missing heartbeat or one written before the interval was recorded."""
+    try:
+        return float(_read_marker_fields("ticker_heartbeat")[2])
+    except (IndexError, ValueError):
+        return float(TICKER_INTERVAL_SECONDS)
 
 
 def get_ticker_success_age() -> Optional[float]:

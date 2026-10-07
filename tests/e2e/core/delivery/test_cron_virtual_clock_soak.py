@@ -83,11 +83,7 @@ SCENARIOS = [
 # virtual day with every other check live; the cell XFAILs at the end only if a deviation was seen
 # (and fails if none was: the probe and the soak disagree). Once the fix is in the tree the
 # scenario is a plain test again.
-GAPS = {
-    # #119969: with NO timezone configured the next occurrence keeps the base time's fixed UTC
-    # offset, so a DST process zone fires 09:00 at 10:00 local after spring-forward
-    "unset_on_newyork_spring": (119970, "#119969 no-tz DST fixed offset (fixed by #119970)"),
-}
+GAPS = {}
 SCENARIOS.append(Scenario("unset_on_newyork_spring", None, "America/New_York", date(2026, 2, 27),
                           days=12))
 

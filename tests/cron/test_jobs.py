@@ -253,6 +253,7 @@ class TestParseSchedule:
         matches the configured-now offset, the invariant that keeps the stored
         instant on the same clock the scheduler checks against.
         """
+        monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Kolkata")
         configured_now = datetime(2026, 6, 22, 20, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: configured_now)
 
@@ -276,8 +277,9 @@ class TestNaiveScheduleTimezoneDivergence:
     server-local, so the job never fired."""
 
     def test_recent_past_oneshot_is_due_under_diverging_tz(self, tmp_cron_dir, monkeypatch):
-        # Configured zone: a fixed +05:30 offset. The server's actual local
-        # zone is irrelevant to the parse now — that is the whole point.
+        # Configured zone: Asia/Kolkata, a fixed +05:30 offset. The server's actual
+        # local zone is irrelevant to the parse now — that is the whole point.
+        monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Kolkata")
         configured = timezone(timedelta(hours=5, minutes=30))
         now = datetime(2026, 6, 22, 20, 7, 30, tzinfo=configured)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)

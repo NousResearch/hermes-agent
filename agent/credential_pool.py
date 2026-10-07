@@ -41,13 +41,13 @@ from hermes_cli.auth import (
     _load_auth_store,
     _load_provider_state,
     _load_provider_state_with_source,
-    _resolve_kimi_base_url,
     _resolve_zai_base_url,
     _same_path,
     _save_auth_store,
     _save_provider_state,
     _store_provider_state,
     read_credential_pool,
+    resolve_provider_base_url,
     write_credential_pool,
 )
 
@@ -2911,10 +2911,8 @@ def _env_payload(*, env_var: str, token: str, base_url: str) -> Dict[str, Any]:
 
 
 # Region-specific endpoints inferred from the key itself.
-_ENV_BASE_URL_RESOLVERS = {
-    "kimi-coding": _resolve_kimi_base_url,
-    "zai": _resolve_zai_base_url,
-}
+_ENV_BASE_URL_RESOLVERS = {"zai": _resolve_zai_base_url}
+_ENV_SEED_PROFILE_BASE_URL = frozenset({"kimi-coding"})  # seeded rows take ProviderProfile.resolve_base_url
 
 
 def _env_key_var_candidates(env_vars: List[str], entries: List[PooledCredential]) -> List[str]:
@@ -2984,6 +2982,8 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         base_url = env_url or pconfig.inference_base_url
         if resolve_base_url is not None:
             base_url = resolve_base_url(token, pconfig.inference_base_url, env_url)
+        elif provider in _ENV_SEED_PROFILE_BASE_URL:
+            base_url = resolve_provider_base_url(pconfig, api_key=token, env_url=env_url)
         seed.upsert(f"env:{env_var}", _env_payload(env_var=env_var, token=token, base_url=base_url))
     return seed.result
 

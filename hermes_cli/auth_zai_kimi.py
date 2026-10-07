@@ -1,4 +1,4 @@
-"""Kimi Code and Z.AI endpoint auto-detection, LM Studio base-URL normalization.
+"""Kimi Code endpoint constant, Z.AI endpoint auto-detection, LM Studio base-URL normalization.
 
 Re-exported from ``hermes_cli/auth.py`` (patch targets unchanged); origin helpers are imported
 lazily per function so ``hermes_cli.auth.<helper>`` patches still intercept and no cycle forms.
@@ -22,15 +22,6 @@ _zai_probe_failed_until: Dict[str, float] = {}
 # "sk-kimi-" keys only work on api.kimi.com/coding; legacy moonshot keys use the old default.
 # NO /v1 suffix: the anthropic SDK appends "/v1/messages" itself ("/coding/v1" would 404).
 KIMI_CODE_BASE_URL = "https://api.kimi.com/coding"
-
-
-def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:
-    """Kimi base URL from the key prefix; an explicit KIMI_BASE_URL always wins."""
-    if env_override:
-        return env_override
-    if api_key and api_key.startswith("sk-kimi-"):
-        return KIMI_CODE_BASE_URL
-    return default_url
 
 
 # Z.AI bills general/coding plans and global/China endpoints separately ("Insufficient balance" on

@@ -156,6 +156,16 @@ def plugin_profile(provider: str) -> Optional[Any]:
     return get_provider_profile(provider)
 
 
+def resolve_provider_base_url(pconfig: Any, *, api_key: str, env_url: str, probe: bool = True) -> str:
+    """``ProviderProfile.resolve_base_url`` of registry row *pconfig*'s profile; the base-class
+    default (env override, else registry default) for a row with no profile."""
+    from providers.base import ProviderProfile
+
+    profile = plugin_profile(pconfig.id) or ProviderProfile(name=pconfig.id)
+    return profile.resolve_base_url(
+        api_key=api_key, default_url=pconfig.inference_base_url, env_url=env_url, probe=probe)
+
+
 def _profile_hook(provider: str, name: str) -> Optional[Callable[..., Any]]:
     hook = getattr(plugin_profile(provider), name, None)
     return hook if callable(hook) else None

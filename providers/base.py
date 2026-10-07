@@ -239,6 +239,23 @@ class ProviderProfile:
         """
         return {}, {}
 
+    def resolve_base_url(self, *, api_key: str, default_url: str, env_url: str, probe: bool = True) -> str:
+        """The endpoint for this provider given its key, registry default and env override.
+
+        ``env_url`` is the provider's ``*_BASE_URL`` override ("" when unset); ``default_url`` is the
+        registry default. Override when the endpoint depends on the key (a key prefix, a region
+        probe) or needs runtime normalisation.
+
+        ``probe=True`` (runtime credentials, credential-pool env seeding): may do network or
+        auth-store I/O and returns the runtime endpoint. ``probe=False`` (status display): must not
+        touch the network or the auth store and returns the configured endpoint as written.
+
+        Default: the env override (trailing slash dropped when ``probe``), else ``default_url``.
+        """
+        if not probe:
+            return env_url or default_url
+        return env_url.rstrip("/") if env_url else default_url
+
     def build_client_kwargs_extras(self, **context: Any) -> dict[str, Any]:
         """Provider-specific OpenAI client keyword arguments.
 

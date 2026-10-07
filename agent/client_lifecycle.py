@@ -708,10 +708,12 @@ class ClientLifecycleMixin:
                 from hermes_cli.runtime_provider import _config_base_url_for_provider, _get_model_config
                 configured_base = _config_base_url_for_provider(_get_model_config(), "actual")
                 base_url = normalize_actual_base_url(configured_base or base_url)
-            elif self.provider in ("kimi-coding", "zai"):
+            elif self.provider == "kimi-coding":
+                from hermes_cli.auth import resolve_provider_base_url
+                base_url = resolve_provider_base_url(pconfig, api_key=api_key, env_url=env_url).rstrip("/")
+            elif self.provider == "zai":
                 from hermes_cli import auth as _auth
-                resolver = _auth._resolve_kimi_base_url if self.provider == "kimi-coding" else _auth._resolve_zai_base_url
-                base_url = resolver(api_key, pconfig.inference_base_url, env_url).rstrip("/")
+                base_url = _auth._resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url).rstrip("/")
         elif self.provider == "custom":
             # Named custom provider: identity in config, credential in key_env; no key_env → nothing to watch.
             try:

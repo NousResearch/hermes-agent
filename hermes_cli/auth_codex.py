@@ -731,6 +731,22 @@ def _codex_usage_probe_url(base_url: Optional[str]) -> str:
     return prefix + "/usage"
 
 
+def _record_codex_quota_exhausted(entry: Any) -> None:
+    """Pin a pool entry's probe verdict to "not restored" for the throttle window after a live 429.
+
+    The 429 is first-hand and newer than any cached probe; a "restored" verdict cached minutes
+    before the account hit its cap would otherwise lift the fresh bench on the next selection.
+    """
+    from hermes_cli.auth import _codex_quota_probe_cache
+    token = _stripped(getattr(entry, "access_token", None))
+    if not token or not _is_codex_rate_limit_shaped(
+            getattr(entry, "last_error_code", None), getattr(entry, "last_error_reason", None),
+            getattr(entry, "last_error_message", None)):
+        return
+    with _codex_quota_probe_lock:
+        _codex_quota_probe_cache[_codex_quota_probe_cache_key(token)] = (time.monotonic(), False)
+
+
 def _probe_codex_quota_restored(
     access_token: Any, *, base_url: Optional[str] = None,
     min_interval_seconds: float = CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS) -> Optional[bool]:

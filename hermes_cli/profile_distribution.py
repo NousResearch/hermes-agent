@@ -578,10 +578,15 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
 
 
 def _bootstrap_user_dirs(target: Path) -> None:
-    """Create the bootstrap dirs a fresh profile expects (same set as ``create_profile``)."""
-    from hermes_cli.profiles import _PROFILE_DIRS
+    """Create the bootstrap dirs and placeholder ``.env`` a fresh profile expects (as
+    ``create_profile``). A profile without a ``.env`` is taken for a pre-#44792 one by
+    ``backfill_profile_envs``, which the next ``hermes update`` fills with a copy of the DEFAULT
+    profile's ``.env`` — its bot tokens and allow-all policy in a third-party distribution. Runs
+    before the payload, so a seed that cannot be written aborts the install first."""
+    from hermes_cli.profiles import _PROFILE_DIRS, _seed_placeholder_env
     for d in _PROFILE_DIRS:
         (target / d).mkdir(parents=True, exist_ok=True)
+    _seed_placeholder_env(target)
 
 
 def install_distribution(
@@ -589,7 +594,8 @@ def install_distribution(
 ) -> InstallPlan:
     """Install a distribution from *source* into a new profile; returns the resolved plan.
     Use :func:`plan_install` first to preview + prompt."""
-    from hermes_cli.profiles import check_alias_collision, create_wrapper_script
+    from hermes_cli.profiles import _clone_staging_dir, check_alias_collision, create_wrapper_script
+    from hermes_constants import clear_named_profile_deleted
     with tempfile.TemporaryDirectory(prefix="hermes_dist_install_") as tmp:
         plan = plan_install(source, Path(tmp), override_name=name)
         if plan.existing and not force:
@@ -600,8 +606,27 @@ def install_distribution(
 
         # Fresh install (or --force): config.yaml comes from the distribution. Roots the
         # payload does not ship are left alone either way, so --force keeps user skills.
-        _bootstrap_user_dirs(plan.target_dir)
-        _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=False)
+        # A fresh install is built in a hidden sibling and published by one rename, as
+        # create_profile does: a running multiplexer's rescan serves any dir under profiles/
+        # carrying an identity marker, so it must never adopt a half-copied profile, and a failed
+        # step (the .env seed included) must leave nothing for `hermes update` to backfill.
+        # Only after that publish is a tombstone left by a profile deleted under this name
+        # cleared, so a failed install never resurrects the name. --force writes in place, so
+        # its home must be live first.
+        staging = None if plan.existing else _clone_staging_dir(plan.target_dir)
+        if staging is None:
+            clear_named_profile_deleted(plan.target_dir)
+        target = staging or plan.target_dir
+        try:
+            _bootstrap_user_dirs(target)
+            _copy_dist_payload(plan.staged_dir, target, plan.manifest, preserve_config=False)
+            if staging is not None:
+                os.rename(staging, plan.target_dir)
+        except BaseException:
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
+            raise
+        clear_named_profile_deleted(plan.target_dir)
         if create_alias and check_alias_collision(plan.manifest.name) is None:
             create_wrapper_script(plan.manifest.name)
         return plan

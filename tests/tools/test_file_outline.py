@@ -1,6 +1,7 @@
 """Synthetic documents exercised through real registry and local backend I/O."""
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event
 
@@ -251,7 +252,37 @@ def test_repeated_page_guard_allows_progress_and_changed_files(document):
     assert call(document, mode="outline", limit=1)["outline"][0]["heading"] == "Changed"
 
 
-@pytest.mark.windows_only
+def test_replaced_file_with_preserved_mtime_is_not_deduplicated(document):
+    document.write_text("# First\n", encoding="utf-8")
+    assert call(document, mode="outline")["outline"][0]["heading"] == "First"
+    stamp = document.stat()
+    replacement = document.with_name("replacement.md")
+    replacement.write_text("# Other\n", encoding="utf-8")
+    os.utime(replacement, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    replacement.replace(document)
+    result = call(document, mode="outline")
+    assert not result.get("dedup")
+    assert result["outline"][0]["heading"] == "Other"
+
+
+@pytest.mark.parametrize("full_read", [False, True])
+def test_outline_neither_grants_nor_discards_whole_file_write_baseline(document, full_read):
+    document.write_text("# Original\nBody\n", encoding="utf-8")
+    if full_read:
+        assert "error" not in call(document)
+    assert call(document, mode="outline")["outline"]
+    written = json.loads(registry.dispatch(
+        "write_file", {"path": str(document), "content": "# Replacement\n"},
+        task_id="outline-test"))
+    if full_read:
+        assert "error" not in written, written
+        assert document.read_text(encoding="utf-8") == "# Replacement\n"
+    else:
+        assert written.get("stale_write_blocked"), written
+        assert document.read_text(encoding="utf-8") == "# Original\nBody\n"
+
+
+@pytest.mark.platforms("windows")
 def test_windows_backend_path_quoting_and_crlf(document):
     path = document.with_name("Unicode 标题's $notes.md")
     path.write_bytes(b"# First\r\n# Last\r\n")

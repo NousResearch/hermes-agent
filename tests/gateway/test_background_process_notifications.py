@@ -192,6 +192,71 @@ async def test_agent_notify_receipt_only_while_launching_turn_is_busy(
 
 
 @pytest.mark.asyncio
+async def test_subagent_process_completion_is_not_delivered_to_the_chat(monkeypatch, tmp_path):
+    """Default: a child's process must not inject a turn or post a receipt into the parent's chat.
+
+    The watcher lane is the one that would otherwise deliver both (the injected completion turn
+    runs on the CHILD session, which carries the parent conversation's routing key). The child's
+    delegation result is the deliverable — see features/delegation.md.
+    """
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="npm ci", started_at=None,
+        owner_task_id="sa-0-crawler",
+    )]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions, consumed=False))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=True)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    watcher = {**_watcher_dict(), "session_key": "agent:main:telegram:dm:123", "notify_on_complete": True}
+    adapter._active_sessions = {watcher["session_key"]: asyncio.Event()}  # launching turn still busy
+
+    await runner._run_process_watcher(watcher)
+
+    runner._enqueue_process_completion_notification.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_surface_flag_keeps_child_process_delivery_working(monkeypatch, tmp_path):
+    """``delegation.surface_child_process_notifications: true`` is the documented opt-in."""
+    import tools.process_registry as pr_module
+    from tools.process_registry import ProcessRegistry
+
+    monkeypatch.setattr(
+        ProcessRegistry, "_surface_child_process_notifications", staticmethod(lambda: True))
+    sessions = [SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="npm ci", started_at=None,
+        owner_task_id="sa-0-crawler",
+    )]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions, consumed=False))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=True)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    watcher = {**_watcher_dict(), "session_key": "agent:main:telegram:dm:123", "notify_on_complete": True}
+    adapter._active_sessions = {watcher["session_key"]: asyncio.Event()}
+
+    await runner._run_process_watcher(watcher)
+
+    runner._enqueue_process_completion_notification.assert_awaited_once()
+    adapter.send.assert_awaited_once()
+    # The receipt text itself is formatter/i18n territory (covered elsewhere); what matters here
+    # is that the opt-in restores chat delivery for a child-owned process.
+    assert adapter.send.await_args.args[1]
+
+
+@pytest.mark.asyncio
 async def test_arm_process_watcher_schedules_on_live_loop_only(monkeypatch, tmp_path):
     """#112033: a watcher registered mid-turn starts on the gateway loop at once while the gateway
     serves; before/after that the caller keeps it for the startup / post-turn drain."""

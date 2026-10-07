@@ -24,6 +24,7 @@ from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
+from gateway.run_notifications_events import build_process_completion_event
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -73,8 +74,6 @@ def _update_output_tail(output: str, limit: int) -> str:
 
 
 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
-# Routing fields copied verbatim from a process watcher onto its synthetic completion event.
-_WATCHER_ROUTE_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id", "user_name")
 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 # Storage causes that clear on their own (one session's lease/compression, not the store): the
 # home-channel notice appends the operator restart tail for every OTHER cause.
@@ -1157,10 +1156,21 @@ class GatewayNotificationsMixin:
         See #9290.
         """
         from gateway.run import _drain_gateway_watch_events, _format_gateway_process_notification
+        from tools.process_registry_notifications import child_process_notification_suppressed
         watch_events = _drain_gateway_watch_events(completion_queue)
         for evt in watch_events:
             async with self._completion_event_scope(evt):
                 if self._load_background_notifications_mode() == "off":
+                    continue
+                # Watch matches from a subagent's process follow the same default suppression as
+                # its completions (delegation.surface_child_process_notifications).
+                if child_process_notification_suppressed(evt):
+                    logger.debug(
+                        "Suppressed subagent-owned watch notification "
+                        "(delegation.surface_child_process_notifications=false): "
+                        "type=%s session_id=%s task_id=%s",
+                        evt.get("type", ""), evt.get("session_id", ""),
+                        str(evt.get("owner_task_id") or evt.get("task_id") or ""))
                     continue
                 synth_text = _format_gateway_process_notification(evt)
                 if not synth_text:
@@ -1961,46 +1971,6 @@ class GatewayNotificationsMixin:
                     chat_id, message_text, metadata=_non_conversational_metadata(send_meta, platform=platform_name),
                 )
 
-    @staticmethod
-    def _build_process_completion_event(watcher: dict, session, session_id: str) -> dict:
-        """Build the synthetic ``completion`` event for an agent-notify watcher."""
-        from gateway.run import _redact_gateway_user_facing_secrets
-        from agent.redact import redact_terminal_output
-        from tools.ansi_strip import strip_ansi
-        from tools.process_registry import transform_process_output
-        _command = getattr(session, "command", "") or ""
-        _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
-        _raw = transform_process_output(_raw, command=_command, returncode=session.exit_code,
-                                        task_id=getattr(session, "task_id", "") or "") if _raw else _raw
-        _raw = redact_terminal_output(_raw, _command)
-        # Keep the last ~2000 chars snapped to a line boundary, with a marker when cut.
-        _LIMIT = 2000
-        # Truncate at line boundaries so notifications never start mid-line (fixes #23284). Keep the last
-        # ~2000 chars but snap to the nearest preceding newline, then prepend a truncation marker when
-        # output was cut.
-        if len(_raw) > _LIMIT:
-            _tail = _raw[-_LIMIT:]
-            _nl = _tail.find("\n")
-            _tail = _tail[_nl + 1:] if _nl != -1 else _tail
-            _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
-        else:
-            _out = _raw
-        return {
-            "type": "completion",
-            "session_id": session_id,
-            **{k: watcher.get(k, "") for k in _WATCHER_ROUTE_FIELDS},
-            "message_id": str(watcher.get("message_id") or "").strip() or None,
-            "started_at": getattr(session, "started_at", None),
-            "command": _redact_gateway_user_facing_secrets(_command),
-            "exit_code": session.exit_code,
-            "completion_reason": getattr(session, "completion_reason", "exited"),
-            "termination_source": getattr(session, "termination_source", ""),
-            "output": _redact_gateway_user_facing_secrets(_out),
-            # Spawning session-db id: lets pre-flight drop this completion if the user /new'd first.
-            "parent_session_id": (
-                watcher.get("parent_session_id") or getattr(session, "parent_session_id", "") or ""
-            ),
-        }
 
     def _format_process_final_message(self, session_id: str, session, notify_mode: str) -> str:
         """Human-facing completion message. Every mode shares the one-line status header; the
@@ -2046,7 +2016,7 @@ class GatewayNotificationsMixin:
         the output tail) / all (running updates + final raw) / result (final raw) / error (final raw
         if exit != 0) / off."""
         from tools.process_registry import process_registry
-        from tools.process_registry_notifications import format_process_notification
+        from tools.process_registry_notifications import child_process_notification_suppressed, format_process_notification
         session_id = watcher["session_id"]
         interval = watcher["check_interval"]
         platform_name = watcher.get("platform", "")
@@ -2060,13 +2030,29 @@ class GatewayNotificationsMixin:
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
         silent = notify_mode == "off" and not agent_notify
+        suppressed_logged = False
         last_output_len = 0
         while True:
             await asyncio.sleep(interval)
             session = process_registry.get(session_id)
             if session is None:
                 break
-            if silent:
+            # Subagent-owned processes are suppressed in the parent conversation by default
+            # (delegation.surface_child_process_notifications). This watcher is the lane that
+            # would otherwise inject a follow-up turn and — while the launching turn is still
+            # running — post the concise receipt, both into the parent's chat/thread for a
+            # process the CHILD owns. The child's delegation result carries it instead
+            # (unread_completions / orphaned_processes).
+            child_owned = child_process_notification_suppressed(
+                {"type": "completion", "owner_task_id": getattr(session, "owner_task_id", "")})
+            if child_owned and not suppressed_logged:
+                suppressed_logged = True
+                logger.debug(
+                    "Suppressed subagent-owned process notification "
+                    "(delegation.surface_child_process_notifications=false): "
+                    "session_id=%s task_id=%s", session_id, getattr(session, "owner_task_id", ""),
+                )
+            if silent or child_owned:
                 # Still wait for the process to exit so we can log it, but don't push any messages.
                 if session.exited:
                     break
@@ -2078,7 +2064,7 @@ class GatewayNotificationsMixin:
                 # Agent-notify: inject a synthetic message unless the agent already consumed the result via
                 # wait/log (poll() is read-only and deliberately does NOT mark consumed).
                 if agent_notify and not process_registry.is_completion_consumed(session_id):
-                    completion_evt = self._build_process_completion_event(watcher, session, session_id)
+                    completion_evt = build_process_completion_event(watcher, session, session_id)
                     synth_text = format_process_notification(completion_evt)
                     if not synth_text:
                         break

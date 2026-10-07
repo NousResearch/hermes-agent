@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
 
-from tools.process_registry_notifications import format_process_notification
+from tools.process_registry_notifications import child_process_notification_suppressed, format_process_notification
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
@@ -1897,7 +1897,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             if not is_async_delegation and _evt_task_id.startswith("sa-"):
                 if surface_child is None:
                     surface_child = self._surface_child_process_notifications()
-                if not surface_child:
+                if child_process_notification_suppressed(evt, surface_child=surface_child):
                     logger.debug(
                         "Suppressed subagent-owned process notification "
                         "(delegation.surface_child_process_notifications=false): "
@@ -2592,8 +2592,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         tracked = self._running.keys() | self._finished.keys()
         self._completion_consumed &= tracked
         self._poll_observed &= tracked
-
-
 
 
 process_registry = ProcessRegistry()

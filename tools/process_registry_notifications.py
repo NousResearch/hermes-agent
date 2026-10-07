@@ -11,6 +11,27 @@ _DONE = ("completed", "success")
 _REASON_STATUS = {"lost": "marked lost because the process backend disappeared", "failed_start": "failed to start"}
 
 
+def child_process_notification_suppressed(evt: dict, *, surface_child: bool | None = None) -> bool:
+    """Whether a subagent-owned process event must be withheld from the parent conversation.
+
+    One rule for every lane that can deliver one — the registry's ``drain_notifications``, the
+    gateway's process watcher and its watch-event drain: the owner is the RAW ``owner_task_id``
+    (``sa-...`` = a delegated child's turn), the delegation result itself
+    (``async_delegation``) is never suppressed, and ``delegation.surface_child_process_notifications:
+    true`` restores delivery with subagent attribution. ``surface_child`` lets a caller that
+    already resolved that config for one drain reuse the answer instead of re-reading it per event.
+    """
+    from tools.process_registry import ProcessRegistry
+    if (evt or {}).get("type") == "async_delegation":
+        return False
+    owner = str(evt.get("owner_task_id") or evt.get("task_id") or "")
+    if not owner.startswith("sa-"):
+        return False
+    if surface_child is None:
+        surface_child = ProcessRegistry._surface_child_process_notifications()
+    return not surface_child
+
+
 @dataclass(frozen=True, slots=True)
 class ProcessNotificationBatch:
     """Keep completion identity until the owning surface starts its turn."""

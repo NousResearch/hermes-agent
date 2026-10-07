@@ -3422,7 +3422,7 @@ def _finish_compaction_boundary(
     agent: Any, compressed: list, *, new_system_prompt: str, old_session_id: Optional[str], in_place: bool,
     compacted_in_place: bool, session_commit_succeeded: bool, defer_context_engine_notification: bool,
     compression_made_progress: bool, compression_used_fallback: bool, compression_feasibility_skip: bool,
-    task_id: str,
+    compression_sidecar_prune: bool = False, task_id: str = "",
 ) -> int:
     """Post-commit bookkeeping: notify engines/providers/hooks, re-arm usage tracking.
     Returns the rough post-compression token estimate (diagnostics only)."""
@@ -3504,7 +3504,8 @@ def _finish_compaction_boundary(
         record_boundary = getattr(type(compressor), "record_completed_compaction", None)
         if callable(record_boundary):
             record_boundary(
-                compressor, used_fallback=compression_used_fallback, feasibility_skip=compression_feasibility_skip
+                compressor, used_fallback=compression_used_fallback, feasibility_skip=compression_feasibility_skip,
+                sidecar_prune=compression_sidecar_prune,
             )
         else:
             compressor._verify_compaction_cleared_threshold = True
@@ -4202,9 +4203,12 @@ def compress_context(
     try:
         # Capture the verdict before rotation callbacks: lifecycle hooks may reset
         # compressor fields on rebind; record only after the full boundary commits.
-        _compression_made_progress, _compression_used_fallback, _compression_feasibility_skip = (
+        _compression_made_progress, _compression_used_fallback, _compression_feasibility_skip, _compression_sidecar_prune = (
             bool(getattr(agent.context_compressor, name, False))
-            for name in ("_last_compression_made_progress", "_last_summary_fallback_used", "_last_feasibility_skip")
+            for name in (
+                "_last_compression_made_progress", "_last_summary_fallback_used", "_last_feasibility_skip",
+                "_last_progress_was_sidecar_prune",
+            )
         )
         if _candidate_rejected(
             agent, compressed, messages, messages_before_compression, attempt_generation=attempt.generation,
@@ -4274,7 +4278,8 @@ def compress_context(
             session_commit_succeeded=commit.session_commit_succeeded,
             defer_context_engine_notification=defer_context_engine_notification,
             compression_made_progress=commit.made_progress, compression_used_fallback=_compression_used_fallback,
-            compression_feasibility_skip=_compression_feasibility_skip, task_id=task_id,
+            compression_feasibility_skip=_compression_feasibility_skip,
+            compression_sidecar_prune=_compression_sidecar_prune, task_id=task_id,
         )
         logger.info(
             "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",

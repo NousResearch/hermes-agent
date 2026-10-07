@@ -2401,6 +2401,10 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         self._verify_compaction_cleared_threshold = False
         # Lets the boundary wrapper tell a completed rewrite from a no-op without inferring from length.
         self._last_compression_made_progress = False
+        # True when this run's only progress was the stale-replay sidecar prune: the transcript
+        # changed (worth committing, worth lifting the no-op backoff) but the local estimate did
+        # not (ciphertext prices at zero, #100611), so it is not effectiveness evidence.
+        self._last_progress_was_sidecar_prune = False
         # Transient summary errors must not block a fresh session.
         self._summary_failure_cooldown_until = 0.0
         # True while the local cooldown failed to persist: an empty durable row then means unknown, not cleared.
@@ -2609,10 +2613,19 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
                 self._ineffective_compression_count,
             )
 
-    def record_completed_compaction(self, *, used_fallback: bool = False, feasibility_skip: bool = False) -> None:
-        """Record one completed boundary; ``feasibility_skip`` is streak-neutral but still arms the real-usage verdict."""
+    def record_completed_compaction(
+        self, *, used_fallback: bool = False, feasibility_skip: bool = False, sidecar_prune: bool = False,
+    ) -> None:
+        """Record one completed boundary; ``feasibility_skip`` is streak-neutral but still arms the
+        real-usage verdict; ``sidecar_prune`` is verdict-neutral too — a stale-replay prune shrinks
+        the provider bill but not the local estimate (ciphertext prices at zero, #100611)."""
         # A completed boundary proves compressibility: lift any structural no-op backoff.
         self._structural_no_op_backoff_until = 0.0
+        if sidecar_prune:
+            # Arming the real-usage verdict here would strike the breaker on the next count
+            # >= threshold (the prune cannot lower the estimate), and two rescues disarm
+            # auto-compaction entirely — the strike latch is left to real rewrites only.
+            return
         self._verify_compaction_cleared_threshold = True
         if feasibility_skip:
             # A deliberate pre-LLM summary skip (#60451, benched model) is not a summary-quality verdict: it must
@@ -5363,6 +5376,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         self._last_compress_refused_would_grow = False
         self._last_summary_overload_degraded = False
         self._last_compression_made_progress = False
+        self._last_progress_was_sidecar_prune = False
         # Do NOT reset the *_failure flags: the cooldown early-return doesn't re-assert them, so a
         # reset would fall through to the destructive static fallback (#29559). Success clears them.
         telemetry = self._begin_compression_telemetry(current_tokens=current_tokens)
@@ -5378,6 +5392,43 @@ Write only the summary body. Do not include any preamble or prefix."""
         telemetry["failure_class"] = failure_class
         self._last_compression_savings_pct = 0.0
         self._record_structural_no_op(reason)
+
+    def _stale_replay_rescue(
+        self, telemetry: Dict[str, Any], messages: List[Dict[str, Any]], failure_class: str, reason: str,
+    ) -> List[Dict[str, Any]]:
+        """Structural no-op exit that first tries the stale reasoning-replay prune.
+
+        A codex_responses transcript can carry most of its real bill in encrypted reasoning sidecars
+        the local estimator prices at zero (only real usage prices ciphertext, #100611). The
+        tail-budget walk then sees a tiny transcript, the middle window comes back empty, and this
+        no-op exit used to return before the success-path ``_prune_stale_reasoning_replay`` — the one
+        cleanup that would shrink the bill never ran, and the armed backoff locked it out for 300s
+        (#125920). Prune a private copy first: a changed transcript returns through it (the committed
+        boundary lifts the backoff); an unchanged one defers retries exactly as before.
+        """
+        candidate = [dict(msg) if isinstance(msg, dict) else msg for msg in messages]
+        pruned = _prune_stale_reasoning_replay(candidate)
+        if pruned:
+            telemetry["pruned_stale_replay_messages"] = pruned
+            self._last_compression_made_progress = True
+            # The prune shrinks the provider bill but not the local estimate (only real usage
+            # prices ciphertext, #100611), so it must NOT arm the real-usage verdict: the next
+            # count >= threshold would strike the breaker, and two rescues disarm auto-compaction
+            # on exactly the short-session shape the prune exists to keep alive.
+            self._last_progress_was_sidecar_prune = True
+            if not self.quiet_mode:
+                logger.info(
+                    "Compression: structural no-op (%s) pruned stale reasoning replay from %d assistant "
+                    "message(s) instead of arming the no-op backoff",
+                    reason, pruned,
+                )
+            # Invariant (#57491): no assembled message leaves compress() with a persistence
+            # marker — this is a new exit with changed content, so it gets the same final scrub
+            # the success path applies (a leaked marker makes the rotation flush skip the row).
+            _strip_persistence_markers(candidate)
+            return candidate
+        self._structural_no_op_result(telemetry, failure_class, reason)
+        return messages
 
     def _drop_blank_echoes(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Remove blank platform echoes trailing the latest actionable user turn."""
@@ -5656,10 +5707,10 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:
-            self._structural_no_op_result(
-                telemetry, "insufficient_messages", f"only {n_messages} messages (need > {_min_for_compress})",
+            return self._stale_replay_rescue(
+                telemetry, messages, "insufficient_messages",
+                f"only {n_messages} messages (need > {_min_for_compress})",
             )
-            return messages
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
         spare_pending_images = bool(self._spared_pending_tool_round(messages))
         # Unpruned copy for no-op/abort returns (history stays lossless) and finalize; head/tail are
@@ -5679,11 +5730,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._record_compression_regions(
                 head_messages=messages[:compress_start], middle_messages=[], tail_messages=messages[compress_end:],
             )
-            self._structural_no_op_result(
-                telemetry, "no_compressible_window",
+            return self._stale_replay_rescue(
+                telemetry, canonical_messages, "no_compressible_window",
                 f"compress_start ({compress_start}) >= compress_end ({compress_end}) - transcript fits within tail budget",
             )
-            return canonical_messages
         turns_to_summarize = messages[compress_start:compress_end]
         # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
         if getattr(self, "tail_mode", "lean") == "lean":
@@ -5697,11 +5747,10 @@ Write only the summary body. Do not include any preamble or prefix."""
         if not turns_to_summarize:
             # Window is only handoff rows (#59496): skip the aux call; _previous_summary is KEPT —
             # it came from this transcript.
-            self._structural_no_op_result(
-                telemetry, "empty_post_handoff_window",
+            return self._stale_replay_rescue(
+                telemetry, canonical_messages, "empty_post_handoff_window",
                 f"window {compress_start}-{compress_end} holds only already-summarized handoffs",
             )
-            return canonical_messages
         if not self.quiet_mode:
             self._log_compression_start(
                 display_tokens, compress_start, compress_end, len(turns_to_summarize), n_messages - scan.tail_start,

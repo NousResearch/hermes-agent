@@ -467,14 +467,16 @@ def test_ttl_and_allowlist_round_trip_through_the_sentinel(hermes_home):
     assert 40 * 60 < remaining <= 45 * 60, "--ttl must be honored as a wall-clock deadline"
 
 
-def test_is_allowed_reads_the_allowlist_by_identity_then_profile(hermes_home):
+def test_is_allowed_narrows_identity_by_profile(hermes_home):
     estop.engage(allow={"user_ids": [OPERATOR], "profiles": ["primary-lane"]})
 
-    assert estop.is_allowed(OPERATOR) is True
-    assert estop.is_allowed("someone-else", "primary-lane") is True
+    assert estop.is_allowed(OPERATOR, "primary-lane") is True
+    assert estop.is_allowed(OPERATOR) is False, "a present profiles list narrows: no profile, no grant"
+    assert estop.is_allowed(OPERATOR, "other-lane") is False, "the wrong serving profile is held"
+    assert estop.is_allowed("someone-else", "primary-lane") is False, "a profile never grants alone"
     assert estop.is_allowed("someone-else", "other-lane") is False
     estop.disengage()
-    assert estop.is_allowed(OPERATOR) is False, "no sentinel admits nobody"
+    assert estop.is_allowed(OPERATOR, "primary-lane") is False, "no sentinel admits nobody"
 
 
 def test_cli_pause_arms_ttl_and_allowlist(hermes_home, capsys):

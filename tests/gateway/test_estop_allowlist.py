@@ -77,12 +77,18 @@ def test_allowlist_matches_identity_not_profile_when_both_are_present(hermes_hom
     assert _gate(user_id=PEER, profile="other-lane") is not None
 
 
-def test_profile_key_is_the_secondary_fallback_for_a_lane(hermes_home):
-    """A maintenance lane can be admitted by profile when its user id is not the operator's."""
+def test_profiles_narrow_identity_and_never_admit_alone(hermes_home):
+    """`profiles` is a NARROWING key: a routing coordinate must never admit anyone alone."""
     estop.engage(allow={"profiles": ["primary-lane"]}, reason="window")
 
-    assert _gate(user_id=PEER, profile="primary-lane") is None
-    assert _gate(user_id=PEER, profile="other-lane") is not None
+    assert _gate(user_id=PEER, profile="primary-lane") is not None, "profiles alone admits nobody"
+    assert _gate(user_id=OPERATOR, profile="primary-lane") is not None
+
+    estop.disengage()
+    estop.engage(allow={"user_ids": [PEER], "profiles": ["primary-lane"]}, reason="window")
+    assert _gate(user_id=PEER, profile="primary-lane") is None, "matching id AND profile is served"
+    assert _gate(user_id=PEER, profile="other-lane") is not None, "wrong serving profile is held"
+    assert _gate(user_id=OPERATOR, profile="primary-lane") is not None, "unlisted id is held"
 
 
 def test_missing_allowlist_admits_nobody(hermes_home):

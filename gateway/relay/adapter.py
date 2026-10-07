@@ -157,6 +157,9 @@ class RelayAdapter(DiscordInteractionMixin, BasePlatformAdapter):
         self._discord_labels_recorded: Dict[tuple, tuple] = {}
         # Label writes: one worker, started on first use and drained by disconnect().
         self._discord_labels_writer = None
+        # Label reads: a private one-thread pool and the read in flight per chat (adapter_discord).
+        self._discord_labels_reader = None
+        self._discord_labels_reads = {}
         # Live cards: draft_key -> draft_id of the OPEN native stream. Armed by
         # send_draft; consumed by send() to convert the turn-final into
         # draft(final=true) instead of a duplicate post. Keyed by _draft_key (chat +

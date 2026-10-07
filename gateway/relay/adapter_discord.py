@@ -5,6 +5,7 @@ text lane's chat labels the interaction body does not carry."""
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import re
@@ -73,6 +74,12 @@ class DiscordInteractionMixin:
         Shutdown closes the session database right after the adapters disconnect and does not see
         this worker. A write still running past this wait cannot reopen state.db after that close
         (``record_chat_labels``); it fails and the labels are recorded again on the next message."""
+        reader = getattr(self, "_discord_labels_reader", None)
+        self._discord_labels_reader, self._discord_labels_reads = None, {}
+        if reader is not None:
+            # Reads never write, so they are not waited for; one still running past the close fails
+            # (get_meta does not reopen).
+            reader.shutdown(wait=False, cancel_futures=True)
         writer = getattr(self, "_discord_labels_writer", None)
         self._discord_labels_writer = None
         if writer is None:
@@ -94,9 +101,8 @@ class DiscordInteractionMixin:
         try:
             # Off the loop and bounded: the read takes the database's writer lock, which a write may
             # be holding. Past the budget it is treated as unreadable (below), so nothing is cached.
-            recorded = (await asyncio.wait_for(
-                asyncio.to_thread(store.chat_labels, Platform.DISCORD, scope, chat_id),
-                self._DISCORD_LABELS_IO_BUDGET_S) if store is not None else None)
+            recorded = (await asyncio.wait_for(asyncio.shield(self._discord_labels_read(store, scope, chat_id)),
+                                               self._DISCORD_LABELS_IO_BUDGET_S) if store is not None else None)
         except Exception:
             # Labels only keep the prompt cache warm; a store fault must not drop the interaction.
             # Not cached either: the next interaction asks the store again.
@@ -108,6 +114,35 @@ class DiscordInteractionMixin:
         self._discord_chat_labels[key] = recorded or (None, None)
         self._evict_oldest(self._discord_chat_labels, self._DISCORD_LABELS_MAX)
         return self._discord_chat_labels[key]
+
+    def _discord_labels_read(self, store, scope: str, chat_id: str) -> asyncio.Future:
+        """The chat's label read: the one still in flight, else a new one. A read the budget gave up on
+        keeps its thread until SessionDB's lock frees, so reads run on a private one-thread pool (not
+        the loop's default executor other platforms' I/O shares) and a retry reuses the unfinished read
+        instead of queuing another."""
+        key, reads = (scope, chat_id), self._discord_labels_reads
+        future = reads.get(key)
+        # Finished but not yet dropped by _settled (its waiter can wake first): ask again.
+        if future is not None and not future.done():
+            return future
+        if self._discord_labels_reader is None:
+            self._discord_labels_reader = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="relay-discord-labels-read")
+        future = asyncio.get_running_loop().run_in_executor(
+            self._discord_labels_reader, contextvars.copy_context().run,
+            store.chat_labels, Platform.DISCORD, scope, chat_id)
+        reads[key] = future
+
+        def _settled(done, key=key, reads=reads):
+            # A late result is dropped (newer text-lane labels may be cached by now); the exception
+            # is retrieved so a read every waiter gave up on does not log "never retrieved".
+            if reads.get(key) is done:
+                del reads[key]
+            if not done.cancelled():
+                done.exception()
+
+        future.add_done_callback(_settled)
+        return future
 
     def _discord_interaction_to_event(self, forward):
         """Convert a forwarded Discord interaction body to a MessageEvent, or None for

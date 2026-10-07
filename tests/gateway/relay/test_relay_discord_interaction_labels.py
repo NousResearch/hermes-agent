@@ -405,3 +405,39 @@ async def test_a_held_database_lock_costs_the_relay_reader_at_most_the_label_bud
     restarted.handle_message.assert_awaited()
     await restarted._on_inbound(_message(chat, "u3", chat_name="Renamed"))
     assert store.chat_labels(Platform.DISCORD, "g1", "ch1") == ("Renamed", "Incident triage")
+
+
+@pytest.mark.asyncio
+async def test_label_reads_stuck_on_the_database_lock_occupy_one_private_thread(tmp_path):
+    """A label read the budget gave up on keeps its thread until SessionDB's lock frees. Retries
+    must reuse that read on the adapter's own thread, not start one per interaction on the default
+    executor other platforms' I/O shares; once the lock frees, the next interaction gets the labels."""
+    store, adapter = _labelled_store(tmp_path)
+    await adapter._on_inbound(_message({"chat_id": "ch1", "chat_type": "group"}))
+    restarted = _restarted(store)
+    restarted._DISCORD_LABELS_IO_BUDGET_S = 0.05
+    threads, real_read = [], store.chat_labels
+
+    def counted_read(*args):
+        threads.append(threading.current_thread().name)
+        return real_read(*args)
+
+    store.chat_labels = counted_read
+    release, holder = _hold_db_lock(store._routing_db)
+    try:
+        for _ in range(5):
+            assert (await _slash(restarted)).source.chat_name is None
+    finally:
+        release.set()
+        await asyncio.to_thread(holder.join, 5)
+    assert len(threads) == 1
+    assert threads[0].startswith("relay-discord-labels-read")
+    for _ in range(100):
+        if not restarted._discord_labels_reads:
+            break
+        await asyncio.sleep(0.02)
+    event = await _slash(restarted)
+    assert (event.source.chat_name, event.source.chat_topic) == ("Hermes Server / #ops", "Incident triage")
+    assert len(threads) == 2
+    await restarted.disconnect()
+    assert restarted._discord_labels_reader is None and restarted._discord_labels_reads == {}

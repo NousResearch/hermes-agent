@@ -142,53 +142,56 @@ def test_truncated_source_release_response_is_unavailable_on_public_path(monkeyp
     assert resolve_source_release("stable") == (None, None)
 
 
-def test_retirement_refuses_newer_source_version(tmp_path):
+def test_retirement_no_git_production_checkout_refuses_unverifiable_stamp(tmp_path):
+    """F1 regression: pyproject.toml is not installed-source ordering evidence.
+
+    Production checkouts carry the inert 0.0.0 placeholder (and it is writable
+    in any tree), so the version comparison the previous repair used proved
+    nothing and the strict ZIP path failed open — a retirement target at
+    sourceVersion 1.2.1 admitted an install stamped with an unrelated (newer)
+    commit. The install stamp is the only no-Git authority: anything but the
+    pinned target commit refuses the strict apply with the explicit-
+    destination remedy; the passive check stays permissive.
+    """
     from hermes_cli.source_releases import _retirement_commit_proof
 
-    request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
+    # The production manifest, unmodified.
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "hermes-agent"\nversion = "0.0.0"\n', encoding="utf-8")
+    request = {"commit": "a" * 40, "sourceVersion": "1.2.1", "sequence": 1}
     terminal = {"name": "stable", "head": {"sequence": 1}}
-    # The version floor: an installed version newer than the qualified build refuses.
-    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n', encoding="utf-8")
-    with pytest.raises(ValueError, match="newer source version"):
+    # An install stamped with a different commit cannot show it predates the
+    # qualified build: the strict apply refuses instead of authorizing the
+    # rollback, whatever pyproject.toml says.
+    (tmp_path / "install-stamp.json").write_text(
+        json.dumps({"commit": "c" * 40}), encoding="utf-8")
+    with pytest.raises(ValueError, match="select the destination channel explicitly"):
         _retirement_commit_proof(request, terminal, None, tmp_path, True)
+    assert _retirement_commit_proof(request, terminal, None, tmp_path, False) is False
 
+    # A checkout with no stamp at all is equally unverifiable.
+    (tmp_path / "install-stamp.json").unlink()
+    with pytest.raises(ValueError, match="select the destination channel explicitly"):
+        _retirement_commit_proof(request, terminal, None, tmp_path, True)
+    assert _retirement_commit_proof(request, terminal, None, tmp_path, False) is False
 
-def test_retirement_no_git_older_stamped_install_is_admitted_unverified(tmp_path):
-    from hermes_cli.source_releases import _retirement_commit_proof
-
-    # Production channel heads carry buildId/sequence/manifestKey/sha256 and
-    # no commit field, so the destination head offers no commit to compare.
-    request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
-    terminal = {"name": "stable", "head": {"sequence": 1}}
-    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.9.0"\n', encoding="utf-8")
-    stamp = tmp_path / "install-stamp.json"
-    # The version floor proves this install older than the qualified build;
-    # a stamp that names neither the target nor the destination head is
-    # unproven, not proven-newer, so the retirement stays admissible with
-    # unverified ancestry instead of stranding the install.
-    stamp.write_text(json.dumps({"commit": "c" * 40}), encoding="utf-8")
-    assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is False
-
-    # A stamp naming the pinned target is proven.
-    stamp.write_text(json.dumps({"commit": "a" * 40}), encoding="utf-8")
+    # An exact target stamp is positive proof on both paths.
+    (tmp_path / "install-stamp.json").write_text(
+        json.dumps({"commit": "a" * 40}), encoding="utf-8")
     assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is True
 
-    # A stamp matching a destination head that publishes a commit field is
-    # NOT proof: "same version, different build" would read as "sitting on
-    # the destination" and silently admit the downgrade the retirement pins.
-    terminal["head"]["commit"] = "b" * 40
-    stamp.write_text(json.dumps({"commit": "b" * 40}), encoding="utf-8")
-    assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is False
 
-
-def test_retirement_no_git_without_stamp_stays_permissive(tmp_path):
+def test_retirement_no_git_without_stamp_stays_permissive_passively(tmp_path):
+    """No stamp, no Git: the passive checkers keep main's permissive answer
+    (reported as ancestryUnverified) instead of stranding the install; only
+    the strict apply path refuses unverified ordering."""
     from hermes_cli.source_releases import _retirement_commit_proof
 
     request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
     terminal = {"name": "stable", "head": {"sequence": 1}}
-    # Main's posture: no version file, no stamp -> nothing contradicts an
-    # older-or-equal install; refuse to strand the ZIP/desktop retirement.
-    assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is False
+    assert _retirement_commit_proof(request, terminal, None, tmp_path, False) is False
+    with pytest.raises(ValueError, match="select the destination channel explicitly"):
+        _retirement_commit_proof(request, terminal, None, tmp_path, True)
 
 
 def test_retirement_downgrade_refuses_when_ancestry_is_unavailable(monkeypatch, tmp_path):
@@ -564,12 +567,14 @@ def test_retirement_stamp_outside_admitted_identities_is_unverified(tmp_path):
     terminal = {"name": "stable", "head": {"sequence": 1}}
     # No version file and no Git: nothing proves ordering in either
     # direction, and the stamp names a commit outside the admitted
-    # identities. A stamp alone cannot prove the install newer, so the
-    # retirement stays admissible with unverified ancestry instead of
-    # stranding the ZIP/desktop mode.
+    # identities. The strict apply path refuses the unverified rollback
+    # instead of authorizing it; the passive checkers keep the unverified
+    # permissive answer instead of stranding the ZIP/desktop mode.
     (tmp_path / "install-stamp.json").write_text(
         json.dumps({"commit": "c" * 40}), encoding="utf-8")
-    assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is False
+    with pytest.raises(ValueError, match="select the destination channel explicitly"):
+        _retirement_commit_proof(request, terminal, None, tmp_path, True)
+    assert _retirement_commit_proof(request, terminal, None, tmp_path, False) is False
 
 
 def test_retirement_apply_fetch_runs_under_custody(monkeypatch, tmp_path):
@@ -898,12 +903,111 @@ class _FixtureGit:
                               text=True, stdin=subprocess.DEVNULL)
 
 
+def test_retirement_necessary_refill_converts_to_blob_none_not_raw_unshallow(tmp_path, monkeypatch):
+    """F2 regression: the necessary-refill branch (ancestry inconclusive after
+    the pinned fetch) must establish ancestry without hydrating the blob
+    history behind the boundary — the filter selection of the repo's
+    ``fetch_full_commit_graph`` owner: a depth-limited full clone converts to
+    ``blob:none`` instead of a raw ``--unshallow``, and an existing
+    partial-clone filter is preserved."""
+    import hermes_cli.update_custody as update_custody
+
+    from hermes_cli import source_releases
+
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    git(origin, "init", "--bare", "-b", "main")
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git(seed, "clone", str(origin), str(seed))
+    git(seed, "config", "user.name", "Release Fixture")
+    git(seed, "config", "user.email", "fixture@example.invalid")
+    # Substantial blob mass BEFORE the install point: a raw --unshallow would
+    # hydrate all of it; the policy-aware refill must not. An intermediate
+    # commit sits between the install point and the target so the depth-1
+    # graft below cuts the chain and the refill is genuinely necessary.
+    labels = (["history-%d" % i for i in range(1, 9)]
+              + ["installed", "intermediate", "target"])
+    commits = {}
+    for label in labels:
+        (seed / ("%s.txt" % label)).write_text(label * 2000, encoding="utf-8")
+        git(seed, "add", "-A")
+        git(seed, "commit", "-m", label)
+        commits[label] = git(seed, "rev-parse", "HEAD")
+    installed, target = commits["installed"], commits["target"]
+    git(seed, "push", "origin", "HEAD:refs/heads/main")
+    git(seed, "push", "origin", installed + ":refs/heads/old")
+
+    request = {"commit": target, "sourceVersion": "1.0.0", "sequence": 1,
+               "repository": "NousResearch/hermes-agent"}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+
+    # The installer shape: a depth-1 clone pinned at the OLDER commit, then a
+    # depth-1 check of the INTERMEDIATE build grafts it with its parents
+    # unfetched, so target->...->installed reads divergent — ancestry is
+    # genuinely inconclusive and the refill branch is required.
+    fresh = tmp_path / "fresh"
+    git(tmp_path, "clone", "--depth=1", "--branch", "old", origin.as_uri(), str(fresh))
+    git(fresh, "checkout", "--detach")
+    git(fresh, "fetch", "--depth=1", "origin", commits["intermediate"])
+    assert subprocess.run(["git", "cat-file", "-e", target + "^{commit}"],
+                          cwd=fresh, capture_output=True).returncode != 0
+
+    fetch_args_seen = []
+    real_run_git = update_custody.run_git
+
+    def spying_run_git(git_cmd, args, **kwargs):
+        if args[:1] == ["fetch"]:
+            fetch_args_seen.append(args)
+        return real_run_git(git_cmd, args, **kwargs)
+
+    monkeypatch.setattr(update_custody, "run_git", spying_run_git)
+
+    assert source_releases._git_retirement_proof(request, terminal, ["git"], fresh, True) is True
+    unshallow_fetches = [args for args in fetch_args_seen if "--unshallow" in args]
+    assert unshallow_fetches, "the inconclusive shape must enter the refill branch"
+    for args in unshallow_fetches:
+        # The policy conversion, not a raw hydrating --unshallow.
+        assert "--filter=blob:none" in args, (
+            "the refill must convert the depth-limited full clone to blob:none: %r" % (args,))
+    # The conversion is recorded exactly as the gitlock owner records it.
+    assert subprocess.run(["git", "config", "--get", "remote.origin.promisor"],
+                          cwd=fresh, capture_output=True, text=True).stdout.strip() == "true"
+    assert subprocess.run(["git", "config", "--get", "remote.origin.partialclonefilter"],
+                          cwd=fresh, capture_output=True,
+                          text=True).stdout.strip() == "blob:none"
+    assert git(fresh, "rev-parse", "--is-shallow-repository") == "false"
+
+    # An existing partial-clone filter is preserved by the refill lane. (On a
+    # promisor clone the end-to-end probes lazily complete the graph, so the
+    # inconclusive branch is exercised through the refill entry point.)
+    partial = tmp_path / "partial"
+    git(tmp_path, "clone", "--depth=1", "--filter=blob:limit=1k", "--branch", "old",
+        origin.as_uri(), str(partial))
+    git(partial, "checkout", "--detach")
+    git(partial, "fetch", "--depth=1", "origin", commits["intermediate"])
+    configured = subprocess.run(["git", "config", "--get", "remote.origin.partialclonefilter"],
+                                cwd=partial, capture_output=True, text=True).stdout.strip()
+    assert configured, "the fixture clone must carry a partial-clone filter"
+    fetch_args_seen.clear()
+    source_releases._guarded_history_refill(["git"], partial, target, 900)
+    refills = [args for args in fetch_args_seen if "--unshallow" in args]
+    assert refills, "the refill lane must run on a grafted partial clone too"
+    for args in refills:
+        assert "--filter=" + configured in args, (
+            "the checkout's own filter must survive: %r" % (args,))
+    assert subprocess.run(
+        ["git", "config", "--get", "remote.origin.partialclonefilter"],
+        cwd=partial, capture_output=True, text=True).stdout.strip() == configured
+    assert source_releases._git_retirement_proof(request, terminal, ["git"], partial, True) is True
+
+
 def test_retirement_no_git_strict_apply_refuses_same_version_unknown_stamp(tmp_path):
     """The strict no-Git apply path cannot treat unverified ordering as
-    authorization: an install carrying build evidence (a version file) at the
-    SAME version as the pinned build, stamped with an unrelated commit, is
-    exactly the same-version different-build rollback the retirement pins, so
-    it refuses with the explicit-destination remedy instead of applying."""
+    authorization: an install stamped with an unrelated commit is exactly the
+    same-version different-build rollback the retirement pins, so it refuses
+    with the explicit-destination remedy instead of applying — whatever the
+    inert pyproject.toml placeholder says."""
     from hermes_cli.source_releases import _retirement_commit_proof
 
     request = {"commit": "a" * 40, "sourceVersion": "1.2.3", "sequence": 1}
@@ -915,29 +1019,33 @@ def test_retirement_no_git_strict_apply_refuses_same_version_unknown_stamp(tmp_p
         _retirement_commit_proof(request, terminal, None, tmp_path, True)
 
 
-def test_retirement_no_git_strict_apply_admits_provably_older_version(tmp_path):
-    """The stated policy boundary: a provably OLDER semantic version may
-    proceed (unverified commit ancestry), the same-version shape may not."""
+def test_retirement_no_git_strict_apply_refuses_regardless_of_manifest_version(tmp_path):
+    """The manifest version is not ordering evidence in either direction: the
+    same unknown stamp refuses with a synthetic OLDER manifest value too, so
+    the refusal provably comes from the stamp authority, not a version read."""
     from hermes_cli.source_releases import _retirement_commit_proof
 
     request = {"commit": "a" * 40, "sourceVersion": "1.2.3", "sequence": 1}
     terminal = {"name": "stable", "head": {"sequence": 1}}
-    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.2.2"\n', encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.9.0"\n', encoding="utf-8")
     (tmp_path / "install-stamp.json").write_text(
         json.dumps({"commit": "c" * 40}), encoding="utf-8")
-    assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is False
+    with pytest.raises(ValueError, match="select the destination channel explicitly"):
+        _retirement_commit_proof(request, terminal, None, tmp_path, True)
 
 
-def test_retirement_no_git_strict_apply_admits_evidence_less_zip_tree(tmp_path):
-    """A packaged tree with no build evidence at all (no version file, no
-    stamp) keeps main's permissive tagless-ZIP apply flow: the version floor
-    and packaged stamps are the only ordering authorities this transport has,
-    and refusing evidence-less installs would strand the supported mode."""
+def test_retirement_no_git_strict_apply_admits_exact_target_stamp(tmp_path):
+    """The stated policy boundary: an install stamp naming the pinned target
+    commit is positive proof, the only ordering authority this transport has,
+    and it admits the apply on both strict and passive paths."""
     from hermes_cli.source_releases import _retirement_commit_proof
 
     request = {"commit": "a" * 40, "sourceVersion": "1.2.3", "sequence": 1}
     terminal = {"name": "stable", "head": {"sequence": 1}}
-    assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is False
+    (tmp_path / "install-stamp.json").write_text(
+        json.dumps({"commit": "a" * 40}), encoding="utf-8")
+    assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is True
+    assert _retirement_commit_proof(request, terminal, None, tmp_path, False) is True
 
 
 def test_retirement_no_git_passive_check_stays_permissive_on_same_version(tmp_path):

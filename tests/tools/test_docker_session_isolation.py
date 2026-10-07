@@ -286,6 +286,53 @@ class TestSessionScopedMountResolution:
         assert terminal_tool._resolve_task_host_cwd(cfg, "t") is None
 
 
+class TestKanbanConfigBridgePin:
+    """The fallback config bridge must not erase a dispatcher's exact pin."""
+
+    @staticmethod
+    def _fake_bridge(monkeypatch, configured_cwd):
+        from hermes_cli import config as hermes_config
+
+        monkeypatch.setattr(hermes_config, "read_raw_config", lambda: {"terminal": {"cwd": configured_cwd}})
+
+        def apply_terminal_config_to_env(*, env, override):
+            assert env is None and override is True
+            os.environ["TERMINAL_CWD"] = configured_cwd
+
+        monkeypatch.setattr(
+            hermes_config, "apply_terminal_config_to_env", apply_terminal_config_to_env
+        )
+        monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", False)
+
+    def test_exact_dispatcher_pin_survives_fallback_bridge(self, monkeypatch, tmp_path):
+        workspace = tmp_path / "task-worktree"
+        workspace.mkdir()
+        configured = str(tmp_path / "configured-static-cwd")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_123")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+        self._fake_bridge(monkeypatch, configured)
+
+        terminal_tool._ensure_terminal_env_bridged()
+
+        assert os.environ["TERMINAL_CWD"] == str(workspace.resolve())
+
+    def test_mismatched_dispatcher_pin_does_not_survive_bridge(self, monkeypatch, tmp_path):
+        workspace = tmp_path / "task-worktree"
+        other = tmp_path / "other-worktree"
+        workspace.mkdir()
+        other.mkdir()
+        configured = str(tmp_path / "configured-static-cwd")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_123")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv("TERMINAL_CWD", str(other))
+        self._fake_bridge(monkeypatch, configured)
+
+        terminal_tool._ensure_terminal_env_bridged()
+
+        assert os.environ["TERMINAL_CWD"] == configured
+
+
 class TestRecordedHostCwdDiscardedOnContainers:
     """_resolve_command_cwd must not cd to a recorded HOST path in a sandbox.
 

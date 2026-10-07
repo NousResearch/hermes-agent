@@ -33,7 +33,15 @@ import {
 } from '@/lib/icons'
 import { type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { resolveSessionTimerSince } from '@/lib/session-timer-since'
-import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import {
+  cacheHitLabel,
+  contextBarLabel,
+  LiveDuration,
+  streamTpsLabel,
+  tokenCountersLabel,
+  tokensPerSecondLabel,
+  usageContextLabel
+} from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -336,6 +344,11 @@ export function useStatusbarItems({
   // ticks mid-turn, message.complete after) — no extra RPC, no polling.
   const cacheHit = cacheHitLabel(currentUsage)
   const tokensPerSecond = tokensPerSecondLabel(currentUsage)
+  // Both ride the SAME `currentUsage` payload as the static throughput readouts
+  // above: stream_tps is live mid-turn (cleared on complete), and the ↑/↓ token
+  // counters come off the same usage tick — no extra RPC, no polling.
+  const streamTps = streamTpsLabel(currentUsage)
+  const tokenCounters = tokenCountersLabel(currentUsage)
 
   // Dial the viewed profile directly: the ambient `requestGateway` is the
   // session-routed dispatcher, which re-scopes `params.profile` to the FOCUSED
@@ -719,6 +732,22 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
+        icon: <Activity className="size-3" />,
+        id: 'stream-tps',
+        label: streamTps || '—',
+        title: copy.streamTpsTitle,
+        toggleLabel: copy.toggleStreamTps,
+        variant: 'text'
+      },
+      {
+        icon: <Hash className="size-3" />,
+        id: 'token-counters',
+        label: tokenCounters || '—',
+        title: copy.tokenCountersTitle,
+        toggleLabel: copy.toggleTokenCounters,
+        variant: 'text'
+      },
+      {
         detail: <LiveDuration since={sessionStartedAt} />,
         hidden: !sessionStartedAt,
         id: 'session-timer',
@@ -763,8 +792,10 @@ export function useStatusbarItems({
       gaugeUsage,
       sessionStartedAt,
       gatewayState,
+      streamTps,
       systemResourcesItem,
       terminalShowing,
+      tokenCounters,
       tokensPerSecond,
       turnStartedAt
     ]

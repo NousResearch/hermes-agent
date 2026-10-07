@@ -20,6 +20,7 @@
     "./reconnect-backoff": "./src/reconnect-backoff.ts",
     "./skin": "./src/skin.ts",
     "./slash": "./src/slash.ts",
+    "./stream-tps": "./src/stream-tps.ts",
     "./theme-presets": "./src/theme-presets.ts"
   },
   "types": "./src/index.ts",

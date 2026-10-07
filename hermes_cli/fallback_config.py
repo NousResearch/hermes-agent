@@ -156,8 +156,11 @@ def _iter_fallback_entries(raw: Any, config: dict[str, Any] | None = None) -> li
             continue
         provider = str(entry.get("provider") or entry.get("model_provider") or "").strip()
         model = str(entry.get("model") or "").strip()
-        has_criteria = bool(entry.get("criteria") or entry.get("heuristic")) or (
-            model.startswith(("auto:", "heuristic:", "criteria:"))
+        is_already_materialized = bool(entry.get("_is_heuristic") or entry.get("criteria_matched"))
+        has_criteria = not is_already_materialized and (
+            bool(entry.get("criteria") or entry.get("heuristic")) or (
+                model.startswith(("auto:", "heuristic:", "criteria:"))
+            )
         )
         if not provider and has_criteria:
             try:
@@ -210,7 +213,37 @@ def _iter_fallback_entries(raw: Any, config: dict[str, Any] | None = None) -> li
         if base_url:
             normalized["base_url"] = base_url
         entries.append(normalized)
-    return entries
+
+    seen: set[tuple[str, str, str]] = set()
+    deduped: list[dict[str, Any]] = []
+    for e in entries:
+        ident = _entry_identity(e)
+        if ident not in seen:
+            seen.add(ident)
+            deduped.append(e)
+    return deduped
+
+
+def get_stored_fallback_rules(config: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return the raw, declarative fallback rules stored in config.
+
+    Preserves inactive heuristic rules, does not query catalogs or materialize candidates,
+    and handles legacy `fallback_model` as the fallback if `fallback_providers` is missing.
+    Always returns fresh dict copies.
+    """
+    if not isinstance(config, dict):
+        return []
+    import copy
+
+    raw = config.get("fallback_providers")
+    if raw is None and "fallback_model" in config:
+        raw = config.get("fallback_model")
+    candidates = [raw] if isinstance(raw, dict) else raw if isinstance(raw, list) else []
+    rules: list[dict[str, Any]] = []
+    for entry in candidates:
+        if isinstance(entry, dict):
+            rules.append(copy.deepcopy(entry))
+    return rules
 
 
 def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:

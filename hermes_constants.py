@@ -1010,6 +1010,8 @@ def parse_reasoning_effort(effort) -> dict | None:
     if effort is None or effort is True:
         return None
     if isinstance(effort, dict):
+        if effort.get("native") is True or effort.get("effort") in {"default", "auto", "native"}:
+            return {"native": True}
         if effort.get("enabled", True) is False:
             return {"enabled": False}
         # ``or ""``: a falsy effort (0/False) is "no level", never the string "0" on the wire.
@@ -1019,7 +1021,7 @@ def parse_reasoning_effort(effort) -> dict | None:
     if effort in {"none", "false", "disabled"}:
         return {"enabled": False}
     if effort in {"default", "auto", "native"}:
-        return None
+        return {"native": True}
     if effort in VALID_REASONING_EFFORTS:
         return {"enabled": True, "effort": effort}
     return None

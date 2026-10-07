@@ -390,7 +390,7 @@ class TestResolveFallbackEntry(unittest.TestCase):
 
     def test_fallback_criteria_reasoning_effort(self):
         c = FallbackCriteria()
-        self.assertEqual(c.reasoning_effort, "default")
+        self.assertIsNone(c.reasoning_effort)
 
         c1 = parse_fallback_criteria({"reasoning_effort": "low", "heuristic": "latest_flash"})
         self.assertEqual(c1.reasoning_effort, "low")
@@ -408,10 +408,10 @@ class TestResolveFallbackEntry(unittest.TestCase):
         from types import SimpleNamespace
         from agent.chat_completion_helpers import _reresolve_fallback_reasoning_config
 
-        # 1. Fallback entry with no reasoning setting defaults to native default (None)
+        # 1. Fallback entry with heuristic provenance and no reasoning setting defaults to native default ({"native": True})
         agent = SimpleNamespace(model="stepfun/step-3.7-flash:free", reasoning_config={"enabled": True, "effort": "high"})
-        _reresolve_fallback_reasoning_config(agent, {})
-        self.assertIsNone(agent.reasoning_config)
+        _reresolve_fallback_reasoning_config(agent, {"_is_heuristic": True})
+        self.assertEqual(agent.reasoning_config, {"native": True})
 
         # 2. Fallback entry with explicit reasoning_effort: low
         _reresolve_fallback_reasoning_config(agent, {"reasoning_effort": "low"})
@@ -421,9 +421,9 @@ class TestResolveFallbackEntry(unittest.TestCase):
         _reresolve_fallback_reasoning_config(agent, {"reasoning_effort": "none"})
         self.assertEqual(agent.reasoning_config, {"enabled": False})
 
-        # 4. Fallback entry with explicit reasoning_effort: default
+        # 4. Fallback entry with explicit reasoning_effort: default maps to {"native": True}
         _reresolve_fallback_reasoning_config(agent, {"reasoning_effort": "default"})
-        self.assertIsNone(agent.reasoning_config)
+        self.assertEqual(agent.reasoning_config, {"native": True})
 
         # 5. Nested in criteria
         _reresolve_fallback_reasoning_config(agent, {"criteria": {"reasoning_effort": "medium"}})

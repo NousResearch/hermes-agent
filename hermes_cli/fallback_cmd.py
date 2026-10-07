@@ -7,10 +7,10 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, List, Optional
 
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import get_stored_fallback_rules
 
-# Normalized fallback chain (merges legacy ``fallback_model``); always a fresh copy.
-_read_chain = get_fallback_chain
+# Declarative fallback chain (stores raw rules, preserves inactive heuristics); always fresh copy.
+_read_chain = get_stored_fallback_rules
 
 
 _MISSING_ACTIVE_PROVIDER = object()
@@ -36,10 +36,21 @@ def _format_entry(entry: Dict[str, Any]) -> str:
     if entry.get("criteria_matched"):
         rank = f" #{entry.get('criteria_rank')}" if entry.get("criteria_rank") else ""
         criteria_str = f"  [heuristic: {entry['criteria_matched']}{rank}]"
+    elif entry.get("criteria") or entry.get("heuristic") or str(entry.get("model", "")).startswith(("auto:", "heuristic:", "criteria:")):
+        try:
+            from hermes_cli.fallback_heuristics import parse_fallback_criteria
+            crit = parse_fallback_criteria(entry)
+            desc = crit.describe()
+        except (ValueError, TypeError, KeyError):
+            desc = "heuristic rule"
+        criteria_str = f"  [heuristic: {desc}]"
     reasoning_str = ""
     if entry.get("reasoning_effort") and entry.get("reasoning_effort") != "default":
         reasoning_str = f"  [thinking: {entry['reasoning_effort']}]"
-    return f"{entry.get('model', '?')}  (via {entry.get('provider', '?')}){criteria_str}{reasoning_str}{base_str}"
+    model_name = entry.get("model")
+    if not model_name or str(model_name).startswith(("auto:", "heuristic:", "criteria:")):
+        model_name = "auto"
+    return f"{model_name}  (via {entry.get('provider', '?')}){criteria_str}{reasoning_str}{base_str}"
 
 
 def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[Dict[str, Any]]:

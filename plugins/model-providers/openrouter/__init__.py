@@ -186,11 +186,12 @@ class OpenRouterProfile(ProviderProfile):
                 if cfg.get("enabled", True) is not False and effort and effort != "none":
                     top_level["verbosity"] = effort
             elif reasoning_config is not None:
-                clamped = self._clamp_reasoning_to_catalog(
-                    dict(reasoning_config), model
-                )
-                if clamped is not None:
-                    extra_body["reasoning"] = clamped
+                if not (reasoning_config.get("native") or reasoning_config.get("effort") in ("default", "auto", "native")):
+                    clamped = self._clamp_reasoning_to_catalog(
+                        dict(reasoning_config), model
+                    )
+                    if clamped is not None:
+                        extra_body["reasoning"] = clamped
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
         # xAI's prompt cache is pinned per backend server via this header.

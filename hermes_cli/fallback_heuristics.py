@@ -106,7 +106,7 @@ class FallbackCriteria:
     vendor: str = ""
     min_context: int = 0
     max_context: int = 0
-    reasoning_effort: str = "default"
+    reasoning_effort: Optional[str] = None
     max_candidates: int = 3
     raw_heuristic: str = ""
 
@@ -358,16 +358,24 @@ def _apply_dict_fields(criteria: FallbackCriteria, raw: dict[str, Any], raw_dict
         except (ValueError, TypeError):
             pass
 
-    reasoning = (
-        raw_dict.get("reasoning_effort")
-        or raw_dict.get("thinking")
-        or raw_dict.get("thinking_effort")
-        or raw_dict.get("reasoning")
-        or raw.get("reasoning_effort")
-        or raw.get("thinking")
-    )
-    if reasoning and isinstance(reasoning, str):
-        criteria.reasoning_effort = reasoning.strip().lower()
+    _apply_dict_reasoning_effort(criteria, raw, raw_dict)
+
+
+def _apply_dict_reasoning_effort(criteria: FallbackCriteria, raw: dict[str, Any], raw_dict: dict[str, Any]) -> None:
+    """Extract and assign reasoning effort setting from dictionary."""
+    reasoning = None
+    for key in ("reasoning_effort", "thinking", "thinking_effort", "reasoning"):
+        if raw_dict.get(key) is not None:
+            reasoning = raw_dict[key]
+            break
+        if isinstance(raw, dict) and raw.get(key) is not None:
+            reasoning = raw[key]
+            break
+    if reasoning is not None:
+        if isinstance(reasoning, bool):
+            criteria.reasoning_effort = "none" if not reasoning else "default"
+        elif isinstance(reasoning, str):
+            criteria.reasoning_effort = reasoning.strip().lower()
 
 
 def _apply_shorthand_tokens(criteria: FallbackCriteria, cleaned: str) -> None:
@@ -609,7 +617,14 @@ def enrich_model_metadata(
     _enrich_from_models_dev(meta, model_id, provider)
 
     if meta.context_window <= 0:
-        meta.context_window = 128_000 if provider.lower() == "openrouter" else 8_192
+        try:
+            from agent.model_metadata import get_model_context_length
+
+            ctx = get_model_context_length(model_id, provider=provider, base_url=base_url)
+            if ctx and ctx > 0:
+                meta.context_window = ctx
+        except Exception as exc:
+            logger.debug("Context length resolution failed for %s (%s): %s", model_id, provider, exc, exc_info=True)
 
     return meta
 
@@ -617,7 +632,7 @@ def enrich_model_metadata(
 # ─── Candidate Gathering and Filtering ──────────────────────────────────────
 
 
-_CANDIDATE_CACHE: dict[str, tuple[float, list[ModelCandidateMetadata]]] = {}
+_CANDIDATE_CACHE: dict[tuple[str, str, str], tuple[float, list[ModelCandidateMetadata]]] = {}
 _CANDIDATE_CACHE_TTL = 300.0  # 5 minutes
 
 
@@ -762,8 +777,11 @@ def get_candidate_models(
     force_refresh: bool = False,
 ) -> list[ModelCandidateMetadata]:
     """Gather candidate models for a provider, enriched with metadata. Defaults to 'nous'."""
+    from hermes_constants import hermes_home_key
+
     provider_norm = provider.lower().strip()
-    cache_key = f"{provider_norm}:{base_url}"
+    home_key = hermes_home_key()
+    cache_key = (home_key, provider_norm, base_url.strip())
     now = time.monotonic()
 
     if not force_refresh and cache_key in _CANDIDATE_CACHE:
@@ -950,14 +968,21 @@ def resolve_fallback_entry(
     candidates = get_candidate_models(provider=provider, base_url=base_url)
     ranked = filter_and_rank_candidates(candidates, criteria)
 
-    if not ranked and criteria.free_only:
+    if not ranked:
         logger.warning(
-            "No free models found matching %s for provider %s; falling back to all models",
+            "No models found matching criteria %s for provider %s",
             criteria.describe(),
             provider,
         )
-        relaxed = FallbackCriteria(**{**criteria.to_dict(), "free_only": False})
-        ranked = filter_and_rank_candidates(candidates, relaxed)
+        return []
+
+    entry_effort = None
+    for key in ("reasoning_effort", "thinking_effort", "thinking", "reasoning"):
+        if entry.get(key) is not None:
+            entry_effort = entry[key]
+            break
+    if entry_effort is None and criteria.reasoning_effort is not None:
+        entry_effort = criteria.reasoning_effort
 
     resolved: list[dict[str, Any]] = []
     for rank, cand in enumerate(ranked[:limit]):
@@ -965,36 +990,25 @@ def resolve_fallback_entry(
             **entry,
             "provider": provider,
             "model": cand.id,
-            "criteria": criteria.to_dict(),
-            "reasoning_effort": entry.get("reasoning_effort") or criteria.reasoning_effort or "default",
             "criteria_matched": criteria.describe(),
             "criteria_rank": rank + 1,
             "criteria_total_matched": len(ranked),
+            "_is_heuristic": True,
+            "_resolved_criteria": criteria.to_dict(),
         }
+        resolved_entry.pop("criteria", None)
+        resolved_entry.pop("heuristic", None)
+        if entry_effort is not None:
+            resolved_entry["reasoning_effort"] = entry_effort
+        elif "reasoning_effort" in resolved_entry:
+            del resolved_entry["reasoning_effort"]
+
         resolved.append(resolved_entry)
 
-    if resolved:
-        logger.info(
-            "Resolved heuristic fallback for %s (%s): %s",
-            provider,
-            criteria.describe(),
-            " -> ".join(f"{r['model']} (#{r['criteria_rank']})" for r in resolved),
-        )
-        return resolved
-
-    if provider in ("nous", "nousresearch", "nous-portal"):
-        safe_model = "stepfun/step-3.7-flash:free"
-    elif provider == "openrouter":
-        safe_model = "minimax/minimax-m3:free"
-    else:
-        safe_model = "default"
-
-    fallback_entry = {
-        **entry,
-        "provider": provider,
-        "model": safe_model,
-        "criteria": criteria.to_dict(),
-        "criteria_matched": "default fallback",
-        "criteria_rank": 1,
-    }
-    return [fallback_entry]
+    logger.info(
+        "Resolved heuristic fallback for %s (%s): %s",
+        provider,
+        criteria.describe(),
+        " -> ".join(f"{r['model']} (#{r['criteria_rank']})" for r in resolved),
+    )
+    return resolved

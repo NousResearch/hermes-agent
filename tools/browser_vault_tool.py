@@ -328,8 +328,38 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
                       ensure_ascii=False)
 
 
-_TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
-                      "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
+_TAB_PROBES["otp"] = (
+    "(() => {"
+    " const attrHit = document.querySelector("
+    "'input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
+    "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i], "
+    "input[placeholder*=code i]');"
+    " if (attrHit) return true;"
+    " const strongRx = /one[- ]?time|verification|security|auth(entication|enticator)?|2fa|two[- ]?factor|mfa|totp|otp|passcode/i;"
+    " const bareCodeRx = /\\bcode\\b/i;"
+    " const nonAuthRx = /\\b(?:search|query|promo|coupon|discount|voucher|referral|gift\\s*card|zip|postal|address|"
+    "quantity|qty|price|amount|comment|message|note|subject|name|city|country|state|province)\\b/i;"
+    " const visible = (el) => !el.disabled && !el.readOnly && (() => {"
+    "   const s = getComputedStyle(el);"
+    "   return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;"
+    " })();"
+    " const inputs = Array.from(document.querySelectorAll("
+    "'input[type=text], input[type=tel], input[type=number], input:not([type])')).filter(visible);"
+    " const labelOf = (el) => el.labels ? Array.from(el.labels, (l) => l.textContent || '').join(' ') : '';"
+    " if (inputs.some((el) => strongRx.test(labelOf(el)))) return true;"
+    " if (inputs.length === 1 && bareCodeRx.test(labelOf(inputs[0])) && !nonAuthRx.test(labelOf(inputs[0]))) return true;"
+    " return false;"
+    "})()"
+)
+# LOCAL PATCH (2026-09-28, cw): the attribute-only probe above missed Facebook's 2FA field — bare id,
+# empty name, no placeholder/aria-label, but a real <label for="...">Code</label>. Attribute selectors
+# can't see associated <label> text, so this walks visible text-like inputs as a fallback and checks
+# el.labels text for OTP wording. An unambiguous phrase (verification/otp/2fa/...) matches immediately;
+# a bare "code" alone (no qualifying word) only counts when it is the SOLE visible candidate on the page
+# AND isn't an obvious non-auth field (promo/coupon/referral/zip/...) — mirrors the uniqueness + exclusion
+# gates in classify_otp_controls() below, so the probe can't focus the wrong tab (e.g. a checkout tab with
+# a "Promo code" field) away from the real login/OTP tab elsewhere. Keep this regex logic in sync with
+# _RE_OTP / _RE_NONAUTH_EXCLUDE in agent/vault_login_classifier.py if either changes.
 
 
 def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:

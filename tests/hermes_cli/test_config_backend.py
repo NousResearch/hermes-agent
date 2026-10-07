@@ -240,6 +240,24 @@ class TestReaderGate:
         with patch.object(guard, "ROOT", tmp_path):
             assert len(guard.scan_file(bad)) == 1
 
+    @pytest.mark.parametrize("body", [
+        "env_path, p = home / '.env', home / 'config.yaml'\n    return p.exists()",
+        "self.cfg = home / 'config.yaml'\n    return open(self.cfg)",
+        "for p in (home / 'config.yaml',):\n        p.read_text()",
+        "p = home / 'config.yaml'\n    return Path.read_text(p)",
+        "p = home / 'config.yaml'\n    shutil.copy2(p, home / 'bak')",
+        "return read_bytes_or_none(home / 'config.yaml')",
+    ])
+    def test_every_binding_form_is_tracked(self, tmp_path, body):
+        # Tuple unpacking, attributes, loop targets, unbound Path methods, copies, byte reads.
+        guard = self._guard()
+        bad = tmp_path / "pm" / "bad_reader.py"
+        bad.parent.mkdir()
+        bad.write_text(f"def a(self, home):\n    {body}\n", encoding="utf-8")
+        with patch.object(guard, "ROOT", tmp_path):
+            assert len(guard.scan_file(bad)) == 1
+        assert "pm" in guard.DEFAULT_TREES
+
     def test_backend_calls_are_clean(self, tmp_path):
         guard = self._guard()
         good = tmp_path / "hermes_cli" / "good_reader.py"

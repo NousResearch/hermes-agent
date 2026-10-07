@@ -39,7 +39,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TREES = (
-    "hermes_cli", "agent", "gateway", "tui_gateway", "cron", "plugins", "tools", "acp_adapter",
+    "hermes_cli", "agent", "gateway", "tui_gateway", "cron", "plugins", "tools", "acp_adapter", "pm",
     "cli.py", "utils.py", "hermes_constants.py", "hermes_logging.py", "hermes_time.py", "run_agent.py",
     "model_tools.py", "batch_runner.py")
 # The backend module itself, and the on-disk primitives it wraps.
@@ -64,7 +64,9 @@ FUNC_READS = {
     "exists", "isfile", "open", "getmtime", "getsize", "stat", "load_yaml_file_readonly", "fast_safe_load",
     # Every PyYAML entry point that parses a stream, not just safe_load.
     "safe_load", "safe_load_all", "full_load", "full_load_all", "unsafe_load", "unsafe_load_all",
-    "load_all", "compose", "compose_all"}
+    "load_all", "compose", "compose_all",
+    # Byte reads and file copies of the user layer (pm snapshots/digests, shutil.copy*).
+    "read_bytes_or_none", "file_digest", "copy", "copy2", "copyfile"}
 BYPASS_WRITERS = {"atomic_roundtrip_yaml_update", "atomic_roundtrip_yaml_save", "atomic_write_text"}
 YAML_HELPER_RE = re.compile(r"(load|read)_yaml|yaml_(load|read)")
 
@@ -109,7 +111,7 @@ class _Scanner:
         return b"\n".join([b[start - 1][c0:], *b[start:end - 1], b[end - 1][:c1]]).decode("utf-8", "replace")
 
     def is_config_path(self, node: ast.AST, names: set[str]) -> bool:
-        if isinstance(node, ast.Name) and node.id in names:
+        if isinstance(node, (ast.Name, ast.Attribute)) and self.seg(node) in names:
             return True
         if isinstance(node, ast.Call) and _func_name(node.func) in {"Path", "str", "expanduser", "resolve"}:
             inner = node.args[0] if node.args else (node.func.value if isinstance(node.func, ast.Attribute) else None)
@@ -128,16 +130,29 @@ class _Scanner:
         # Two passes so `a = home / "config.yaml"; b = a` binds b too.
         for _ in range(2):
             for node in _scope_nodes(scope):
-                targets: list = []
                 if isinstance(node, ast.Assign):
-                    targets, value = node.targets, node.value
+                    pairs = [(t, node.value) for t in node.targets]
                 elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
-                    targets, value = [node.target], node.value
+                    pairs = [(node.target, node.value)]
+                elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                    # `for p in (home / "config.yaml", ...)` binds p to each element.
+                    elts = node.iter.elts if isinstance(node.iter, (ast.Tuple, ast.List, ast.Set)) else [node.iter]
+                    pairs = [(node.target, e) for e in elts]
                 else:
                     continue
-                if self.is_config_path(value, names):
-                    names.update(t.id for t in targets if isinstance(t, ast.Name))
+                for target, value in pairs:
+                    self._bind(target, value, names)
         return names
+
+    def _bind(self, target: ast.AST, value: ast.AST, names: set[str]) -> None:
+        """Add *target* (a name, ``self.attr``, or an unpacked tuple element) when *value* is a config path."""
+        if isinstance(target, (ast.Tuple, ast.List)):
+            if isinstance(value, (ast.Tuple, ast.List)) and len(value.elts) == len(target.elts):
+                for t, v in zip(target.elts, value.elts):
+                    self._bind(t, v, names)
+            return
+        if isinstance(target, (ast.Name, ast.Attribute)) and self.is_config_path(value, names):
+            names.add(self.seg(target))
 
     def flag(self, node: ast.Call, why: str) -> None:
         line = self.lines[node.lineno - 1]
@@ -158,6 +173,11 @@ class _Scanner:
             return
         if name in PATH_METHOD_READS and receiver is not None and self.is_config_path(receiver, names):
             self.flag(node, f"direct {name}() of a config path ({self.seg(receiver)})")
+            return
+        # Unbound form: ``Path.read_text(p)`` / ``Path.exists(p)``.
+        if (name in PATH_METHOD_READS and isinstance(receiver, ast.Name) and receiver.id == "Path"
+                and first is not None and self.is_config_path(first, names)):
+            self.flag(node, f"direct Path.{name}() of a config path ({self.seg(first)})")
             return
         is_reader = name in FUNC_READS or YAML_HELPER_RE.search(name) is not None
         if name == "load" and receiver is not None and "yaml" in self.seg(receiver).lower():

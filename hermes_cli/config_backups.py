@@ -65,7 +65,7 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
         dest = root / f"{config_path.name}.{reason}.{time.strftime('%Y%m%d-%H%M%S')}"
         if dest.is_symlink() or dest.exists():  # never write through a planted link
             return None
-        shutil.copy2(config_path, dest)
+        shutil.copy2(config_path, dest)  # config-reader: ok — file tooling, gated above
         for stale in [dest, *existing][keep:]:
             stale.unlink(missing_ok=True)
         return dest

@@ -58,7 +58,7 @@ eof_line: "*** End of File" LF
 
 DESCRIPTION = """Create, replace, edit or delete files with a patch. This is a FREEFORM tool: send the patch text itself, not JSON.
 
-This is the only file-writing tool in this session. It replaces write_file and patch: whenever instructions say to write, create, overwrite, edit or patch a file, use apply_patch. Do not look for another file tool or write files from scripts or shell commands.
+This is the only file-writing tool in this session. It replaces write_file and patch: whenever instructions say to write, create, overwrite, edit or patch a file, use apply_patch. Write files whose content you compose yourself with apply_patch, not through scripts or shell commands; a script may still save data it computes.
 
 *** Begin Patch
 *** Add File: <path>

@@ -22,6 +22,20 @@ _OPENROUTER_REASONING_PREFIXES = (
 _PROBE_TTL_S = 60
 
 
+def ollama_num_ctx_for_route(agent) -> int | None:
+    """``_ollama_num_ctx`` while the agent is on a local endpoint, else None.
+
+    It is resolved once at construction, but ``/model``, fallback activation and the primary
+    restore all move a live agent to another endpoint without re-resolving it; a hosted route
+    must never see it (Mistral 422s on ``options``). Same local-only rule as agent_init's floor.
+    """
+    num_ctx = getattr(agent, "_ollama_num_ctx", None)
+    if not num_ctx:
+        return None
+    from agent.model_metadata import is_local_endpoint
+    return num_ctx if is_local_endpoint(str(getattr(agent, "base_url", "") or "")) else None
+
+
 def _cached_probe(agent, cache_attr: str, probe, unknown, definitive):
     """``probe(model, base_url, api_key)`` once per (model, base_url); ``unknown`` is what a raising probe
     yields, ``definitive(value)`` decides permanent vs 60s TTL."""
@@ -77,7 +91,7 @@ def unset_reasoning_default(agent) -> dict | None:
         return None
     # ``_ollama_num_ctx`` is only ever set for a server detected as Ollama (agent_init); Ollama
     # 400s ``reasoning_effort`` on a model pulled without the thinking capability.
-    if getattr(agent, "_ollama_num_ctx", None) and not agent._ollama_supports_thinking_cached():
+    if ollama_num_ctx_for_route(agent) and not agent._ollama_supports_thinking_cached():
         return None
     return dict(default)
 

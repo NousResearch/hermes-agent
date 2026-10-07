@@ -80,6 +80,7 @@ def test_unset_effort_default_keeps_the_field_off_where_it_would_be_wrong():
         assert _wire_reasoning_config(rejected) is None
         # A local Ollama model pulled without the thinking capability 400s on reasoning_effort.
         ollama = _Agent(None)
+        ollama.base_url = "http://localhost:11434/v1"
         ollama._ollama_num_ctx = 8192
         ollama._ollama_supports_thinking_cached = lambda: False
         assert _wire_reasoning_config(ollama) is None

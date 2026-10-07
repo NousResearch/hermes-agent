@@ -158,10 +158,17 @@ def plugin_profile(provider: str) -> Optional[Any]:
 
 def resolve_provider_base_url(pconfig: Any, *, api_key: str, env_url: str, probe: bool = True) -> str:
     """``ProviderProfile.resolve_base_url`` of registry row *pconfig*'s profile; the base-class
-    default (env override, else registry default) for a row with no profile."""
+    default (env override, else registry default) for a row with no profile.
+
+    A ``$HERMES_HOME`` plugin re-registering a bundled name without overriding the hook keeps the
+    bundled key/region routing (kimi key prefix, zai probe, copilot exchange endpoint): that logic
+    ran by provider id before profiles owned it, and dropping it would point the key at the wrong host."""
+    import providers
     from providers.base import ProviderProfile
 
-    profile = plugin_profile(pconfig.id) or ProviderProfile(name=pconfig.id)
+    profile = plugin_profile(pconfig.id)
+    if profile is None or type(profile).resolve_base_url is ProviderProfile.resolve_base_url:
+        profile = providers._REGISTRY.get(pconfig.id) or profile or ProviderProfile(name=pconfig.id)
     return profile.resolve_base_url(
         api_key=api_key, default_url=pconfig.inference_base_url, env_url=env_url, probe=probe)
 

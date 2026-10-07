@@ -209,10 +209,14 @@ class AcmeProfile(ProviderProfile):
         """The endpoint for this provider. default_url is the registry default,
         env_url the *_BASE_URL override ("" when unset). Override when the
         endpoint depends on the key (a key prefix, a region probe) or needs
-        normalising. probe=True is the runtime path (credential resolution,
-        credential-pool env seeding) and may do network or auth-store I/O;
-        probe=False is the status display and must not. Default: env_url
-        (trailing slash dropped when probing), else default_url."""
+        normalising. probe=True is the runtime path (credential resolution)
+        and may do network or auth-store I/O; probe=False is the status display:
+        no network or auth-store I/O, pure derivations (a key prefix) still
+        apply. Credential-pool env seeding and the per-turn env refresh consult
+        this hook only for the bundled kimi-coding / zai / actual profiles.
+        Re-registering one of those names without overriding this hook keeps
+        the bundled routing. Default: env_url (trailing slash dropped when
+        probing), else default_url."""
         return super().resolve_base_url(api_key=api_key, default_url=default_url, env_url=env_url, probe=probe)
 
     def create_client(self, **client_kwargs):

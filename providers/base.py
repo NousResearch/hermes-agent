@@ -246,9 +246,10 @@ class ProviderProfile:
         registry default. Override when the endpoint depends on the key (a key prefix, a region
         probe) or needs runtime normalisation.
 
-        ``probe=True`` (runtime credentials, credential-pool env seeding): may do network or
-        auth-store I/O and returns the runtime endpoint. ``probe=False`` (status display): must not
-        touch the network or the auth store and returns the configured endpoint as written.
+        ``probe=True`` is the runtime path (credential resolution; credential-pool env seeding and
+        the turn-boundary env refresh, which consult the hook only for the bundled kimi-coding /
+        zai / actual profiles) and may do network or auth-store I/O. ``probe=False`` is the status
+        display: no network or auth-store I/O, but pure derivations (a key prefix) still apply.
 
         Default: the env override (trailing slash dropped when ``probe``), else ``default_url``.
         """

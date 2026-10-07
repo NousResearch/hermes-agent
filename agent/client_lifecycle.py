@@ -101,7 +101,7 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
 
 
 # Providers whose turn-boundary env refresh takes ProviderProfile.resolve_base_url instead of
-# env-override-or-registry-default.
+# env-override-or-registry-default: the pre-hook subset, kept as is (not an extension point).
 _ENV_REFRESH_PROFILE_BASE_URL = frozenset({"actual", "kimi-coding", "zai"})
 
 

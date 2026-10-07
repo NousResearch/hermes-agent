@@ -101,7 +101,7 @@ class TestCopilotHook:
         profile = _profile("copilot")
         assert profile.resolve_base_url(api_key="tok", default_url=self.DEFAULT, env_url="") == "https://api.ent.test"
 
-    def test_no_exchange_endpoint_keeps_default_and_status_skips_exchange(self, monkeypatch):
+    def test_no_exchange_endpoint_keeps_env_override_and_status_skips_exchange(self, monkeypatch):
         import hermes_cli.copilot_auth as copilot_auth
 
         monkeypatch.setattr(copilot_auth, "resolve_copilot_token", lambda: ("ghu_x", "env"))
@@ -128,3 +128,16 @@ class TestActualHook:
         assert profile.resolve_base_url(api_key="", default_url=default, env_url="http://127.0.0.1:8080", probe=probe) == "http://127.0.0.1:8080/v1"
         assert profile.resolve_base_url(api_key="", default_url=default, env_url="https://api.actual.inc/", probe=probe) == default
         assert profile.resolve_base_url(api_key="", default_url=default, env_url="", probe=probe) == default
+
+
+def test_user_override_without_the_hook_keeps_bundled_routing(monkeypatch):
+    """A ``$HERMES_HOME`` plugin re-registering ``kimi-coding`` as a plain ProviderProfile keeps the
+    bundled key-prefix routing: an ``sk-kimi-`` key still reaches the Kimi Code endpoint."""
+    import providers
+    from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider_base_url
+    from hermes_cli.auth_zai_kimi import KIMI_CODE_BASE_URL
+
+    plain = ProviderProfile(name="kimi-coding", api_mode="chat_completions")
+    monkeypatch.setattr(providers, "get_provider_profile", lambda name: plain)
+    url = resolve_provider_base_url(PROVIDER_REGISTRY["kimi-coding"], api_key="sk-kimi-abc", env_url="")
+    assert url == KIMI_CODE_BASE_URL

@@ -1505,10 +1505,21 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     async def _echo_stt_transcripts(
         self, adapter, source: SessionSource, transcripts: List[str], *, metadata=None, log_context: str = "Transcript"
     ) -> None:
-        """Send each transcript back as ``🎙️ "…"`` (best-effort; failures are logged, never raised)."""
+        """Send each transcript back (best-effort; failures are logged, never raised).
+
+        Telegram uses HTML expandable quotes via ``format_stt_transcript_echo``;
+        other platforms use the localized ``gateway.voice.transcript_echo_short``.
+        """
+        from gateway.stt_echo import format_stt_transcript_echo
+
+        platform = getattr(source, "platform", None)
         for tx in transcripts:
             try:
-                await adapter.send(source.chat_id, t("gateway.voice.transcript_echo_short", text=tx), metadata=metadata)
+                await adapter.send(
+                    source.chat_id,
+                    format_stt_transcript_echo(tx, platform),
+                    metadata=metadata,
+                )
             except Exception as echo_exc:
                 logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
 
@@ -1522,9 +1533,14 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         # quality in real time. On transcription failure do NOT send a hardcoded notice: that
         # bypassed the LLM and produced two replies; enrichment leaves one neutral marker instead.
         if _successful_transcripts and self._should_echo_stt_transcripts():
+            from gateway.stt_echo import stt_echo_metadata
+
             _echo_adapter = self._delivery_adapter_for(source)
             if _echo_adapter:
-                _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                _echo_meta = stt_echo_metadata(
+                    getattr(source, "platform", None),
+                    self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                )
                 await self._echo_stt_transcripts(_echo_adapter, source, _successful_transcripts, metadata=_echo_meta)
         return message_text
 
@@ -2019,10 +2035,14 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         as a prefix, so only the unsent tail is echoed."""
         if not transcripts or not self._should_echo_stt_transcripts() or adapter is None:
             return
+        from gateway.stt_echo import stt_echo_metadata
+
         already_echoed = int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
         event._gateway_pending_stt_echoed = max(already_echoed, len(transcripts))
         await self._echo_stt_transcripts(
-            adapter, source, transcripts[already_echoed:], metadata=metadata, log_context=log_context,
+            adapter, source, transcripts[already_echoed:],
+            metadata=stt_echo_metadata(getattr(source, "platform", None), metadata),
+            log_context=log_context,
         )
 
     async def _transcribe_and_echo_pending_voice(

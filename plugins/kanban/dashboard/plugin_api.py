@@ -188,6 +188,16 @@ def _task_dict(task: kanban_db.Task, *, latest_summary: Optional[str] = None,
     return d
 
 
+def _done_sort_key(d: dict) -> tuple:
+    """Newest-completed-first with None last, tolerating a non-integer
+    ``completed_at`` a writer that bypassed the normal completion path can
+    leave behind (e.g. an ISO-8601 string): coerce through ``_to_epoch`` —
+    the same defense ``task_age`` already applies — so the negation never
+    sees a string and the board view does not 500."""
+    ts = kanban_db._to_epoch(d["completed_at"])
+    return (ts is None, -(ts or 0))
+
+
 def _attachment_dict(a: kanban_db.Attachment) -> dict[str, Any]:
     """``stored_path`` is the absolute on-disk path workers read; UI downloads by ``id``."""
     return {
@@ -331,7 +341,7 @@ def get_board(
         # history, so order it newest-completed-first. Two stable sorts compose
         # into the "completed_at DESC NULLS LAST, id DESC" SQL key.
         columns["done"].sort(key=lambda d: d["id"], reverse=True)
-        columns["done"].sort(key=lambda d: (d["completed_at"] is None, -(d["completed_at"] or 0)))
+        columns["done"].sort(key=_done_sort_key)
 
         # Queue columns keep list_tasks' dispatch order (priority DESC, created_at ASC).
         tenants = [r["tenant"] for r in conn.execute("SELECT DISTINCT tenant FROM tasks WHERE tenant IS NOT NULL ORDER BY tenant")]

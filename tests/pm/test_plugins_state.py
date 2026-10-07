@@ -96,6 +96,7 @@ def test_unreadable_profile_state_is_not_an_empty_selection(homes, monkeypatch, 
         enabled_member_dirs()
 
 
+@pytest.mark.platforms("posix")  # a self-referencing symlink needs no privilege only on POSIX
 def test_unreadable_config_link_is_not_an_empty_selection(homes):
     # Only a missing file means "no config": a symlink loop must refuse, not drop the home's plugins.
     default_home, _ = homes

@@ -372,6 +372,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'stt.xai.model': ['grok-voice-transcribe-2.0', 'grok-voice-transcribe-1.0'],
   'tts.openai.model': ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
   'tts.elevenlabs.model_id': [
+    'eleven_v4',
+    'eleven_v4_turbo',
     'eleven_v3',
     'eleven_ttv_v3',
     'eleven_multilingual_v2',

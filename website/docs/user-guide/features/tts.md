@@ -55,7 +55,7 @@ tts:
     speed: 1.0                  # Converted to rate percentage (+/-%)
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
-    model_id: "eleven_multilingual_v2"
+    model_id: "eleven_multilingual_v2"   # or eleven_v4 / eleven_v4_turbo (90+ languages, 10k-char cap)
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
@@ -184,7 +184,7 @@ Each provider has a documented per-request input-character cap. Hermes splits lo
 |------------|-------------|
 | `eleven_flash_v2_5` | 40000 |
 | `eleven_flash_v2` | 30000 |
-| `eleven_multilingual_v2` (default), `eleven_multilingual_v1`, `eleven_english_sts_v2`, `eleven_english_sts_v1` | 10000 |
+| `eleven_v4`, `eleven_v4_turbo`, `eleven_multilingual_v2` (default), `eleven_multilingual_v1`, `eleven_english_sts_v2`, `eleven_english_sts_v1` | 10000 |
 | `eleven_v3`, `eleven_ttv_v3` | 5000 |
 | Unknown model | Falls back to provider default (10000) |
 

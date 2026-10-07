@@ -140,8 +140,14 @@ def test_text_fallback_send_leaves_a_record(tmp_path, monkeypatch, caplog, text_
     runner._schedule = lambda coro, _label: SimpleNamespace(result=lambda timeout=None, _r=asyncio.run(coro): _r)
     runner._close_native_stream_boundary = lambda _why: None
 
+    from gateway.run_turn_runner_approval_delivery import ApprovalDeliveryError
+
     with caplog.at_level(logging.INFO, logger="gateway.run"):
-        runner._approval_notify_sync(dict(APPROVAL, request_id="req-1"))
+        if text_ok:
+            runner._approval_notify_sync(dict(APPROVAL, request_id="req-1"))
+        else:  # a failed text prompt fails the pending request (fail-closed) after logging its receipt
+            with pytest.raises(ApprovalDeliveryError):
+                runner._approval_notify_sync(dict(APPROVAL, request_id="req-1"))
 
     text = [r for r in caplog.records if r.message.startswith("Exec approval text prompt send")]
     assert len(text) == 1 and text[0].levelno == level

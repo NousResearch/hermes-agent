@@ -7,6 +7,7 @@ import os
 import subprocess
 
 import pm.environments
+import pytest
 from hermes_cli.worktree_ops import _prune_stale_worktrees
 from pm.filesystem import lock_fd
 from pm.install_states import collect_orphan_install_states, orphan_install_states
@@ -66,3 +67,19 @@ def test_held_orphan_is_kept(tmp_path):
             os.close(fd)
     # Locks released (owner exited): all are reclaimed on the next pass.
     assert sorted(p.name for p in collect_orphan_install_states(installs)) == ["dddd", "eeee", "ffff"]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores directory modes")
+def test_partly_removed_orphan_keeps_its_record_until_retried(tmp_path):
+    installs = tmp_path / "installs"
+    state = _state(installs, "aaaa", tmp_path / "gone")
+    stuck = state / "environments" / "gen" / "venv"
+    (stuck / "pyvenv.cfg").write_text("", encoding="utf-8")
+    stuck.chmod(0o500)  # its entries cannot be unlinked: the removal stops part-way
+    try:
+        assert collect_orphan_install_states(installs) == []
+        assert orphan_install_states(installs) == [state]
+    finally:
+        stuck.chmod(0o700)
+    assert collect_orphan_install_states(installs) == [state] and not state.exists()

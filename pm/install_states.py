@@ -18,6 +18,7 @@ lock, or a dependency / PM runtime generation lease.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shutil
@@ -82,6 +83,20 @@ def collect_orphan_install_states(installs: Path) -> list[Path]:
     for state in orphan_install_states(installs):
         if _held(state):
             logger.debug("orphan install state %s is still held; skipped", state.name)
+            continue
+        # The record goes last, and only once everything else is gone: the startup prune runs on
+        # a daemon thread and a removal can fail part-way (an open file on Windows, a read-only
+        # dir), and a dir that lost its record first would never be recognised again.
+        for child in state.iterdir():
+            if child.name == "inputs":
+                continue
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                with contextlib.suppress(OSError):
+                    child.unlink()
+        if any(child.name != "inputs" for child in state.iterdir()):
+            logger.debug("orphan install state %s only partly removed; retried next pass", state.name)
             continue
         shutil.rmtree(state, ignore_errors=True)
         if not state.exists():

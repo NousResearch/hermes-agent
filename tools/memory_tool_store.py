@@ -584,7 +584,12 @@ class MemoryStore:
         hold ``_file_lock`` (via ``_mutate``): a bare write from an earlier snapshot
         drops concurrent entries (#119668)."""
         try:
-            atomic_write_text(path, ENTRY_DELIMITER.join(entries), tmp_prefix=".mem_")
+            # Trailing LF: aligns the store with agent_import.py's canonical
+            # serialization so tracked MEMORY.md/USER.md never show up in git
+            # with a missing EOF newline (#134569). Parsers strip entries, so
+            # the added byte is round-trip neutral.
+            atomic_write_text(path, ENTRY_DELIMITER.join(entries) + "\n" if entries else "",
+                              tmp_prefix=".mem_")
         except OSError as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 

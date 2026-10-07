@@ -977,9 +977,9 @@ def _prepare_profile_gateway_update_restart(profile: str, pid: int) -> str | Non
     return None
 
 
-def launch_detached_gateway_restart_by_cmdline(old_pid: int, run_argv: list[str]) -> bool:
-    """Relaunch a gateway with no profile→PID-file mapping by replaying its captured argv after exit."""
-    return old_pid > 0 and bool(run_argv) and _spawn_gateway_restart_watcher(old_pid, list(run_argv))
+def launch_detached_gateway_restart_by_cmdline(old_pid: int, run_argv: list[str], home: str | None = None) -> bool:
+    """Relaunch a gateway with no profile→PID-file mapping by replaying its captured argv (on Windows under ``home``, the one it ran on) after exit."""
+    return old_pid > 0 and bool(run_argv) and _spawn_gateway_restart_watcher(old_pid, list(run_argv), home=home)
 
 
 def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
@@ -1055,7 +1055,7 @@ def _host_gateway_watcher_env() -> dict[str, str]:
     return env
 
 
-def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: bool | None = None) -> bool:
+def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: bool | None = None, home: str | None = None) -> bool:
     """Spawn the detached watcher that respawns ``run_argv`` once ``old_pid`` exits. Watcher and respawn
     both need platform-appropriate detach: POSIX setsid; on Windows ``start_new_session`` does NOT detach
     (the watcher would die with the CLI console), so ``windows_detach_popen_kwargs()`` supplies flags."""
@@ -1074,7 +1074,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
     if sys.platform == "win32":
         try:
             from hermes_cli.gateway_windows import windowless_gateway_restart_spec
-            run_argv, respawn_cwd, respawn_env_overlay = windowless_gateway_restart_spec(list(run_argv))
+            run_argv, respawn_cwd, respawn_env_overlay = windowless_gateway_restart_spec(list(run_argv), home=home)
         except Exception:
             # Fall back to the original argv: a visible window beats a failed respawn.
             respawn_cwd = ""

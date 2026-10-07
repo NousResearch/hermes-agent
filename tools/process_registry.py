@@ -282,7 +282,7 @@ def _systemd_run_user_scope_available() -> bool:
                     for _attempt in range(2):
                         result = subprocess.run(
                             _systemd_scope_argv(binary, probe_unit, "/bin/sh", "-c", "exit 0"),
-                            capture_output=True,
+                            stdin=subprocess.DEVNULL, capture_output=True,
                             timeout=3,
                             env=systemd_user_bus_env(),
                         )

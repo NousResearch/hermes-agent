@@ -64,6 +64,28 @@ def test_recycled_pid_is_not_our_launcher(tmp_path, monkeypatch):
     assert runtime._launcher_pid() == os.getpid()
 
 
+def test_create_time_tolerates_a_proc_without_proc_stat(tmp_path, monkeypatch):
+    """A userns/mountns sandbox mounts /proc with subset=pid, so there is no /proc/stat and psutil's
+    create_time() raises FileNotFoundError out of boot_time() — not a psutil.Error (#134452). The
+    start must not abort on it: an unknown birth time records "<pid> 0", status() reads that as not
+    running, and the recorded pid stays usable by stop()'s orphan sweep."""
+    import os
+
+    import psutil
+
+    def no_proc_stat(self):
+        raise FileNotFoundError(2, "No such file or directory", "/proc/stat")
+
+    monkeypatch.setattr(psutil.Process, "create_time", no_proc_stat)
+    assert runtime._create_time(os.getpid()) is None
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    pidfile = tmp_path / "launcher.pid"
+    pidfile.write_text(f"{os.getpid()} 0", encoding="utf-8")  # what start() records then
+    assert runtime._launcher_pid() is None  # an unconfirmable identity is not running
+    assert runtime._recorded_launcher_pid() == os.getpid()  # the sweep can still match the group
+
+
 def test_recorded_display_held_by_a_live_server_is_not_reused(tmp_path, monkeypatch):
     """After profile A stops, B may take A's number; A restarting must pick another rather than
     unlink B's socket and lock."""

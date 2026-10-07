@@ -173,7 +173,11 @@ def _create_time(pid: int) -> Optional[float]:
     import psutil
     try:
         return psutil.Process(pid).create_time()
-    except (psutil.Error, OverflowError, ValueError):
+    # create_time() goes through boot_time(), which reads /proc/stat — absent when /proc is
+    # mounted subset=pid inside a userns/mountns sandbox, and that FileNotFoundError is not a
+    # psutil.Error (#134452). An unknown birth time must not abort the start: callers treat
+    # None as "cannot confirm this pid is ours".
+    except (psutil.Error, OverflowError, ValueError, OSError):
         return None
 
 

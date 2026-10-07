@@ -45,8 +45,8 @@ class Workflow:
     """Columns (board order) and the manual move allow-list."""
 
     columns: tuple[Column, ...]
-    # Manual moves (drag, PATCH status) a human may request: ``src -> {dst}``. Archive is
-    # always allowed and not listed. Allowed != guaranteed: verbs still apply their own
+    # Manual moves (drag, PATCH status) a human may request: ``src -> {dst}``. Archiving
+    # (dst) is always allowed and not listed; ``archived`` may appear as a source (restore). Allowed != guaranteed: verbs still apply their own
     # gates (parents open, completion evidence).
     manual: Mapping[str, frozenset[str]]
 
@@ -79,7 +79,8 @@ class Workflow:
         return dst in self.manual.get(src, frozenset())
 
     def to_dict(self) -> dict:
-        """JSON shape served by the dashboard's ``GET /workflow``."""
+        """JSON shape served by the dashboard's ``GET /workflow``. ``manual`` keys are the
+        column keys plus ``archived`` (restore source), which is never a column."""
         return {
             "columns": [
                 {"key": c.key, "label": c.label, "icon": c.icon, "drag_target": c.drag_target}

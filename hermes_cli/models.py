@@ -1753,15 +1753,16 @@ def _configured_relay_base_url(provider: str) -> str:
     base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
     if not base_url:
         return ""
-    # A base_url equal to the provider's own endpoint (profile's, or the registry row's when the
-    # profile leaves it empty: TokenHub; profiles cover OpenRouter, absent from the registry) is
-    # not a relay: setup persists canonical URLs, and OAuth providers (Codex) need native discovery.
+    # A base_url equal to the provider's own endpoint (the profile's or the registry row's: TokenHub's
+    # profile leaves it empty; OpenRouter has no registry row) is not a relay: setup persists
+    # canonical URLs, and OAuth providers (Codex) need native discovery.
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
         from providers import get_provider_profile
 
-        canonical = {normalize_route_base_url(u) for u in (getattr(get_provider_profile(normalized), "base_url", ""),
-                     getattr(PROVIDER_REGISTRY.get(normalized), "inference_base_url", "")) if u}
+        profile_url = getattr(get_provider_profile(normalized), "base_url", "")
+        registry_url = getattr(PROVIDER_REGISTRY.get(normalized), "inference_base_url", "")
+        canonical = {normalize_route_base_url(u) for u in (profile_url, registry_url) if u}
     except Exception:
         return base_url  # lookup failed: stay a relay, never widening where credentials go
     return "" if normalize_route_base_url(base_url) in canonical else base_url

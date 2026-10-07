@@ -114,13 +114,15 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
 
 
 def test_dependency_block_with_terminal_parents_parks_then_escalates(
-    kanban_home: Path, capsys: pytest.CaptureFixture[str],
+    kanban_home: Path, capsys: pytest.CaptureFixture[str], monkeypatch,
 ) -> None:
     """A ``dependency`` block whose parents are all terminal can never be
     satisfied by ``recompute_ready``: it must park in ``blocked`` as
     ``needs_input`` (no ``dependency_wait``, no re-promotion), say so on the
     CLI, and count toward the loop breaker so a re-block after an unblock
     reaches ``triage``."""
+    # Block attributes its audit comment to an explicit author only.
+    monkeypatch.setenv("HERMES_PROFILE", "operator")
     with kbc.connect_closing() as conn:
         parent = kb.create_task(conn, title="already-done-parent", assignee="worker")
         with kb.write_txn(conn):

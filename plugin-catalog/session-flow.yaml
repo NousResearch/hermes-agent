@@ -1,0 +1,44 @@
+name: session-flow
+repo: https://github.com/agantila/session-flow
+sha: 6eebf540453e6b8b7f508a16d8205ff3c6ad0dcb
+description: >-
+  Smooth line-by-line chat animation, Ctrl+Scroll session cycling,
+  Firefox-style session groups, glass readability for the composer,
+  sidebar-style content tabs and full personalization — six features
+  in a single plain-ESM plugin, all live-configurable from a built-in
+  settings page. Plain ESM, no build step, no dependencies, one file.
+  Disclosure — pure UI layer (pane, settings page, sidebar nav, palette
+  commands, i18n): reads Hermes's gateway state and atom feeds
+  (`projects.tree`, `projects.list`, `session.active_list`, `session.list`,
+  `session.context_breakdown`, `session.title`, focused-session state) and
+  the REST mirror `GET /api/sessions` (pinned state); writes
+  `session.cwd.set` / `session.workspace.move` / `session.create` and the
+  localStorage key `hermes.desktop.projectScope` (when the user picks a
+  project in the composer chip); stores its own settings under
+  `~/.hermes/cache/desktop-plugins/session-flow/`. No outbound network
+  calls, no telemetry, no credentials read or stored, no shell commands.
+  All timers are ctx-owned intervals disposed on unload (live-session
+  poll ~30 s, session refresh ~45 s, project cache + nav status 60 s,
+  activity expiry 30 s, composer-chip sync 2.5 s, lightweight UI sync
+  2–5 s).
+maintainer: AGANTILA — Deniz Yilmaz
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/agantila/session-flow#readme
+version: "1.28.1"
+image: https://raw.githubusercontent.com/agantila/session-flow/6eebf540453e6b8b7f508a16d8205ff3c6ad0dcb/docs/marketing/heroes/sf-hero-a1-sessionpane-liste-16x9.png
+screenshots:
+  - https://raw.githubusercontent.com/agantila/session-flow/6eebf540453e6b8b7f508a16d8205ff3c6ad0dcb/docs/marketing/heroes/sf-hero-a9-sidebar-kanban-files-16x9.jpg
+  - https://raw.githubusercontent.com/agantila/session-flow/6eebf540453e6b8b7f508a16d8205ff3c6ad0dcb/docs/marketing/heroes/sf-hero-a4-composer-glass-16x9.png
+  - https://raw.githubusercontent.com/agantila/session-flow/6eebf540453e6b8b7f508a16d8205ff3c6ad0dcb/docs/marketing/heroes/sf-hero-a5-ctrlscroll-hud-16x9.png
+  - https://raw.githubusercontent.com/agantila/session-flow/6eebf540453e6b8b7f508a16d8205ff3c6ad0dcb/docs/marketing/heroes/sf-hero-a6-contenttabs-16x9.png
+  - https://raw.githubusercontent.com/agantila/session-flow/6eebf540453e6b8b7f508a16d8205ff3c6ad0dcb/docs/marketing/heroes/sf-hero-a7-settings-16x9.png
+  - https://raw.githubusercontent.com/agantila/session-flow/6eebf540453e6b8b7f508a16d8205ff3c6ad0dcb/docs/marketing/heroes/sf-hero-a8-workspace-personal-16x9.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

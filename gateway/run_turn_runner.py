@@ -1873,8 +1873,19 @@ class TurnRunner:
         # before run_conversation) is retained as a secondary guard. It is also the sole guard on the
         # fallback branch taken when mid-run context compression shrinks the message list below the original
         # history length, preserving the compression-safe behaviour of #160.
+        source = self._ctx.source
+        profile_name = getattr(source, "profile", None)
+        if not profile_name and source is not None:
+            resolver = getattr(self._runner, "_profile_name_for_source", None)
+            if callable(resolver):
+                profile_name = resolver(source)
+        if not profile_name:
+            active_profile = getattr(self._runner, "_active_profile_name", None)
+            profile_name = active_profile() if callable(active_profile) else active_profile
+        profile_name = profile_name or "default"
         media_tags, has_voice_directive = _collect_auto_append_media_tags(
             result.get("messages", []), history_offset=len(agent_history), history_media_paths=history_media_paths,
+            profile_name=profile_name,
         )
         if not media_tags:
             return final_response

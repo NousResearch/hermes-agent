@@ -10,17 +10,14 @@ def local_cache_folder() -> Path | None:
     """Read WinRT LocalCache; unpackaged installs need no WinRT dependencies."""
     if sys.platform != "win32":
         return None
-    import ctypes
+    try:
+        from winrt.windows.storage import ApplicationData
 
-    query = ctypes.WinDLL("kernel32").GetCurrentPackageFullName
-    query.argtypes = [ctypes.POINTER(ctypes.c_uint32), ctypes.c_wchar_p]
-    query.restype = ctypes.c_long
-    result = query(ctypes.byref(ctypes.c_uint32()), None)
-    if result == 15700:  # APPMODEL_ERROR_NO_PACKAGE
-        return None
-    if result != 122:  # ERROR_INSUFFICIENT_BUFFER: this process has package identity
-        raise ctypes.WinError(result)
-
-    from winrt.windows.storage import ApplicationData
-
-    return Path(ApplicationData.current.local_cache_folder.path)
+        return Path(ApplicationData.current.local_cache_folder.path)
+    except ModuleNotFoundError as exc:
+        if exc.name not in ("winrt", "winrt.windows", "winrt.windows.storage"):
+            raise
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != -2147009196:  # HRESULT: no package identity
+            raise
+    return None

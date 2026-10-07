@@ -91,6 +91,14 @@ def test_named_account_same_response_is_not_a_free_tier_refusal(case_id, status,
     assert "To sign in: /login." not in result["final_response"]
 
 
+def test_anonymous_402_off_the_welcome_host_keeps_ordinary_402_handling():
+    paid = "https://inference-api.nousresearch.com/v1"
+    error = _error(402, {"error": {"message": "payment required"}})
+    classified = classify_api_error(error, provider="nous", model=MODEL, base_url=paid, api_key=make_jwt())
+    assert "welcome_refusal" not in classified.error_context
+    assert classified.reason.value == "billing"
+
+
 @pytest.mark.parametrize("remaining,reason,retry_after", [("750", "at_capacity", 4), ("0", "rate_limited", 2000)])
 def test_header_wait_is_the_exhausted_bucket_reset_else_retry_after(remaining, reason, retry_after):
     headers = {"Retry-After": "4", "x-ratelimit-remaining-requests-1h": remaining,

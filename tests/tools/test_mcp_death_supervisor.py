@@ -581,6 +581,25 @@ def test_a_supervisor_that_cannot_start_is_not_fatal(monkeypatch, all_groups_ali
     assert mcp_tool._death_supervisor is None
 
 
+def test_the_supervisor_is_never_attributed_to_a_stdio_server():
+    """The supervisor is spawned lazily by the first server's registration, often while a slower
+    server's stdio_client() is still inside its child-PID snapshot window. If the snapshot delta
+    keeps it, that server records the supervisor as its own process: every shutdown then SIGTERMs
+    the supervisor, finds its unreaped zombie still holding the group and logs a bogus
+    "Force-killed MCP process ... after SIGTERM timeout" after a 2s wait."""
+    pytest.importorskip("psutil")
+    server = subprocess.Popen(_VICTIM, start_new_session=True)
+    supervisor = mcp_tool._spawn_death_supervisor()
+    assert supervisor is not None
+    try:
+        assert _mcp_lifecycle._filter_mcp_children({server.pid, supervisor.pid}) == {server.pid}
+    finally:
+        _kill(server.pid)
+        _kill(supervisor.pid)
+        server.wait(timeout=10)
+        supervisor.wait(timeout=10)
+
+
 @contextlib.contextmanager
 def _stdio_connection(child_pid, fake_supervisor):
     """Drive the real MCPServerTask._run_stdio with a known spawned child.

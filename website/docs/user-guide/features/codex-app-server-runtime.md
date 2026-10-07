@@ -524,3 +524,46 @@ If you find a bug, [open an issue](https://github.com/NousResearch/hermes-agent/
 ```
 
 For implementation details, see [PR #24182](https://github.com/NousResearch/hermes-agent/pull/24182) and the [Codex app-server protocol README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md).
+
+## Long-running gateway Goals (opt-in)
+
+With a Codex app-server supporting `thread/goal/set|get|clear` (validated with Codex
+0.160.0), a messaging gateway can hand `/goal` continuation and completion to the
+native Codex Goal runtime rather than the Hermes auxiliary judge:
+
+```yaml
+model:
+  openai_runtime: codex_app_server
+agent:
+  codex_turn_timeout: 0       # no wall-clock turn cutoff
+  codex_idle_timeout: 1800    # interrupt after 30 minutes without scoped wire activity
+goals:
+  runtime: codex
+  codex_token_budget: 200000  # per-goal cumulative resource guard; 0/null is explicitly uncapped
+```
+
+The defaults remain `goals.runtime: hermes` and a 600-second total turn timeout.
+The gateway's independent inactivity watchdog still applies. A quiet tool taking
+longer than either inactivity guard can be interrupted; this is not infinite
+execution. Notifications indicate wire activity, not proof of meaningful work.
+
+A native Goal receives one kickoff. Codex schedules subsequent tool-working turns;
+Hermes consumes those turns, persists each transcript, mirrors native status, and
+avoids a second judge/FIFO scheduler. The Hermes `goals.max_turns` cap does not apply
+and `/goal resume` does not reset native token usage. Existing active or paused
+Hermes-owned Goals retain their owner after the configuration change.
+
+`/goal status`, `/goal pause`, `/goal resume`, `/goal clear`, and `/stop` remain user
+controls. Completion requires native `complete` and any configured completion
+gates. `blocked`, `budgetLimited`, `usageLimited`, interruption, API errors, and
+failed gates never mean successful delivery. A terminal/resource-limited Goal
+requires a newly authorized Goal instead of silently replenishing its budget.
+Changing criteria during execution pauses the old objective; explicitly set a new
+Goal for the revised criteria. Native Goals do not support Hermes process wait
+barriers. Empty no-tool turns are not force-continued.
+
+Transcript or transport failures pause the mirror and retire the client rather
+than replaying actions. Resume stays on the original native thread; failure to
+recover that thread cannot silently reset its Goal progress/budget. This bridge
+does not automatically restart unfinished Goals after a gateway restart: inspect
+status and explicitly resume. Other Hermes runtimes and CLI Goals are unchanged.

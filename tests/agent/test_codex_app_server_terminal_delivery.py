@@ -57,7 +57,8 @@ async def test_terminal_status_survives_progress_delivery(tmp_path, monkeypatch,
         cwd=str(tmp_path), codex_bin=str(executable),
         client_factory=lambda **kw: CodexAppServerClient(**kw, extra_args=[status]),
     )
-    monkeypatch.setattr(session, "run_turn", partial(session.run_turn, turn_timeout=2.0))
+    import hermes_cli.config as config
+    monkeypatch.setattr(config, "load_config", lambda: {"agent": {"codex_turn_timeout": 2.0, "codex_idle_timeout": 20}})
     agent = AIAgent(api_key="stub", base_url="https://stub.invalid", provider="openai",
                     api_mode="codex_app_server", quiet_mode=True, skip_context_files=True, skip_memory=True)
     agent._codex_session = session

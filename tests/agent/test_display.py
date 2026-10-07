@@ -9,6 +9,7 @@ from agent.display import (
     capture_local_edit_snapshot,
     extract_edit_diff,
     get_cute_tool_message,
+    get_tool_preview_max_len,
     prepare_tool_preview,
     redact_tool_args_for_display,
     set_tool_preview_max_len,
@@ -36,6 +37,21 @@ def test_cute_tool_message_falls_back_when_renderer_raises(monkeypatch):
 
 class TestBuildToolPreview:
     """Tests for build_tool_preview defensive handling and normal operation."""
+
+    def test_execute_code_single_line_preview(self):
+        result = build_tool_preview("execute_code", {"code": "print('hello')"})
+        assert result == "print('hello')"
+
+    def test_execute_code_two_line_preview(self):
+        result = build_tool_preview("execute_code", {"code": "import os\nprint(os.getcwd())"})
+        assert result == "import os | print(os.getcwd())"
+
+    def test_execute_code_longer_preview_counts_remaining_lines(self):
+        result = build_tool_preview(
+            "execute_code",
+            {"code": "import os\nimport sys\nprint(os.getcwd())"},
+        )
+        assert result == "import os (+2 lines)"
 
     def test_none_args_returns_none(self):
         """PR #453: None args should not crash, should return None."""
@@ -158,6 +174,34 @@ class TestPrepareToolPreview:
 
 class TestCuteToolMessagePreviewLength:
 
+    def test_execute_code_message_includes_two_line_preview(self):
+        line = get_cute_tool_message(
+            "execute_code",
+            {"code": "import os\nprint(os.getcwd())"},
+            0.1,
+        )
+        assert "import os | print(os.getcwd())" in line
+
+    def test_execute_code_message_counts_remaining_lines(self):
+        line = get_cute_tool_message(
+            "execute_code",
+            {"code": "import os\nimport sys\nprint(os.getcwd())"},
+            0.1,
+        )
+        assert "import os (+2 lines)" in line
+        assert "import sys" not in line
+
+    def test_execute_code_message_preview_uses_wider_limit(self):
+        previous_limit = get_tool_preview_max_len()
+        try:
+            set_tool_preview_max_len(80)
+            first_line = "x = '" + "a" * 70 + "'"
+            line = get_cute_tool_message("execute_code", {"code": first_line}, 0.1)
+        finally:
+            set_tool_preview_max_len(previous_limit)
+
+        assert first_line[:52] in line
+        assert "..." in line
 
     def test_search_files_preview_uses_positive_configured_limit_not_default(self):
         set_tool_preview_max_len(80)

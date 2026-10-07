@@ -196,5 +196,32 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
         _prepare(TimeoutError("Terminal approval preparation timed out; commands were not started"))
         assert interrupt_issuer(agent) == "terminal_batch_preparation_timeout"
         assert agent._interrupt_message is None
+
+        # Sequential skip notices (stop before a call / after one) render the recorded system reason.
+        def _calls():
+            return [SimpleNamespace(id=f"s{i}", function=SimpleNamespace(name=f"t{i}", arguments="{}")) for i in (1, 2)]
+
+        def _stop_mid_batch(*_a, **_k):
+            agent.interrupt(tool_reason="terminal batch timeout")
+            return None, 0.0
+
+        agent._vprint, agent.log_prefix = (lambda *_a, **_k: None), ""
+        for stop_first in (True, False):
+            set_interrupt(False)
+            agent.clear_interrupt()
+            if stop_first:
+                agent.interrupt(tool_reason="terminal batch timeout")
+            rows = []
+            with (
+                patch.object(te, "_budget_for_agent"),
+                patch.object(te, "_flush_session_db_after_tool_progress", return_value=True),
+                patch.object(te, "_emit_terminal_post_tool_call"),
+                patch.object(te, "_resolve_sequential_dispatch"),
+                patch.object(te, "_run_sequential_call", _stop_mid_batch),
+                patch.object(te, "_publish_sequential_result", return_value=True),
+            ):
+                te._execute_tool_calls_sequential(agent, SimpleNamespace(tool_calls=_calls()), rows, "t", finalize=False)
+            assert rows and all("Turn aborted — terminal batch timeout" in r["content"] for r in rows), rows
+            assert not any("User sent a new message" in r["content"] for r in rows)
     finally:
         set_interrupt(False)

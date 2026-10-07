@@ -104,11 +104,37 @@ plugins/platforms/mcp_events/
 └── README.md
 ```
 
+## Named emitters
+
+The tools take an emitter *name* configured under `mcp_events.emitters:` (with
+`url` and optional `headers`). This fixes two problems with raw URLs, found in
+end-to-end use against
+[mcp-events-bridge](https://github.com/hookdeck/mcp-events-bridge):
+
+- **Identity.** The URL otherwise becomes the emitter's identity everywhere:
+  the tool replies, the session's `user_id`, each delivery's framing, the audit
+  log and the gateway logs. A named emitter shows as its name in all of those;
+  the URL (and its host, for the per-emitter rate limit) stays internal.
+- **Credentials.** A URL is the only credential channel a bare tool call
+  offers, and MCP servers without OAuth commonly carry a secret in the URL path
+  (a capability URL — mcp-events-bridge and Zapier's MCP URLs do). That URL
+  then reaches the model context in every framed delivery, the session store,
+  the audit log and the agent's replies; no redaction can recover it. With
+  named emitters, the URL and any `Authorization` headers resolve from
+  config/.env at call time and never pass through the model or the logs (the
+  way `MCP_EVENTS_WEBHOOK_SECRET` already stays out of them).
+
+Secret placement follows the repo's env policy: a URL or header set that
+carries a secret lives in `MCP_EVENTS_EMITTER_<NAME>_URL` / `_HEADERS`
+(profile-scoped, name uppercased with non-alphanumerics as `_`), which wins
+over the config.yaml entry. Unnamed `emitter_url` calls remain for ad-hoc
+public emitters (SSRF-guarded as before); a named emitter skips the URL guard
+because operator configuration *is* the allow decision.
+
 ## Deliberately out of scope (future, not this PR)
 
 - **Emitter direction** (Hermes exposing `events/*` for others to subscribe to).
-- **Full challenge-response** on subscribe (some emitters verify callbacks with a
-  signed single-use challenge first); the record carries the challenge through
-  for a follow-up.
 - **Multi-round-trip / `subscriptions/listen`** interop with core-spec push.
 - Per-event authorization policies beyond the emitter allow-list.
+- OAuth for emitters (named-emitter headers cover bearer tokens; a full OAuth
+  grant flow is a follow-up once there is a concrete emitter that needs it).

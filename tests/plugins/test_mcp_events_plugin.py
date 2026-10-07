@@ -429,7 +429,7 @@ class TestClientTools:
                             lambda *a, **k: {"id": "em-99", "emitter_url": a[0], "event": a[1],
                                              "callback_url": a[2], "filter": {}, "created_at": 1.0,
                                              "expires_at": None})
-        out = tools_mod.mcp_events_subscribe("https://em.example/mcp", "deploy")
+        out = tools_mod.mcp_events_subscribe(emitter_url="https://em.example/mcp", event="deploy")
         assert "em-99" in out and store.get("em-99") is not None
         monkeypatch.setattr(tools_mod.protocol, "unsubscribe", lambda *a, **k: True)
         out = tools_mod.mcp_events_unsubscribe("em-99")
@@ -437,12 +437,12 @@ class TestClientTools:
 
     def test_subscribe_refuses_unsafe_emitter(self, tmp_path, monkeypatch):
         tools_mod, _ = self._tools(tmp_path, monkeypatch)
-        out = tools_mod.mcp_events_subscribe("http://169.254.169.254/mcp", "deploy")
+        out = tools_mod.mcp_events_subscribe(emitter_url="http://169.254.169.254/mcp", event="deploy")
         assert "Refusing" in out
 
     def test_subscribe_rejects_bad_filter_json(self, tmp_path, monkeypatch):
         tools_mod, _ = self._tools(tmp_path, monkeypatch)
-        out = tools_mod.mcp_events_subscribe("https://em.example/mcp", "deploy", filter_json="{bad")
+        out = tools_mod.mcp_events_subscribe(emitter_url="https://em.example/mcp", event="deploy", filter_json="{bad")
         assert "not valid JSON" in out
 
 
@@ -663,3 +663,130 @@ class TestPlatformAuthorization:
         # name (the emitter knob was registered here) silently never matches.
         assert registered["allowed_users_env"] == "MCP_EVENTS_ALLOWED_USERS"
         assert registered["allow_all_env"] == "MCP_EVENTS_ALLOW_ALL_USERS"
+
+
+# --------------------------------------------------------------------------
+# Named emitters: config-resolved URLs and headers, name-based identity
+# --------------------------------------------------------------------------
+
+def _sec_with_emitters(over=None, emitters=None):
+    kw = dict(webhook_secret=_secret(), requested_host="127.0.0.1", port=9901,
+              public_base_url="", trusted_emitters=frozenset(), allow_all_emitters=False,
+              rate_limit_per_min=120, timestamp_skew=300, storm_max_per_min=60, home_channel="",
+              emitters=emitters or {})
+    kw.update(over or {})
+    return security.MCPEventsSecurityContext(**kw)
+
+
+class TestEmitterResolution:
+    def test_env_var_name_is_the_uppered_name_with_underscores(self):
+        assert security._emitter_env_var("mcp-events-bridge", "_URL") == "MCP_EVENTS_EMITTER_MCP_EVENTS_BRIDGE_URL"
+
+    def test_config_entry_resolves_url_and_headers(self, monkeypatch):
+        monkeypatch.setattr(security, "_scoped_secret", lambda name: "")
+        sec = _sec_with_emitters(emitters={"bridge": {"url": "http://127.0.0.1:8080/mcp",
+                                                      "headers": {"Authorization": "Bearer t"}}})
+        assert sec.resolve_emitter("bridge") == ("http://127.0.0.1:8080/mcp", {"Authorization": "Bearer t"})
+        assert sec.resolve_emitter("nope") is None
+        assert sec.emitter_names() == ["bridge"]
+
+    def test_env_url_and_headers_win_over_config(self, monkeypatch):
+        env = {"MCP_EVENTS_EMITTER_BRIDGE_URL": "http://127.0.0.1:9999/mcp/secret",
+               "MCP_EVENTS_EMITTER_BRIDGE_HEADERS": '{"Authorization": "Bearer env-token"}'}
+        monkeypatch.setattr(security, "_scoped_secret", lambda name: env.get(name, ""))
+        sec = _sec_with_emitters(emitters={"bridge": {"url": "http://config.example/mcp",
+                                                      "headers": {"X-Keep": "yes"}}})
+        url, headers = sec.resolve_emitter("bridge")
+        assert url == "http://127.0.0.1:9999/mcp/secret"
+        assert headers == {"X-Keep": "yes", "Authorization": "Bearer env-token"}
+
+    def test_non_json_env_headers_are_ignored(self, monkeypatch):
+        monkeypatch.setattr(security, "_scoped_secret", lambda name: "{bad" if name.endswith("_HEADERS") else "")
+        sec = _sec_with_emitters(emitters={"bridge": {"url": "http://127.0.0.1:8080/mcp"}})
+        assert sec.resolve_emitter("bridge") == ("http://127.0.0.1:8080/mcp", {})
+
+
+class TestNamedEmitterTools:
+    def _tools(self, tmp_path, monkeypatch, emitters=None):
+        from plugins.platforms.mcp_events import tools as tools_mod
+        store = protocol.SubscriptionStore(home_dir=str(tmp_path))
+        monkeypatch.setattr(tools_mod.protocol, "SubscriptionStore", lambda: store)
+        monkeypatch.setattr(tools_mod.security.MCPEventsSecurityContext, "capture",
+                            classmethod(lambda cls: _sec_with_emitters(emitters=emitters)))
+        return tools_mod, store
+
+    def test_a_named_loopback_emitter_resolves_without_the_url_guard(self, tmp_path, monkeypatch):
+        tools_mod, _ = self._tools(tmp_path, monkeypatch, emitters={
+            "bridge": {"url": "http://127.0.0.1:8080/mcp/secret", "headers": {"Authorization": "Bearer t"}}})
+        # The raw URL would be refused (loopback, not trusted); the named emitter
+        # is operator-approved and resolves with its headers.
+        url, headers, display, err = tools_mod._resolve_target("bridge", "")
+        assert err is None and url == "http://127.0.0.1:8080/mcp/secret"
+        assert headers == {"Authorization": "Bearer t"} and display == "bridge"
+
+    def test_unknown_name_lists_the_known_emitters(self, tmp_path, monkeypatch):
+        tools_mod, _ = self._tools(tmp_path, monkeypatch, emitters={"bridge": {"url": "u"}})
+        url, headers, display, err = tools_mod._resolve_target("bridg", "")
+        assert err is not None and "bridge" in err and url is None
+
+    def test_neither_name_nor_url_is_an_error(self, tmp_path, monkeypatch):
+        tools_mod, _ = self._tools(tmp_path, monkeypatch)
+        _, _, _, err = tools_mod._resolve_target("", "")
+        assert "emitter" in err
+
+    def test_subscribe_by_name_stores_the_name_and_hides_the_url(self, tmp_path, monkeypatch):
+        tools_mod, store = self._tools(tmp_path, monkeypatch, emitters={
+            "bridge": {"url": "https://em.example/mcp/secret-key"}})
+        captured = {}
+
+        def fake_subscribe(url, event, callback_url, secret, filter_args=None, timeout=20.0, headers=None):
+            captured.update(url=url, headers=headers)
+            return {"id": "em-77", "emitter_url": url, "event": event, "callback_url": callback_url,
+                    "filter": {}, "created_at": 1.0, "expires_at": None}
+
+        monkeypatch.setattr(tools_mod.protocol, "subscribe", fake_subscribe)
+        out = tools_mod.mcp_events_subscribe(emitter="bridge", event="resend.email.received")
+        assert captured["url"] == "https://em.example/mcp/secret-key"
+        rec = store.get("em-77")
+        assert rec["emitter_name"] == "bridge"
+        assert "bridge" in out and "secret-key" not in out
+
+    def test_unsubscribe_reresolves_a_named_emitters_headers(self, tmp_path, monkeypatch):
+        tools_mod, store = self._tools(tmp_path, monkeypatch, emitters={
+            "bridge": {"url": "https://em.example/mcp/rotated", "headers": {"Authorization": "Bearer new"}}})
+        store.add({"id": "em-5", "emitter_url": "https://em.example/mcp/old", "emitter_name": "bridge",
+                   "event": "e", "callback_url": "c", "filter": {}, "created_at": 1.0, "expires_at": None})
+        seen = {}
+
+        def fake_unsubscribe(url, record, timeout=15.0, headers=None):
+            seen.update(url=url, headers=headers)
+            return True
+
+        monkeypatch.setattr(tools_mod.protocol, "unsubscribe", fake_unsubscribe)
+        out = tools_mod.mcp_events_unsubscribe("em-5")
+        assert seen["url"] == "https://em.example/mcp/rotated"
+        assert seen["headers"] == {"Authorization": "Bearer new"}
+        assert "bridge" in out and "old" not in out
+
+    def test_emitter_headers_reach_the_emitter_request(self, monkeypatch):
+        sent = _capture_requests(monkeypatch, {"events": []})
+        protocol.list_events("https://emitter.example.com/mcp", headers={"Authorization": "Bearer t"})
+        headers = {k.lower(): v for k, v in sent[0]["headers"].items()}
+        assert headers["authorization"] == "Bearer t"
+        assert headers["mcp-method"] == "events/list"
+
+
+class TestNamedEmitterIdentity:
+    def test_deliveries_frame_and_dispatch_by_name_not_url(self, live_receiver):
+        stub, base = live_receiver
+        rec = _subscribe_stub(stub)
+        rec["emitter_name"] = "bridge"
+        stub.store.add(rec)
+        status, _ = _signed_post(base, "/mcp/events/webhook/loc-1", stub._sec.webhook_secret,
+                                 {"eventId": "e1", "name": "deploy.finished", "timestamp": "2026-10-07T12:00:00Z",
+                                  "data": {}, "cursor": None}, webhook_id="wh-name2")
+        assert status == 200
+        d = stub.dispatched[-1]
+        assert d["emitter_url"] == "bridge"
+        assert "from emitter 'bridge'" in d["text"]
+        assert "em.example" not in d["text"]

@@ -80,9 +80,15 @@ def interactive_setup() -> None:
             "  port: 9901",
             "  public_base_url: https://your-host.example.com  # remote mode only",
             "  trusted_emitters: []        # hostnames allowed when exposed; empty + allow_all_emitters=false => fail closed",
+            "  emitters:                   # named emitters; tools take the name",
+            "    mcp-events-bridge:",
+            "      url: http://127.0.0.1:8080/mcp  # or set MCP_EVENTS_EMITTER_MCP_EVENTS_BRIDGE_URL in .env",
+            "      headers: {}               # or MCP_EVENTS_EMITTER_MCP_EVENTS_BRIDGE_HEADERS (JSON) in .env",
             "  rate_limit_per_min: 120",
             "  storm_max_per_min: 60",
         )))
+        print_info("An emitter URL that carries a secret (a capability URL) belongs in the")
+        print_info(".env var, not config.yaml - .env is for secrets only.")
     print_warning("Never commit the secret. It signs every delivery your agent will act on.")
 
 

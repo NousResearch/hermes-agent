@@ -67,6 +67,29 @@ def _guard_deliverable(url: str) -> Optional[str]:
     return None
 
 
+def _resolve_target(emitter: str, emitter_url: str) -> tuple[Optional[str], Optional[dict], Optional[str], Optional[str]]:
+    """``emitter`` (a name configured under ``mcp_events.emitters:``) wins over a
+    raw ``emitter_url``. Named emitters are operator-approved, so the URL guard
+    and the loopback refusal do not apply to them — and their credentials never
+    leave config/.env, so they never reach the model or the logs. Returns
+    ``(url, headers, display_name, error)``."""
+    name = (emitter or "").strip()
+    if name:
+        resolved = security.MCPEventsSecurityContext.capture().resolve_emitter(name)
+        if resolved is None:
+            known = ", ".join(security.MCPEventsSecurityContext.capture().emitter_names()) or "(none configured)"
+            return None, None, None, f"Emitter {name!r} is not configured. Known emitters: {known}."
+        url, headers = resolved
+        return url, headers, name, None
+    url = (emitter_url or "").strip()
+    if not url:
+        return None, None, None, ("Provide an emitter name (configured under mcp_events.emitters) "
+                                  "or an emitter_url.")
+    if err := _guard_emitter(url):
+        return None, None, None, err
+    return url, None, url, None
+
+
 def _fmt_events(events: list[dict]) -> str:
     if not events:
         return "The emitter advertises no events."
@@ -75,27 +98,33 @@ def _fmt_events(events: list[dict]) -> str:
     return "Events advertised by the emitter:\n" + "\n".join(lines)
 
 
-def mcp_events_list(emitter_url: str) -> str:
+def mcp_events_list(emitter: str = "", emitter_url: str = "") -> str:
     """List the events an MCP event emitter advertises (``events/list``)."""
-    if err := _guard_emitter(emitter_url):
+    url, headers, _display, err = _resolve_target(emitter, emitter_url)
+    if err:
         return err
-    if not protocol.server_supports_events(emitter_url):
-        logger.debug("MCP Events: %s did not advertise the events capability; trying events/list anyway", emitter_url)
+    if not protocol.server_supports_events(url, headers=headers):
+        logger.debug("MCP Events: %s did not advertise the events capability; trying events/list anyway", url)
     try:
-        return _fmt_events(protocol.list_events(emitter_url))
+        return _fmt_events(protocol.list_events(url, headers=headers))
     except Exception as e:
         return f"events/list failed: {e}"
 
 
-def mcp_events_subscribe(emitter_url: str, event: str, filter_json: str = "") -> str:
-    """Subscribe this Hermes agent to ``event`` on ``emitter_url``.
+def mcp_events_subscribe(emitter: str = "", event: str = "", filter_json: str = "",
+                         emitter_url: str = "") -> str:
+    """Subscribe this Hermes agent to ``event`` on an emitter.
 
-    ``filter_json`` (optional) is a JSON object of emitter-side filter arguments.
-    Deliveries wake the agent in a per-subscription conversation.
+    ``emitter`` is the name of an emitter configured under ``mcp_events.emitters:``
+    (preferred — its URL and auth headers resolve from config/.env and never reach
+    the model or the logs). ``emitter_url`` subscribes to an unconfigured emitter
+    directly. ``filter_json`` (optional) is a JSON object of emitter-side filter
+    arguments. Deliveries wake the agent in a per-subscription conversation.
     """
-    if err := _guard_emitter(emitter_url):
+    url, headers, display, err = _resolve_target(emitter, emitter_url)
+    if err:
         return err
-    if err := _guard_deliverable(emitter_url):
+    if err := _guard_deliverable(url):
         return err
     if not (event or "").strip():
         return "An event name is required."
@@ -112,14 +141,17 @@ def mcp_events_subscribe(emitter_url: str, event: str, filter_json: str = "") ->
     local_id = uuid.uuid4().hex[:16]
     callback_url = f"{_callback_base()}/mcp/events/webhook/{local_id}"
     try:
-        record = protocol.subscribe(emitter_url, event.strip(), callback_url,
-                                    sec.webhook_secret, filter_args=filter_args or None)
+        record = protocol.subscribe(url, event.strip(), callback_url,
+                                    sec.webhook_secret, filter_args=filter_args or None,
+                                    headers=headers)
     except Exception as e:
         return f"events/subscribe failed: {e}"
     record["local_id"] = local_id
+    if display != url:
+        record["emitter_name"] = display
     store.add(record)
-    security.audit("subscribe", emitter_url, record["id"], f"event {event!r}")
-    return (f"Subscribed to {event!r} on {emitter_url}.\n"
+    security.audit("subscribe", display, record["id"], f"event {event!r}")
+    return (f"Subscribed to {event!r} on {display}.\n"
             f"Subscription id: {record['id']}\n"
             f"Deliveries will wake the agent in conversation 'mcp-events:{record['id']}'." +
             (f"\nExpires: {record['expires_at']}" if record.get("expires_at") else ""))
@@ -131,11 +163,22 @@ def mcp_events_unsubscribe(subscription_id: str) -> str:
     sub = store.resolve(subscription_id)
     if sub is None:
         return f"No subscription {subscription_id!r}."
-    ok = protocol.unsubscribe(sub["emitter_url"], sub)
+    # Re-resolve a named emitter's URL and auth headers so rotated credentials in
+    # config/.env are picked up; the stored URL is the fallback.
+    url, headers = sub["emitter_url"], None
+    if sub.get("emitter_name"):
+        resolved = security.MCPEventsSecurityContext.capture().resolve_emitter(sub["emitter_name"])
+        if resolved is not None:
+            url, headers = resolved
+    ok = protocol.unsubscribe(url, sub, headers=headers)
     store.remove(sub["id"])
-    security.audit("unsubscribe", sub["emitter_url"], sub["id"], "cancelled by agent")
-    return (f"Unsubscribed {sub['id']!r} ({sub.get('event')!r} on {sub['emitter_url']})."
+    security.audit("unsubscribe", _display(sub), sub["id"], "cancelled by agent")
+    return (f"Unsubscribed {sub['id']!r} ({sub.get('event')!r} on {_display(sub)})."
             + ("" if ok else " The emitter did not acknowledge; the local record is removed."))
+
+
+def _display(sub: dict) -> str:
+    return str(sub.get("emitter_name") or sub.get("emitter_url") or "unknown")
 
 
 def mcp_events_subscriptions() -> str:
@@ -145,7 +188,7 @@ def mcp_events_subscriptions() -> str:
         return "No MCP event subscriptions."
     lines = []
     for s in subs:
-        line = f"- {s['id']}: {s.get('event')!r} on {s.get('emitter_url')}"
+        line = f"- {s['id']}: {s.get('event')!r} on {_display(s)}"
         if s.get("expires_at"):
             line += f" (expires {s['expires_at']})"
         lines.append(line)
@@ -155,17 +198,19 @@ def mcp_events_subscriptions() -> str:
 _TOOLS: dict[str, tuple] = {
     "mcp_events_list": (
         mcp_events_list,
-        "List the events an MCP event emitter advertises (events/list). Takes emitter_url (the emitter's MCP HTTP endpoint).",
-        {"emitter_url": {"type": "string", "description": "The emitter's MCP HTTP endpoint URL."}},
-        ["emitter_url"],
+        "List the events an MCP event emitter advertises (events/list). Takes emitter (a name configured under mcp_events.emitters) or emitter_url (the emitter's MCP HTTP endpoint).",
+        {"emitter": {"type": "string", "description": "Configured emitter name from mcp_events.emitters (preferred)."},
+         "emitter_url": {"type": "string", "description": "The emitter's MCP HTTP endpoint URL (for emitters not configured by name)."}},
+        [],
     ),
     "mcp_events_subscribe": (
         mcp_events_subscribe,
-        "Subscribe this Hermes agent to an event on an MCP event emitter. Signed deliveries wake the agent in a per-subscription conversation.",
-        {"emitter_url": {"type": "string", "description": "The emitter's MCP HTTP endpoint URL."},
+        "Subscribe this Hermes agent to an event on an MCP event emitter. Signed deliveries wake the agent in a per-subscription conversation. Pass emitter (a configured name) or emitter_url.",
+        {"emitter": {"type": "string", "description": "Configured emitter name from mcp_events.emitters (preferred)."},
          "event": {"type": "string", "description": "Event name from mcp_events_list."},
-         "filter_json": {"type": "string", "description": "Optional JSON object of emitter-side filter arguments."}},
-        ["emitter_url", "event"],
+         "filter_json": {"type": "string", "description": "Optional JSON object of emitter-side filter arguments."},
+         "emitter_url": {"type": "string", "description": "The emitter's MCP HTTP endpoint URL (for emitters not configured by name)."}},
+        ["event"],
     ),
     "mcp_events_unsubscribe": (
         mcp_events_unsubscribe,

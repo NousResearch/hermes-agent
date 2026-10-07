@@ -153,15 +153,18 @@ class MCPEventsRequestHandler(BaseHTTPRequestHandler):
         # The callback URL embeds our local id (the emitter's id is only known
         # after subscribe returns); resolve() accepts either.
         sub = adapter.store.resolve(sub_id) if sub_id else None
+        # A named emitter shows as its name everywhere the agent or a human
+        # looks (framing, audit, session identity); its URL never does.
+        display = str((sub or {}).get("emitter_name") or (sub or {}).get("emitter_url") or "?")
         if not protocol.verify_delivery(sec.webhook_secret, webhook_id, timestamp, signature, body,
                                          skew_seconds=sec.timestamp_skew):
             return drop(401, "signature/timestamp verification failed",
-                        emitter=(sub or {}).get("emitter_url", "?"), ref=sub_id)
+                        emitter=display, ref=sub_id)
         try:
             payload = json.loads(body.decode("utf-8"))
         except Exception:
             return drop(400, "delivery body is not JSON",
-                        emitter=(sub or {}).get("emitter_url", "?"), ref=sub_id)
+                        emitter=display, ref=sub_id)
         # A top-level `type` marks a signed control envelope (sketch: Non-event
         # webhook bodies), not an event. The `verification` challenge arrives
         # BEFORE the subscription is stored — answering it is what lets
@@ -175,19 +178,19 @@ class MCPEventsRequestHandler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "duplicate": True})
         emitter_host = (urllib.parse.urlparse(sub["emitter_url"]).hostname or "")
         if not adapter._rate.check(f"emitter:{emitter_host}"):
-            return drop(429, "per-emitter rate limit exceeded", emitter=sub["emitter_url"], ref=sub_id)
+            return drop(429, "per-emitter rate limit exceeded", emitter=display, ref=sub_id)
         if not adapter._storm.check(f"sub:{sub_id}"):
             adapter.metrics["storm_drops"] += 1
-            return drop(429, "subscription storm guard tripped", emitter=sub["emitter_url"], ref=sub_id)
+            return drop(429, "subscription storm guard tripped", emitter=display, ref=sub_id)
 
         event_name = str(payload.get("name") or sub.get("event") or "unknown")
-        text = security.wrap_event(sub["emitter_url"], event_name, sub_id,
+        text = security.wrap_event(display, event_name, sub_id,
                                    security.render_event_payload(payload))
         chat_id = f"mcp-events:{sub_id}"  # one conversation per subscription, like A2A's per-context routing
-        dispatched = adapter._dispatch_to_session(chat_id, sub["emitter_url"], event_name, text)
+        dispatched = adapter._dispatch_to_session(chat_id, display, event_name, text)
         if not dispatched:
-            return drop(503, "agent gateway not ready", emitter=sub["emitter_url"], ref=sub_id)
-        security.audit("inbound", sub["emitter_url"], sub_id, f"event {event_name!r} dispatched")
+            return drop(503, "agent gateway not ready", emitter=display, ref=sub_id)
+        security.audit("inbound", display, sub_id, f"event {event_name!r} dispatched")
         adapter.metrics["accepted"] += 1
         self._json(200, {"ok": True})
 
@@ -248,22 +251,33 @@ class MCPEventsAdapter(BasePlatformAdapter):
         return True
 
     def _refresh_subscriptions(self) -> None:
-        """Re-subscribe anything past ``expires_at`` so restarts don't silently go deaf."""
+        """Re-subscribe anything past ``expires_at`` so restarts don't silently go deaf.
+        A named emitter re-resolves its URL and auth headers so rotated credentials
+        in config/.env are picked up."""
         for sub in self.store.expired():
+            url, headers = sub["emitter_url"], None
+            if sub.get("emitter_name"):
+                resolved = self._sec.resolve_emitter(sub["emitter_name"])
+                if resolved is not None:
+                    url, headers = resolved
             try:
-                fresh = protocol.subscribe(sub["emitter_url"], sub["event"],
+                fresh = protocol.subscribe(url, sub["event"],
                                            self.callback_url(sub["id"]), self._sec.webhook_secret,
-                                           filter_args=sub.get("filter") or None)
+                                           filter_args=sub.get("filter") or None, headers=headers)
             except Exception as e:
                 logger.warning("MCP Events: refresh of subscription %s failed: %s", sub["id"], e)
-                security.audit("drop", sub.get("emitter_url", "?"), sub["id"], f"refresh failed: {e}")
+                security.audit("drop", str(sub.get("emitter_name") or sub.get("emitter_url") or "?"),
+                               sub["id"], f"refresh failed: {e}")
                 continue
             if fresh["id"] != sub["id"]:
                 # Emitter rotated the id — retire the old record, keep the new one.
                 self.store.remove(sub["id"])
             fresh["filter"] = sub.get("filter") or {}
+            if sub.get("emitter_name"):
+                fresh["emitter_name"] = sub["emitter_name"]
             self.store.add(fresh)
-            security.audit("subscribe", sub.get("emitter_url", "?"), fresh["id"], "refreshed after expiry")
+            security.audit("subscribe", str(fresh.get("emitter_name") or fresh["emitter_url"]),
+                           fresh["id"], "refreshed after expiry")
 
     async def connect(self, **_kwargs) -> bool:
         # Capture the gateway loop so the HTTP thread can marshal events via run_coroutine_threadsafe.

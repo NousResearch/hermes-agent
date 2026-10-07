@@ -15,10 +15,25 @@ on signed deliveries — no cron, no human message.
      public_base_url: https://your-host.example.com
    ```
    Localhost-only mode (no secret) works for local emitters with no config.
-3. In any session:
-   - `mcp_events_list <emitter-mcp-url>` — see what events the emitter offers.
-   - `mcp_events_subscribe <emitter-mcp-url> <event>` — subscribe; deliveries
-     wake the agent in a per-subscription conversation.
+3. (Recommended) Name your emitters so the agent works with names, not URLs —
+   and so emitter credentials never reach the model or the logs:
+   ```yaml
+   mcp_events:
+     emitters:
+       mcp-events-bridge:            # the name the tools take
+         url: http://127.0.0.1:8080/mcp
+   ```
+   A URL that carries a secret (a capability URL — common for MCP servers
+   without OAuth) belongs in `.env` instead, e.g.
+   `MCP_EVENTS_EMITTER_MCP_EVENTS_BRIDGE_URL=...`; a bearer-token emitter uses
+   `MCP_EVENTS_EMITTER_<NAME>_HEADERS='{"Authorization": "Bearer ..."}'`
+   (JSON) or a plain `headers:` map for non-secret values. Env wins over
+   config.yaml.
+4. In any session:
+   - `mcp_events_list <emitter>` (a configured name, or an emitter URL) — see
+     what events the emitter offers.
+   - `mcp_events_subscribe <emitter> <event>` — subscribe; deliveries wake the
+     agent in a per-subscription conversation.
    - `mcp_events_subscriptions` / `mcp_events_unsubscribe <id>` — manage them.
 
 ## How it works

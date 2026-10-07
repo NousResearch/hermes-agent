@@ -39,15 +39,19 @@ _SUBSCRIPTIONS_FILE = "mcp_events_subscriptions.json"
 DEFAULT_TIMESTAMP_SKEW = 300
 
 
-def _mcp_headers(method: str) -> dict[str, str]:
+def _mcp_headers(method: str, extra: dict | None = None) -> dict[str, str]:
     """2026-07-28 transport: the ``Mcp-Method`` header must match the JSON-RPC body,
-    otherwise the emitter rejects the call with -32020."""
-    return {
+    otherwise the emitter rejects the call with -32020. ``extra`` adds emitter
+    auth headers (e.g. a bearer token from config) — never logged."""
+    headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "Mcp-Method": method,
         "MCP-Protocol-Version": PROTOCOL_VERSION,
     }
+    if extra:
+        headers.update({str(k): str(v) for k, v in extra.items()})
+    return headers
 
 
 def _rpc_request(method: str, params: dict) -> dict:
@@ -68,14 +72,14 @@ def _rpc_request(method: str, params: dict) -> dict:
     }
 
 
-def _post_json(url: str, payload: dict, timeout: float = 15.0) -> dict:
+def _post_json(url: str, payload: dict, timeout: float = 15.0, headers: dict | None = None) -> dict:
     """POST a JSON-RPC call to an emitter's MCP endpoint; returns the ``result`` dict.
 
     Raises on transport errors and on JSON-RPC ``error`` responses — the caller
     decides what the agent sees.
     """
     body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=body, headers=_mcp_headers(payload["method"]), method="POST")
+    req = urllib.request.Request(url, data=body, headers=_mcp_headers(payload["method"], headers), method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             raw = resp.read(MAX_EVENT_BYTES + 1024)
@@ -94,11 +98,11 @@ def _post_json(url: str, payload: dict, timeout: float = 15.0) -> dict:
     return result
 
 
-def server_supports_events(mcp_url: str, timeout: float = 15.0) -> bool:
+def server_supports_events(mcp_url: str, timeout: float = 15.0, headers: dict | None = None) -> bool:
     """Best-effort ``server/discover`` probe: True when the emitter advertises the
     ``events`` capability. A False here is advisory — subscribe() still tries."""
     try:
-        result = _post_json(mcp_url, _rpc_request("server/discover", {}), timeout=timeout)
+        result = _post_json(mcp_url, _rpc_request("server/discover", {}), timeout=timeout, headers=headers)
     except Exception as e:
         logger.debug("MCP Events: server/discover probe failed: %s", e)
         return False
@@ -106,9 +110,9 @@ def server_supports_events(mcp_url: str, timeout: float = 15.0) -> bool:
     return isinstance(caps, dict) and "events" in caps
 
 
-def list_events(mcp_url: str, timeout: float = 15.0) -> list[dict]:
+def list_events(mcp_url: str, timeout: float = 15.0, headers: dict | None = None) -> list[dict]:
     """``events/list`` against the emitter; returns [{name, description, ...}]."""
-    result = _post_json(mcp_url, _rpc_request("events/list", {}), timeout=timeout)
+    result = _post_json(mcp_url, _rpc_request("events/list", {}), timeout=timeout, headers=headers)
     events = result.get("events") or []
     return [e for e in events if isinstance(e, dict) and e.get("name")]
 
@@ -124,7 +128,8 @@ def _iso_to_epoch(value) -> float | None:
 
 
 def subscribe(mcp_url: str, event: str, callback_url: str, secret: str,
-              filter_args: dict | None = None, timeout: float = 20.0) -> dict:
+              filter_args: dict | None = None, timeout: float = 20.0,
+              headers: dict | None = None) -> dict:
     """``events/subscribe``: registers our webhook callback for ``event``.
 
     ``secret`` is the ``whsec_``-prefixed signing secret the emitter will use to
@@ -137,7 +142,7 @@ def subscribe(mcp_url: str, event: str, callback_url: str, secret: str,
         "arguments": filter_args or {},
         "delivery": {"mode": "webhook", "url": callback_url, "secret": secret},
     }
-    result = _post_json(mcp_url, _rpc_request("events/subscribe", params), timeout=timeout)
+    result = _post_json(mcp_url, _rpc_request("events/subscribe", params), timeout=timeout, headers=headers)
     sub_id = str(result.get("id") or "")
     if not sub_id:
         raise RuntimeError("emitter accepted the subscription but returned no id")
@@ -154,13 +159,13 @@ def subscribe(mcp_url: str, event: str, callback_url: str, secret: str,
     }
 
 
-def unsubscribe(mcp_url: str, record: dict, timeout: float = 15.0) -> bool:
+def unsubscribe(mcp_url: str, record: dict, timeout: float = 15.0, headers: dict | None = None) -> bool:
     """``events/unsubscribe`` by the subscription key (name, arguments, delivery URL);
     the derived id is not accepted as input. True when the emitter acknowledged."""
     params = {"name": record["event"], "arguments": record.get("filter") or {},
               "delivery": {"url": record["callback_url"]}}
     try:
-        _post_json(mcp_url, _rpc_request("events/unsubscribe", params), timeout=timeout)
+        _post_json(mcp_url, _rpc_request("events/unsubscribe", params), timeout=timeout, headers=headers)
         return True
     except Exception as e:
         logger.debug("MCP Events: unsubscribe failed: %s", e)

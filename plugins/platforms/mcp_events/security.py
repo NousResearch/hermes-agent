@@ -44,6 +44,12 @@ def _scoped_secret(name: str) -> str:
     return os.getenv(name, "").strip()
 
 
+def _emitter_env_var(name: str, suffix: str) -> str:
+    """``mcp-events-bridge`` + ``_URL`` -> ``MCP_EVENTS_EMITTER_MCP_EVENTS_BRIDGE_URL``."""
+    slug = "".join(ch if ch.isalnum() else "_" for ch in (name or "").upper())
+    return f"MCP_EVENTS_EMITTER_{slug}{suffix}"
+
+
 def _load_yaml_section() -> dict:
     """Behavioral settings live in config.yaml under ``mcp_events:`` — .env is for
     secrets only (root AGENTS.md). Missing file/section => defaults."""
@@ -71,10 +77,20 @@ class MCPEventsSecurityContext:
     timestamp_skew: int
     storm_max_per_min: int
     home_channel: str
+    emitters: dict = field(default_factory=dict)
 
     @classmethod
     def capture(cls) -> "MCPEventsSecurityContext":
         cfg = _load_yaml_section()
+        raw_emitters = cfg.get("emitters")
+        emitters: dict = {}
+        if isinstance(raw_emitters, dict):
+            for name, entry in raw_emitters.items():
+                if isinstance(entry, dict) and str(name).strip():
+                    emitters[str(name).strip()] = {
+                        "url": str(entry.get("url") or "").strip(),
+                        "headers": {str(k): str(v) for k, v in (entry.get("headers") or {}).items()},
+                    }
         return cls(
             webhook_secret=_scoped_secret("MCP_EVENTS_WEBHOOK_SECRET"),
             requested_host=str(cfg.get("host") or "127.0.0.1"),
@@ -86,7 +102,36 @@ class MCPEventsSecurityContext:
             timestamp_skew=int(cfg.get("timestamp_skew_seconds") or 300),
             storm_max_per_min=int(cfg.get("storm_max_per_min") or 60),
             home_channel=str(cfg.get("home_channel") or ""),
+            emitters=emitters,
         )
+
+    def emitter_names(self) -> list[str]:
+        return sorted(self.emitters)
+
+    def resolve_emitter(self, name: str) -> Optional[tuple[str, dict]]:
+        """A configured emitter name -> ``(url, headers)``.
+
+        The profile-scoped env vars ``MCP_EVENTS_EMITTER_<NAME>_URL`` /
+        ``_HEADERS`` (name uppercased, non-alphanumeric -> ``_``) win over the
+        ``mcp_events.emitters:`` config.yaml entry. A URL that carries a
+        capability secret is a secret, and .env is for secrets — so secret-
+        bearing emitter URLs should only ever live in the env var. Returns
+        None when the name is configured nowhere."""
+        cfg = self.emitters.get(name) or {}
+        url = _scoped_secret(_emitter_env_var(name, "_URL")) or str(cfg.get("url") or "")
+        if not url:
+            return None
+        headers = dict(cfg.get("headers") or {})
+        raw_env_headers = _scoped_secret(_emitter_env_var(name, "_HEADERS"))
+        if raw_env_headers:
+            try:
+                parsed = json.loads(raw_env_headers)
+                if isinstance(parsed, dict):
+                    headers.update({str(k): str(v) for k, v in parsed.items()})
+            except ValueError:
+                logger.warning("MCP Events: %s is not a JSON object; ignoring it",
+                               _emitter_env_var(name, "_HEADERS"))
+        return url, headers
 
     def localhost_only(self) -> bool:
         return not self.webhook_secret

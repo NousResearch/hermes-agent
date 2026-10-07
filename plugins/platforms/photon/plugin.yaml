@@ -29,6 +29,10 @@ requires_env:
     prompt: "Photon project secret"
     url: "https://app.photon.codes/"
     password: true
+# Enablement also reads the auth.json credential pool written by `hermes photon setup`
+# (load_project_credentials falls back to it when the .env write failed or was cleared).
+auth_pools:
+  - photon_project
 optional_env:
   - name: PHOTON_SIDECAR_PORT
     description: "Loopback port for the Node sidecar control + inbound channel (default 8789)"

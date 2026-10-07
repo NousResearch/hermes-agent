@@ -153,6 +153,10 @@ class PlatformRegistry:
             f"platform_registry_loading_{id(self)}", default=frozenset()
         )
         self._cancelled_inflight: set[_LoadKey] = set()
+        # Enablement env-key metadata (see ``declare_env_keys``): (scope, name) → declared vars.
+        self._env_keys: dict[tuple[Optional[str], str], frozenset] = {}
+        # Enablement auth-pool metadata (see ``declare_auth_pools``): (scope, name) → declared pools.
+        self._auth_pools: dict[tuple[Optional[str], str], frozenset] = {}
         # A failed loader is no longer discoverable, but its identity remains
         # until ownership teardown can CAS-restore the displaced predecessor.
         self._consumed_loaders: dict[_LoadKey, _Loader] = {}
@@ -288,6 +292,39 @@ class PlatformRegistry:
         """Whether ownership teardown cancelled an in-flight loader."""
         with self._lock:
             return (scope, name) in self._cancelled_inflight
+
+    # -- enablement env-key metadata (declared in plugin.yaml, read pre-import) ---------------
+    # ``requires_env``/``optional_env`` name the env vars a platform's enablement path
+    # (``env_enablement_fn``/``is_connected``) may consult. The config enablement pass uses
+    # them to skip importing plugins whose credentials cannot be present; a platform that
+    # enables while reading an undeclared var breaks the skip's exactness (and ``hermes
+    # setup``'s prompts), so undeclared means "no declared keys" means the skip is off.
+
+    def declare_env_keys(self, name: str, keys, *, scope: Optional[str] = None) -> None:
+        """Declare the env vars a deferred platform's enablement consults (manifest data)."""
+        with self._lock:
+            self._env_keys[(scope, name)] = frozenset(keys or ())
+
+    def env_keys(self, name: str) -> frozenset:
+        """Declared enablement env vars for *name* (current scope AND process-global). Empty = undeclared."""
+        with self._lock:
+            keys = self._env_keys.get((self.current_scope_key(), name), self._env_keys.get((None, name)))
+            return keys or frozenset()
+
+    # ``auth_pools``: ``auth.json`` ``credential_pool`` keys a platform's enablement may read
+    # (manifest data, declared alongside ``env_keys``). The enablement pre-check treats
+    # "any declared pool has a record" as a credential-presence signal without importing.
+
+    def declare_auth_pools(self, name: str, pools, *, scope: Optional[str] = None) -> None:
+        """Declare the ``auth.json`` credential-pool keys a deferred platform's enablement consults."""
+        with self._lock:
+            self._auth_pools[(scope, name)] = frozenset(pools or ())
+
+    def auth_pools(self, name: str) -> frozenset:
+        """Declared credential-pool keys for *name* (current scope AND process-global). Empty = undeclared."""
+        with self._lock:
+            pools = self._auth_pools.get((self.current_scope_key(), name), self._auth_pools.get((None, name)))
+            return pools or frozenset()
 
     def _resolve_all(self) -> None:
         """Run every pending deferred loader (only ``all_entries``/``plugin_entries`` call this;

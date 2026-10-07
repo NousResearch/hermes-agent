@@ -437,18 +437,92 @@ def _enable_plugin_platform(config: GatewayConfig, entry) -> None:
             )
 
 
+def _auth_pool_has_record(pools) -> bool:
+    """True when any declared ``auth.json`` ``credential_pool`` key holds a record.
+
+    Import-free presence signal: ``auth.json`` is pure data (the shape ``hermes <x> setup``
+    CLIs write), so the enablement pre-check can consult it without importing the platform.
+    Any read/parse failure fails OPEN (treated as "record may exist") — the cost of a wrong
+    fail-open is one extra import, never a silently dropped platform.
+    """
+    if not pools:
+        return False
+    try:
+        from hermes_cli.config import get_hermes_home
+        path = get_hermes_home() / "auth.json"
+        if not path.exists():
+            return False
+        import json as _json
+        auth = _json.loads(path.read_text(encoding="utf-8")) or {}
+        pool = auth.get("credential_pool") or {}
+        for key in pools:
+            entries = pool.get(key) or []
+            if isinstance(entries, list) and entries:
+                return True
+    except Exception as e:
+        logger.debug("auth-pool pre-check raised: %s", e)
+        return True
+    return False
+
+
+def _plugin_could_be_enabled(name: str, registry, config: GatewayConfig) -> bool:
+    """Pre-import skip for the plugin enablement pass: True when the platform *cannot* be
+    credential-gated off (no declared env var set, no auth-pool record, no config row) — see
+    ``declare_env_keys`` / ``declare_auth_pools``.
+
+    Exactness contract: a bundled platform's enablement path (``env_enablement_fn`` /
+    ``is_connected``) consults only the env vars its manifest declares (``requires_env`` /
+    ``optional_env``), the ``auth.json`` credential-pool keys it declares (``auth_pools``),
+    plus YAML-derived ``extra``/``token`` — the same lists ``hermes setup`` prompts from.
+    When the manifest declares none, the skip is off (legacy behavior). Scope-aware
+    ``get_env_value`` mirrors what ``is_connected`` itself reads under multiplexing.
+    """
+    try:
+        from hermes_cli.config import get_env_value
+        keys = registry.env_keys(name)
+        if not keys:
+            return True
+        if any((get_env_value(var) or "").strip() for var in keys):
+            return True
+    except Exception as e:
+        logger.debug("enablement pre-check for %s raised: %s", name, e)
+        return True
+    try:
+        if _auth_pool_has_record(registry.auth_pools(name)):
+            return True
+    except Exception as e:
+        logger.debug("auth-pool pre-check for %s raised: %s", name, e)
+        return True
+    # No declared credential present: still import when a YAML section may have created a config
+    # row (extra/token/YAML enablement) or the platform is already enabled.
+    try:
+        platform = Platform(name)
+    except Exception:
+        return True
+    return platform in config.platforms
+
+
 def _enable_plugin_platforms_from_env(config: GatewayConfig) -> None:
     """Registry-driven enable for plugin platforms (built-ins have rows in ``_ENV_STEPS``).
 
     Enabled when credentials are configured (``is_connected`` MUST gate: ``check_fn`` alone would
     enable unconfigured platforms that retry-connect forever) and deps are present (``check_fn``) or
     installable later by ``create_adapter()`` — never here: installing in this sweep boot-looped the app.
+
+    Iterates registered NAMES, importing only platforms whose credentials could be present
+    (``_plugin_could_be_enabled``); a full-set ``plugin_entries()`` here materialized every
+    platform plugin (~2s of adapter imports) on every ``load_gateway_config()``.
     """
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
-        for entry in platform_registry.plugin_entries():
+        for name in sorted(platform_registry.registered_names()):
+            if not _plugin_could_be_enabled(name, platform_registry, config):
+                continue
+            entry = platform_registry.get(name)
+            if entry is None or entry.source != "plugin":
+                continue
             _enable_plugin_platform(config, entry)
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)

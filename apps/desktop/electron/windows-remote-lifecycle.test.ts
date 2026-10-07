@@ -268,9 +268,11 @@ test('Windows gates keep a dead marker while the checkout lock or a lease byte i
   }
 
   const deleteAt = spawnScript.indexOf('[IO.File]::Delete($marker)')
+
   const guardAt = spawnScript.indexOf(
     'if($verdict -eq "CLEAR" -and (Test-CheckoutLockHeld $checkoutRoots)){$verdict="HELD"}'
   )
+
   assert.ok(guardAt > 0 && guardAt < deleteAt, 'the checkout probe must precede the dead-marker delete')
   assert.match(
     probeScript,

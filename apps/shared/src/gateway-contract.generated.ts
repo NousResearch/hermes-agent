@@ -4695,6 +4695,26 @@ export interface StatusUpdatePayload {
 export interface SessionUsagePayload {
   usage: Usage
 }
+/** ``managed_turn_usage.ManagedTurnUsageObserver``; volatile after-call observations. Missing usage and mixed models permanently clear ``observed_usage_complete``. Coverage is deliberately restricted to responses that reached the standard accounting hook: provider failures/invalid responses and Codex app-server require separate proof. Not terminal usage or worker-stop evidence. */
+export interface ManagedTurnUsagePayload {
+  managed_turn_key: string
+  user_row_id: number
+  model: string
+  observed_calls: number
+  observed_usage_complete: boolean
+  coverage: 'accounted_responses_only'
+  usage: ManagedTurnKnownUsage
+}
+/** Only the provider-confirmed tokens observed by this managed turn so far. */
+export interface ManagedTurnKnownUsage {
+  calls: number
+  input: number
+  output: number
+  cache_read: number
+  cache_write: number
+  reasoning: number
+  total: number
+}
 /** ``prompt_turn._invoke_agent`` ``_on_session_title`` hook. */
 export interface SessionTitlePayload {
   session_id: string
@@ -5821,6 +5841,8 @@ export interface BackendGatewayEventMap {
   'gateway.ready': GatewayReadyPayload
   /** Apply a named desktop layout preset. */
   'layout.apply': LayoutApplyPayload
+  /** Opt-in managed turn: confirmed usage after each accounted provider response (not final/stop proof). */
+  'managed_turn.usage': ManagedTurnUsagePayload
   /** The turn ended: final text, usage and outcome. */
   'message.complete': MessageCompletePayload
   /** One streamed chunk of the assistant reply. */
@@ -5958,6 +5980,7 @@ export const GATEWAY_EVENT_TYPES = [
   'free_tier.challenge',
   'gateway.ready',
   'layout.apply',
+  'managed_turn.usage',
   'message.complete',
   'message.delta',
   'message.interim',

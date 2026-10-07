@@ -70,6 +70,16 @@ def _fold_moa_usage(agent, canonical_usage):
     return _moa_client, canonical_usage, _moa_ref_cost
 
 
+def _notify_managed_usage(agent, usage, response) -> None:
+    """An absent hook costs no wire event; a managed hook failure stops further calls."""
+    callback = getattr(agent, "_managed_turn_usage_callback", None)
+    if callback is not None:
+        from agent.managed_usage_validation import has_complete_raw_usage
+        served = getattr(response, "model", None)
+        callback(usage, model=agent.model, served_model=served if isinstance(served, str) and served else None,
+                 raw_usage_complete=has_complete_raw_usage(agent, getattr(response, "usage", None), usage))
+
+
 def record_response_usage(
     agent: Any, response: Any, *, messages: List[Dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
@@ -96,6 +106,7 @@ def record_response_usage(
             "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
             agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
         )
+        _notify_managed_usage(agent, None, response)
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
     canonical_usage = with_served_service_tier(
@@ -293,4 +304,5 @@ def record_response_usage(
             f"{cached:,}/{prompt:,} tokens "
             f"({hit_pct:.0f}% hit, {written:,} written)"
         )
+    _notify_managed_usage(agent, canonical_usage, response)
     return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)

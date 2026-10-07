@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 from utils import normalize_proxy_url
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
+from gateway.platforms.base_media import MediaDeliveryMixin
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
 
 logger = logging.getLogger(__name__)
@@ -1235,6 +1236,23 @@ def _validated_delivery_path(raw_path, session_key: str, label: str,
     return safe_path
 
 
+def _media_file_identity(path: str) -> tuple:
+    """Stable identity for one on-disk file. Symlink / bind-mount aliases
+    collapse; distinct copies keep distinct identities so legitimate pairs
+    still send twice.
+
+    ``st_ino == 0`` is not a real inode (Windows, some SMB mounts). Using it
+    as a key silently collapses every file on that volume to one identity.
+    """
+    try:
+        st = os.stat(path)
+        if not st.st_ino:
+            return ("path", path)
+        return ("ino", st.st_dev, st.st_ino)
+    except OSError:
+        return ("path", path)
+
+
 def _existing_regular_file(raw: str) -> bool:
     try:
         return Path(os.path.expanduser(raw)).is_file()
@@ -1914,7 +1932,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(ABC):
+class BasePlatformAdapter(MediaDeliveryMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -3261,16 +3279,35 @@ class BasePlatformAdapter(ABC):
     @staticmethod
     def filter_media_delivery_paths(media_files, session_key: str = "",
                                     dropped: Optional[List[dict]] = None) -> List[Tuple[str, bool]]:
-        """Drop unsafe MEDIA paths and normalize accepted paths; ``dropped`` collects the rejects."""
-        return [
-            (safe_path, bool(is_voice)) for media_path, is_voice in media_files or []
-            if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path", dropped))]
+        """Drop unsafe MEDIA paths; collect rejects and send each on-disk file once."""
+        seen: set = set()
+        out: List[Tuple[str, bool]] = []
+        for media_path, is_voice in media_files or []:
+            safe_path = _validated_delivery_path(media_path, session_key, "MEDIA directive path", dropped)
+            if not safe_path:
+                continue
+            key = (_media_file_identity(safe_path), bool(is_voice))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((safe_path, bool(is_voice)))
+        return out
 
     @staticmethod
     def filter_local_delivery_paths(file_paths, session_key: str = "") -> List[str]:
-        """Drop unsafe bare local file paths and normalize accepted paths."""
-        safe_paths = (_validated_delivery_path(p, session_key, "local file path") for p in file_paths or [])
-        return [p for p in safe_paths if p]
+        """Drop unsafe bare local file paths, normalize, one send per on-disk file."""
+        seen: set = set()
+        out: List[str] = []
+        for raw in file_paths or []:
+            safe_path = _validated_delivery_path(raw, session_key, "local file path")
+            if not safe_path:
+                continue
+            ident = _media_file_identity(safe_path)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            out.append(safe_path)
+        return out
 
     @staticmethod
     def _mask_protected_spans(content: str) -> str:
@@ -3330,8 +3367,8 @@ class BasePlatformAdapter(ABC):
         # - code blocks / inline code / blockquotes hold prose examples (#35695) - serialized JSON string
         #   values hold stored tool-result text (#34375) Both maskers are offset-preserving (chars ->
         #   spaces) so match offsets stay valid; chaining them masks the union of both protected regions.
-        # Dedupe on the expanded path (first occurrence wins) so the same file referenced twice in one
-        # response — e.g. a MEDIA tag inline AND in a summary footer — is uploaded once, not twice (#29131).
+        # Only identical strings dedupe before acceptance: a rejected alias must not
+        # consume the inode slot of an allowed path. Filters dedupe accepted files.
         seen_paths: set = set()
 
         def _add(path: str) -> None:
@@ -4306,59 +4343,6 @@ class BasePlatformAdapter(ABC):
                              profile=getattr(delivery_adapter, "_owner_profile", None))
         except Exception:
             logger.debug("delivery ledger update failed", exc_info=True)
-
-    async def _deliver_media_attachments(
-        self, event: MessageEvent, media_files: list, local_files: list, *,
-        force_document_attachments: bool, human_delay: float, metadata: Dict[str, Any],
-        record_delivery: Callable) -> None:
-        """Deliver MEDIA-tag files and detected local files by type: images batched via
-        ``send_multiple_images`` unless ``[[as_document]]``; otherwise audio → send_voice (MEDIA
-        tags only, never bare local files), video → send_video, else send_document. Every failure is
-        reported. Each send feeds ``record_delivery`` so media-only turns report SUCCESS."""
-        from urllib.parse import quote as _quote
-
-        def _as_image(path: str) -> bool:
-            return Path(path).suffix.lower() in _IMAGE_EXTS and not force_document_attachments
-        _image_paths = [p for p, is_voice in media_files if not is_voice and _as_image(p)]
-        _image_paths += [p for p in local_files if _as_image(p)]
-        if _image_paths:
-            await self._send_image_batch(
-                event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay,
-                record_delivery)
-        chat_id = event.source.chat_id
-
-        async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> SendResult:
-            """MEDIA-tag files (``media_tag``) may route to send_voice; bare local files never
-            do."""
-            ext = Path(path).suffix.lower()
-            if media_tag and should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
-                result = await self.send_voice(chat_id=chat_id, audio_path=path, metadata=metadata, is_voice=is_voice)
-            elif ext in _VIDEO_EXTS:
-                if media_tag:
-                    logger.info("[%s] Sending video attachment (%s) to %s", self.name, ext, chat_id)
-                result = await self.send_video(chat_id=chat_id, video_path=path, metadata=metadata)
-            else:
-                result = await self.send_document(chat_id=chat_id, file_path=path, metadata=metadata)
-            if not result.success:
-                logger.warning("[%s] Failed to send %s (%s): %s", self.name,
-                               "media" if media_tag else "local file", ext, result.error)
-                await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
-            return result
-        queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
-        if queue:
-            logger.info("[%s] Delivering %d non-image MEDIA attachment(s)", self.name, len(queue))
-        queue += [(p, False, False) for p in local_files if not _as_image(p)]
-        for path, is_voice, media_tag in queue:
-            if human_delay > 0:
-                await asyncio.sleep(human_delay)
-            try:
-                record_delivery(await _send_one(path, is_voice=is_voice, media_tag=media_tag))
-            except Exception as err:
-                record_delivery(SendResult(success=False, error=str(err)))
-                if media_tag:
-                    logger.warning("[%s] Error sending media: %s", self.name, err)
-                else:
-                    logger.error("[%s] Error sending local file %s: %s", self.name, path, err)
 
     async def _send_image_batch(
         self, event: MessageEvent, images: list, metadata: Dict[str, Any], human_delay: float,

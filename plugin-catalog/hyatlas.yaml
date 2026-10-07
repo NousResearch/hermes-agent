@@ -1,0 +1,29 @@
+name: hyatlas
+repo: https://github.com/tuancookiez-hub/HyAtlas-Memory
+sha: 002ec3287a4ec044900a92b552248c69ccfa65c3
+subdir: plugins/hyatlas
+version: "4.2.4"
+image: https://raw.githubusercontent.com/tuancookiez-hub/HyAtlas-Memory/002ec3287a4ec044900a92b552248c69ccfa65c3/docs/images/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/tuancookiez-hub/HyAtlas-Memory/002ec3287a4ec044900a92b552248c69ccfa65c3/docs/images/desktop-overview.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/HyAtlas-Memory/002ec3287a4ec044900a92b552248c69ccfa65c3/docs/images/desktop-graph.png
+title: HyAtlas Memory
+description: "HyAtlas v4 — local-first 7-layer memory provider backed by a pure-Go single-binary server (chromem-go vectors, in-process BGE-small embeddings, async LLM fact extraction, bitemporal knowledge graph with source citations). Ships agent tools (hyatlas_status/search/recent/add), a `hermes hyatlas` CLI, a Desktop pane with a starmap graph view, and a web dashboard. Disclosure — requires the separate hyatlas-go server binary, installed by the user from the repo's installer or GitHub release assets; the plugin never downloads or bundles it. All plugin traffic goes to the user-configured server (default 127.0.0.1:19528); the server itself calls an LLM endpoint the user configures server-side for extraction — no LLM credentials live in or flow through the plugin. Optional subprocess spawn only when the auto_start setting is enabled (default off). No telemetry; all memory data stays on the user's machine."
+maintainer: tuancookiez-hub
+tier: community
+category: memory
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/tuancookiez-hub/HyAtlas-Memory/tree/main/plugins/hyatlas
+platforms:
+- linux
+- macos
+- windows
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "After enabling, select the provider with `hermes memory setup` (memory.provider: hyatlas) — installing and enabling alone does not activate memory."
+  - "The agent tools and hooks arrive through the MemoryProvider interface, not ctx.register_tool, so they do not appear in the plugin tool list."
+  - "Requires the separate hyatlas-go server binary (installed by the user); without a reachable server the provider reports unavailable and memory features degrade rather than fail."

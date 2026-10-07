@@ -360,3 +360,55 @@ def test_flagged_scaffolding_row_is_never_the_inflight_task():
     found = ContextCompressor._find_inflight_user_task(msgs)
     assert found is not None
     assert JOB_SENTINEL in str(found.get("content"))
+
+
+def test_replay_replaces_surviving_user_row_with_same_message_uid():
+    """A protected copy of the in-flight request must not remain active beside its replay."""
+    from agent.context_compressor import (
+        _INFLIGHT_TASK_REPLAY_HEADER,
+        COMPRESSED_SUMMARY_METADATA_KEY,
+        _template_visible_role,
+    )
+    from agent.message_metadata import ABSORBED_MESSAGE_UIDS
+
+    uid = "request-uid"
+    carrier = {
+        "role": "assistant",
+        "content": SUMMARY_PREFIX + "\n## Summary\nran steps.\n\n" + _SUMMARY_END_MARKER,
+        COMPRESSED_SUMMARY_METADATA_KEY: True,
+    }
+    original = {"role": "user", "content": JOB_SENTINEL, "message_uid": uid}
+    out = _make_compressor()._reappend_inflight_user_task(
+        [original, carrier], {**original}
+    )
+
+    def holders(rows):
+        return [m for m in rows if uid == m.get("message_uid") or uid in m.get(ABSORBED_MESSAGE_UIDS, ())]
+
+    matching = holders(out)
+    assert len(matching) == 1
+    assert _INFLIGHT_TASK_REPLAY_HEADER in str(matching[0].get("content"))
+
+    # Real compress(): the head-protected original is the head's only user row.
+    # Removing it must not leave the window opening system -> assistant.
+    messages = _cron_transcript()
+    messages[1] = {**messages[1], "message_uid": uid}
+    compressed = _compress(messages)
+    assert len(holders(compressed)) == 1
+    # Raw role: _template_visible_role skips a leading assistant(tool_calls)
+    # row, which native Gemini rejects as the first turn.
+    assert compressed[1]["role"] == "user", [m["role"] for m in compressed]
+    visible = [r for r in map(_template_visible_role, compressed[1:]) if r is not None]
+    assert visible[0] == "user", visible
+    assert all(a != b for a, b in zip(visible, visible[1:])), visible
+    assert JOB_SENTINEL in _text(compressed[_handoff_idx(compressed)]).split(_SUMMARY_END_MARKER)[-1]
+
+    # Visible assistant text in the tail makes the summary merge into tail[0],
+    # an assistant(tool_calls) row: it must stay adjacent to its tool results.
+    messages += [{"role": "assistant", "content": "interim note"}, *_tool_pairs(1, 40)]
+    compressed = _compress(messages)
+    assert compressed[1]["role"] == "user", [m["role"] for m in compressed]
+    for i, msg in enumerate(compressed):
+        if msg.get("tool_calls"):
+            ids = [c["id"] for c in msg["tool_calls"]]
+            assert [m.get("tool_call_id") for m in compressed[i + 1 : i + 1 + len(ids)]] == ids, i

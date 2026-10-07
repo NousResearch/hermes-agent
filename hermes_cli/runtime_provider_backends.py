@@ -157,18 +157,23 @@ def _resolve_openrouter_runtime(
         )
     )
     if is_openrouter_context:
+        # Same read order as the credential pool and _resolve_api_key_provider_secret
+        # (.env, then scope-aware os.environ, raw op:// references yielding to the resolved
+        # scoped value). get_secret_str sees os.environ only, so a key living solely in
+        # ~/.hermes/.env was lost once the pool entry went exhausted/benched (#117667).
         # OPENAI_API_KEY is a legacy home for an OpenRouter key. When OPENAI_BASE_URL binds it, it
         # goes only to that origin: another scheme or port on the same host is another endpoint.
         # Unbound, openrouter.ai gets it only when it is OpenRouter-shaped (sk-or-), so a real OpenAI
         # key never reaches a third party.
-        openai_key = get_secret_str("OPENAI_API_KEY")
+        from hermes_cli.config import get_env_value_prefer_dotenv
+        openai_key = get_env_value_prefer_dotenv("OPENAI_API_KEY") or ""
         openai_base_url = get_secret_str("OPENAI_BASE_URL", "").strip()
         if base_url_hostname(openai_base_url):
             openai_origin = base_url_origin(openai_base_url)  # empty on a bad port: bound, matches nothing
             openai_key_ok = bool(openai_origin[1]) and openai_origin == base_url_origin(base_url)
         else:
             openai_key_ok = not is_openrouter_url or rp.looks_like_openrouter_key(openai_key)
-        candidates = [explicit_api_key, get_secret_str("OPENROUTER_API_KEY"),
+        candidates = [explicit_api_key, get_env_value_prefer_dotenv("OPENROUTER_API_KEY"),
                       openai_key if openai_key_ok else ""]
     else:
         # ``model.api_key`` and ``model.key_env`` back a trusted config base_url only; the key_env
@@ -198,12 +203,13 @@ def _resolve_openrouter_runtime(
 
 
 def _resolve_bedrock_runtime(requested_provider: str, model_cfg: Dict[str, Any], target_model: Optional[str]) -> Dict[str, Any]:
-    """AWS Bedrock with triple-path routing: OpenAI models → Bedrock Mantle's Responses endpoint;
+    """AWS Bedrock with triple-path routing: bare in-Region OpenAI IDs → Bedrock Mantle's Responses
+    endpoint (their ``us.``/``global.`` profile IDs are bedrock-runtime IDs and take Converse);
     Claude → AnthropicBedrock SDK (prompt caching, thinking budgets); others → Converse API.
     AWS_BEARER_TOKEN_BEDROCK auth is unsupported by AnthropicBedrock (SigV4 only), so bearer users
     go through Converse regardless of model."""
-    from agent.bedrock_adapter import (bedrock_openai_base_url, has_aws_credentials, is_anthropic_bedrock_model,
-                                       is_openai_bedrock_model, resolve_aws_auth_env_var, resolve_bedrock_bearer_token,
+    from agent.bedrock_adapter import (bedrock_openai_base_url, bedrock_openai_uses_mantle, has_aws_credentials,
+                                       is_anthropic_bedrock_model, resolve_aws_auth_env_var, resolve_bedrock_bearer_token,
                                        resolve_bedrock_runtime_region, bedrock_guardrail_config)
     from hermes_cli.config import load_config  # direct (not the origin delegate), as before
     rp = _rp()
@@ -228,7 +234,7 @@ def _resolve_bedrock_runtime(requested_provider: str, model_cfg: Dict[str, Any],
     has_bearer_token = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
     runtime = rp._runtime("bedrock", "bedrock_converse", f"https://bedrock-runtime.{region}.amazonaws.com", "aws-sdk",
                           source=auth_source, region=region, requested_provider=requested_provider)
-    if is_openai_bedrock_model(current_model):
+    if bedrock_openai_uses_mantle(current_model):
         bearer = resolve_bedrock_bearer_token()
         runtime.update(api_mode="codex_responses", base_url=bedrock_openai_base_url(region), api_key=bearer or "aws-sdk",
                        source="AWS_BEARER_TOKEN_BEDROCK" if bearer else auth_source, model=current_model, bedrock_openai=True)

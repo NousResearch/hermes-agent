@@ -660,6 +660,8 @@ def _guard_exports(db, session_ids: list[str]) -> None:
 
 @_captured
 def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> None:
+    from hermes_cli.session_export import export_projection
+
     ns = _parse("sessions export", args, "output", "--source", "--session-id")
     with _session_db() as db:
         if ns.session_id:
@@ -667,15 +669,13 @@ def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> None:
             if not resolved_session_id:
                 raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
             _guard_exports(db, [resolved_session_id])
-            # Transfer projection: every row with its active/compacted flags, so an import of this
-            # JSONL restores a compacted session's whole history instead of only its live rows.
-            rows = [db.export_session(resolved_session_id, include_inactive=True)]
+            rows = [db.export_session(resolved_session_id, **export_projection(False))]
             if not rows[0]:
                 raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
         else:
             found = db.search_sessions(source=ns.source, limit=100000)
             _guard_exports(db, [session["id"] for session in found])
-            rows = db.export_all(source=ns.source, include_inactive=True)
+            rows = db.export_all(source=ns.source, **export_projection(False))
         text = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
         if text:
             text += "\n"

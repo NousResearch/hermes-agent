@@ -445,6 +445,27 @@ describe("a bot is named by its own backend, never by another bot's cached recor
     expect(groupSpeakerLabel('vps::default')).not.toBe('Agent B')
   })
 
+  it('the row shows the name its @handle uses when the backend title and display_name differ', () => {
+    $botMeta.set({})
+
+    const thin = {
+      ...vps,
+      connectionLabel: 'VPS',
+      display_name: 'Remote Human Name',
+      title: 'Remote Bot Title'
+    } as RosterRow
+
+    mergeServerMeta([thin])
+
+    expect(displayName(thin, botRosterMeta(thin, $botMeta.get()))).toBe('Remote Bot Title')
+    expect(botMentionTag(thin)).toBe('remote-bot-title')
+
+    // No display_name: the backend's title, never the Desktop-side connection label.
+    const titleOnly = { ...thin, display_name: '' } as RosterRow
+
+    expect(displayName(titleOnly, botRosterMeta(titleOnly, $botMeta.get()))).toBe('Remote Bot Title')
+  })
+
   it("only a fresh answer from the bot's backend corrects its record, and a title alone never mints one", () => {
     $botMeta.set({ 'vps::default': { color: '#00ff00', title: 'New title' } })
     // The VPS stops answering; the pane keeps its last-painted row, which predates the rename.

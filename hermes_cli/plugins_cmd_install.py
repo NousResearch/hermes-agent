@@ -528,7 +528,6 @@ def cmd_install(
     allow_removed: bool = False,
     no_deps: bool = False,
     yes_deps: bool = False,
-    allow_live_gateway: bool = False,
 ) -> None:
     """Install a plugin from the curated catalog (bare name), a Git URL, or owner/repo shorthand.
 
@@ -558,10 +557,6 @@ def cmd_install(
             "This plugin may have been removed for security reasons.[/red]")
 
     try:
-        if force:
-            # `install --force` over an existing install replaces its code in place — the same
-            # destructive mutation of a loaded checkout that `update` is (#70473).
-            _pc()._refuse_live_gateway_mutation("reinstall", allow_live_gateway=allow_live_gateway)
         git_url, _subdir = _pc()._resolve_git_url(identifier)
         if not allow_removed:
             catalog.raise_if_removed(identifier, git_url, *((entry.name,) if entry else ()))

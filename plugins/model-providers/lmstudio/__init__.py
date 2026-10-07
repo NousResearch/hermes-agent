@@ -2,7 +2,7 @@
 
 Request quirk: reasoning goes out as top-level ``reasoning_effort``, gated on and clamped to
 the per-model ``allowed_options`` LM Studio publishes in ``/api/v1/models``. The agent probes
-and caches those options and passes them as ``reasoning_options``.
+and caches those options and passes them as ``lmstudio_reasoning_options``.
 
 Everything else stays where it lives today: endpoint, ``LM_API_KEY`` / ``LM_BASE_URL`` and the
 no-auth placeholder (``hermes_cli/auth.py`` registry row), the chat-model picker probe
@@ -23,12 +23,12 @@ class LMStudioProfile(ProviderProfile):
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, supports_reasoning: bool = False,
-        reasoning_options: list[str] | None = None, **context: Any,
+        lmstudio_reasoning_options: list[str] | None = None, **context: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """``supports_reasoning`` is true only when the model publishes a non-``off`` option;
-        ``reasoning_options`` is the agent's cached probe of them. Auxiliary calls have no probe
-        (``None``) and keep the generic nested ``reasoning`` they always sent."""
-        if reasoning_options is None:
+        ``lmstudio_reasoning_options`` is the agent's cached probe of them. Auxiliary calls have no
+        probe (``None``) and keep the generic nested ``reasoning`` they always sent."""
+        if lmstudio_reasoning_options is None:
             if not reasoning_config or not isinstance(reasoning_config, dict):
                 return {}, {}
             if reasoning_config.get("enabled") is False:
@@ -36,7 +36,7 @@ class LMStudioProfile(ProviderProfile):
             return {"reasoning": {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}}, {}
         if not supports_reasoning:
             return {}, {}
-        effort = resolve_lmstudio_effort(reasoning_config, reasoning_options)
+        effort = resolve_lmstudio_effort(reasoning_config, lmstudio_reasoning_options)
         return {}, ({"reasoning_effort": effort} if effort is not None else {})
 
 

@@ -4,8 +4,9 @@ Request quirk: top-level ``reasoning_effort``, clamped to TokenHub's low/medium/
 when thinking is off; a main-loop turn with no configured effort sends ``high``.
 
 Endpoint, ``TOKENHUB_API_KEY``, aliases and the static Hy model list stay in
-``hermes_cli/auth.py`` / ``hermes_cli/models_catalog_static.py``; model listing and the doctor
-probe stay off so the picker keeps the curated list.
+``hermes_cli/auth.py`` / ``hermes_cli/models_catalog_static.py``. ``base_url`` is left empty so
+model listing keeps today's paths: first-time setup probes ``{base}/models`` through the generic
+fallback and the ``/model`` picker serves the curated list. The doctor probe stays off.
 """
 
 from typing import Any
@@ -35,6 +36,5 @@ class TokenHubProfile(ProviderProfile):
 
 
 register_provider(TokenHubProfile(
-    name="tencent-tokenhub", display_name="Tencent TokenHub", base_url="https://tokenhub.tencentmaas.com/v1",
-    supports_model_listing=False, supports_health_check=False,
+    name="tencent-tokenhub", display_name="Tencent TokenHub", supports_health_check=False,
 ))

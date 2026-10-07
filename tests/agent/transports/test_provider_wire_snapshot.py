@@ -85,6 +85,8 @@ BASE_URL_ONLY = {
     "base-url:kimi-coding": ("kimi-k3", "https://api.kimi.com/coding/v1"),
     "base-url:tokenhub": ("hunyuan-t1", "https://tokenhub.tencentmaas.com/v1"),
     "base-url:github-models": ("openai/gpt-5.5", "https://models.github.ai/inference"),
+    # o-series stays on chat completions and takes the GitHub reasoning branch; gpt-5.5 above goes to Responses.
+    "base-url:github-models-chat": ("openai/o4-mini", "https://models.github.ai/inference"),
     "base-url:nvidia-nim": ("nvidia/nemotron-3-super", "https://integrate.api.nvidia.com/v1"),
     "base-url:qwen-portal": ("qwen3-coder-plus", "https://portal.qwen.ai/v1"),
     "base-url:lmstudio-port": ("qwen/qwen3-8b", "http://127.0.0.1:1234/v1"),
@@ -215,7 +217,10 @@ def test_provider_wire_matches_snapshot(offline, provider, model, base_url):
 
 @pytest.mark.parametrize("key,model,base_url", BASE_URL_CELLS, ids=[c[0] for c in BASE_URL_CELLS])
 def test_base_url_only_wire_matches_snapshot(offline, key, model, base_url):
-    _check(key, _wire("", model, base_url), model, base_url)
+    actual = _wire("", model, base_url)
+    if key == "base-url:github-models-chat":
+        assert actual["api_mode"] == "chat_completions", "cell no longer reaches the chat-completions GitHub branch"
+    _check(key, actual, model, base_url)
 
 
 def test_snapshot_covers_every_provider():

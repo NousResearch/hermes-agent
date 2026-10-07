@@ -158,7 +158,7 @@ def test_guardrail_halt_is_a_failed_cron_run():
         },
     }
 
-    with pytest.raises(RuntimeError, match="stopped retrying patch"):
+    with pytest.raises(RuntimeError, match="same_tool_failure_halt.*count=8"):
         cron_scheduler._final_response_from_result(
             result, "guardrail-job", "Guardrail job", _FakeCronAgent
         )

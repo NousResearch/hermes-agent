@@ -17,6 +17,15 @@ def format_run_error(exc: BaseException) -> str:
     return f"## Error\n\n```\n{traceback_text}\n```\n"
 
 
+def format_partial_response(result: dict | None) -> str:
+    """Keep partial evidence in the private archive without delivering it as a finished report."""
+    response = (result or {}).get("final_response") or ""
+    if not response:
+        return ""
+    response = redact_sensitive_text(response, force=True, redact_url_credentials=True)
+    return f"\n## Partial response (run failed)\n\n{response}\n"
+
+
 def external_worker_stderr_tail(path: Path) -> str:
     """Redacted tail of a restart-safe cron worker's captured stderr, as a message suffix.
 

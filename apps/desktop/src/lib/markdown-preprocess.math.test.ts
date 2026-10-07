@@ -56,3 +56,41 @@ describe('single-line display math promotion', () => {
     expect(preprocessMarkdown(input)).toBe('$$\n\\begin{aligned}\na &= b \\\\\nc &= d\n\\end{aligned}\n$$')
   })
 })
+
+// An indented code block (4+ spaces or a tab) can hold a literal $$…$$ line —
+// the promotion must not split it, or the listing the reader sees and copies
+// changes. Fenced code is segmented out earlier in the pipeline; indented code
+// has no fence to segment on, so its lines are recognized here instead.
+describe('indented code blocks', () => {
+  it('leaves a $$…$$ line inside a 4-space indented code block alone', () => {
+    expect(preprocessMarkdown('    $$x^2$$')).toBe('    $$x^2$$')
+  })
+
+  it('leaves a $$…$$ line inside a multi-line indented listing alone', () => {
+    const input = '    fn main()\n    $$x^2$$\n    end'
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('leaves a tab-indented $$…$$ line alone', () => {
+    expect(preprocessMarkdown('\t$$x^2$$')).toBe('\t$$x^2$$')
+  })
+
+  it('leaves indented code inside a blockquote alone', () => {
+    expect(preprocessMarkdown('>     $$x^2$$')).toBe('>     $$x^2$$')
+  })
+
+  it('leaves a code continuation inside a list item alone', () => {
+    const input = '- item\n\n      $$x^2$$'
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('still promotes math with shallow paragraph indentation', () => {
+    expect(preprocessMarkdown('   $$x^2$$')).toBe('   $$\n   x^2\n   $$')
+  })
+
+  it('still promotes quoted math with ordinary quote padding', () => {
+    expect(preprocessMarkdown('>   $$x^2$$')).toBe('>   $$\n>   x^2\n>   $$')
+  })
+})

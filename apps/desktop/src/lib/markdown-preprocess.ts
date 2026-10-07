@@ -79,6 +79,94 @@ const HUGGING_DISPLAY_MATH_CLOSE_RE = /^([ \t]*(?:>[ \t]*)*[ \t]*)(\S[^\n]*?)\$\
 function containerContinuationPrefix(prefix: string): string {
   return prefix.replace(/(?:[-+*]|\d+[.)])[ \t]+/g, marker => ' '.repeat(marker.length))
 }
+// True when the container prefix of a display-math line lands the math
+// content inside a CommonMark indented code block. The prefix is the flat
+// run of spaces, tabs, blockquote markers and one optional list marker that
+// the display-math line regexes capture, so it can hold containers in any
+// interleaving. CommonMark column rules: indentation before a '>' marker
+// allows up to 3 columns, a '>' keeps at most one space of padding, a list
+// marker keeps up to four, and every column left over is content
+// indentation — 4+ columns of it (or a tab) makes the line an indented
+// code block, whose literal text the math rewrites must not touch (fenced
+// code already sidesteps this pass entirely).
+
+function isIndentedCodePrefix(prefix: string): boolean {
+  // A tab anywhere in the indentation is code: at line start a tab alone
+  // makes the line an indented code block, and mid-prefix tabs are
+  // pathological — leaving the line untouched is the conservative read.
+  if (prefix.indexOf(String.fromCharCode(9)) !== -1) {
+    return true
+  }
+
+  let contentIndent = 0
+  let pos = 0
+
+  while (pos < prefix.length) {
+    const runStart = pos
+
+    while (pos < prefix.length && prefix[pos] === ' ') {
+      pos += 1
+    }
+
+    const run = pos - runStart
+
+    if (pos === prefix.length) {
+      // Trailing whitespace is pure content indentation.
+      contentIndent += run
+
+      break
+    }
+
+    if (prefix[pos] === '>') {
+      // Indentation before a blockquote marker: up to 3 columns.
+      if (run > 3) {
+        return true
+      }
+
+      pos += 1
+
+      // One optional space of padding after the marker.
+      if (prefix[pos] === ' ') {
+        pos += 1
+      }
+
+      continue
+    }
+
+    // The only other token the prefix grammar allows is one list marker.
+    if (run > 3) {
+      return true
+    }
+
+    const listMarker = /^(?:[-+*]|[0-9]+[.)])/.exec(prefix.slice(pos))
+
+    if (!listMarker) {
+      // Not a shape the display-math regexes produce; let the caller decide.
+      return false
+    }
+
+    pos += listMarker[0].length
+
+    // Up to four columns of padding after a list marker.
+    let padding = 0
+
+    while (pos < prefix.length && prefix[pos] === ' ' && padding < 4) {
+      pos += 1
+      padding += 1
+    }
+
+    // The rest of the prefix is content indentation.
+    while (pos < prefix.length && prefix[pos] === ' ') {
+      pos += 1
+      contentIndent += 1
+    }
+
+    break
+  }
+
+  return contentIndent >= 4
+}
+
 // Bare-URL autolink matcher. The character classes EXCLUDE `*` so a URL that
 // abuts markdown emphasis with no separating space (e.g. `**label: https://x**`,
 // a very common LLM pattern) doesn't swallow the trailing `**` into the href.
@@ -886,6 +974,16 @@ function splitHuggingDisplayMath(text: string): string {
   for (let index = 0; index < lines.length; index += 1) {
     const openingMatch = lines[index].match(HUGGING_DISPLAY_MATH_OPEN_RE)
 
+    // An indented code block can hold a literal $$…$$ line: splitting it
+    // would change the code the reader sees and copies. Fenced code never
+    // reaches this pass (splitFencedCode); indented code has no fence to
+    // segment on, so its lines are detected here and left untouched.
+    if (openingMatch && isIndentedCodePrefix(openingMatch[1])) {
+      out.push(lines[index])
+
+      continue
+    }
+
     // A single-line `$$body$$` that owns its whole line is the compact display
     // form every LLM emits. Left alone, remark-math routes it through the
     // mathText (inline) construct — its flow construct needs the `$$`
@@ -924,7 +1022,11 @@ function splitHuggingDisplayMath(text: string): string {
     let closingIndex = -1
 
     for (let candidate = index + 1; candidate < lines.length; candidate += 1) {
-      if (HUGGING_DISPLAY_MATH_CLOSE_RE.test(lines[candidate])) {
+      const closingMatch = lines[candidate].match(HUGGING_DISPLAY_MATH_CLOSE_RE)
+
+      // An indented code line cannot close a hugging block: its literal $$
+      // is code text, not a delimiter.
+      if (closingMatch && !isIndentedCodePrefix(closingMatch[1])) {
         closingIndex = candidate
 
         break

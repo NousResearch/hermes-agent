@@ -16,13 +16,15 @@ def rotate_runtime_main_api_key(old: Any, new: Any) -> None:
     would stay invisible to the turn thread; the published dict is shared, so mutating it is not.
     """
     from agent.auxiliary_client import (
-        _MAIN_RUNTIME_FIELDS, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_CONTEXT, _normalize_api_key,
+        _RUNTIME_MAIN_COMPAT_SNAPSHOT, _MAIN_RUNTIME_FIELDS, _RUNTIME_MAIN_CONTEXT, _normalize_api_key,
         _publish_runtime_main_mirrors,
     )
 
     runtime = _RUNTIME_MAIN_CONTEXT.get()
     if isinstance(runtime, dict) and runtime.get("api_key") == old:
+        # Only the runtime the mirrors were published from may republish them: a scoped runtime (or another
+        # session's) that happens to share the old key must not overwrite them with its own route.
+        published = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) == _RUNTIME_MAIN_COMPAT_SNAPSHOT
         runtime["api_key"] = _normalize_api_key(new)
-        # A scoped runtime is a normalized copy (empty fields dropped) that must not reach the mirrors.
-        if _RUNTIME_MAIN_API_KEY == old:
+        if published:
             _publish_runtime_main_mirrors(tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS))

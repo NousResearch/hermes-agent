@@ -210,6 +210,11 @@ class TestOAuthFlagOnRefresh:
                 rotate_runtime_main_api_key(old, new)
                 assert aux._RUNTIME_MAIN_CONTEXT.get()["api_key"] == new
             assert (aux._RUNTIME_MAIN_MODEL, aux._RUNTIME_MAIN_API_KEY) == (agent.model, new)
+            # Even a scope sharing the still-published old key must not republish its own route.
+            aux.set_runtime_main("anthropic", agent.model, api_key=old, api_mode="anthropic_messages")
+            with aux.scoped_runtime_main({"provider": "anthropic", "api_key": old, "model": "m"}):
+                rotate_runtime_main_api_key(old, new)
+            assert (aux._RUNTIME_MAIN_MODEL, aux._RUNTIME_MAIN_API_KEY) == (agent.model, old)
         finally:
             aux.clear_runtime_main()
 

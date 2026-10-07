@@ -156,10 +156,10 @@ class SessionCompressionMixin:
             if row is None or row["ended_at"] is None:
                 return None
             reason = row["end_reason"]
-            from hermes_state_common import is_scheduler_finalized_cron
+            from hermes_state_common import CRON_FINALIZED_END_REASONS
             if (
                 is_automatic_end_reason(reason)
-                or is_scheduler_finalized_cron(dict(row))
+                or (row["source"] == "cron" and reason in CRON_FINALIZED_END_REASONS)
                 or reason == "compression"
                 or reason in _BOUNDARY_END_REASONS
             ):

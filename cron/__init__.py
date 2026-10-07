@@ -1,21 +1,16 @@
-"""
-Cron job scheduling system for Hermes Agent.
-
-This module provides scheduled task execution, allowing the agent to:
-- Run automated tasks on schedules (cron expressions, intervals, one-shot)
-- Self-schedule reminders and follow-up tasks
-- Execute tasks in isolated sessions (no prior context)
-
-Cron jobs are executed automatically by the gateway daemon:
-    hermes gateway install    # Install as a user service
-    sudo hermes gateway install --system  # Linux servers: boot-time system service
-    hermes gateway            # Or run in foreground
-
-The gateway ticks the scheduler every 60 seconds. A file lock prevents
-duplicate execution if multiple processes overlap.
+"""Cron job scheduling for Hermes Agent: scheduled tasks (cron expressions, intervals, one-shot),
+self-scheduled reminders, isolated sessions. The gateway daemon (``hermes gateway [install]``) ticks
+the scheduler every 60 seconds; a file lock prevents duplicate execution across processes.
 """
 
-from cron.jobs import (
+# The restart-safe external worker runs as ``-m cron.scheduler``, which executes this package
+# first: boot PM dependencies before ``cron.jobs`` reaches a third-party import. A no-op
+# unless ``_launch_external_cron_worker`` marked this process. See cron/worker_bootstrap.py.
+from cron.worker_bootstrap import worker_bootstrap as _boot_external_worker
+
+_boot_external_worker()
+
+from cron.jobs import (  # noqa: E402
     create_job,
     get_job,
     list_jobs,
@@ -27,11 +22,11 @@ from cron.jobs import (
     rearm_oneshot,
     JOBS_FILE,
 )
-from cron.scheduler import tick
+from cron.scheduler import tick  # noqa: E402
 
 __all__ = [
     "create_job",
-    "get_job", 
+    "get_job",
     "list_jobs",
     "remove_job",
     "update_job",

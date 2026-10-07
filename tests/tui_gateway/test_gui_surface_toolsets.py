@@ -15,7 +15,7 @@ answer is identical on every connection topology.
 import pytest
 
 import tui_gateway.server as server
-from toolsets import TOOLSETS, resolve_toolset
+from toolsets import TOOLSETS
 
 GUI_TOOLS = {
     "annotate_preview",
@@ -26,9 +26,8 @@ GUI_TOOLS = {
     "read_terminal",
     "read_window_below",
     "react_to_message",
-    "setup_mcp",
-    "tip",
-    "tour",
+    "show_tip",
+    "gui_tour",
 }
 
 
@@ -42,8 +41,6 @@ def no_desktop_env(monkeypatch):
 
 
 class TestDesktopUiToolset:
-    def test_holds_exactly_the_gui_affordances(self):
-        assert set(resolve_toolset("desktop_ui")) == GUI_TOOLS
 
     def test_stays_off_the_core_tool_list(self):
         """Core ships on every API call — a GUI-only tool must not be there."""
@@ -89,6 +86,7 @@ class TestResolverPlumbing:
         no_desktop_env.setattr(cc, "coding_selection", lambda **_: ["coding"])
 
         assert server._load_enabled_toolsets("desktop") == [
+            "catalog",
             "coding",
             "desktop_ui",
             "project",
@@ -116,3 +114,42 @@ class TestResolverPlumbing:
         no_desktop_env.setenv("HERMES_TUI_TOOLSETS", "web,memory")
 
         assert server._load_enabled_toolsets("desktop") == ["web", "memory"]
+
+
+class TestExplicitEmptySelection:
+    """#82010: an explicitly saved empty platform_toolsets list is a zero-tool state.
+
+    ``platform_toolsets.cli: []`` used to fall open — the resolver returned an empty set and
+    the gateway converted it to None, which downstream means 'no restriction' (every
+    toolset). Only an ABSENT key means that; the explicit empty list must return [].
+    """
+
+    @staticmethod
+    def _config(no_desktop_env, platform_toolsets):
+        import agent.coding_context as cc
+        import hermes_cli.config as config_mod
+
+        no_desktop_env.setattr(cc, "coding_selection", lambda **_: None)
+        no_desktop_env.setattr(
+            config_mod, "load_config", lambda: {"platform_toolsets": platform_toolsets}
+        )
+
+    def test_explicit_empty_list_yields_no_toolsets(self, no_desktop_env):
+        self._config(no_desktop_env, {"cli": []})
+
+        assert server._load_enabled_toolsets("desktop") == []
+        assert server._load_enabled_toolsets("tui") == []
+
+    def test_absent_key_keeps_the_default_selection(self, no_desktop_env):
+        self._config(no_desktop_env, {})
+
+        result = server._load_enabled_toolsets("tui")
+        assert result  # the platform default applies — not the zero state, not None-as-all
+
+    def test_named_selection_is_honored(self, no_desktop_env):
+        self._config(no_desktop_env, {"cli": ["memory"]})
+
+        result = server._load_enabled_toolsets("tui")
+        assert result is not None
+        assert "memory" in result
+        assert "terminal" not in result

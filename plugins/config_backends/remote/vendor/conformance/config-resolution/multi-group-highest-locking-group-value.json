@@ -1,0 +1,96 @@
+{
+  "fixtureVersion": 2,
+  "name": "multi-group-highest-locking-group-value",
+  "description": "Proves d5-lock: When several groups lock a key the value is the highest-priority LOCKING group's value; a higher non-locking group does not supply it.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-a",
+      "priority": 10,
+      "values": {
+        "x": 1
+      },
+      "locks": [
+        "x"
+      ]
+    },
+    {
+      "kind": "group",
+      "groupId": "g-b",
+      "priority": 20,
+      "values": {
+        "x": 2
+      },
+      "locks": [
+        "x"
+      ]
+    },
+    {
+      "kind": "group",
+      "groupId": "g-c",
+      "priority": 30,
+      "values": {
+        "x": 3
+      },
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "x": 2
+    },
+    "provenance": {
+      "x": "group"
+    },
+    "groupProvenance": {
+      "x": "g-b"
+    },
+    "locks": [
+      {
+        "path": "x",
+        "level": "group",
+        "groupId": "g-b"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "agent",
+      "op": "set",
+      "path": "x",
+      "value": 4,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "x",
+        "lockedBy": "group",
+        "lockedByGroupId": "g-b"
+      }
+    }
+  ]
+}

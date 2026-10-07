@@ -27,6 +27,7 @@ from hermes_state_holders import read_only_db_uri
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
+from hermes_cli.config_backend import require_file_tooling
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
 
@@ -35,9 +36,11 @@ from hermes_cli.backup_restore import (
     _default_new_file_mode,
     _detect_prefix,
     _extract_member_atomically,
+    _get_config_path_value,
     _import_db_member,
     _restore_auth_json,
     _safe_restore_db,
+    _set_config_path_value,
     _validate_backup_zip,
 )
 
@@ -594,6 +597,7 @@ def run_backup(args) -> bool:
     the caller turns False into exit status 1 so a cron/systemd timer never publishes a "successful"
     archive that is missing state.db. Hard failures keep raising ``SystemExit``.
     """
+    require_file_tooling("`hermes backup`")
     hermes_root = get_default_hermes_root()
 
     if not hermes_root.is_dir():
@@ -730,6 +734,7 @@ def _import_member_rel(member: str, prefix: str) -> tuple[str, bool]:
 
 def run_import(args) -> Optional[int]:
     """Restore a Hermes backup; return 1 on damaged archives or incomplete restores."""
+    require_file_tooling("`hermes import`")
     zip_path = Path(args.zipfile).expanduser().resolve()
 
     if not zip_path.is_file():
@@ -760,12 +765,11 @@ def run_import(args) -> Optional[int]:
 
         print(f"Backup contains {file_count} files")
         print(f"Target: {display_hermes_home()}")
-
         if prefix:
             print(f"Detected archive prefix: {prefix!r} (will be stripped)")
 
         # Check for existing installation
-        has_config = (hermes_root / "config.yaml").exists()
+        has_config = (hermes_root / "config.yaml").exists()  # config-reader: ok — profile marker for the backup scope (file tooling)
         has_env = (hermes_root / ".env").exists()
 
         if (has_config or has_env) and not args.force:
@@ -971,7 +975,7 @@ def run_import(args) -> Optional[int]:
                         continue
                     profile_name = entry.name
                     # Only create wrappers for directories with config
-                    if not (entry / "config.yaml").exists() and not (entry / ".env").exists():
+                    if not (entry / "config.yaml").exists() and not (entry / ".env").exists():  # config-reader: ok — profile marker for the backup scope (file tooling)
                         continue
                     collision = check_alias_collision(profile_name)
                     if collision:
@@ -1505,6 +1509,7 @@ def restore_quick_snapshot(
     Returns True if at least one file was restored and the listed auth.json
     was not refused or skipped.
     """
+    require_file_tooling("Snapshot restore")
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
 
@@ -1980,26 +1985,6 @@ def _read_raw_yaml_dict(path: Path) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     return data if isinstance(data, dict) else None
-
-
-def _get_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...]) -> Any:
-    node: Any = data
-    for key in dotted:
-        if not isinstance(node, dict):
-            return None
-        node = node.get(key)
-    return node
-
-
-def _set_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...], value: Any) -> None:
-    node = data
-    for key in dotted[:-1]:
-        child = node.get(key)
-        if not isinstance(child, dict):
-            child = {}
-            node[key] = child
-        node = child
-    node[dotted[-1]] = value
 
 
 def restore_config_model_settings_if_rewritten(

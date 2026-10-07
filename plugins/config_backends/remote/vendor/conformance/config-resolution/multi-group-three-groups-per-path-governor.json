@@ -1,0 +1,119 @@
+{
+  "fixtureVersion": 2,
+  "name": "multi-group-three-groups-per-path-governor",
+  "description": "Proves d5-lock, d5-priority: Three groups; each locked path takes the value (or inherited absence) of the highest-priority group whose lock covers it, unlocked paths take the highest-priority value.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {
+        "a": {
+          "b": "t"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-1",
+      "priority": 1,
+      "values": {
+        "a": {
+          "b": 1,
+          "c": 1
+        }
+      },
+      "locks": [
+        "a"
+      ]
+    },
+    {
+      "kind": "group",
+      "groupId": "g-2",
+      "priority": 2,
+      "values": {
+        "a": {
+          "b": 2
+        },
+        "d": 2
+      },
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-3",
+      "priority": 3,
+      "values": {},
+      "locks": [
+        "a.b"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "a": {
+        "b": "t",
+        "c": 1
+      },
+      "d": 2
+    },
+    "provenance": {
+      "a.b": "tenant",
+      "a.c": "group",
+      "d": "group"
+    },
+    "groupProvenance": {
+      "a.c": "g-1",
+      "d": "g-2"
+    },
+    "locks": [
+      {
+        "path": "a",
+        "level": "group",
+        "groupId": "g-1"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "d",
+      "value": "p",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "principal",
+      "op": "unset",
+      "path": "a.b",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "a",
+        "lockedBy": "group",
+        "lockedByGroupId": "g-1"
+      }
+    }
+  ]
+}

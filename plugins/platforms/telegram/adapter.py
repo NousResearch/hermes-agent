@@ -2585,11 +2585,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """Save a newly created thread_id back into config.yaml so it survives restarts."""
         try:
             from hermes_constants import get_hermes_home
+            from hermes_cli.config import atomic_config_write, config_exists, read_user_config_raw
             config_path = get_hermes_home() / "config.yaml"
-            if not config_path.exists():
+            if not config_exists(config_path):
                 logger.warning("[%s] Config file not found at %s, cannot persist thread_id", self.name, config_path)
                 return
-            from hermes_cli.config import atomic_config_write, read_user_config_raw
             config = read_user_config_raw(config_path)
             # platforms.telegram.extra.dm_topics — create the path for topics not predeclared in config.yaml.
             dm_topics = config.setdefault("platforms", {}).setdefault("telegram", {}).setdefault("extra", {}).setdefault("dm_topics", [])

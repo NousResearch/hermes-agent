@@ -37,9 +37,9 @@ logger = logging.getLogger(__name__)
 
 
 def _read_config(home: Path) -> dict:
-    import utils
+    from hermes_cli.config_backend import read_config_doc
     try:
-        data = utils.fast_safe_load((home / "config.yaml").read_text(encoding="utf-8-sig"))
+        data = read_config_doc(home / "config.yaml")
     except Exception:  # missing/unreadable/invalid YAML: nothing we can see is in use
         return {}
     return data if isinstance(data, dict) else {}

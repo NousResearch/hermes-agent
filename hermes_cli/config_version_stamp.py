@@ -29,16 +29,16 @@ def read_config_version_stamp(*, raise_on_parse_error: bool = False) -> Tuple[Op
     never-stamped current-schema file, not an ancient install — ``migrate_config()`` gives it only
     the legacy-key steps). A missing file, or malformed YAML under a tolerant caller, reads as
     ``latest`` exactly as ``check_config_version()`` always reported it."""
-    from hermes_cli.config import InvalidUserConfigError, _warn_config_parse_failure, fast_safe_load, get_config_path
+    from hermes_cli.config import InvalidUserConfigError, _warn_config_parse_failure, get_config_path
+    from hermes_cli.config_backend import config_exists, read_config_doc
 
     latest = _coerce_config_version(DEFAULT_CONFIG.get("_config_version", 1)) or 1
     config_path = get_config_path()
-    if not config_path.exists():
+    if not config_exists(config_path):
         return latest, latest
 
     try:
-        with open(config_path, encoding="utf-8-sig") as f:
-            config = fast_safe_load(f)
+        config = read_config_doc(config_path)
     except Exception as e:
         _warn_config_parse_failure(config_path, e)
         if raise_on_parse_error:

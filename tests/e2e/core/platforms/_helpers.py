@@ -57,7 +57,7 @@ def hermetic_env(home: Path, extra: Optional[Dict[str, str]] = None) -> Dict[str
         PYTHONPATH=os.pathsep.join(p for p in (shim, str(REPO_ROOT)) if p),
         NO_COLOR="1", TERM="dumb", NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost",
         HERMES_STATE_DB_GUARD_BYPASS="1", HERMES_DISABLE_LAZY_INSTALLS="1", TZ="UTC", PYTHONUNBUFFERED="1",
-        TIRITH_ENABLED="false", AWS_EC2_METADATA_DISABLED="true",
+        AWS_EC2_METADATA_DISABLED="true",
     )
     env.update(extra or {})
     return env

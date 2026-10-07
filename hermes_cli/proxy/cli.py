@@ -34,11 +34,13 @@ def cmd_proxy_start(args: Any) -> int:
         auth_hint = getattr(adapter, "auth_hint", f"hermes auth add {adapter.name}")
         _err(f"Not logged into {adapter.display_name}. Run `{auth_hint}` first.")
         return 2
+    from hermes_cli.url_utils import format_url_host
+
     host = getattr(args, "host", None) or DEFAULT_HOST
     port = getattr(args, "port", None) or DEFAULT_PORT
     _err(
         f"Starting Hermes proxy for {adapter.display_name}\n"
-        f"  Listening on:  http://{host}:{port}/v1\n"
+        f"  Listening on:  http://{format_url_host(host)}:{port}/v1\n"
         f"  Forwarding to: (resolved per-request from your subscription)\n"
         f"  Use any bearer token in the client — the proxy attaches your real credential.\n"
         f"\n"

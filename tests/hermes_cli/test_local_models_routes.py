@@ -84,6 +84,18 @@ def test_status_lists_staged_models_with_labels(client, tmp_path):
     assert row["size_label"].endswith("GB")
 
 
+def test_status_sizes_a_split_model_by_all_its_parts(client):
+    """A split's first file can be a metadata stub of a few MB. The row reports the model the user
+    has on disk, so a side-loaded split outside the catalog is every part, not part 1."""
+    from hermes_cli.local_runtime.bootstrap import models_dir
+
+    _write_fake_gguf(models_dir() / "Side-Split-00001-of-00002.gguf", size=1024)
+    _write_fake_gguf(models_dir() / "Side-Split-00002-of-00002.gguf", size=8192)
+    rows = {m["id"]: m for m in client.get("/api/local-models/status").json()["models"]}
+
+    assert rows["Side-Split"]["size_bytes"] == (4 + 1024) + (4 + 8192)
+
+
 def test_status_tracks_preset_spill_and_restored_window(client, tmp_path, monkeypatch):
     from dataclasses import replace
     from types import SimpleNamespace

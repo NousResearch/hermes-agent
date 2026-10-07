@@ -108,12 +108,21 @@ class SessionCompressionMixin:
                 if row["end_reason"] != "compression":
                     return outcome
                 children = conn.execute(
-                    "SELECT id FROM sessions WHERE parent_session_id = ? AND source = 'cron'"
+                    "SELECT * FROM sessions WHERE parent_session_id = ? AND source = 'cron'"
                     + self._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias="")
                     + f" AND NOT ({_RESET_CHILD_SQL.format(a='sessions')})"
-                    + " AND id NOT GLOB 'cron_*' LIMIT 2",
+                    + " AND id NOT GLOB 'cron_*'",
                     (current,) * 4,
                 ).fetchall()
+                # The scheduler's canonical resolver prefers continuations over
+                # stale automatic-cleanup siblings. Do not let those siblings
+                # erase a unique settlement after the live tip is finalized.
+                # A sibling with its own durable receipt remains competing.
+                children = [child for child in children if not (
+                    child["ended_at"] is not None
+                    and is_automatic_end_reason(child["end_reason"])
+                    and scheduler_finalized_cron_outcome(dict(child)) is None
+                )]
                 if not children:
                     return outcome
                 if len(children) != 1:

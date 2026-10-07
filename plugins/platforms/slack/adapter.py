@@ -1075,6 +1075,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: Dict[Any, bool] = {}
         self._clarify_resolved: Dict[Any, bool] = {}
+        self._interaction_owners: Dict[Any, Any] = {}
         # clarify_id → (channel_id, message_ts, rendered_question) so the gateway can retire a
         # card whose clarify ended without a click (timeout, reset, superseding prose).
         self._clarify_messages: Dict[str, Tuple[str, str, str]] = {}
@@ -4982,9 +4983,14 @@ class SlackAdapter(BasePlatformAdapter):
                 {"type": "actions", "elements": actions}]
             return t("platform.slack.approval.fallback_text", command=prompt.command[:100]), blocks
 
-        return await self._send_interactive_prompt(
+        result = await self._send_interactive_prompt(
             prompt.chat_id, prompt.metadata, _build, "send_exec_approval",
             resolved=self._approval_resolved, resolved_max=self._APPROVAL_RESOLVED_MAX)
+        if result.success and result.message_id:
+            from gateway.interaction_owner import InteractionOwner
+            marker = self._workspace_message_marker(self._metadata_team_id(prompt.metadata), result.message_id)
+            self._interaction_owners[marker] = InteractionOwner.capture(prompt.chat_id, prompt.metadata).bind_prompt(result.message_id)
+        return result
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
@@ -5449,6 +5455,8 @@ class SlackAdapter(BasePlatformAdapter):
             resolved=self._clarify_resolved, resolved_max=self._CLARIFY_RESOLVED_MAX,
             team_scoped_key=False, sanitize=False)
         if result.success and result.message_id:
+            from gateway.interaction_owner import InteractionOwner
+            self._interaction_owners[result.message_id] = InteractionOwner.capture(chat_id, metadata).bind_prompt(result.message_id)
             question_text, _blocks = _build()
             response_channel = str((result.raw_response or {}).get("channel") or chat_id)
             self._clarify_messages[clarify_id] = (response_channel, result.message_id, question_text)
@@ -5629,6 +5637,12 @@ class SlackAdapter(BasePlatformAdapter):
             approval_key = msg_ts
         if self._approval_resolved.pop(approval_key, True):
             return
+        owner = self._interaction_owners.pop(approval_key, None)
+        if owner is None or not owner.accepts(
+            actor_id=user_id, chat_id=channel_id, channel_id=channel_id,
+            thread_id=message.get("thread_ts"), prompt_message_id=msg_ts,
+            generation=owner.generation):
+            return
         # Resolve FIRST (unblocks the agent); render after so a click past the
         # timeout (count == 0) shows "expired", not "approved".
         try:
@@ -5682,6 +5696,12 @@ class SlackAdapter(BasePlatformAdapter):
         clarify_id, token = value.split("|", 1)
         # Double-click guard — atomic pop (mirrors approval).
         if self._clarify_resolved.pop(msg_ts, True):
+            return
+        owner = self._interaction_owners.get(msg_ts)
+        if owner is None or not owner.accepts(
+            actor_id=user_id, chat_id=channel_id, channel_id=channel_id,
+            thread_id=message.get("thread_ts"), prompt_message_id=msg_ts,
+            generation=owner.generation):
             return
         original_text = self._section_text(message, limit=None)
         from tools import clarify_gateway as _clarify_mod

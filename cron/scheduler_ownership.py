@@ -40,7 +40,7 @@ def register_ticked_homes(homes) -> None:
     live until process exit, so serving (or churning) many profiles leaks one ThreadPoolExecutor
     and its worker threads per home ever ticked.
     """
-    from cron.store_health import forget_homes, store_key
+    from cron.store_health import forget_stores, store_key
 
     resolved, stores = {}, {}
     for home in homes:
@@ -50,7 +50,8 @@ def register_ticked_homes(homes) -> None:
         stores[key] = store_key(path)
     with _ticked_lock:
         departed = set(_ticked_homes) - set(resolved)
-        departed_stores = [_ticked_stores[k] for k in departed if k in _ticked_stores]
+        # A store another still-ticked profile reaches (cron/ symlinked to one place) keeps its state.
+        departed_stores = {_ticked_stores[k] for k in departed if k in _ticked_stores} - set(stores.values())
         _ticked_homes.clear()
         _ticked_homes.update(resolved)
         _ticked_stores.clear()
@@ -59,7 +60,7 @@ def register_ticked_homes(homes) -> None:
         # Late import: cron.scheduler imports this module.
         from cron.scheduler import discard_parallel_pools
         discard_parallel_pools(departed)
-        forget_homes(departed_stores)
+        forget_stores(departed_stores)
 
 
 def ticked_homes() -> dict:

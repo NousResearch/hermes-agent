@@ -456,7 +456,11 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
     assert any(r.levelname == "WARNING" and "unwritable notice for" in r.getMessage() for r in caplog.records)
     from cron import scheduler_ownership  # the profile leaves this gateway, its home already deleted
     monkeypatch.setattr(scheduler_ownership, "_ticked_homes", {})
-    scheduler_ownership.register_ticked_homes([profile])
+    sibling = cron_store / "sibling"  # a second profile whose cron/ reaches the same store
+    sibling.mkdir()
+    (sibling / "cron").symlink_to(cron_dir, target_is_directory=True)
+    scheduler_ownership.register_ticked_homes([profile, sibling])
+    scheduler_ownership.register_ticked_homes([profile])  # sibling leaves; the store is still ticked
     assert store_health.degraded_record(cron_dir) is not None
     shutil.rmtree(profile)  # removes the cron/ symlink, never the store it points at
     scheduler_ownership.register_ticked_homes([])

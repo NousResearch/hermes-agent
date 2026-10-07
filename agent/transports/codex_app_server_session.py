@@ -57,6 +57,9 @@ class TurnResult:
     compacted: bool = False
     # Codex likely wedged (turn timeout, dead subprocess, token refresh failure): caller respawns next turn.
     should_retire: bool = False
+    native_turns: int = 0
+    usage_recorded: bool = False
+    usage_result: Optional[dict[str, Any]] = None
 
 
 # Some codex versions stream ``<turn_aborted>`` as raw agentMessage text when an
@@ -254,6 +257,7 @@ class CodexAppServerSession:
         self._interrupt_event = threading.Event()
         self._active_turn_id: Optional[str] = None
         self._active_turn_lock = threading.Lock()
+        self._native_goal_control: Optional[Callable[[], bool]] = None
         # In-progress fileChange items by id (item/started -> item/completed):
         # approval params don't carry the changeset, so this feeds the prompt summary.
         self._pending_file_changes: dict[str, str] = {}
@@ -455,6 +459,7 @@ class CodexAppServerSession:
         self, user_input: Any, *, model: Optional[str] = None, reasoning_effort: Optional[str] = None,
         service_tier: Optional[str] = None, turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25, post_tool_quiet_timeout: float = 90.0,
+        idle_timeout: Optional[float] = None,
     ) -> TurnResult:
         """Send a user message and block until turn/completed, bridging approvals and projecting items.
 
@@ -469,6 +474,10 @@ class CodexAppServerSession:
         reason for minutes without emitting a single event while the app-server still answers RPCs
         (#112928). Only subprocess death or ``turn_timeout`` retires the session.
         """
+        if turn_timeout < 0 or (idle_timeout is not None and idle_timeout < 0):
+            raise ValueError("Codex timeouts must be non-negative")
+        if turn_timeout == 0 and idle_timeout == 0:
+            raise ValueError("Codex requires a total or inactivity timeout")
         result = TurnResult()
         if self._start_for(result):
             # Do not clear first: a hard stop arriving during ensure_started() must
@@ -487,13 +496,15 @@ class CodexAppServerSession:
                 ts = self._request_for(result, "turn/start", params, "turn/start")
                 if ts is not None:
                     self._service_tier_sent = service_tier
-                    self._run_started_turn(result, ts, turn_timeout, notification_poll_timeout, post_tool_quiet_timeout)
+                    self._run_started_turn(result, ts, turn_timeout, notification_poll_timeout, post_tool_quiet_timeout,
+                                           idle_timeout=idle_timeout)
         self._interrupt_event.clear()
         return result
 
     def _run_started_turn(
         self, result: TurnResult, ts: dict, turn_timeout: float, notification_poll_timeout: float,
         post_tool_quiet_timeout: float,
+        *, idle_timeout: Optional[float] = None,
     ) -> None:
         """Drive an accepted ``turn/start`` to completion: quiet warning, approvals, projection."""
         projector = CodexEventProjector()
@@ -507,6 +518,8 @@ class CodexAppServerSession:
 
         def warn_if_quiet() -> bool:
             nonlocal last_tool_completion_at
+            if self._native_goal_control is not None:
+                self._native_goal_control()
             if last_tool_completion_at is None or (time.monotonic() - last_tool_completion_at) <= post_tool_quiet_timeout:
                 return False
             last_tool_completion_at = None
@@ -558,7 +571,7 @@ class CodexAppServerSession:
         self._drive_turn(
             result, turn_timeout=turn_timeout, notification_poll_timeout=notification_poll_timeout,
             timeout_label="turn", before_poll=warn_if_quiet, on_server_request=on_server_request,
-            on_note=on_note,
+            on_note=on_note, idle_timeout=idle_timeout,
         )
         with self._active_turn_lock:
             self._active_turn_id = None
@@ -568,6 +581,7 @@ class CodexAppServerSession:
         timeout_label: str, on_server_request: Callable[[dict], bool],
         on_note: Callable[[dict, str], bool], before_poll: Optional[Callable[[], bool]] = None,
         pre_scope_filter: Optional[Callable[[dict, str], bool]] = None,
+        idle_timeout: Optional[float] = None,
     ) -> None:
         """Shared poll loop for run_turn / compact_thread until turn/completed or deadline.
 
@@ -577,10 +591,17 @@ class CodexAppServerSession:
         return True to complete the turn. Deadline without completion interrupts and
         retires the session.
         """
-        deadline = time.monotonic() + turn_timeout
+        now = time.monotonic()
+        deadline = now + turn_timeout if turn_timeout or idle_timeout is None else None
+        last_activity = now
         turn_complete = False
         client = self._client
-        while time.monotonic() < deadline and not turn_complete:
+        inactive = False
+        while not turn_complete:
+            now = time.monotonic()
+            inactive = bool(idle_timeout and now - last_activity >= idle_timeout)
+            if inactive or (deadline is not None and now >= deadline):
+                break
             if self._interrupt_event.is_set():
                 self._issue_interrupt(result.turn_id)
                 result.interrupted = True
@@ -591,6 +612,7 @@ class CodexAppServerSession:
                 break
             sreq = client.take_server_request(timeout=0)
             if sreq is not None:
+                last_activity = time.monotonic()
                 try:
                     turn_complete = on_server_request(sreq)
                 except CodexAppServerTransportError as exc:
@@ -606,6 +628,7 @@ class CodexAppServerSession:
             if not _notification_belongs_to_turn(note, thread_id=self._thread_id, turn_id=result.turn_id):
                 logger.debug("ignoring foreign codex notification: method=%s", method)
                 continue
+            last_activity = time.monotonic()
             turn_complete = on_note(note, method)
 
         # An item/completed agentMessage can be commentary, or precede more tool work. Its
@@ -614,9 +637,9 @@ class CodexAppServerSession:
             self._issue_interrupt(result.turn_id)
             result.interrupted = True
             if not result.error:
-                result.error = self._format_error_with_stderr(
-                    f"{timeout_label} timed out after {turn_timeout}s without turn/completed; task incomplete",
-                )
+                reason = (f"{timeout_label} inactive for {idle_timeout}s" if inactive
+                          else f"{timeout_label} timed out after {turn_timeout}s")
+                result.error = self._format_error_with_stderr(f"{reason} without turn/completed; task incomplete")
             result.should_retire = True
 
     def compact_thread(

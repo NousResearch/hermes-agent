@@ -44,11 +44,16 @@ class GatewayGoalCommandsMixin:
             return None
 
         def dispatch():
-            return dispatch_goal_command(
-                mgr, event.get_command_args() or "", authorize_gate=authorize_gate,
-                render=lambda key, default, **values: t(key, **values),
-                last_user_message=last_user_message_from_db(getattr(mgr, "session_id", None)),
-            )
+            from hermes_cli.codex_goals import goal_lock
+            from hermes_cli.goals import load_goal
+            with goal_lock(mgr.session_id):
+                if getattr(mgr, "runtime_name", None) == "codex":
+                    mgr._state = load_goal(mgr.session_id)
+                return dispatch_goal_command(
+                    mgr, event.get_command_args() or "", authorize_gate=authorize_gate,
+                    render=lambda key, default, **values: t(key, **values),
+                    last_user_message=last_user_message_from_db(getattr(mgr, "session_id", None)),
+                )
 
         # Drafting resolves profile-scoped credentials. Keep ContextVars across the
         # executor hop; manager I/O must also stay off the messaging event loop.

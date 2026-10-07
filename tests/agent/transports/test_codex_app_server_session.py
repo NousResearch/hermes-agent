@@ -902,8 +902,16 @@ class TestSessionRetirement:
         if drain_for_approval:
             client.queue_server_request("item/commandExecution/requestApproval", command="echo hi")
         session = make_session(client)
-        clock = iter([0.0, 0.0, 0.0, 601.0])
-        with patch.object(session_mod.time, "monotonic", side_effect=lambda: next(clock)):
+        # Advance only once the wire goes silent, not after a fixed number of
+        # clock reads (an inactivity watchdog legitimately reads the clock too).
+        clock = [0.0]
+        take_notification = client.take_notification
+        def timed_notification(timeout=0):
+            if not client._notifications:
+                clock[0] = 601.0
+            return take_notification(timeout)
+        client.take_notification = timed_notification
+        with patch.object(session_mod.time, "monotonic", side_effect=lambda: clock[0]):
             result = session.run_turn("hi", turn_timeout=600.0, notification_poll_timeout=0.0)
         assert result.final_text == "still checking"
         assert any(msg.get("content") == result.final_text for msg in result.projected_messages)
@@ -1174,9 +1182,9 @@ class TestTransportLoss:
         session = make_session(client)
         started = session._run_started_turn
 
-        def close_then_run(result, ts, *args):
+        def close_then_run(result, ts, *args, **kwargs):
             session.close()
-            return started(result, ts, *args)
+            return started(result, ts, *args, **kwargs)
 
         session._run_started_turn = close_then_run
         result = session.run_turn("hi", turn_timeout=3, notification_poll_timeout=0.001)

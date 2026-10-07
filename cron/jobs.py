@@ -2522,71 +2522,6 @@ def mark_job_run(
     return _under_fire_fence(job_id, locked)
 
 
-def _write_oneshot_diagnostic(job: Dict[str, Any], text: str, what: str) -> bool:
-    """Best-effort operator-visible trace in the job's output dir; never breaks the caller."""
-    try:
-        save_job_output(job.get("id", ""), text)
-        return True
-    except Exception as e:
-        logger.debug("Failed to write %s diagnostic for job %r: %s", what, job.get("id"), e)
-        return False
-
-
-def _write_wedged_oneshot_diagnostic(job: Dict[str, Any]) -> None:
-    """Trace for a wedged one-shot removal: dispatch was claimed but mark_job_run never ran
-    (interrupted mid-run); removing it silently would leave no output, error, or record.
-
-    A finite one-shot whose dispatch was claimed (``repeat.completed`` >= ``repeat.times``) but which never
-    reached ``mark_job_run`` (``last_run_at`` is null) was interrupted mid-run — scheduler restart, gateway
-    kill, or a non-Exception escape (#73973). The recovery guards remove such jobs so they stop appearing
-    due, but a silent removal leaves the user with no output, no error, and no job record. Write a small
-    diagnostic file into the job's output directory so the removal is observable and debuggable.
-    """
-    if job.get("last_run_at") is not None:
-        return  # a prior run was recorded — normal completion race, not a wedge
-    repeat = job.get("repeat") or {}
-    claim = job.get("run_claim") or {}
-    written = _write_oneshot_diagnostic(
-        job,
-        "# Cron job removed without producing output\n\n"
-        f"- job id: {job.get('id')}\n"
-        f"- name: {job.get('name')}\n"
-        f"- dispatch claimed: {repeat.get('completed', '?')}/{repeat.get('times', '?')}\n"
-        f"- run claimed at: {claim.get('at', 'unknown')} by {claim.get('by', 'unknown')}\n"
-        f"- removed at: {_hermes_now().isoformat()}\n\n"
-        "This one-shot job's dispatch was claimed, but the run never "
-        "completed (`last_run_at` was never written) — the scheduler "
-        "process was most likely killed or restarted mid-execution. The "
-        "job has been removed to stop it re-firing; recreate it to run "
-        "again.\n",
-        "wedged-oneshot")
-    if written:
-        logger.warning(
-            "Job '%s': removed without a completed run — diagnostic written to "
-            "its output directory",
-            job.get("name", job.get("id", "?")))
-
-
-def _write_missed_oneshot_diagnostic(job: Dict[str, Any], next_run: str) -> None:
-    """Trace for a never-ran one-shot retired outside the grace window (else it would just vanish).
-    """
-    _write_oneshot_diagnostic(
-        job,
-        "# Cron job removed before firing (run time outside grace window)\n\n"
-        f"- job id: {job.get('id')}\n"
-        f"- name: {job.get('name')}\n"
-        f"- scheduled run time: {next_run}\n"
-        f"- grace window: {ONESHOT_GRACE_SECONDS}s\n"
-        f"- removed at: {_hermes_now().isoformat()}\n\n"
-        "This one-shot's run time is more than the grace window in the "
-        "past (scheduler down past the window, host asleep, or jobs.json "
-        "edited), which is outside the 'will never fire' contract "
-        "enforced at create/update/resume time. The job was removed "
-        "without running; recreate it (or use the Run button) to "
-        "schedule it again.\n",
-        "missed-oneshot")
-
-
 def claim_dispatch(job_id: str) -> bool:
     """Atomically claim a finite one-shot dispatch BEFORE execution: ``repeat.completed`` is bumped
     and persisted under the jobs lock so a tick dying mid-execution cannot lose the dispatch
@@ -2622,6 +2557,8 @@ def claim_dispatch(job_id: str) -> bool:
             jobs.pop(i)
             # See #73973.
             save_jobs(jobs, removed_ids={job_id})
+            from cron.jobs_diagnostics import _write_wedged_oneshot_diagnostic
+
             _write_wedged_oneshot_diagnostic(job)
             logger.info(
                 "Job '%s': dispatch limit reached (%d/%d) — removing", label, completed, times)
@@ -3160,6 +3097,8 @@ def _retire_expired_oneshot(d: _DueJob) -> bool:
     if store_health.outage_covers(_current_cron_store().cron_dir, d.next_run_dt.timestamp(), ONESHOT_GRACE_SECONDS):
         return False
     if not (d.job.get("run_claim") or d.job.get("fire_claim")):
+        from cron.jobs_diagnostics import _write_missed_oneshot_diagnostic
+
         _write_missed_oneshot_diagnostic(d.job, d.next_run)
         d.scan.retire(d.job["id"])
         d.scan.on_saved.append(lambda job=d.job: record_cron_missed(job))
@@ -3204,6 +3143,8 @@ def _oneshot_dispatch_limit_reached(job: Dict[str, Any], scan: _DueScan) -> bool
             name, completed, times)
     scan.retire(job["id"])
     # The claimed run never completed here by definition — leave an operator-visible diagnostic.
+    from cron.jobs_diagnostics import _write_wedged_oneshot_diagnostic
+
     _write_wedged_oneshot_diagnostic(job)
     return True
 
@@ -3327,24 +3268,27 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
         jobs = [j for j in jobs if scan.find(j.get("id")) is not None]
 
     due = []
-    for job in jobs:
-        # Per-job containment: one malformed record must never abort the whole scan. Normalization
-        # above repairs known shapes; this catches FUTURE variants so healthy siblings still
-        # run/persist.
-        try:
-            if is_terminal_job(job) and not _is_recoverable_error_job(job):
-                continue
-            if not job.get("enabled", True):
-                continue
-            if _has_pause_marker(job):
-                _self_disable_half_paused(job, scan)
-                continue
-            if _evaluate_due_job(job, scan, run_claim_ttl):
-                due.append(job)
-        except Exception:
-            logger.exception(
-                "Skipping malformed cron job %r during due scan",
-                job.get("name") or job.get("id") or "?")
+    from cron.occurrences import shared_ledger_connection
+
+    with shared_ledger_connection():  # one executions.db connection for the whole scan (#133883)
+        for job in jobs:
+            # Per-job containment: one malformed record must never abort the whole scan. Normalization
+            # above repairs known shapes; this catches FUTURE variants so healthy siblings still
+            # run/persist.
+            try:
+                if is_terminal_job(job) and not _is_recoverable_error_job(job):
+                    continue
+                if not job.get("enabled", True):
+                    continue
+                if _has_pause_marker(job):
+                    _self_disable_half_paused(job, scan)
+                    continue
+                if _evaluate_due_job(job, scan, run_claim_ttl):
+                    due.append(job)
+            except Exception:
+                logger.exception(
+                    "Skipping malformed cron job %r during due scan",
+                    job.get("name") or job.get("id") or "?")
 
     if scan.needs_save:
         try:

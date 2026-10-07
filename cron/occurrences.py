@@ -1,9 +1,53 @@
 """Exact scheduled identities, independent of mutable jobs.json dispatch stamps, plus the
 profile-local stale-schedule catch-up counter marker."""
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
+
+# One executions.db connection per due scan instead of one per job (#133883): opening and closing
+# the ledger for every job recreates and deletes its -wal/-shm files each time (N jobs => 2N
+# unlinks per tick, plus a pragma/schema run per open). Thread-local (the scan is single-threaded),
+# lazily opened by the first lookup inside the scope.
+_scan_ledger = threading.local()
+
+_OCCURRENCE_QUERY = ("SELECT id, finished_at, claimed_at FROM executions "
+                     "WHERE job_id=? AND scheduled_instant=? AND status='completed'")
+
+
+@contextmanager
+def shared_ledger_connection():
+    """Let every ``completed_occurrence()`` call inside this block reuse one read connection.
+
+    Nested scopes join the outermost one. The connection closes when the outermost scope exits,
+    so executions.db's WAL/SHM pair is still cleaned up once per scan, not once per job.
+    """
+    if getattr(_scan_ledger, "active", False):
+        yield
+        return
+    _scan_ledger.active, _scan_ledger.conn = True, None
+    try:
+        yield
+    finally:
+        conn, _scan_ledger.conn, _scan_ledger.active = _scan_ledger.conn, None, False
+        if conn is not None:
+            conn.close()
+
+
+def _completed_rows(job_id, instant):
+    """The occurrence rows for one job — on the scan's shared connection when one is open."""
+    from cron.executions import _connect, _lock, _transaction
+
+    if not getattr(_scan_ledger, "active", False):
+        with _transaction() as conn:
+            return conn.execute(_OCCURRENCE_QUERY, (job_id, instant)).fetchall()
+    with _lock:
+        if _scan_ledger.conn is None:
+            _scan_ledger.conn = _connect()
+        # Autocommit SELECT: each lookup reads the latest committed state, like a fresh connection.
+        return _scan_ledger.conn.execute(_OCCURRENCE_QUERY, (job_id, instant)).fetchall()
 
 
 def scheduled_instant(value):
@@ -22,7 +66,6 @@ def scheduled_instant(value):
 def completed_occurrence(job, instant):
     """Unknown/failed/pruned attempts cannot prove completion: keep them eligible."""
     from cron.constants import FIRE_CLAIM_SKEW_SECONDS
-    from cron.executions import _transaction
 
     instant = scheduled_instant(instant)
     if instant is None:
@@ -30,12 +73,7 @@ def completed_occurrence(job, instant):
     # A skewed early fire (see claim_job_for_fire) legitimately completes just before its slot.
     earliest_real = datetime.fromisoformat(instant) - timedelta(seconds=FIRE_CLAIM_SKEW_SECONDS)
     try:
-        with _transaction() as conn:
-            rows = conn.execute(
-                "SELECT id, finished_at, claimed_at FROM executions "
-                "WHERE job_id=? AND scheduled_instant=? "
-                "AND status='completed'", (str(job['id']), instant)
-            ).fetchall()
+        rows = _completed_rows(str(job['id']), instant)
         for row in rows:
             completed_at = scheduled_instant(row["finished_at"] or row["claimed_at"])
             # Legacy or malformed timestamps remain proof; only positively identified poison

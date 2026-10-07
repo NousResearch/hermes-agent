@@ -695,6 +695,43 @@ class TestBuildConverseKwargs:
         for m in kwargs["messages"]:
             assert {"cachePoint": {"type": "default"}} not in m["content"]
 
+    @staticmethod
+    def _vision_tool_round(image_bytes: bytes):
+        import base64
+        data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode()
+        return data_url, [
+            {"role": "user", "content": "What is on screen?"},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "t1", "type": "function", "function": {"name": "vision_analyze", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "t1", "content": [
+                {"type": "text", "text": "Image loaded into your context"},
+                {"type": "image_url", "image_url": {"url": data_url}}]},
+        ]
+
+    # Converse accepts toolResult images only for "Amazon Nova and Anthropic Claude 3 and 4 models".
+    @pytest.mark.parametrize("model", [
+        "us.amazon.nova-pro-v1:0", "anthropic.claude-sonnet-4-6-20250514-v1:0",
+        "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    ])
+    def test_tool_result_image_reaches_the_model_as_an_image_block(self, model):
+        from agent.bedrock_adapter import build_converse_kwargs
+        image_bytes = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 8
+        data_url, messages = self._vision_tool_round(image_bytes)
+        blocks = build_converse_kwargs(model=model, messages=messages)["messages"][-1]["content"][0]["toolResult"]["content"]
+        assert {"image": {"format": "png", "source": {"bytes": image_bytes}}} in blocks
+        assert {"text": "Image loaded into your context"} in blocks
+        assert not any(data_url.split(",", 1)[1][:64] in b.get("text", "") for b in blocks)
+
+    @pytest.mark.parametrize("model", ["us.meta.llama4-maverick-17b-instruct-v1:0", "us.anthropic.claude-opus-5-v1:0"])
+    def test_tool_result_image_is_never_inlined_as_text_for_models_without_tool_result_images(self, model):
+        from agent.bedrock_adapter import build_converse_kwargs
+        data_url, messages = self._vision_tool_round(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 8)
+        blocks = build_converse_kwargs(model=model, messages=messages)[
+            "messages"][-1]["content"][0]["toolResult"]["content"]
+        assert blocks and all(set(b) == {"text"} and b["text"].strip() for b in blocks)
+        assert {"text": "Image loaded into your context"} in blocks
+        assert not any(data_url.split(",", 1)[1][:64] in b["text"] for b in blocks)
+
 
 # ---------------------------------------------------------------------------
 # cachePoint rejection self-heal (#97281)

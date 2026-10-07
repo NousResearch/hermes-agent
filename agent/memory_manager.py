@@ -386,6 +386,14 @@ class MemoryManager:
     swallows per-provider exceptions.
     """
 
+    # Process-wide registry of in-flight external prefetch threads, keyed by provider
+    # name. A new MemoryManager is built per agent init, so a per-instance registry
+    # would let every fresh manager spawn one more stuck thread against the same
+    # provider (#134392); shared, a stuck call suppresses new spawns from any manager
+    # until it returns. The per-manager late-result cache stays instance-local.
+    _EXTERNAL_PREFETCH_THREADS: Dict[str, threading.Thread] = {}
+    _EXTERNAL_PREFETCH_LOCK = threading.Lock()
+
     def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
@@ -396,10 +404,8 @@ class MemoryManager:
         if timeout <= 0 or not math.isfinite(timeout):
             raise ValueError("external_prefetch_timeout must be a finite positive number")
         self._external_prefetch_timeout = timeout
-        self._external_prefetch_threads: Dict[str, threading.Thread] = {}
         self._late_prefetch: Dict[str, _LatePrefetch] = {}
         self._late_prefetch_generation: int = 0
-        self._external_prefetch_lock = threading.Lock()
         # Single-worker background executor for end-of-turn sync/prefetch, created lazily so
         # the builtin-only path spawns no threads; one worker serializes a provider's writes.
         self._sync_executor: Optional[ThreadPoolExecutor] = None
@@ -505,7 +511,7 @@ class MemoryManager:
 
     def _invalidate_late_prefetch(self) -> None:
         """Drop cached late results so they cannot replay across a session boundary."""
-        with self._external_prefetch_lock:
+        with self._EXTERNAL_PREFETCH_LOCK:
             self._late_prefetch.clear()
             self._late_prefetch_generation += 1
 
@@ -543,7 +549,7 @@ class MemoryManager:
                 error_box["value"] = exc
             finally:
                 late_raw = None
-                with self._external_prefetch_lock:
+                with self._EXTERNAL_PREFETCH_LOCK:
                     if (
                         abandoned["yes"]
                         and not consumed["yes"]
@@ -555,7 +561,7 @@ class MemoryManager:
                     spilled = self._spill_external_prefetch(
                         late_raw, session_id=session_id, provider_name=provider.name,
                     )
-                    with self._external_prefetch_lock:
+                    with self._EXTERNAL_PREFETCH_LOCK:
                         if (
                             abandoned["yes"]
                             and not consumed["yes"]
@@ -564,15 +570,15 @@ class MemoryManager:
                             self._late_prefetch[provider.name] = _LatePrefetch(
                                 query, session_id, spilled,
                             )
-                with self._external_prefetch_lock:
-                    if self._external_prefetch_threads.get(provider.name) is thread:
-                        self._external_prefetch_threads.pop(provider.name, None)
+                with self._EXTERNAL_PREFETCH_LOCK:
+                    if self._EXTERNAL_PREFETCH_THREADS.get(provider.name) is thread:
+                        self._EXTERNAL_PREFETCH_THREADS.pop(provider.name, None)
 
         thread = spawn_context_thread(_run, name=f"memory-prefetch-{provider.name}")
         pending_late: Optional[str] = None
-        with self._external_prefetch_lock:
+        with self._EXTERNAL_PREFETCH_LOCK:
             generation = self._late_prefetch_generation
-            existing = self._external_prefetch_threads.get(provider.name)
+            existing = self._EXTERNAL_PREFETCH_THREADS.get(provider.name)
             if existing is not None:
                 if existing.is_alive():
                     logger.debug(
@@ -580,12 +586,12 @@ class MemoryManager:
                         provider.name,
                     )
                     return ""
-                self._external_prefetch_threads.pop(provider.name, None)
+                self._EXTERNAL_PREFETCH_THREADS.pop(provider.name, None)
             late = self._late_prefetch.pop(provider.name, None)
             if late is not None and late.query == query and late.session_id == session_id and late.value:
                 pending_late = late.value
             else:
-                self._external_prefetch_threads[provider.name] = thread
+                self._EXTERNAL_PREFETCH_THREADS[provider.name] = thread
                 thread.start()
 
         if pending_late is not None:
@@ -594,7 +600,7 @@ class MemoryManager:
             )
 
         thread.join(self._external_prefetch_timeout)
-        with self._external_prefetch_lock:
+        with self._EXTERNAL_PREFETCH_LOCK:
             if thread.is_alive():
                 abandoned["yes"] = True
                 logger.warning(
@@ -609,8 +615,8 @@ class MemoryManager:
                 return ""
             consumed["yes"] = True
             self._late_prefetch.pop(provider.name, None)
-            if self._external_prefetch_threads.get(provider.name) is thread:
-                self._external_prefetch_threads.pop(provider.name, None)
+            if self._EXTERNAL_PREFETCH_THREADS.get(provider.name) is thread:
+                self._EXTERNAL_PREFETCH_THREADS.pop(provider.name, None)
         if "value" in error_box:
             raise error_box["value"]
         result = result_box.get("value", "")

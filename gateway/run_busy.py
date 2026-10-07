@@ -655,6 +655,9 @@ class GatewayBusySessionMixin:
 
         Fail-open exactly like the funnel: a runner without a hook registry, an event without a
         source, or a hook that raises all leave the text untouched.
+
+        ``session_id`` carries the running turn's real session id — the same value the turn funnel
+        emits — never the routing key (see ``_busy_session_id``).
         """
         if not text:
             return text
@@ -662,11 +665,28 @@ class GatewayBusySessionMixin:
         if source is None:
             return text
         from gateway.run_turn import apply_collectable_text_filter
-        ctx = self._text_filter_context(source, session_key or "")
+        ctx = self._text_filter_context(source, self._busy_session_id(session_key))
         with self._profile_scope_for_source(source):
             return await apply_collectable_text_filter(
                 getattr(self, "hooks", None), "agent:message:filter", ctx, "message", text,
             )
+
+    def _busy_session_id(self, session_key: str) -> str:
+        """The running turn's real session id: the value the turn funnel's filter emits.
+
+        A busy lane only holds the routing *key* (``agent:main:...``), which used to be written
+        into the hook payload's ``session_id``; a subscriber keying on that field then saw two
+        different identifier shapes depending on the lane. The real id lives on the registered turn
+        context (bound atomically with the running agent), and a steer/redirect cannot happen
+        without a live turn, so this resolves. Fail-open like the rest of the seam: a runner or a
+        turn without a context yields ``""`` rather than a second shape under the same name.
+        """
+        try:
+            state = self._peek_session_state(session_key)
+            ctx = getattr(getattr(state, "turn", None), "ctx", None)
+            return str(getattr(ctx, "session_id", "") or "")
+        except Exception:
+            return ""
 
     async def _steer_filtered(
         self, running_agent, text: str, session_key: str, event: Optional[MessageEvent] = None

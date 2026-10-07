@@ -511,6 +511,7 @@ class _BusyStub(_ScopeTrackingStub):
     _filter_inbound_text = cast(Any, GatewayRunner._filter_inbound_text)
     _text_filter_context = cast(Any, GatewayRunner._text_filter_context)
     _steer_filtered = cast(Any, GatewayRunner._steer_filtered)
+    _busy_session_id = cast(Any, GatewayRunner._busy_session_id)
 
 
 class _AgentDeMentira:
@@ -582,9 +583,13 @@ async def test_the_busy_lanes_filter_inside_the_profile_scope_too():
 class _BusyLaneStub(_ScopeTrackingStub):
     """Doble que ejercita la entrada de steer FILTRADA real en los carriles que la saltaban."""
 
+    # El id real de la sesión en marcha: vive en el contexto del turno, como en producción.
+    REAL_SESSION_ID = "s-real-1234"
+
     _filter_inbound_text = cast(Any, GatewayRunner._filter_inbound_text)
     _text_filter_context = cast(Any, GatewayRunner._text_filter_context)
     _steer_filtered = cast(Any, GatewayRunner._steer_filtered)
+    _busy_session_id = cast(Any, GatewayRunner._busy_session_id)
 
     def __init__(self, hooks, running_agent):
         super().__init__(hooks)
@@ -594,7 +599,10 @@ class _BusyLaneStub(_ScopeTrackingStub):
         self.queued: list = []
 
     def _peek_session_state(self, key):
-        return SimpleNamespace(turn=SimpleNamespace(agent=self._running_agent))
+        return SimpleNamespace(turn=SimpleNamespace(
+            agent=self._running_agent,
+            ctx=SimpleNamespace(session_id=self.REAL_SESSION_ID),
+        ))
 
     def _fold_into_running_turn(self, agent, key, event):
         self.folded.append(key)
@@ -656,6 +664,34 @@ async def test_the_priority_steer_lane_is_filtered_too():
     assert agente.recibido == ["[dni oculto]"], "el carril PRIORITY steer no filtró el texto"
     assert [e for e, _ in hooks.events] == ["agent:message:filter"]
     assert stub.folded == ["s-key"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lane", ["slash_command", "priority"])
+async def test_the_busy_lane_hook_context_carries_the_real_session_id(lane):
+    """``session_id`` significa lo mismo en todos los carriles: el id de la sesión, no la clave.
+
+    El carril busy solo tiene la clave de enrutado (``agent:main:...``); el id real vive en el
+    contexto del turno en marcha. Antes del arreglo, un subscriptor con política por sesión veía
+    dos formas distintas bajo el mismo nombre según el carril.
+    """
+    stub, hooks, agente = _busy_lane()
+    event = MessageEvent(
+        text="/steer texto" if lane == "slash_command" else "texto",
+        message_type=MessageType.TEXT,
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm"),
+        message_id="m5",
+    )
+
+    if lane == "slash_command":
+        await _steer_command_unbound(stub, event, "s-key", event.source)
+    else:
+        await _priority_steer_unbound(stub, event, agente, "s-key")
+
+    contexts = [ctx for event_type, ctx in hooks.events if event_type == "agent:message:filter"]
+    assert len(contexts) == 1
+    assert contexts[0]["session_id"] == _BusyLaneStub.REAL_SESSION_ID
+    assert contexts[0]["session_id"] != "s-key"
 
 
 @pytest.mark.asyncio

@@ -85,7 +85,7 @@ def _mcp_install_action_name(name: str) -> str:
     process/log while its git clone is still running."""
     from hermes_cli.web_server_gateway import _ACTION_LOG_FILES
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48] or "server"
-    digest = hashlib.sha1(name.encode()).hexdigest()[:8]
+    digest = hashlib.sha1(name.encode(), usedforsecurity=False).hexdigest()[:8]
     action = f"mcp-install-{slug}-{digest}"
     _ACTION_LOG_FILES.setdefault(action, f"action-{action}.log")
     return action

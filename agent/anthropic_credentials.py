@@ -63,7 +63,8 @@ def _first_env(*names: str) -> str:
 def _is_oauth_token(key: str) -> bool:
     """True for Anthropic OAuth/setup tokens (sk-ant-oat*, eyJ JWTs, cc-); False for sk-ant-api*
     Console keys and sk-ant-usr* user-scoped API keys (#133856) — the latter pay per token and
-    authenticate as x-api-key, so the Claude Code identity must not ride along."""
+    authenticate as x-api-key, so the Claude Code identity must not ride along. Unknown sk-ant-*
+    prefixes still classify as OAuth so OAuth prefixes Anthropic ships later keep working."""
     if not key or key.startswith(("sk-ant-api", "sk-ant-usr")):
         return False
     return key.startswith(("sk-ant-", "eyJ", "cc-"))

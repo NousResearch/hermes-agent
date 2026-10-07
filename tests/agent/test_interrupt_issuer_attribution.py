@@ -149,5 +149,52 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
         assert interrupt_issuer(agent) is None
         assert agent._interrupt_message == "fix the login bug"
         assert agent._pending_redirect == "use the staging db"
+
+        # Desktop batch PREPARATION has the same two exits: a user stop that cancels it keeps the
+        # user's message/redirect, and a preparation timeout is a system stop with no message.
+        import agent.terminal_approval_batch as tab
+
+        def _prepare(exc, during=lambda: None):
+            class _Batch:
+                def __init__(self, *_a):
+                    pass
+
+                def start(self):
+                    during()
+                    raise exc
+
+                def close(self):
+                    pass
+
+            ids = iter(["p1", "p2"])
+
+            def _parse(*_a, **_k):
+                call_id = next(ids)
+                return SimpleNamespace(name="terminal", parse_error=None, ref=lambda _t: SimpleNamespace(call_id=call_id))
+
+            with (
+                patch.object(tab, "_TerminalBatch", _Batch),
+                patch("gateway.session_context.get_session_env", return_value="desktop"),
+                patch("tools.approval._gateway_notify_cb", lambda _k: object()),
+                patch.object(te, "_parse_tool_call", _parse),
+                tab.terminal_approval_batch(agent, [1, 2], [], "t"),
+            ):
+                pass
+
+        def _user_stop():
+            agent.interrupt("fix the login bug")
+            agent._pending_redirect = "use the staging db"
+
+        set_interrupt(False)
+        agent.clear_interrupt()
+        _prepare(tab._CancelledPreparation("Terminal approval preparation cancelled; command was not started"), _user_stop)
+        assert interrupt_issuer(agent) is None
+        assert agent._interrupt_message == "fix the login bug"
+        assert agent._pending_redirect == "use the staging db"
+        set_interrupt(False)
+        agent.clear_interrupt()
+        _prepare(TimeoutError("Terminal approval preparation timed out; commands were not started"))
+        assert interrupt_issuer(agent) == "terminal_batch_preparation_timeout"
+        assert agent._interrupt_message is None
     finally:
         set_interrupt(False)

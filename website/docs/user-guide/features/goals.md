@@ -232,7 +232,31 @@ goals:
   # /goal resume. Default 20. Lower this if you want tighter loops;
   # raise it for long-running refactors.
   max_turns: 20
+  # Let the agent declare and close its own goal via the `goal` tool. Default false.
+  agent_tool: false
 ```
+
+### Agent-owned goals (`goals.agent_tool`)
+
+Most sessions never type `/goal`. The agent says "I'll cut the release once CI is green" and the
+session goes quiet — nothing drives it to the finish line. `agent_tool: true` fixes that the way
+Meta's Muse Code does: the agent gets a `goal` tool and declares the goal itself.
+
+- `goal(action="get")` — is there a goal on this session, and is it mine or the user's?
+- `goal(action="create", objective=...)` — declare the end state when committing to multi-step work.
+  Refused while any goal is active or the user set one with `/goal`; the user always wins.
+- `goal(action="complete", evidence=...)` — claim done. The handler runs the same completion audit
+  the post-turn judge uses, against the evidence cited, and refuses anything but DONE.
+
+The system prompt (injected only when the tool is in the toolset) tells the agent to check, create,
+and not to claim completion in prose. From there the normal loop applies: the judge checks each turn,
+continuation prompts fire when the agent stops early (they remind it to close through the tool),
+`/goal status` shows the goal as `self-set`. Nothing is inferred behind the agent's back and there is
+no extra model call per turn — the goal is declared inside the turn, with full context.
+
+If the judge rules a self-set goal BLOCKED (you did the work yourself, scope moved on), it is parked,
+not paused-with-a-nag: `/goal resume` keeps it, or the agent declares a new one over it. A goal you
+typed with `/goal` still pauses and waits for you.
 
 ### Choosing the judge model
 

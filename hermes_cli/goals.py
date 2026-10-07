@@ -65,6 +65,13 @@ CONTINUATION_PROMPT_TEMPLATE = (
     "If you are blocked and need input from the user, say so clearly and stop."
 )
 
+# Appended for agent-declared goals (goals.agent_tool): completion is claimed through the tool.
+AGENT_GOAL_CONTINUATION_SUFFIX = (
+    "\n\nThis goal is one you set yourself. When it is actually done, call "
+    "goal(action=\"complete\", evidence=...) with the verifiable evidence; the audit must pass. "
+    "Do not claim completion in prose."
+)
+
 # With a completion contract: the block tells the agent what "done" means, how to prove it, what
 # not to break, scope, and when to stop — so it targets the verification surface.
 CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE = (
@@ -255,6 +262,17 @@ DRAFT_CONTRACT_SYSTEM_PROMPT = (
     '{"outcome": "...", "verification": "...", "constraints": "...", '
     '"boundaries": "...", "stop_when": "..."}'
 )
+
+
+# ── Agent-owned goals (goals.agent_tool) ─────────────────────────────
+# Muse-style: the model declares and closes its own session goal through the ``goal`` tool
+# (``tools/goal_tool.py``). Agent goals are tagged ``source="agent"``: they yield to a user /goal,
+# and park instead of nagging on BLOCKED.
+
+
+def agent_goal_tool_enabled() -> bool:
+    """``goals.agent_tool``: expose the ``goal`` tool so the model declares/closes its own goal."""
+    return bool(_goals_setting("agent_tool", False))
 
 
 # ── Completion contract ───────────────────────────────────────────────
@@ -450,6 +468,8 @@ class GoalState:
     contract: GoalContract = field(default_factory=GoalContract)
     # /goal gate add <cmd>: ALL must pass before the judge may declare done.
     gates: List[GoalGate] = field(default_factory=list)
+    # "user" (typed /goal) or "agent" (declared by the agent via the goal tool, goals.agent_tool).
+    source: str = "user"
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -472,6 +492,7 @@ class GoalState:
             waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
             waiting_reason=data.get("waiting_reason"),
             contract=GoalContract.from_dict(data.get("contract")),
+            source=str(data.get("source") or "user"),
             gates=[
                 GoalGate.from_dict(g) for g in (data.get("gates") or [])
                 if isinstance(g, dict) and str(g.get("command") or "").strip()
@@ -1121,7 +1142,8 @@ class GoalManager:
         sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
         con = ", contract" if self.has_contract() else ""
         gat = f", {len(s.gates)} gate{'s' if len(s.gates) != 1 else ''}" if s.gates else ""
-        meta = f"{turns}{sub}{con}{gat}"
+        src = ", self-set" if s.source == "agent" else ""
+        meta = f"{turns}{sub}{con}{gat}{src}"
         if s.status == "active":
             if s.waiting_on_session and _session_waiting(s.waiting_on_session):
                 return f"⏳ Goal (parked on {s.waiting_reason or f'session {s.waiting_on_session}'}, {meta}): {s.goal}"
@@ -1174,6 +1196,22 @@ class GoalManager:
             contract=contract if contract is not None else GoalContract(),
         )
         return self._save()
+
+    def set_agent_goal(self, objective: str, *, contract: Optional[GoalContract] = None,
+                       max_turns: Optional[int] = None) -> Optional[GoalState]:
+        """Install a goal the agent declared on itself (``source="agent"``). Never overwrites an
+        active goal or any user-declared goal — the user always wins; returns None in that case."""
+        if not self.accepts_agent_goal():
+            return None
+        state = self.set(objective, contract=contract, max_turns=max_turns)
+        state.source = "agent"
+        return self._save()
+
+    def accepts_agent_goal(self) -> bool:
+        """No goal, or a parked (paused) agent goal, may be replaced by a new declaration; an active
+        goal or any user-set goal never is."""
+        s = self._state
+        return not self.has_goal() or (s.source == "agent" and s.status == "paused")
 
     def set_contract(self, contract: GoalContract) -> Optional[GoalState]:
         """Attach or replace the completion contract on the active goal."""
@@ -1525,6 +1563,15 @@ class GoalManager:
         # BLOCKED verdict: the judge ruled the goal genuinely cannot be satisfied as stated (impossible, out
         # of scope, needs user input). See #100954.
         if verdict == "blocked":
+            # An agent-declared goal was never asked for by the user, so it must not nag them to
+            # re-scope. BLOCKED can mean a temporary blocker (approval, credentials) as well as
+            # obsolete work, so the goal is parked, not discarded: /goal resume keeps it, and the
+            # agent may declare a new goal over it.
+            if state.source == "agent":
+                return self._pause_decision(
+                    f"agent goal parked: {reason}", "blocked", reason,
+                    f"⊙ Goal parked: {reason} (/goal resume to keep it; the agent may set a new one)",
+                )
             return self._pause_decision(
                 f"judged unachievable: {reason}", "blocked", reason,
                 f"🚫 Goal judged unachievable — paused: {reason} Re-scope with /goal set, or override with /goal resume.",
@@ -1566,6 +1613,15 @@ class GoalManager:
         s = self._state
         if not s or s.status != "active":
             return None
+        prompt = self._continuation_body(s)
+        if prompt and s.source == "agent":
+            # Muse-style probe: an agent-declared goal is closed by the agent itself, through the
+            # tool, with evidence — not by announcing completion in prose.
+            prompt += AGENT_GOAL_CONTINUATION_SUFFIX
+        return prompt
+
+    @staticmethod
+    def _continuation_body(s: "GoalState") -> Optional[str]:
         # Contract first (it carries the verification surface); subgoals fold in as extra criteria.
         if s.has_contract():
             contract_block = s.contract.render_block()

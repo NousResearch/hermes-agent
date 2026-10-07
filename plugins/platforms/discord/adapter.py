@@ -5167,10 +5167,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
 
     def _discord_free_response_channels(self) -> set:
         """Channel IDs/names needing no mention; a lone "*" is preserved for wildcard short-circuit."""
-        raw = self.config.extra.get("free_response_channels")
-        if raw is None:
-            raw = self._gate_env("DISCORD_FREE_RESPONSE_CHANNELS")
-        return self._gate_csv_set(raw)
+        return self._gate_csv_set(self._gate_raw("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS"))
 
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract user-mention IDs (``<@ID>`` and legacy ``<@!ID>``) from raw content,

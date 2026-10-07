@@ -145,6 +145,14 @@ export const SETTINGS_MANIFEST = {
     }
   },
   chat: {
+    largePasteThreshold: {
+      subpage: 'attachments',
+      keywords: ['paste', 'clipboard', 'text', 'threshold', 'inline', 'attachment'],
+      copy: t => ({
+        label: t.settings.config.largePasteThresholdTitle,
+        description: t.settings.config.largePasteThresholdDesc
+      })
+    },
     attachmentSize: {
       subpage: 'attachments',
       keywords: ['attachment', 'image', 'preview', 'upload', 'file size', 'limit', 'MB'],

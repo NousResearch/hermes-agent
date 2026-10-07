@@ -1031,6 +1031,8 @@ export interface Translations extends NoticeTranslations {
       alwaysExternalLinksTitle: string
       alwaysExternalLinksDesc: string
       attachmentSizeTitle: string
+      largePasteThresholdTitle: string
+      largePasteThresholdDesc: string
       attachmentSizeDesc: string
       attachmentSizeUnit: string
       attachmentSizeLabel: string

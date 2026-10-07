@@ -33,6 +33,7 @@ import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
+import { $largePasteAttachmentThreshold } from '@/store/large-paste-threshold'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -646,7 +647,7 @@ export function ChatBar({
     // material rides along as a file. Falls back to inline insertion if the
     // attachment can't be created (missing bridge, write failure) so the
     // paste is never lost.
-    if (onAttachPastedText && shouldConvertPasteToAttachment(pastedText)) {
+    if (onAttachPastedText && shouldConvertPasteToAttachment(pastedText, $largePasteAttachmentThreshold.get())) {
       const editor = event.currentTarget
 
       void Promise.resolve(onAttachPastedText(pastedText)).then(attached => {

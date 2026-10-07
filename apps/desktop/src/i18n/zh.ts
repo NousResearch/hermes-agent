@@ -1271,6 +1271,8 @@ export const zh = defineLocale({
       updates: '更新'
     },
     config: {
+      largePasteThresholdTitle: '长文本粘贴附件阈值',
+      largePasteThresholdDesc: '粘贴的纯文本超过此字符数时，将作为文本文件附件添加。设为 0 可始终直接粘贴到消息中。',
       minimizeToTrayTitle: '最小化到托盘',
       minimizeToTrayDesc:
         '最小化窗口或关闭主窗口时，将其隐藏到系统托盘（macOS 上为菜单栏），让 Hermes 继续运行。通过托盘菜单中的“退出 Hermes”或 Cmd+Q 退出。默认关闭，仅适用于此设备。',

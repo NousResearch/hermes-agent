@@ -1594,6 +1594,9 @@ export const esOverrides = {
       disableF12Title: 'Desactivar DevTools con F12',
       disableF12Desc:
         'Impide que F12 abra las herramientas para desarrolladores. Ctrl+Shift+I (o Cmd+Opt+I en Mac) sigue funcionando.',
+      largePasteThresholdTitle: 'Umbral para adjuntar texto pegado largo',
+      largePasteThresholdDesc:
+        'El texto sin formato que supere este número de caracteres se adjunta como archivo de texto. Establece 0 para pegar siempre en el mensaje.',
       attachmentSizeTitle: 'Tamaño máximo de vista previa / carga de imagen',
       attachmentSizeDesc:
         'Tamaño máximo de archivo local que el escritorio cargará para vistas previas y adjuntos de imagen, en MB. El valor por defecto es 16. Los adjuntos remotos no-imagen usan un límite separado de 256 MB. Un valor muy alto carga el archivo completo en memoria y puede congelar o bloquear la app.',

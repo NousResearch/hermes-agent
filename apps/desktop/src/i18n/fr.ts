@@ -1598,6 +1598,9 @@ export const frOverrides = {
       disableF12Title: 'Désactiver les outils de développement avec F12',
       disableF12Desc:
         "Empêcher F12 d'ouvrir les outils de développement. Ctrl+Maj+I (ou Cmd+Option+I sur Mac) continue de fonctionner.",
+      largePasteThresholdTitle: 'Seuil de conversion du texte collé en pièce jointe',
+      largePasteThresholdDesc:
+        'Le texte brut collé dépassant ce nombre de caractères est joint sous forme de fichier texte. Réglez sur 0 pour toujours le coller dans le message.',
       attachmentSizeTitle: 'Taille maximale de chargement des aperçus / images',
       attachmentSizeDesc:
         "Taille maximale d'un fichier local que Desktop chargera pour les aperçus et les pièces jointes image, en Mo. La valeur par défaut est 16. Les pièces jointes distantes non-image utilisent une limite distincte de 256 Mo. Une valeur très élevée charge le fichier entier en mémoire et peut figer ou planter l'application.",

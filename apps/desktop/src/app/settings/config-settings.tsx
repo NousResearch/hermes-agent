@@ -47,6 +47,7 @@ import {
   setNested,
   voiceFieldVisible
 } from './helpers'
+import { LargePasteThresholdSetting } from './large-paste-threshold-setting'
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
@@ -490,7 +491,12 @@ function ConfigSettingsInner({
       {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}
-      {showAttachments ? <AttachmentSizeSetting /> : null}
+      {showAttachments ? (
+        <>
+          <AttachmentSizeSetting />
+          <LargePasteThresholdSetting />
+        </>
+      ) : null}
       {/* Shared metrics are two coupled opt-ins with a consent side effect, so they
           go through their own RPC rather than the generic field autosave. */}
       {showSharedMetrics ? <SharedMetricsSettings /> : null}

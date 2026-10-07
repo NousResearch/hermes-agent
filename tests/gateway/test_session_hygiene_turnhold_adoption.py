@@ -160,13 +160,23 @@ async def _drain_deferred(runner, timeout=10.0):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("progress_notices", [True, False], ids=["notices-on", "notices-off"])
 async def test_turn_hold_keeps_admission_and_adopts_watermark_fenced_summary(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, progress_notices
 ):
     """A watermark-fenced worker keeps its commit admission at turn-hold
     expiry; its late summary is ADOPTED (committed), not discarded — while
     the turn itself is still released at the budget (#90845 invariant).
+
+    The deferral notice is routine progress, so it honours the
+    ``compression.progress_notices`` opt-in (off by default): sent when the
+    gate is on, silent when it is off. Everything else is identical.
     """
+    monkeypatch.setattr(
+        "gateway.run._gateway_compression_progress_notices_enabled",
+        lambda: progress_notices,
+    )
+
     worker_started = threading.Event()
     release_worker = threading.Event()
     committed = threading.Event()
@@ -271,11 +281,15 @@ async def test_turn_hold_keeps_admission_and_adopts_watermark_fenced_summary(
     # advances it (the deferral is not a failure).
     assert not fake_db.increment_hygiene_failure_streak.called
     assert fake_db.reset_hygiene_failure_streak.called
-    # Deferral notice still reaches the user.
+    # The deferral notice reaches the user only when progress notices are on.
     sent = [m["content"] for m in adapter.sent]
-    assert any(
+    notified = any(
         "deferred" in c.lower() or "still streaming" in c.lower() for c in sent
-    ), f"turn-hold must send deferral notice, got: {sent}"
+    )
+    assert notified is progress_notices, (
+        f"deferral notice must follow compression.progress_notices="
+        f"{progress_notices}, got: {sent}"
+    )
 
 
 @pytest.mark.asyncio

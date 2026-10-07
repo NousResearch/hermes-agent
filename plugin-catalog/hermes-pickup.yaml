@@ -1,0 +1,20 @@
+name: hermes-pickup
+repo: https://github.com/murenovich/hermes-pickup
+sha: cb3d49383b0121fc7c66f6d79387e2ea0a05a7dd
+description: "Pick up where you left off: up to 3 cards of unfinished work from your recent Hermes chats, project folders and files, each with where you stopped and a one-click next step. Adapted from Herald OS by Luke (iamlukethedev), MIT. Disclosure: after explicit in-app consent, each Refresh sends recent chat excerpts and metadata from all profiles, project/file names and paths, and git branch/status/commit subjects to your own configured Hermes model provider; reads session stores read-only and runs read-only git commands; never reads document or file contents; writes only $HERMES_HOME/pickup/. The optional install.sh can, when asked, add the plugin to every profile's plugins.enabled (undone exactly by uninstall.sh)."
+maintainer: murenovich
+tier: community
+category: desktop
+requires_hermes: ">=0.20.0"
+docs_url: https://github.com/murenovich/hermes-pickup#readme
+version: "0.1.1"
+screenshots:
+  - https://raw.githubusercontent.com/murenovich/hermes-pickup/cb3d49383b0121fc7c66f6d79387e2ea0a05a7dd/docs/screenshot.png
+known_issues:
+  - "On installs with several profiles, Hermes issue #134712 can make the Desktop backend answer Plugin not found; the page explains the fix (enable hermes-pickup in every profile, then restart Desktop)."
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

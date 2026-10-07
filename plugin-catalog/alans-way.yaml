@@ -1,25 +1,26 @@
 name: alans-way
 repo: https://github.com/capthvnsen/alans-way-agents
-sha: 09c6d3c2682013123be042ed8a9e4a3dba54fca8
+sha: 8948c75c7192906e8853afffd1c8d826e52f8206
 subdir: alans-way
-version: "0.6.0"
+version: "0.6.1"
 title: "Alan's Way"
 description: >-
   Proactive primary bot for a Hermes gateway running on a Linux machine or a macOS guest VM. After install,
   the workspace-setup skill walks that agent through a separate companion app and Tailscale setup on the
   user's computer (macOS, Windows or Linux). Setup configures every bot profile and turns off the stock
-  browser and computer_use toolsets in favor of the workspace tools. Watches are propose-only: a proposed
+  browser toolset in favor of the workspace browser. Desktop input goes only through Hermes's approval-gated
+  computer_use tool. Watches are propose-only: a proposed
   watch runs only after the user approves it.
 maintainer: capthvnsen
 tier: community
 category: automation
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/capthvnsen/alans-way
+docs_url: https://github.com/capthvnsen/alans-way-agents/tree/8948c75c7192906e8853afffd1c8d826e52f8206/alans-way
 readme: true
 platforms: [linux, macos]
 known_issues:
   - "Install this on the machine that runs Hermes (a Linux host or a macOS guest VM), not on the user's primary computer. Windows guests are new and untested on real hardware. If the plugin is already installed from the catalog, setup leaves it as it is, so this pin stays."
-  - "Setup turns off Hermes's browser and computer_use toolsets for Telegram so the agent uses the workspace tools. Pass --keep-browser or --keep-computer-use to leave them on."
+  - "Setup turns off Hermes's stock browser toolset for Telegram and cron so the agent uses the workspace browser (pass --keep-browser to leave it on). It never turns off computer_use: on Hermes with the computer-use provider API, desktop input goes through the gated computer_use tool and its alans-way-computer provider."
 capabilities:
   provides_tools:
     - proactive_control

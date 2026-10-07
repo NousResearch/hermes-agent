@@ -2585,10 +2585,10 @@ def reconcile_job_record(
 
     * ``execution_id`` is that job's most recent execution. A reconcile of an older attempt says
       nothing about the state the job is in now, and a newer attempt in the ledger is enough to
-      disqualify it — so this can never overwrite the record of a run that started since. (Read
-      under the same lock as the record itself. A claim landing between that read and the save is
-      not represented here, and cannot be: it would be transient anyway, because the live run
-      writes its own outcome when it ends, which is the later write.)
+      disqualify it — so this can never overwrite the record of a run that started since. (The read
+      and the repair are ONE critical section on the ledger's WRITE fence — ``BEGIN IMMEDIATE``,
+      nested under this jobs lock — so a newer attempt cannot be inserted between them; a claim
+      arriving after the fence is genuinely later and writes its own outcome.)
     * the job currently reads ``last_status == "interrupted"``. Anything else (a newer run, a manual
       edit, an operator's own fix) has already moved past the interruption.
 
@@ -2602,24 +2602,40 @@ def reconcile_job_record(
     bumps ``repeat.completed``: a reconcile must move neither the schedule nor the at-most-once
     dispatch accounting.
     """
-    from cron.executions import latest_execution
+    import sqlite3
+
+    from cron.executions import latest_execution, ledger_write_fence
 
     def apply(jobs, _i, job):
-        # The ledger read sits inside the callback so it is evaluated with the record's own state
-        # under one lock: the repair rests on both conditions being true together.
-        latest = latest_execution(str(job_id))
-        if not latest or latest.get("id") != str(execution_id):
+        # The decision ("is the reconciled attempt still this job's newest?") and the repair are ONE
+        # critical section on the ledger's WRITE fence, nested inside the jobs lock. The jobs lock
+        # alone does not fence it: create_execution runs OUTSIDE it (cron/scheduler_provider.py), so
+        # a newer attempt could otherwise land between the read and the save and be overwritten with
+        # the older attempt's outcome. Fence order is jobs -> ledger; the reverse ABBA-deadlocks
+        # against the claim path (claim_job_for_fire -> completed_occurrence -> _transaction).
+        try:
+            with ledger_write_fence() as ledger_conn:
+                latest = latest_execution(str(job_id), conn=ledger_conn)
+                if not latest or latest.get("id") != str(execution_id):
+                    return False
+                if job.get("last_status") != "interrupted":
+                    return False
+                if success:
+                    job["last_status"] = "ok"
+                    if _is_interruption_reason(job.get("last_error")):
+                        job["last_error"] = None
+                    job["failure_streak"] = 0
+                else:
+                    job["last_status"] = "error"
+                save_jobs(jobs)
+        except sqlite3.OperationalError as exc:
+            # Fail closed: no fence, no repair. Never fall back to an unfenced read, and never crash
+            # the `hermes cron reconcile` verb over a ledger another writer is holding.
+            logger.warning(
+                "Cron reconcile could not take the ledger write fence for job %s "
+                "(execution %s): %s — leaving the job record untouched",
+                job_id, execution_id, exc)
             return False
-        if job.get("last_status") != "interrupted":
-            return False
-        if success:
-            job["last_status"] = "ok"
-            if _is_interruption_reason(job.get("last_error")):
-                job["last_error"] = None
-            job["failure_streak"] = 0
-        else:
-            job["last_status"] = "error"
-        save_jobs(jobs)
         logger.info(
             "Reconciled job %s to last_status=%s (execution %s): %s",
             job_id, job["last_status"], execution_id, note or "no operator note")

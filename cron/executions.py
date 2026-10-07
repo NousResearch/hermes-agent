@@ -118,6 +118,27 @@ def _transaction() -> Iterator[sqlite3.Connection]:
         yield conn
 
 
+@contextmanager
+def ledger_write_fence() -> Iterator[sqlite3.Connection]:
+    """Hold the ledger's WRITE fence — process ``_lock`` plus ``BEGIN IMMEDIATE`` — for a section.
+
+    ``_transaction()`` is DEFERRED: a SELECT-only section holds no SQLite lock at all, so it
+    serialises threads inside one process and nothing more. A caller that reads ``latest_execution``
+    and then commits a decision derived from it must hold THIS fence instead, because the next
+    attempt's row is inserted by ``create_execution`` OUTSIDE the jobs-store lock (see
+    ``cron/scheduler_provider.py``), so it would otherwise land between the read and the write —
+    cross-process included, which is what ``BEGIN IMMEDIATE`` closes.
+
+    Lock order is always **jobs -> ledger**: nest this INSIDE the jobs lock, matching the existing
+    claim path (``claim_job_for_fire`` -> ``completed_occurrence`` -> ``_transaction``). The reverse
+    order ABBA-deadlocks against it.
+    """
+    from hermes_cli.sqlite_util import transaction
+
+    with _lock, transaction(_connect(), immediate=True) as conn:
+        yield conn
+
+
 def _fetch(conn: sqlite3.Connection, execution_id: str) -> Optional[Dict[str, Any]]:
     row = conn.execute("SELECT * FROM executions WHERE id=?", (execution_id,)).fetchone()
     return dict(row) if row is not None else None
@@ -560,8 +581,13 @@ def reconcile_execution(
 
 def list_executions(
     *, job_id: Optional[str] = None, limit: int = 50, before_claimed_at: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> List[Dict[str, Any]]:
-    """Return indexed, newest-first execution history with cursor pagination."""
+    """Return indexed, newest-first execution history with cursor pagination.
+
+    ``conn`` is a caller-held ledger connection (e.g. from ``ledger_write_fence``); when given, the
+    query runs on it instead of opening one, so the read can share a caller's write fence.
+    """
     clauses: List[str] = []
     params: List[Any] = []
     if job_id is not None:
@@ -575,12 +601,15 @@ def list_executions(
     params.append(max(1, min(int(limit), 500)))
     # Stamps carry the local offset, which changes at DST and on a timezone change, so text order
     # is not time order. julianday() compares instants (ms); the text breaks same-ms ties.
-    with _transaction() as conn:
-        rows = conn.execute(
-            "SELECT * FROM executions" + where
-            + " ORDER BY julianday(claimed_at) DESC, claimed_at DESC, id DESC LIMIT ?",
-            params,
-        ).fetchall()
+    sql = (
+        "SELECT * FROM executions" + where
+        + " ORDER BY julianday(claimed_at) DESC, claimed_at DESC, id DESC LIMIT ?"
+    )
+    if conn is not None:
+        rows = conn.execute(sql, params).fetchall()
+    else:
+        with _transaction() as own_conn:
+            rows = own_conn.execute(sql, params).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -594,8 +623,15 @@ def get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row is not None else None
 
 
-def latest_execution(job_id: str) -> Optional[Dict[str, Any]]:
-    rows = list_executions(job_id=job_id, limit=1)
+def latest_execution(
+    job_id: str, *, conn: Optional[sqlite3.Connection] = None,
+) -> Optional[Dict[str, Any]]:
+    """The job's newest attempt; runs on ``conn`` when a caller supplies its own fenced connection.
+
+    The "newest attempt" rule is defined once, here (``list_executions``' ORDER BY) — never a second
+    copy — so a fenced read and an unfenced one can never disagree about which row is newest.
+    """
+    rows = list_executions(job_id=job_id, limit=1, conn=conn)
     return rows[0] if rows else None
 
 

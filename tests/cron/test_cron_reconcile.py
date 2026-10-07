@@ -266,3 +266,97 @@ def test_a_closed_row_also_settles_the_occurrence_it_was_claimed_for(monkeypatch
             record["id"], status="completed",
             evidence=str(_evidence_file(tmp_path))) is not None
         assert completed_occurrence(jobs.get_job(job_id), instant)
+
+
+def test_a_newer_execution_landing_at_the_read_cannot_be_overwritten(monkeypatch, tmp_path):
+    """A newer attempt landing at the latest-execution read must not be written over.
+
+    ``create_execution`` runs outside the jobs lock (``cron/scheduler_provider.py``), so the jobs
+    lock alone never covered the instant a new attempt becomes the job's newest. The decision and
+    its job-record repair are therefore ONE critical section on the ledger's write fence: B is held
+    until the repair commits, and only then does it land and own the job.
+    """
+    import threading
+
+    import cron.jobs as jobs
+
+    home = _profile(tmp_path)
+    with jobs.use_cron_store(home):
+        executions = _ledger(monkeypatch, tmp_path, home)
+        _frozen_clock(executions, monkeypatch)
+        job_id = _interrupted_job(jobs)
+        abandoned = _abandoned(executions, monkeypatch, job_id, generation=1)
+        assert executions.reconcile_execution(
+            abandoned["id"], status="completed",
+            evidence=str(_evidence_file(tmp_path))) is not None
+
+        real_latest = executions.latest_execution
+        b_done = threading.Event()
+        b_ids = []
+        b_errors = []
+        b_threads = []
+
+        def create_newer_execution():
+            try:
+                b_ids.append(
+                    executions.create_execution(str(job_id), source="provider")["id"])
+            except BaseException as exc:  # a refused insert must not vanish
+                b_errors.append(repr(exc))
+            finally:
+                b_done.set()
+
+        landed_inside_window = False
+        fired = {"n": 0}
+
+        def hooked(job_id_arg, **kw):
+            nonlocal landed_inside_window
+            record = real_latest(job_id_arg, **kw)  # the reconcile's own read -> sees A
+            if fired["n"] == 0:
+                fired["n"] = 1
+                thread = threading.Thread(target=create_newer_execution, name="newer-execution")
+                b_threads.append(thread)
+                thread.start()
+                # Bounded window: did the newer attempt land before the repair committed?
+                landed_inside_window = b_done.wait(0.5)
+            return record
+
+        monkeypatch.setattr(executions, "latest_execution", hooked)
+        repaired = jobs.reconcile_job_record(
+            job_id, execution_id=abandoned["id"], success=True, note="pipeline exited 0")
+        monkeypatch.setattr(executions, "latest_execution", real_latest)
+
+    assert b_threads, "the newer-execution thread never started"
+    b_threads[0].join(timeout=10.0)
+    assert not b_threads[0].is_alive(), "the newer execution never landed"
+    assert not b_errors, b_errors
+    assert b_ids and b_ids[0] != abandoned["id"]
+    assert landed_inside_window is False, (
+        "a newer execution landed between the decision and the repair")
+    assert repaired is True
+    # The repair was true at commit time; the genuinely-later attempt now owns the job.
+    assert executions.latest_execution(job_id)["id"] == b_ids[0]
+
+
+def test_reconcile_refuses_when_the_ledger_write_fence_is_unavailable(monkeypatch, tmp_path):
+    """Fail closed: no fence, no repair — and never crash the `hermes cron reconcile` verb."""
+    import sqlite3
+
+    import cron.jobs as jobs
+
+    home = _profile(tmp_path)
+    with jobs.use_cron_store(home):
+        executions = _ledger(monkeypatch, tmp_path, home)
+        job_id = _interrupted_job(jobs)
+        abandoned = _abandoned(executions, monkeypatch, job_id, generation=1)
+        assert executions.reconcile_execution(
+            abandoned["id"], status="completed",
+            evidence=str(_evidence_file(tmp_path))) is not None
+
+        def unavailable():
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(executions, "ledger_write_fence", unavailable)
+        # Refused (not raised), and the job record is left exactly as the interruption wrote it.
+        assert jobs.reconcile_job_record(
+            job_id, execution_id=abandoned["id"], success=True) is False
+        assert jobs.get_job(job_id)["last_status"] == "interrupted"

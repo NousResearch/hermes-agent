@@ -149,6 +149,11 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._app_id = str(extra.get("app_id") or _resolve_qq_secret("QQ_APP_ID", "")).strip()
         self._client_secret = str(extra.get("client_secret") or _resolve_qq_secret("QQ_CLIENT_SECRET", "")).strip()
         self._markdown_support = bool(extra.get("markdown_support", True))
+        at_sender_val = extra.get("at_sender", True)
+        if isinstance(at_sender_val, str):
+            self._at_sender = at_sender_val.strip().lower() in ("true", "1", "yes", "on")
+        else:
+            self._at_sender = bool(at_sender_val)
         self._dm_policy = str(extra.get("dm_policy", "pairing")).strip().lower()
         self._allow_from = _coerce_list(extra.get("allow_from") or extra.get("allowFrom"))
         self._group_policy = str(extra.get("group_policy", "pairing")).strip().lower()
@@ -166,6 +171,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}  # request/response correlation
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
         self._last_msg_id: Dict[str, str] = {}  # last inbound message ID per chat (send_typing)
+        self._msg_id_to_sender: Dict[str, str] = {}  # msg_id -> sender member_openid (at_sender correlation)
         self._typing_sent_at: Dict[str, float] = {}  # typing debounce: chat_id → last send_typing ts
         self._access_token: Optional[str] = None
         self._token_expires_at: float = 0.0
@@ -571,9 +577,15 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     # ── Inbound message handling ──
 
     async def handle_message(self, event: MessageEvent) -> None:
-        """Cache the last message ID per chat, then delegate to base."""
+        """Cache the last message ID and sender per chat, then delegate to base."""
         if event.message_id and event.source.chat_id:
             self._last_msg_id[event.source.chat_id] = event.message_id
+        if event.source.user_id and event.message_id:
+            if len(self._msg_id_to_sender) >= 500:
+                old_keys = list(self._msg_id_to_sender.keys())[:100]
+                for k in old_keys:
+                    self._msg_id_to_sender.pop(k, None)
+            self._msg_id_to_sender[event.message_id] = event.source.user_id
         await super().handle_message(event)
 
     async def _on_message(self, event_type: str, d: Any) -> None:
@@ -768,6 +780,12 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         member = str(author.get("member_openid", ""))
         if not group_openid or not self._is_group_allowed(group_openid, member):
             return
+        if member and msg_id:
+            if len(self._msg_id_to_sender) >= 500:
+                old_keys = list(self._msg_id_to_sender.keys())[:100]
+                for k in old_keys:
+                    self._msg_id_to_sender.pop(k, None)
+            self._msg_id_to_sender[msg_id] = member
         await self._ingest(
             d, msg_id, self._strip_at_mention(content), d.get("attachments"), timestamp,
             chat_id=group_openid, qq_chat_type="group", user_id=member, chat_type="group")
@@ -1360,11 +1378,26 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send text/markdown: format, split via truncate_message(), retry transient failures."""
-        del metadata
         if not await self._ensure_connected():
             return self._NOT_CONNECTED
         if not content or not content.strip():
             return SendResult(success=True)
+
+        chat_type = self._guess_chat_type(chat_id)
+        if not reply_to and metadata and isinstance(metadata, dict):
+            reply_to = metadata.get("reply_to_message_id")
+
+        if self._at_sender and self._markdown_support and chat_type == "group" and reply_to:
+            sender_id = None
+            if metadata and isinstance(metadata, dict):
+                sender_id = metadata.get("user_id") or metadata.get("sender_id")
+            if not sender_id:
+                sender_id = self._msg_id_to_sender.get(reply_to)
+
+            if sender_id:
+                at_tag = f'<qqbot-at-user id="{sender_id}" />'
+                if at_tag not in content and "<qqbot-at-user" not in content:
+                    content = f"{at_tag}\n{content}"
 
         chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH)
         last_result = SendResult(success=False, error="No chunks")
@@ -1375,7 +1408,17 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             reply_to = None  # only reply_to the first chunk
         return last_result
 
-    _PERMANENT_SEND_ERRORS = ("invalid", "forbidden", "not found")
+    _PERMANENT_SEND_ERRORS = (
+        "invalid", "forbidden", "not found", "bad request",
+        "无权限", "主动消息", "400", "过期", "msgid", "msg_id",
+    )
+
+    def _send_retry_is_final(self, result: "SendResult") -> bool:
+        """True when a failed send must be returned as-is: neither a retry nor the plain-text
+        fallback can fix it (e.g. msg_id expired, permissions, bad request)."""
+        error = (result.error or "").lower()
+        return any(k in error for k in self._PERMANENT_SEND_ERRORS)
+
 
     async def _send_chunk(self, chat_id: str, content: str, reply_to: Optional[str] = None) -> SendResult:
         last_exc: Optional[Exception] = None
@@ -1524,32 +1567,42 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an image natively via QQ Bot API upload; URL sources fall back to text."""
-        del metadata
-        result = await self._send_media(chat_id, image_url, MEDIA_TYPE_IMAGE, "image", caption, reply_to)
+        if not reply_to and metadata and isinstance(metadata, dict):
+            reply_to = metadata.get("reply_to_message_id")
+        result = await self._send_media(chat_id, image_url, MEDIA_TYPE_IMAGE, "image", caption, reply_to, metadata=metadata)
         if result.success or not self._is_url(image_url):
             return result
         logger.warning("[%s] Image send failed, falling back to text: %s", self._log_tag, result.error)
         fallback = f"{caption}\n{image_url}" if caption else image_url
-        return await self.send(chat_id=chat_id, content=fallback, reply_to=reply_to)
+        return await self.send(chat_id=chat_id, content=fallback, reply_to=reply_to, metadata=metadata)
 
-    async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, **kwargs) -> SendResult:
-        return await self._send_media(chat_id, image_path, MEDIA_TYPE_IMAGE, "image", caption, reply_to)
+    async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, metadata=None, **kwargs) -> SendResult:
+        if not reply_to and metadata and isinstance(metadata, dict):
+            reply_to = metadata.get("reply_to_message_id")
+        return await self._send_media(chat_id, image_path, MEDIA_TYPE_IMAGE, "image", caption, reply_to, metadata=metadata, **kwargs)
 
-    async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None, **kwargs) -> SendResult:
-        return await self._send_media(chat_id, audio_path, MEDIA_TYPE_VOICE, "voice", caption, reply_to)
+    async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None, metadata=None, **kwargs) -> SendResult:
+        if not reply_to and metadata and isinstance(metadata, dict):
+            reply_to = metadata.get("reply_to_message_id")
+        return await self._send_media(chat_id, audio_path, MEDIA_TYPE_VOICE, "voice", caption, reply_to, metadata=metadata, **kwargs)
 
-    async def send_video(self, chat_id, video_path, caption=None, reply_to=None, **kwargs) -> SendResult:
-        return await self._send_media(chat_id, video_path, MEDIA_TYPE_VIDEO, "video", caption, reply_to)
+    async def send_video(self, chat_id, video_path, caption=None, reply_to=None, metadata=None, **kwargs) -> SendResult:
+        if not reply_to and metadata and isinstance(metadata, dict):
+            reply_to = metadata.get("reply_to_message_id")
+        return await self._send_media(chat_id, video_path, MEDIA_TYPE_VIDEO, "video", caption, reply_to, metadata=metadata, **kwargs)
 
     async def send_document(
-        self, chat_id, file_path, caption=None, file_name=None, reply_to=None, **kwargs
+        self, chat_id, file_path, caption=None, file_name=None, reply_to=None, metadata=None, **kwargs
     ) -> SendResult:
+        if not reply_to and metadata and isinstance(metadata, dict):
+            reply_to = metadata.get("reply_to_message_id")
         return await self._send_media(
-            chat_id, file_path, MEDIA_TYPE_FILE, "file", caption, reply_to, file_name=file_name)
+            chat_id, file_path, MEDIA_TYPE_FILE, "file", caption, reply_to, file_name=file_name, metadata=metadata, **kwargs)
 
     async def _send_media(
         self, chat_id: str, media_source: str, file_type: int, kind: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, file_name: Optional[str] = None) -> SendResult:
+        reply_to: Optional[str] = None, file_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Upload media and send as a native message. HTTP(S) URLs → single ``POST
         .../files`` with ``url=`` (QQ fetches it). Local files → chunked upload
         (prepare / PUT parts / complete), up to the platform's ~100 MB per-file limit."""
@@ -1558,6 +1611,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         chat_type = self._guess_chat_type(chat_id)
         if chat_type == "guild":
             return SendResult(success=False, error="Guild media send not supported via this path")
+
+        if not reply_to and metadata and isinstance(metadata, dict):
+            reply_to = metadata.get("reply_to_message_id")
 
         try:
             if self._is_url(media_source):
@@ -1642,7 +1698,10 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     def format_message(self, content: str) -> str:
         """Pass markdown through when supported, else strip it (as BlueBubbles/SMS do)."""
-        return content if self._markdown_support else strip_markdown(content)
+        if self._markdown_support:
+            return content
+        cleaned = re.sub(r"<qqbot-at-user\s+id=[\"'][^\"']+[\"']\s*/>\s*", "", content)
+        return strip_markdown(cleaned)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         chat_type = self._guess_chat_type(chat_id)

@@ -1792,7 +1792,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # before anything else touches the checkout. Run at START, not only in the apply path
     # below: a run that dies between here and the fetch would otherwise leave the next run to
     # fail with "File exists" until an operator removed the lock by hand (#132089). Idempotent,
-    # and _sweep_stale skips everything while a git process holds it.
+    # and _sweep_stale skips everything while a git process holds it. A killed update's
+    # index.lock is younger than the sweep's age floor, so it goes here once its git is proven
+    # dead (we hold the update lock: no other update's git can own it).
+    from hermes_cli.gitlock import release_dead_index_lock
+    if release_dead_index_lock(_m().PROJECT_ROOT):
+        print("  (removed .git/index.lock left by a git that was killed)")
     _check.clear_git_debris(_m().PROJECT_ROOT)
 
     opts = _resolve_update_options(args, gateway_mode)

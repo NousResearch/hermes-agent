@@ -107,6 +107,29 @@ def clear_stale_git_locks(repo_root: Path, *, min_age_seconds: Optional[int] = N
     )
 
 
+def release_dead_index_lock(repo_root: Path) -> bool:
+    """Drop ``.git/index.lock`` when the git that took it is proven gone, whatever its age.
+
+    A git killed while it held the index lock (an update's tree killed by the user, a probe killed
+    by its own timeout) leaves it behind, and every later merge/stash/reset refuses with "File
+    exists". The age floor above keeps such a lock for 10 minutes, so the next ``hermes update``
+    died at its fast-forward (#132089; the Windows crash cell ``mid_fetch``). Ownership is the
+    launch-time repair's proof (``_early_recovery._release_dead_index_lock``): a live holder keeps
+    it. Windows can only prove it by the unlink, which a lock-keeping git with its fd closed (a
+    ``git commit`` waiting in the editor) would not stop, so there any running git keeps it. An
+    interrupted tree move owns its own lock judgement, so its marker defers to that repair.
+    """
+    from hermes_cli._early_recovery import _git_dir, _release_dead_index_lock, interrupted_pull_marker
+
+    root = Path(repo_root)
+    git_dir = _git_dir(root)
+    if not (git_dir / "index.lock").exists() or interrupted_pull_marker(root).exists():
+        return False
+    if os.name == "nt" and _git_proc_running():
+        return False
+    return _release_dead_index_lock(git_dir, root)
+
+
 def _pack_dir(repo_root: Path) -> Path:
     git_dir = Path(repo_root) / ".git"
     return (git_dir if git_dir.is_dir() else Path(repo_root)) / "objects" / "pack"

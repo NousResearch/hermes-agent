@@ -324,3 +324,42 @@ def test_non_partial_checkout_is_left_alone(repo: Path) -> None:
     keys = subprocess.run(["git", "config", "--local", "--get-regexp", "maintenance|writecommitgraph"], cwd=repo,
                           capture_output=True, text=True).stdout
     assert keys == "", "a full clone keeps git's stock maintenance"
+
+
+# ---- a killed git's index.lock (#132089) ----
+
+
+def _status_blocked_on_a_fifo(repo: Path, *argv: str) -> subprocess.Popen:
+    """A real ``git status`` that takes ``.git/index.lock`` and then blocks: its untracked scan
+    opens a FIFO ``.gitignore`` nobody writes."""
+    (repo / "junk").mkdir()
+    os.mkfifo(repo / "junk" / ".gitignore")
+    (repo / "junk" / "x").touch()
+    (repo / "a.txt").touch()  # stat-dirty: status refreshes (and so locks) the index
+    proc = subprocess.Popen(["git", *argv, "status", "--porcelain"], cwd=repo,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.monotonic() + 20
+    while not (repo / ".git" / "index.lock").exists():
+        assert proc.poll() is None and time.monotonic() < deadline, "git status never took index.lock"
+        time.sleep(0.05)
+    return proc
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="ownership proof via /proc (Linux)")
+def test_a_killed_gits_index_lock_goes_at_once_and_a_live_ones_stays(repo: Path) -> None:
+    """The next update must not die on the lock a killed one left (the age floor kept it for 10
+    minutes), and must never take the lock of a git that is still running."""
+    from hermes_cli.gitlock import release_dead_index_lock
+
+    lock = repo / ".git" / "index.lock"
+    proc = _status_blocked_on_a_fifo(repo)
+    try:
+        assert release_dead_index_lock(repo) is False
+        assert lock.exists()
+    finally:
+        proc.kill()
+        proc.wait()
+
+    assert lock.exists(), "premise: a SIGKILLed status strands index.lock"
+    assert release_dead_index_lock(repo) is True
+    assert not lock.exists()

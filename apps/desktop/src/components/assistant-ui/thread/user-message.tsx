@@ -17,6 +17,7 @@ import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/type
 import { useMessageReactions } from '@/components/assistant-ui/thread/use-message-reactions'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { Codicon } from '@/components/ui/codicon'
+import { CopyButton } from '@/components/ui/copy-button'
 import { Tip } from '@/components/ui/tooltip'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
@@ -504,9 +505,26 @@ export const UserMessage: FC<{
                   </ActionBarPrimitive.Edit>
                 )}
                 {/* Hover cluster, bottom-right: when it was sent, then Stop or
-                    Restore. Its fill masks the last line's tail while shown. */}
+                    Restore. Its fill masks the last line's tail while shown.
+                    Copy comes first so a long prompt can be re-used without
+                    drag-selecting the bubble — the prompt is the one thing
+                    users re-send elsewhere, and the assistant bubble already
+                    had its own copy affordance all along. */}
                 <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center gap-1 rounded-md bg-(--dt-user-bubble) pl-1 opacity-0 transition-opacity group-hover/user-message:opacity-100 group-hover/user-message:transition-none group-focus-within/user-message:opacity-100">
                   <MessageHoverTime className={cn(!showStop && !showRestore && 'pr-0.5')} />
+                  {messageText ? (
+                    <CopyButton
+                      appearance="icon"
+                      buttonSize="icon"
+                      className={cn('pointer-events-auto size-5', USER_ACTION_ICON_BUTTON_CLASS)}
+                      label={copy.copy}
+                      // The bubble opens the edit composer on click; a copy
+                      // click must not also trigger that rewind path.
+                      preventDefault
+                      stopPropagation
+                      text={messageText}
+                    />
+                  ) : null}
                   {showStop ? (
                     <button
                       aria-label={copy.stop}

@@ -372,9 +372,20 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> di
     # A live multiplexer's record (the host's own, or the one serving this profile) names every
     # profile a restart would blip ("default, alpha, beta"); a standalone gateway's names none.
     shared_with = (runtime or {}).get("served_profiles") if gateway_running else None
+    # Whether messaging was ever configured, independent of liveness. A stopped gateway projects an
+    # empty platform map, so ``gateway_state: "stopped"`` alone cannot tell "bots are down" apart
+    # from "messaging was never set up" — and a Desktop install with no platforms reads a plain
+    # stopped gateway as a red "messaging stopped" alarm on every boot. ``None`` = unknown: the
+    # config was unreadable, or a shared multiplexer serves profiles whose config this request
+    # cannot see (the retained record names them even after the process died) — in both cases the
+    # caller must fall back to the pre-verdict behavior rather than trust a partial "nothing set up".
+    served_multi = isinstance((runtime or {}).get("served_profiles"), list) \
+        and len((runtime or {}).get("served_profiles") or []) > 1
+    messaging_configured = None if (configured is None or served_multi) else len(configured) > 0
     return {
         "runtime": runtime, "gateway_running": gateway_running, "gateway_pid": liveness.pid,
         "gateway_state": gateway_state, "gateway_platforms": gateway_platforms,
+        "gateway_messaging_configured": messaging_configured,
         "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at,
         "gateway_heartbeat_stale_s": gateway_heartbeat_stale_s,
         "gateway_shared_with": [str(p) for p in shared_with] if isinstance(shared_with, list) else None}
@@ -527,6 +538,7 @@ async def get_status(profile: Optional[str] = None):
             "can_update_hermes": not _dashboard_local_update_managed_externally(),
             "gateway_running": gateway_running, "gateway_state": gateway_state,
             "gateway_platforms": gateway["gateway_platforms"],
+            "gateway_messaging_configured": gateway["gateway_messaging_configured"],
             "gateway_exit_reason": gateway["gateway_exit_reason"],
             "gateway_updated_at": gateway["gateway_updated_at"],
             # Seconds since housekeeping last stamped the heartbeat, only when the PID is alive but the

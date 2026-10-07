@@ -3298,8 +3298,8 @@ def _compression_child_source(agent: Any, parent_session_id: str) -> str:
         parent = agent._session_db.get_session(parent_session_id)
     if parent and parent.get("source"):
         return parent["source"]
-    from run_agent import _session_source_for_agent  # late: run_agent imports this module
-    return _session_source_for_agent(getattr(agent, "platform", None))
+    from agent.session_source import session_source_for
+    return session_source_for(getattr(agent, "platform", None))
 
 
 def _publish_rotated_compaction(

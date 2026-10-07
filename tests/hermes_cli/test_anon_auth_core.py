@@ -137,6 +137,22 @@ class TestExplicitProvision:
         assert anon_auth.ensure_portal_identity(explicit=True) is None
         assert portal.minted == 0
 
+    @pytest.mark.parametrize("raw, body", [
+        ("true", {"preview_full_connectors": True}),
+        ("false", {"preview_full_connectors": False}),
+        (None, {}),
+        ("1", {}),
+    ])
+    def test_preview_full_connectors_rides_the_create_call(self, portal, monkeypatch, raw, body):
+        """The cohort reaches the account service on the one call that creates the account, as a
+        real boolean; anything but exactly true/false leaves the body empty (the service default)."""
+        if raw is None:
+            monkeypatch.delenv(anon_auth.PREVIEW_FULL_CONNECTORS_ENV, raising=False)
+        else:
+            monkeypatch.setenv(anon_auth.PREVIEW_FULL_CONNECTORS_ENV, raw)
+        anon_auth.ensure_portal_identity(explicit=True)
+        assert portal.create_requests == [body]
+
 
 class TestResolverIsUnchanged:
     def test_guest_is_last_resort_and_explicit_key_wins(self, portal, monkeypatch):

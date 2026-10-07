@@ -10,6 +10,10 @@
  *
  * - `held` / `busy` / `live <pid>` => an update still owns the checkout: keep waiting;
  * - `reclaimed` / `absent` => nothing runs: proceed;
+ * - no marker at all => the helper is asked too (it checks the checkout lock
+ *   under the same rule) unless no checkout lock file exists, which is the
+ *   script's own "not held"; only its `held` keeps the gate closed, any other
+ *   answer proceeds as before;
  * - `unsupported` (older checkout, no helper) => proceed without deleting
  *   (dead = not running, as before minus the deletion) — unless this process
  *   already saw the same body block: then the script is only missing or
@@ -43,7 +47,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { type CreateTimeProbe, inspectUpdateMarker, markerPath } from './update-marker'
+import { type CreateTimeProbe, inspectUpdateMarker, type MarkerInspection, markerPath } from './update-marker'
 import type { UpdateMarker } from './update-marker-judge'
 import type { MarkerHelperVerdict } from './updater/marker-helper'
 
@@ -80,8 +84,14 @@ export interface LiveMarkerProbeOptions {
   hermesHome: string
   /** The script helper `reclaim`, or null when the checkout's script predates protocol 2. */
   reclaim: (() => Promise<MarkerHelperVerdict>) | null
+  /**
+   * False when the script would answer "not held" for a missing checkout
+   * lock: with no marker the helper is then not spawned (on Windows a
+   * powershell.exe load on every boot's critical path).
+   */
+  checkoutLockMayBeHeld?: () => boolean
   createTime?: CreateTimeProbe
-  onLiveMarker?: (marker: { startedAt: number | null }) => void
+  onLiveMarker?: (marker: { startedAt: number | null; runId: string | null }) => void
   /** Every answer that comes from a running helper verdict (boot progress, the blocked screen). */
   onHeld?: (state: HeldState) => void
   /** The gate let this wait through over a blocking hold because the user chose Start anyway. */
@@ -92,6 +102,13 @@ export interface LiveMarkerProbeOptions {
 }
 
 const STILL_RUNNING = new Set(['held', 'busy', 'live', 'error'])
+
+/**
+ * The hold id of "no marker, but the helper says the checkout lock is held"
+ * (an update that holds the lock before publishing, or after retiring, its
+ * marker). There is no body to scope it to, so one id stands for that state.
+ */
+const ABSENT_HOLD_ID = markerHoldId(Buffer.from('\0no update marker\0'))
 
 // First sighting of each held body, process-wide: a later gate wait (a pool
 // backend, a reconnect) reports the same "since".
@@ -251,7 +268,8 @@ async function refreshVerdict(
   holdId: string,
   reclaim: () => Promise<MarkerHelperVerdict>,
   now: () => number,
-  log: ((line: string) => void) | undefined
+  log: ((line: string) => void) | undefined,
+  subject = 'dead update marker'
 ): Promise<AskedEntry> {
   const generation = recheckGeneration
   let verdict = await reclaim()
@@ -264,7 +282,7 @@ async function refreshVerdict(
 
   if (!previous || STILL_RUNNING.has(previous.verdict.kind) !== STILL_RUNNING.has(verdict.kind)) {
     log?.(
-      `[updates] dead update marker: script helper says ${verdict.kind}${'pid' in verdict ? ` ${verdict.pid}` : ''}`
+      `[updates] ${subject}: script helper says ${verdict.kind}${'pid' in verdict ? ` ${verdict.pid}` : ''}`
     )
   }
 
@@ -300,6 +318,51 @@ function logOverrideOnce(entry: AskedEntry, state: HeldState, log: ((line: strin
   )
 }
 
+/** What the script helper is asked about: a dead marker body, or no marker at all. */
+interface HelperSubject {
+  holdId: string
+  absent: boolean
+  label: string
+  ownerPid: number | null
+  run: { startedAt: number | null; runId: string | null }
+}
+
+function helperSubject(
+  inspection: MarkerInspection,
+  hermesHome: string,
+  checkoutLockMayBeHeld: (() => boolean) | undefined
+): HelperSubject | null {
+  if (inspection.state === 'absent') {
+    // No lock file is the script's own "not held": nothing to ask.
+    if (checkoutLockMayBeHeld?.() === false) {
+      return null
+    }
+
+    return { holdId: ABSENT_HOLD_ID, absent: true, label: 'no update marker', ownerPid: null, run: { startedAt: null, runId: null } }
+  }
+
+  if (inspection.state !== 'dead') {
+    return null
+  }
+
+  return {
+    holdId: markerHoldId(inspection.raw, statMarkerFile(hermesHome)),
+    absent: false,
+    label: 'dead update marker',
+    ownerPid: inspection.marker?.pid ?? null,
+    run: { startedAt: inspection.marker?.startedAt ?? null, runId: inspection.marker?.run ?? null }
+  }
+}
+
+/**
+ * No marker: only the helper's positive `held` (a process holds the checkout
+ * lock) closes the gate; a helper that cannot answer keeps the old "no
+ * marker, nothing runs" so a broken script never blocks boot.
+ */
+function keepsGateShut(verdict: MarkerHelperVerdict, absent: boolean): boolean {
+  return STILL_RUNNING.has(verdict.kind) && (!absent || verdict.kind === 'held')
+}
+
 /**
  * A v1 marker (no `ct:`, no delegate) reads live on a bare alive pid for up to
  * V1_MAX_AGE_S, so a recycled pid (Windows, #122206) parks boot ~20 min. A
@@ -329,6 +392,7 @@ async function failedAfterV1Start(hermesHome: string, marker: UpdateMarker | nul
 export function liveMarkerProbe({
   hermesHome,
   reclaim,
+  checkoutLockMayBeHeld,
   createTime,
   onLiveMarker,
   onHeld,
@@ -353,16 +417,18 @@ export function liveMarkerProbe({
         return false
       }
 
-      onLiveMarker?.({ startedAt: inspection.marker?.startedAt ?? null })
+      onLiveMarker?.({ startedAt: inspection.marker?.startedAt ?? null, runId: inspection.marker?.run ?? null })
 
       return true
     }
 
-    if (inspection.state !== 'dead' || !reclaim) {
+    const subject = reclaim ? helperSubject(inspection, hermesHome, checkoutLockMayBeHeld) : null
+
+    if (!subject || !reclaim) {
       return false
     }
 
-    const holdId = markerHoldId(inspection.raw, statMarkerFile(hermesHome))
+    const { holdId } = subject
 
     if (unanswerableHolds.has(holdId)) {
       return false
@@ -372,19 +438,19 @@ export function liveMarkerProbe({
     let entry = previous!
 
     if (verdictDue(previous, now, reprobeMs)) {
-      entry = await refreshVerdict(previous, holdId, reclaim, now, log)
+      entry = await refreshVerdict(previous, holdId, reclaim, now, log, subject.label)
       asked.set(holdId, entry)
     }
 
     const { verdict } = entry
 
-    if (!STILL_RUNNING.has(verdict.kind) || helperUnanswerable(entry, holdId, log)) {
+    if (!keepsGateShut(verdict, subject.absent) || helperUnanswerable(entry, holdId, log)) {
       return false
     }
 
     const state: HeldState = {
       verdict: verdict.kind as HeldState['verdict'],
-      ownerPid: inspection.marker?.pid ?? null,
+      ownerPid: subject.ownerPid,
       livePid: 'pid' in verdict ? verdict.pid : null,
       holdId,
       since: heldSince(holdId, now()),
@@ -401,7 +467,7 @@ export function liveMarkerProbe({
     }
 
     onHeld?.(state)
-    onLiveMarker?.({ startedAt: inspection.marker?.startedAt ?? null })
+    onLiveMarker?.(subject.run)
 
     return true
   }

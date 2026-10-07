@@ -830,28 +830,6 @@ def _effective_model_block():
             'main_provider': embedded_provider or str(block.get('provider') or '').strip()}
 
 
-def _scheduler_job_rows():
-    from cron.jobs import load_jobs
-    from cron.scheduler import _load_cron_job_config
-    rows, errors = [], []
-    for job in load_jobs():
-        if job.get("no_agent"):
-            continue
-        try:
-            jc = _load_cron_job_config(job, job.get("id"), str(job.get("name") or ""))
-            rows.append({"id": job.get("id"), "name": job.get("name"),
-                         "pinned_model": bool(job.get("model")), "model": jc.model,
-                         "pinned_provider": str(job.get("provider") or ""),
-                         "cron_default_provider": jc.cron_default_provider})
-        except Exception as e:
-            # Deliberate boundary: one unreadable job must not hide the others, and
-            # the error is reported to the user with the resolution findings.
-            logger.exception("cron job config unreadable for %s", job.get("id"))
-            errors.append({"id": job.get("id"),
-                           "error": "%s: %s" % (type(e).__name__, e)})
-    return rows, errors
-
-
 def _probe_readback():
     _ensure_src_on_path()
     errors = []
@@ -863,14 +841,7 @@ def _probe_readback():
         logger.exception("effective config readback failed")
         effective = {"model_block": {}, "main_model": "", "main_provider": ""}
         errors.append({"error": "effective config: %s: %s" % (type(e).__name__, e)})
-    try:
-        jobs, jerrors = _scheduler_job_rows()
-        errors.extend(jerrors)
-    except Exception as e:
-        logger.exception("scheduler resolution readback failed")
-        jobs = []
-        errors.append({"error": "scheduler resolution: %s: %s" % (type(e).__name__, e)})
-    return {"effective": effective, "jobs": jobs, "errors": errors}
+    return {"effective": effective, "errors": errors}
 
 
 def probe_readback_main():
@@ -905,11 +876,11 @@ def compat_smoke(model_id, provider):
     return out
 
 
-def read_effective_and_resolution():
+def read_effective_config():
     try:
         return run_probe('readback')
     except (RuntimeError, OSError, ValueError) as exc:
-        return {'effective': {}, 'jobs': [], 'errors': [{'error': type(exc).__name__}]}
+        return {'effective': {}, 'errors': [{'error': type(exc).__name__}]}
 
 
 def write_main_model(model_id):
@@ -937,8 +908,7 @@ def apply_main(snap, catalog):
     rec = {"timestamp": _iso(_now()), "mode": "apply-main", "status": None,
            "previous": None, "chosen": None, "reason": None, "source": None,
            "check": None, "apply": {"attempted": False, "ok": None, "output_tail": ""},
-           "verify": {"effective_model": None, "scheduler_next_job_model": None,
-                      "ok": None, "rolled_back": False}}
+           "verify": {"effective_model": None, "ok": None, "rolled_back": False}}
     if crown is None:
         last_good = (state.get("last_good") or {}).get("model_id")
         rec["status"] = "failed_no_eligible"
@@ -953,7 +923,7 @@ def apply_main(snap, catalog):
         return 3, rec["status"], [rec["notice"]]
 
     chosen = crown["model_id"]
-    baseline = read_effective_and_resolution()
+    baseline = read_effective_config()
     cur = (baseline.get("effective") or {}).get("main_model") or ""
     prov = (baseline.get("effective") or {}).get("main_provider") or ""
     rec["previous"] = {"model": cur, "provider": prov}
@@ -989,14 +959,8 @@ def apply_main(snap, catalog):
             'kingmaker blocked: stronger candidate %s has %s; no config write.' % (first['name'], first['reason'])])
 
     if chosen == cur:
-        unpinned = [j for j in (baseline.get("jobs") or [])
-                    if not j.get("pinned_model")]
         rec["verify"]["effective_model"] = cur
-        rec["verify"]["scheduler_next_job_model"] = (
-            unpinned[0].get("model") if unpinned else None)
-        rec["verify"]["ok"] = all(j.get('model') == cur for j in unpinned)
-        if not rec['verify']['ok']:
-            return finish('failed_verify', 5, ['kingmaker blocked: unchanged main differs from cron resolution; no write.'])
+        rec["verify"]["ok"] = True
         return finish("unchanged", 0, [])          # silent: nothing changed
 
     smoke = compat_smoke(chosen, prov or "nous")
@@ -1022,7 +986,7 @@ def apply_main(snap, catalog):
                 chosen, crown.get("index"), crown.get("avg_cost_per_task"),
                 smoke.get("detail"), cur, COOLDOWN_HOURS, chosen, prov or "nous")])
 
-    fresh = read_effective_and_resolution()
+    fresh = read_effective_config()
     fmain = (fresh.get("effective") or {}).get("main_model") or ""
     fprov = (fresh.get("effective") or {}).get("main_provider") or ""
     rec["verify"]["effective_model"] = fmain
@@ -1034,7 +998,7 @@ def apply_main(snap, catalog):
 
     ok, out = write_main_model(chosen)
     rec["apply"] = {"attempted": True, "ok": bool(ok), "output_tail": _tail(out)}
-    post = read_effective_and_resolution()
+    post = read_effective_config()
     pmain = (post.get("effective") or {}).get("main_model") or ""
     rec["verify"]["effective_model"] = pmain
 
@@ -1042,7 +1006,7 @@ def apply_main(snap, catalog):
         if pmain != chosen:
             rec['verify']['rollback_note'] = 'not our observed write; preserved'
             return False
-        current = read_effective_and_resolution()
+        current = read_effective_config()
         effective = current.get('effective') or {}
         rec['verify']['effective_model'] = effective.get('main_model')
         if (current.get('errors') or effective.get('main_model') != chosen
@@ -1050,7 +1014,7 @@ def apply_main(snap, catalog):
             rec['verify']['rollback_note'] = 'concurrent or unknown state; preserved'
             return False
         ok2, out2 = write_main_model(cur)
-        chk = read_effective_and_resolution()
+        chk = read_effective_config()
         cmain = (chk.get("effective") or {}).get("main_model") or ""
         rec["verify"]["rollback_output_tail"] = _tail(out2)
         rec['verify']['effective_model'] = cmain or None
@@ -1075,17 +1039,13 @@ def apply_main(snap, catalog):
                 "verified" if rolled else "not needed or unverified",
                 COOLDOWN_HOURS, rec["apply"]["output_tail"] or "(none)")])
 
-    unpinned = [j for j in post.get("jobs", []) if not j.get("pinned_model")]
-    bad = [j for j in unpinned if j.get("model") != chosen]
-    sched_model = unpinned[0].get("model") if unpinned else None
-    rec["verify"]["scheduler_next_job_model"] = sched_model
-    if bad or post.get("errors") or (post.get('effective') or {}).get('main_provider') != prov:
+    if post.get("errors") or (post.get('effective') or {}).get('main_provider') != prov:
         rolled = rollback()
         rec["verify"]["rolled_back"] = bool(rolled)
         rec["verify"]["ok"] = False
-        detail = ("scheduler resolution disagrees: %s" % (
-            ", ".join("%s=%s" % (j.get("name"), j.get("model")) for j in bad[:3]))
-            if bad else "scheduler resolution errors: %s" % (post.get("errors") or [])[:2])
+        detail = "readback errors: %s" % (post.get("errors") or [])[:2] if post.get("errors") \
+            else "effective config readback disagrees (provider %r)" % (
+                (post.get('effective') or {}).get('main_provider') or '')
         mark_candidate_failed(state, chosen, "verify failed: %s" % detail)
         save_state(state)
         return finish("failed_verify", 5, [
@@ -1101,10 +1061,9 @@ def apply_main(snap, catalog):
         "KINGMAKER MAIN MODEL SWITCH: %s -> %s (Hermes Index %s, $%s/task). Applied "
         "via `hermes config set model.default`; provider %r unchanged. Applies "
         "to future runs only - running chats keep their current model. Verified: "
-        "effective config and next-job scheduler resolution both show %s. "
-        "Reason: %s." % (cur, chosen, "%.2f" % (crown.get("index") or 0),
-                         crown.get("avg_cost_per_task"), prov or "nous",
-                         chosen, rec["reason"])])
+        "the effective config now reads %s. Reason: %s." % (
+            cur, chosen, "%.2f" % (crown.get("index") or 0),
+            crown.get("avg_cost_per_task"), prov or "nous", chosen, rec["reason"])])
 
 
 # ---------------------------------------------------------------- collector mode

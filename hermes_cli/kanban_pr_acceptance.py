@@ -18,6 +18,10 @@ from urllib.parse import quote
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
+_BILLING_PAYWALL_MESSAGE = (
+    "The job was not started because recent account payments have failed "
+    "or your spending limit needs to be increased."
+)
 
 
 def validate_contract(value: str | None) -> str:
@@ -104,8 +108,136 @@ def _assignee_profile_home(assignee: str | None) -> str | None:
         raise _GateAuthError(f"assignee profile {assignee!r} cannot be resolved") from None
 
 
+def _billing_exception_repositories(policy: dict | None) -> set[str]:
+    if not isinstance(policy, dict):
+        return set()
+    exception = policy.get("github_actions_billing_exception")
+    if not isinstance(exception, dict) or exception.get("enabled") is not True:
+        return set()
+    repositories = exception.get("repositories")
+    if not isinstance(repositories, list):
+        return set()
+    return {repo for repo in repositories if isinstance(repo, str) and _REPO.fullmatch(repo)}
+
+
+def _collect_billing_exception(repo: str, number: int, sha: str, branch: str,
+                               receipt: dict, profile_home: str | None = None) -> dict | None:
+    pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
+                 paginate=True, profile_home=profile_home)
+    runs = [run for page in pages for run in page["check_runs"]]
+    if not pages or len({run["id"] for run in runs}) != pages[0]["total_count"]:
+        raise ValueError("Incomplete check-run pagination")
+
+    failed = [run for run in runs if run.get("status") == "completed" and run.get("conclusion") == "failure"]
+    if any(run.get("status") != "completed" for run in runs):
+        return None
+    if not failed:
+        if not runs:
+            # No check-runs to verify; cannot accept a billing-exception reconciliation
+            # without any CI evidence. Fall through to the regular path.
+            return None
+        if not all(run.get("conclusion") == "success" for run in runs):
+            # Only all-success is acceptable; cancelled/timed_out/skipped/neutral
+            # and missing conclusions are NOT equivalent to success per Kanban
+            # completion-contract policy.
+            return None
+        # All check-runs completed with no failures. For billing-exception repos on a
+        # free plan, the branch-protection rules API (rules/branches) returns HTTP 403,
+        # so the required-checks set cannot be populated via that path. Accept all
+        # non-failing check-runs on the exact head as a local-only reconciliation
+        # (per board policy: github_actions_billing_exception).
+        receipt["checks"] = [
+            {
+                "name": run["name"],
+                "id": run["id"],
+                "url": run.get("html_url") or run.get("details_url"),
+                "head_sha": run.get("head_sha"),
+                "classification": str(run.get("conclusion") or run.get("status") or "unknown"),
+                "conclusion": run.get("conclusion"),
+            }
+            for run in runs
+        ]
+        current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
+        receipt["base_sha"] = (current.get("base") or {}).get("sha")
+        if (
+            current["head"]["sha"] != sha
+            or current["base"]["ref"] != branch
+            or (current["state"] == "closed" and not current.get("merged"))
+        ):
+            receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
+            return receipt
+        receipt.update(
+            ok=True,
+            classification="billing/paywall — not executed",
+            detail=(
+                "Repository is on a free plan; branch-protection rules API unavailable (HTTP 403). "
+                "All check-runs verified non-failing on exact head via check-runs API; "
+                "exact PR head/base, local verification, and independent review remain required."
+            ),
+            policy="github_actions_billing_exception",
+        )
+        return receipt
+
+    waived_ids: set[int] = set()
+    for run in failed:
+        annotations = _api(f"repos/{repo}/check-runs/{run['id']}/annotations",
+                           profile_home=profile_home)
+        if not isinstance(annotations, list) or not any(
+            isinstance(annotation, dict)
+            and _BILLING_PAYWALL_MESSAGE in str(annotation.get("message") or "")
+            for annotation in annotations
+        ):
+            return None
+        waived_ids.add(run["id"])
+
+    receipt["checks"] = [
+        {
+            "name": run["name"],
+            "id": run["id"],
+            "url": run.get("html_url") or run.get("details_url"),
+            "head_sha": run.get("head_sha"),
+            "classification": (
+                "billing/paywall — not executed" if run["id"] in waived_ids
+                else str(run.get("conclusion") or run.get("status") or "unknown")
+            ),
+            "conclusion": run.get("conclusion"),
+        }
+        for run in runs
+    ]
+
+    # Re-read after all pages and annotations: old-head billing evidence is not transferable.
+    current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
+    receipt["base_sha"] = (current.get("base") or {}).get("sha")
+    if (
+        current["head"]["sha"] != sha
+        or current["base"]["ref"] != branch
+        or (current["state"] == "closed" and not current.get("merged"))
+    ):
+        receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
+        return receipt
+
+    receipt.update(
+        ok=True,
+        classification="billing/paywall — not executed",
+        detail=(
+            "Board policy treats only GitHub Actions jobs carrying the exact account-billing "
+            "not-started annotation as non-gating; local verification and review remain external gates."
+        ),
+        policy="github_actions_billing_exception",
+    )
+    return receipt
+
+
+def _board_acceptance_policy() -> dict | None:
+    try:
+        from hermes_cli.kanban_db import get_current_board, read_board_metadata
+        return read_board_metadata(get_current_board()).get("pr_acceptance")
+    except Exception:
+        return None
+
+
 def collect_acceptance(contract: str, published_pr: str | None,
-                       assignee: str | None = None) -> dict:
+                       assignee: str | None = None, *, policy: dict | None = None) -> dict:
     receipt = {"ok": False, "classification": "missing", "head_sha": None,
                "pr_url": published_pr, "checks": [],
                "recovery": "Fix required failures, rerun infrastructure checks or wait, then retry completion. "
@@ -131,12 +263,24 @@ def collect_acceptance(contract: str, published_pr: str | None,
         pr = repository["pullRequest"]
         sha, branch = pr["headRefOid"], pr["baseRefName"]
         receipt["head_sha"] = sha
+        receipt["base_branch"] = branch
         if not re.fullmatch(r"[0-9a-f]{40}", sha) or pr["state"] not in {"OPEN", "MERGED"}:
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+        if repo in _billing_exception_repositories(policy):
+            waived = _collect_billing_exception(repo, number, sha, branch, receipt, profile_home)
+            if waived is not None:
+                return waived
+            # Billing exception did not apply (e.g., non-billing check failures).
+            # The rules API also returns 403 on free plans, so skip it and let
+            # required stay as GraphQL-only (typically empty on free plans),
+            # which makes the "no required checks" path report the check-run
+            # evidence already gathered by _collect_billing_exception.
+            rules = []
+        else:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}"
+                         f"?per_page=100", paginate=True, profile_home=profile_home)
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":

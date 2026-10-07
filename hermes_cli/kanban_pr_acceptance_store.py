@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from hermes_cli.kanban_db_connect import write_txn
-from hermes_cli.kanban_pr_acceptance import _PR, collect_acceptance
+from hermes_cli.kanban_pr_acceptance import _PR, _board_acceptance_policy, collect_acceptance
 
 
 def _snapshot(conn, task_id):
@@ -32,7 +32,11 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
     # The assignee profile's gh login owns the repo: acceptance must not run as
     # the ambient login of whichever process completes the card (#122689).
     assignee = conn.execute("SELECT assignee FROM tasks WHERE id=?", (task_id,)).fetchone()["assignee"]
-    return snapshot, collect_acceptance(contract, published_pr, assignee=assignee)
+    assert isinstance(contract, str)
+    return snapshot, collect_acceptance(
+        contract, published_pr, assignee=assignee,
+        policy=_board_acceptance_policy(),
+    )
 
 
 def record_acceptance(conn, task_id, acceptance):

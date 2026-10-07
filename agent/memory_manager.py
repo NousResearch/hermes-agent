@@ -6,6 +6,7 @@ registered at a time (tool-schema bloat, conflicting backends).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import contextvars
 import hashlib
 import inspect
@@ -32,6 +33,7 @@ from agent.memory_provider import (
     MemoryProvider,
     PRE_COMPRESS_CHECKPOINT_API_VERSION,
     _freeze_memory_observation_payload,
+    _encoded_json_scalar_size,
     _thaw_json_value,
     ctx_bound,
     spawn_context_thread,
@@ -535,6 +537,16 @@ class MemoryManager:
     _strip_skill_scaffolding = staticmethod(extract_user_instruction_from_skill_message)
 
     @staticmethod
+    def _coerce_prefetch_result(raw_result: Any) -> Any:
+        """Restore a structured result's fields after the plugin-host wire codec."""
+        if isinstance(raw_result, Mapping) and "context" in raw_result:
+            return MemoryPrefetchResult(
+                context=raw_result["context"],
+                observations=raw_result.get("observations", ()),
+            )
+        return raw_result
+
+    @staticmethod
     def _normalize_prefetch_result(
         provider: MemoryProvider,
         raw_result: Any,
@@ -577,6 +589,7 @@ class MemoryManager:
         """
         if raw_result is None:
             raw_result = ""
+        raw_result = MemoryManager._coerce_prefetch_result(raw_result)
         if isinstance(raw_result, str):
             return _NormalizedPrefetchResult(
                 result=MemoryPrefetchResult(context=raw_result),
@@ -638,6 +651,16 @@ class MemoryManager:
             except StopIteration:
                 break
             try:
+                if isinstance(candidate, Mapping):
+                    # Read the fixed contract fields; never expand arbitrary plugin keys.
+                    raw_candidate: Any = candidate
+                    candidate = MemoryObservation(
+                        source_kind=raw_candidate.get("source_kind"),
+                        schema=raw_candidate.get("schema"),
+                        version=raw_candidate.get("version"),
+                        provider=raw_candidate.get("provider", ""),
+                        payload=raw_candidate.get("payload"),
+                    )
                 if not isinstance(candidate, MemoryObservation):
                     raise TypeError("observation has the wrong type")
                 for field_name in ("source_kind", "schema"):
@@ -645,7 +668,7 @@ class MemoryManager:
                     if (
                         not isinstance(field, str)
                         or not field
-                        or len(field) > MAX_MEMORY_OBSERVATION_FIELD_CHARS
+                        or str.__len__(field) > MAX_MEMORY_OBSERVATION_FIELD_CHARS
                     ):
                         raise ValueError(f"observation {field_name} is invalid")
                 if (
@@ -654,11 +677,13 @@ class MemoryManager:
                     or candidate.version < 1
                 ):
                     raise ValueError("observation version is invalid")
+                if _encoded_json_scalar_size(candidate.version) > MAX_MEMORY_OBSERVATION_BYTES:
+                    raise ValueError("observation version is too large")
                 if candidate.provider not in ("", provider.name):
                     raise ValueError("observation provider does not match its source provider")
                 if not isinstance(provider.name, str) or not provider.name:
                     raise ValueError("provider name is invalid")
-                if len(provider.name) > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
+                if str.__len__(provider.name) > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
                     raise ValueError("provider name is too long")
 
                 frozen_payload, _payload_bytes = _freeze_memory_observation_payload(
@@ -925,6 +950,7 @@ class MemoryManager:
         if "error" in result_box:
             raise result_box["error"]
         result = result_box.get("value", "")
+        result = self._coerce_prefetch_result(result)
         if isinstance(result, str) and result.strip():
             # Prefetch is stamped into the user turn's api_content and replayed every later turn;
             # spill oversized results like plugin hook output so one provider can't inflate the prefix.

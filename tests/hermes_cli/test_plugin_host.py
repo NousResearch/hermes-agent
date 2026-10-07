@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
 import hermes_yaml as yaml
 import pytest
@@ -278,4 +279,66 @@ def test_hosted_memory_provider_stays_live_across_a_host_crash(tmp_path, monkeyp
         # The proxy Hermes already holds reloads the provider into the new host on next use.
         assert provider.whoami() not in {first_pid, os.getpid()}
     finally:
+        host.shutdown()
+
+
+@pytest.mark.platforms("any")  # structured return values cross the child-process wire
+def test_hosted_memory_prefetch_preserves_structured_result(tmp_path, monkeypatch):
+    from agent.memory_manager import MemoryManager
+    from plugins.memory import load_memory_provider
+
+    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    provider_dir = home / "plugins" / "memprobe"
+    provider_dir.mkdir(parents=True)
+    (provider_dir / "__init__.py").write_text(
+        '''
+from agent.memory_provider import MemoryObservation, MemoryPrefetchResult, MemoryProvider
+
+class Probe(MemoryProvider):
+    @property
+    def name(self): return "memprobe"
+    def is_available(self): return True
+    def initialize(self, session_id, **kwargs): pass
+    def get_tool_schemas(self): return []
+    def prefetch(self, query, *, session_id=""):
+        return MemoryPrefetchResult(
+            context=f"host context: {query}:{session_id}" + chr(10) + "x" * 10_100,
+            observations=(MemoryObservation(
+                source_kind="recall",
+                schema="memprobe.recall",
+                version=1,
+                payload={"query": query},
+            ),),
+        )
+''',
+        encoding="utf-8",
+    )
+
+    memory_manager = MemoryManager()
+    host = plugins_mod.get_plugin_manager()._plugin_host()
+    try:
+        provider = load_memory_provider("memprobe", register_skills=False)
+        assert provider is not None
+        memory_manager.add_provider(provider)
+
+        result = memory_manager.prefetch_all_result(
+            "question", session_id="session-a"
+        )
+
+        original_context = "host context: question:session-a\n" + "x" * 10_100
+        assert result.context != original_context
+        marker = "full content saved to "
+        assert marker in result.context
+        spill_path = Path(result.context.split(marker, 1)[1].split("]", 1)[0])
+        assert spill_path.is_relative_to(home)
+        assert spill_path.read_text(encoding="utf-8") == original_context + "\n"
+        assert len(result.observations) == 1
+        observation = result.observations[0]
+        assert observation.source_kind == "recall"
+        assert observation.schema == "memprobe.recall"
+        assert observation.version == 1
+        assert observation.provider == "memprobe"
+        assert observation.payload == {"query": "question"}
+    finally:
+        memory_manager.shutdown_all()
         host.shutdown()

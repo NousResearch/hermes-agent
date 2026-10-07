@@ -32,26 +32,38 @@ What you see in the conversation flow while the agent works.
 
 ## Status-bar symbols
 
-The single line at the bottom of the TUI. Segments appear only when relevant and drop off first on narrow terminals.
+The single line at the bottom of the TUI (toggle with `/statusbar`). Segments appear only when relevant and drop off first on narrow terminals; a session-title badge is pinned to the far-right edge once the session has a name. Which segments render can be restricted with the `display.status_bar.fields` config list.
 
 | Symbol | Meaning |
 |--------|---------|
 | `⠋⠙⠹…` (braille patterns) | Busy spinner. Thinking and tool phases use different braille animation sets. |
 | `☤ 🌀 🤔 ✨ 🍵 🔮` | Frames of the `emoji` busy-indicator style (`/indicator emoji`). The default style rotates kaomoji faces instead. |
 | <code>&#124; / - &#92;</code> | Frames of the `ascii` busy-indicator style. |
+| `☤ <model>` | Current model (Classic CLI). The caduceus marks the bar's start. |
+| `<used>/<window>` | Context tokens used out of the model's context window (e.g. `~66.6K/1M`). |
+| `[█░░░] N%` | Context fill as a bar plus percentage. Color: green < 50%, yellow 50-80%, orange 80-95%, red >= 95%. |
+| `~` prefix | The context number is a local estimate (reasoning models replay thinking, so the last request's count can overshoot); provider-exact readings have no `~`. |
+| `◎ N%` | Prompt cache hit rate since the last baseline reset (a model switch or compression resets it). >= 70% is good, < 40% is bad. |
+| `◷ Ns` | Rolling average API latency per request (Classic CLI). |
+| `↑ N t/s` | Rolling average output throughput, tokens per second (Classic CLI). |
+| `🗜️ N` / `cmp N` | The session has been auto-compressed N times (`🗜️` in the Classic CLI, `cmp N` in the TUI). |
+| `⚙ N` / `N bg` | N background processes tracked in this session (Classic CLI: `⚙ N`, TUI: `N bg`). |
+| `▶ N` | N `/bg` tasks currently running. |
+| `⛓ N` | N subagents currently active. |
+| `⊙ goal a/b` | A standing [goal](../user-guide/features/goals.md) is active - a of b turns used. |
+| `⎇ <branch>` | Git branch of the working directory (opt-in via `display.status_bar.fields`). |
+| `Σ<N>` | Session token total (opt-in via an explicit fields list, Classic CLI). |
 | `⏱` | Per-prompt elapsed time while the turn runs, e.g. `⏱ 12s/3m 45s` (turn time / session time). |
 | `⏲` | The same timer, frozen after the turn completes. |
-| `cmp N` | The session has been auto-compressed N times. |
-| `▶ N` | N `/bg` tasks currently running. |
+| `✓ <dur>` | Time since the last final response - idle time (Classic CLI); hidden while a turn is live. |
+| `📌 N` | N prompts parked in the stash (Ctrl+S); `▲` appended while the stash panel is open. |
 | `⚠ YOLO` | YOLO mode is on (auto-approval). Also shown in the startup banner. |
-| `⛓ N` | N subagents currently active. |
 | `↩ resumes when subagent finishes` | Reassurance shown while you are idle but delegated work is still in flight — the result returns on its own. |
 | `● REC` | Voice mode is recording. |
 | `◉ STT` | Voice recording stopped; speech-to-text is transcribing. |
 | `◉ focus` | Focus view is on (reduced output). Pinned so it never drops off a narrow terminal. |
 | `♥` | Affection flash — Hermes noticed you being nice to it. |
 | `⚡` / `🔋` | Battery indicator (opt-in): plugged in / on battery, with percentage. |
-| `N bg` | N background terminal processes tracked in this session. |
 | `N live sessions` | Open TUI sessions in this process — click to open the session switcher. |
 
 ## Notices

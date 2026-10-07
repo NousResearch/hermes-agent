@@ -141,6 +141,40 @@ class TestForegroundTimeoutCap:
         assert call_kwargs[1]["timeout"] == FOREGROUND_MAX_TIMEOUT
         assert "error" not in result or result["error"] is None
 
+    def test_schema_advertises_the_configured_default_not_a_frozen_literal(self):
+        """The advertised default must point at the config key, never a frozen number.
+
+        The runtime resolves an omitted ``timeout`` as ``timeout or config["timeout"]`` (covered by
+        ``test_config_default_above_cap_not_rejected`` above), so a description frozen at
+        ``default: 180`` contradicts ``terminal.timeout`` whenever a user sets something else: the
+        model passes ``timeout=180`` explicitly and the user's lower value never bounds a hanging
+        command (observed: ``terminal.timeout=60`` still let ``sleep 120`` run to completion).
+        """
+        from tools.terminal_tool import TERMINAL_SCHEMA
+
+        desc = TERMINAL_SCHEMA["parameters"]["properties"]["timeout"]["description"]
+        assert "terminal.timeout" in desc
+        assert "default: 180" not in desc
+
+    def test_omitted_timeout_uses_the_configured_default(self):
+        """Omitting ``timeout`` (what the schema now tells the model to do) uses ``config["timeout"]``."""
+        from tools.terminal_tool import terminal_tool
+
+        with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config(timeout=60)), \
+             patch("tools.terminal_tool._start_cleanup_thread"):
+
+            mock_env = MagicMock()
+            mock_env.execute.return_value = {"output": "done", "returncode": 0}
+
+            with patch("tools.terminal_tool._active_environments", {"default": mock_env}), \
+                 patch("tools.terminal_tool._last_activity", {"default": 0}), \
+                 patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
+                result = json.loads(terminal_tool(command="sleep 120"))
+
+        assert mock_env.execute.call_args[1]["timeout"] == 60
+        assert "error" not in result or result["error"] is None
+
+
 class TestPromotionKeepsTheDetachmentGuard:
     def test_over_cap_timeout_with_shell_backgrounding_is_still_refused(self):
         """Independent-review witness: a promoted `cmd &` started a tracked shell that exited at once

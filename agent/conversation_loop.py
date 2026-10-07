@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
+from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
 from agent.message_metadata import append_message, without_persistence_fields
@@ -345,7 +346,6 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     if not (messages and messages[-1].get("role") == "assistant"):
         # Hidden row with a neutral api_content (#88955). Never _INTERRUPT_SCAFFOLD_MARKER:
         # as assistant text the model echoes it (#81841).
-        from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
         append_message(messages, {"role": "assistant", "content": visible} if visible else hidden_interrupt_placeholder_row())
     # Transcript shows the user's own words; the provider replays the scaffolded form.
     append_message(messages, {"role": "user", "content": text, "api_content": correction})

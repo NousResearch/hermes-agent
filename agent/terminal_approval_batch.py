@@ -312,8 +312,8 @@ def terminal_approval_batch(agent, calls, messages, task_id):
                 batch.close()
                 # A cancellation means a stop is already published (or our own
                 # close() ran): re-interrupting would overwrite the user's queued
-                # message/redirect. A timeout is a system stop: attribute it via
-                # tool_reason with no message, which callers re-queue as a user turn.
+                # message/redirect. A timeout is a system stop: tool_reason only, no
+                # message (callers re-queue _interrupt_message as the user's next turn).
                 if isinstance(exc, TimeoutError):
                     agent.interrupt(tool_reason="terminal batch preparation timeout")
                 # The sequential path must still persist a result for every

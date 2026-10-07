@@ -419,6 +419,60 @@ describe('useSessionTileActions reloadFromMessage failed-submit rollback (#95745
     expect(submits).toBe(2)
   })
 
+  it('a turn that lands during the 4033 confirm is kept: accept re-plans, decline leaves it in place', async () => {
+    const { JsonRpcGatewayError } = await import('@hermes/shared')
+    const submits: Record<string, unknown>[] = []
+
+    requestGatewayMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submits.push(params ?? {})
+
+        if (!params?.confirm_deep_truncate) {
+          throw new JsonRpcGatewayError('truncation would archive later user turns', { code: 4033 })
+        }
+      }
+
+      return {}
+    })
+
+    for (const accept of [true, false]) {
+      publishSessionState(RUNTIME_SESSION_ID, createClientSessionState(STORED_SESSION_ID, seed as never))
+      submits.length = 0
+      const { result } = renderTileActions()
+
+      // The 4033 dialog: a new turn arrives before the user answers (once; later dialogs just answer).
+      let dialogs = 0
+
+      const stopConfirming = $confirmRequest.listen(request => {
+        if (request && dialogs++ > 0) {
+          settleConfirm(true)
+        } else if (request) {
+          const current = $sessionStates.get()[RUNTIME_SESSION_ID]!
+          publishSessionState(RUNTIME_SESSION_ID, {
+            ...current,
+            messages: [...current.messages, { id: 'u3', parts: [textPart('new')], role: 'user', timestamp: 5 }]
+          } as never)
+          settleConfirm(accept)
+        }
+      })
+
+      await act(async () => {
+        await result.current.reloadFromMessage('a2')
+      })
+      stopConfirming()
+
+      const ids = $sessionStates.get()[RUNTIME_SESSION_ID]?.messages.map(m => m.id)
+
+      // Decline leaves the new turn in place; accept asked again over the transcript that now holds
+      // it, so the confirmed regenerate archives it knowingly.
+      expect(ids?.includes('u3')).toBe(!accept)
+      // Accept re-runs against the current transcript (u3 now follows the target, so it asks again —
+      // auto-accepted here — and sends confirmed); decline submits nothing further.
+      expect(submits.filter(p => p.confirm_deep_truncate).length).toBe(accept ? 1 : 0)
+      expect(dialogs).toBe(accept ? 2 : 1)
+    }
+  })
+
   it('restores the full tile transcript when regenerate is rejected', async () => {
     requestGatewayMock.mockImplementation(async (method: string) => {
       if (method === 'prompt.submit') {

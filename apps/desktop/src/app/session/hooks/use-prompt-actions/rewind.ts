@@ -25,7 +25,6 @@ import type { ConfirmRequest } from '@/store/confirm'
 
 import {
   appendText,
-  isDeepTruncateRefusal,
   isFailedUserTurn,
   isSessionBusyError,
   isVisibleUserMessage,
@@ -588,28 +587,6 @@ async function confirmIfDeepCut<P extends { truncateOrdinal: number | undefined 
   }
 
   return (await confirmDeep()) ? { ...plan, confirmDeepTruncate: true } : null
-}
-
-/**
- * The server counts later user turns with its own predicate (steer rows, compaction carriers) and
- * refuses an unconfirmed deep cut with 4033. Client and server can disagree, so a refusal asks the
- * same destructive confirm once and retries confirmed. A decline rethrows the 4033, which callers
- * roll back silently (`isDeepTruncateRefusal`).
- */
-export async function submitWithDeepTruncateConfirm<T>(
-  submit: (confirmDeepTruncate: boolean) => Promise<T>,
-  confirmed: boolean,
-  confirmDeep: () => Promise<boolean>
-): Promise<T> {
-  try {
-    return await submit(confirmed)
-  } catch (err) {
-    if (confirmed || !isDeepTruncateRefusal(err) || !(await confirmDeep())) {
-      throw err
-    }
-
-    return submit(true)
-  }
 }
 
 /** Optimistic reload state: keep the user turn, hide the branch's assistants. */

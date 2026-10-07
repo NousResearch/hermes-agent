@@ -279,7 +279,12 @@ export function isGatewayTimeoutError(error: unknown): boolean {
 export const SESSION_BUSY_RETRY_TIMEOUT_MS = 6_000
 export const SESSION_BUSY_RETRY_INTERVAL_MS = 150
 
-/** prompt.submit refused an unconfirmed truncation that would archive later user turns (#133716). */
+/**
+ * prompt.submit refused an unconfirmed truncation that would archive later user turns (#133716).
+ * The server counts turns with its own predicate, so it can refuse a cut the client judged shallow:
+ * callers roll back at once (the submit wrote nothing), ask, and re-run the action with the deep cut
+ * forced, so the retry re-reads and re-validates the session like any first attempt.
+ */
 export const GATEWAY_DEEP_TRUNCATE_REFUSED_CODE = 4033
 
 export function isDeepTruncateRefusal(error: unknown): boolean {

@@ -14,7 +14,7 @@ import { useCallback, useMemo, useRef } from 'react'
 import type { ClientSessionState } from '@/app/types'
 import type { WorkspaceMode } from '@/contrib/types'
 import { useI18n } from '@/i18n'
-import { textPart } from '@/lib/chat-messages'
+import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
@@ -60,7 +60,6 @@ import {
   planRestore,
   rebindSurvivorRowIds,
   runRewindSubmit,
-  submitWithDeepTruncateConfirm,
   type SurvivorUserRowIds
 } from '../session/hooks/use-prompt-actions/rewind'
 import { useSubmitPrompt } from '../session/hooks/use-prompt-actions/submit'
@@ -551,7 +550,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
   )
 
   const reloadFromMessage = useCallback(
-    async (parentId: string | null) => {
+    async (parentId: string | null, answeredFor?: ChatMessage[]): Promise<void> => {
       const state = readState()
 
       if (!state || state.busy) {
@@ -559,7 +558,10 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       }
 
       const confirmDeep = () => confirm(deepCutConfirmRequest(t.assistant.thread))
-      const plan = await planConfirmedReload(state.messages, parentId, confirmDeep)
+      // The user's answer to a 4033 covers only the transcript they answered for: any change asks again.
+      const forceDeep = answeredFor !== undefined && answeredFor === state.messages
+      const planned = await planConfirmedReload(state.messages, parentId, forceDeep ? async () => true : confirmDeep)
+      const plan = planned && forceDeep ? { ...planned, confirmDeepTruncate: true } : planned
       const after = readState()
 
       // The confirm is a wait of user length: a turn that started or output that landed meanwhile
@@ -577,20 +579,15 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         // runRewindSubmit (withSessionNotFoundResume + runtime rebind), so the
         // PR-era inline prompt.submit wrapper is superseded on current main.
         applySurvivorRowIds(
-          await submitWithDeepTruncateConfirm(
-            confirmed =>
-              submitRewind(
-                plan.text,
-                plan.truncateOrdinal,
-                false,
-                plan.truncateMessageId,
-                plan.truncateRowId,
-                plan.sourceText,
-                durableRowIdsForRebind(messages),
-                confirmed
-              ),
-            plan.confirmDeepTruncate,
-            confirmDeep
+          await submitRewind(
+            plan.text,
+            plan.truncateOrdinal,
+            false,
+            plan.truncateMessageId,
+            plan.truncateRowId,
+            plan.sourceText,
+            durableRowIdsForRebind(messages),
+            plan.confirmDeepTruncate
           )
         )
       } catch (err) {
@@ -605,14 +602,19 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           messages
         }))
 
-        // A declined deep-cut confirm is the user's answer, not a failure.
-        if (!isDeepTruncateRefusal(err)) {
+        if (!isDeepTruncateRefusal(err) || plan.confirmDeepTruncate) {
           notifyError(err, copy.regenerateFailed)
+        } else if (await confirmDeep()) {
+          // Re-run from the top: the session is re-read and re-validated after this wait.
+          await reloadFromMessageRef.current(parentId, messages)
         }
       }
     },
     [applySurvivorRowIds, copy.regenerateFailed, readState, submitRewind, t, update]
   )
+
+  const reloadFromMessageRef = useRef(reloadFromMessage)
+  reloadFromMessageRef.current = reloadFromMessage
 
   const restoreToMessage = useCallback(
     async (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => {
@@ -704,10 +706,12 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
   )
 
   const editMessage = useCallback(
-    async (edited: AppendMessage) => {
+    async (edited: AppendMessage, answeredFor?: ChatMessage[]): Promise<void> => {
       const messages = readMessages()
       const confirmDeep = () => confirm(deepCutConfirmRequest(t.assistant.thread))
-      const plan = await planConfirmedEdit(messages, edited, confirmDeep)
+      const forceDeep = answeredFor !== undefined && answeredFor === messages
+      const planned = await planConfirmedEdit(messages, edited, forceDeep ? async () => true : confirmDeep)
+      const plan = planned && forceDeep ? { ...planned, confirmDeepTruncate: true } : planned
 
       // Edit interrupts a live turn on purpose; only output that landed during the confirm makes
       // the plan's index and rollback snapshot stale.
@@ -730,20 +734,15 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
       try {
         applySurvivorRowIds(
-          await submitWithDeepTruncateConfirm(
-            confirmed =>
-              submitRewind(
-                plan.text,
-                plan.truncateOrdinal,
-                interruptFirst,
-                plan.truncateMessageId,
-                plan.truncateRowId,
-                plan.sourceText,
-                durableRowIdsForRebind(messages),
-                confirmed
-              ),
-            plan.confirmDeepTruncate,
-            confirmDeep
+          await submitRewind(
+            plan.text,
+            plan.truncateOrdinal,
+            interruptFirst,
+            plan.truncateMessageId,
+            plan.truncateRowId,
+            plan.sourceText,
+            durableRowIdsForRebind(messages),
+            plan.confirmDeepTruncate
           )
         )
       } catch (err) {
@@ -756,13 +755,19 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           messages
         }))
 
-        if (!isDeepTruncateRefusal(err)) {
+        if (!isDeepTruncateRefusal(err) || plan.confirmDeepTruncate) {
           notifyError(err, copy.editFailed)
+        } else if (await confirmDeep()) {
+          // Re-run from the top: the session is re-read and re-validated after this wait.
+          await editMessageRef.current(edited, messages)
         }
       }
     },
     [applySurvivorRowIds, copy.editFailed, readMessages, readState, submitRewind, t, update]
   )
+
+  const editMessageRef = useRef(editMessage)
+  editMessageRef.current = editMessage
 
   // Branch-visibility sync (assistant-ui hides non-active branches).
   const handleThreadMessagesChange = useCallback(

@@ -351,6 +351,46 @@ class TestGenerate:
         assert call_kwargs["model"] == "gpt-image-2"
         assert call_kwargs["quality"] == "medium"
 
+    def test_edit_multi_image_routes_to_images_edit_list(self, provider, tmp_path):
+        _write_config(tmp_path)
+        png_bytes = bytes.fromhex(_PNG_HEX)
+        src1 = tmp_path / "src1.png"
+        src1.write_bytes(png_bytes)
+        src2 = tmp_path / "src2.png"
+        src2.write_bytes(png_bytes)
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            result = provider.generate(
+                "combine them",
+                reference_image_urls=[str(src1), str(src2)],
+            )
+
+        assert result["success"] is True
+        assert result["modality"] == "image"
+        call_kwargs = fake_client.images.edit.call_args.kwargs
+        assert isinstance(call_kwargs["image"], list)
+        assert len(call_kwargs["image"]) == 2
+
+    def test_edit_rejects_exceeding_max_reference_images(self, provider, tmp_path):
+        _write_config(tmp_path)
+        png_bytes = bytes.fromhex(_PNG_HEX)
+        srcs = []
+        for i in range(17):
+            p = tmp_path / f"img_{i}.png"
+            p.write_bytes(png_bytes)
+            srcs.append(str(p))
+
+        fake_client = MagicMock()
+        with _patched_openai(fake_client):
+            result = provider.generate("too many images", reference_image_urls=srcs)
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "Too many source images" in result["error"]
+        fake_client.images.edit.assert_not_called()
+
     def test_api_error_surfaces(self, provider, tmp_path):
         _write_config(tmp_path)
         fake_client = MagicMock()

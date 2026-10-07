@@ -396,7 +396,15 @@ class AzureFoundryImageGenProvider(ImageGenProvider):
             sources.append(image_url.strip())
         for ref in (normalize_reference_images(reference_image_urls) or []):
             sources.append(ref)
-        sources = sources[:16]  # GPT Image edit caps at 16 images
+        if len(sources) > 16:
+            return error_response(
+                error=f"Too many source images: provided {len(sources)}, maximum supported is 16",
+                error_type="invalid_argument",
+                provider="azure-foundry",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
         is_edit = bool(sources)
         modality = "image" if is_edit else "text"
 

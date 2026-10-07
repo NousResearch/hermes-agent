@@ -4037,7 +4037,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     from gateway.run import _gateway_runner_ref
                     runner = _gateway_runner_ref()
             from gateway.platforms.api_server_fire_startup import refuse_until_started
-            if (refusal := await refuse_until_started(runner, job_id)) is not None: return refusal
+            refusal = await refuse_until_started(runner, job_id)
+            if refusal is not None:
+                return refusal
+            # Live adapters (parity with the built-in ticker): E2EE / relay-fronted platforms
+            # have no native credential, so without them delivery fails.
             adapters = getattr(runner, "adapters", None) or None
 
             def _detach_fire(fire_fn, *fire_args) -> "web.Response":

@@ -172,6 +172,8 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "(or per-model under agent.reasoning_overrides)."))
     add("-t", "--toolsets", default=None,
         help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.")
+    add("--max-turns", type=int, default=None, metavar="N",
+        help="Maximum tool-calling iterations for this invocation, including -z/--oneshot.")
     add("--resume", "-r", metavar="SESSION", default=None, help=(
         "Resume a previous session by ID or title, or pass 'latest' for "
         "the most recent session (workspace-scoped, like -c with no name)"))
@@ -287,7 +289,7 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "hooks_auto_accept: in config.yaml)."))
     add("--checkpoints", action="store_true", default=False,
         help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)")
-    add("--max-turns", type=int, default=None, metavar="N",
+    add("--max-turns", type=int, default=SUPPRESS, metavar="N",
         help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)")
     add("--run-budget", type=float, default=None, metavar="SECONDS", dest="run_budget", help=(
         "Optional wall-clock budget in seconds for each conversation run. "

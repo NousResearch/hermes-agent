@@ -39,10 +39,10 @@ def repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
-    (root / "a.txt").write_text("one\n")
+    (root / "a.txt").write_text("one\n", encoding="utf-8")
     subprocess.run(["git", "add", "a.txt"], cwd=root, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "first"], cwd=root, check=True)
-    (root / "b.txt").write_text("two\n")
+    (root / "b.txt").write_text("two\n", encoding="utf-8")
     subprocess.run(["git", "add", "b.txt"], cwd=root, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "second"], cwd=root, check=True)
     return root
@@ -412,7 +412,7 @@ def _git_in_the_editor(repo: Path, tmp_path: Path, argv: list[str]) -> subproces
                       "Path(sys.argv[1] + '.ready').write_text('')\n"
                       "while not Path(sys.argv[1] + '.go').exists(): time.sleep(0.02)\n"
                       "Path(sys.argv[1]).write_text('fixture\\n')\n", encoding="utf-8")
-    (repo / "a.txt").write_text("changed\n")
+    (repo / "a.txt").write_text("changed\n", encoding="utf-8")
     proc = subprocess.Popen(argv, cwd=repo, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             env={**os.environ, "GIT_EDITOR": f"{sys.executable} {editor}"})
     msg = repo / ".git" / "COMMIT_EDITMSG"
@@ -438,7 +438,7 @@ def test_a_killed_updates_lock_stays_while_any_git_works_in_the_checkout(repo: P
     lock = repo / ".git" / "index.lock"
     _killed_update_receipt()
     if form.startswith("dashed"):
-        exec_path = subprocess.run(["git", "--exec-path"], capture_output=True, text=True, check=True).stdout.strip()
+        exec_path = subprocess.run(["git", "--exec-path"], capture_output=True, text=True, encoding="utf-8", check=True).stdout.strip()
         dashed = Path(exec_path) / "git-commit"
         if not dashed.exists():
             pytest.skip("this git ships no dashed git-commit")
@@ -452,7 +452,7 @@ def test_a_killed_updates_lock_stays_while_any_git_works_in_the_checkout(repo: P
         assert release_dead_index_lock(repo) is False
         assert lock.exists(), f"{form}: the reclaim deleted a lock a live git may own"
     finally:
-        Path(f"{repo / '.git' / 'COMMIT_EDITMSG'}.go").write_text("")
+        Path(f"{repo / '.git' / 'COMMIT_EDITMSG'}.go").write_text("", encoding="utf-8")
         if form.startswith("dashed"):
             assert proc.wait(timeout=20) == 0, "the user's commit failed"
         else:
@@ -481,10 +481,11 @@ def test_lock_keeping_git_is_recognised_in_every_form_and_by_path_components(tmp
     lock = root / ".git" / "index.lock"
     lock.write_bytes(b"")
 
-    def ps_lists(command: str):
+    def ps_lists(command: str, cwd: Path = root):
         def run(argv, **_kw):
             if argv[0] == "lsof":
-                return subprocess.CompletedProcess(argv, 1, "", "")
+                return subprocess.CompletedProcess(argv, 0 if "cwd" in argv else 1,
+                                                   f"p4242\nn{cwd}\n" if "cwd" in argv else "", "")
             rows = (f"4242 {getattr(os, 'getuid', lambda: 0)()} {command.split()[0]}" if "-ocomm=" in argv else f"4242 {command}")
             return subprocess.CompletedProcess(argv, 0, rows + "\n", "")
         return run
@@ -492,6 +493,8 @@ def test_lock_keeping_git_is_recognised_in_every_form_and_by_path_components(tmp
     monkeypatch.setattr("shutil.which", lambda name: name)
     monkeypatch.setattr(er.subprocess, "run", ps_lists("/Library/Developer/CommandLineTools/usr/libexec/git-core/git-commit -a"))
     assert er._held_open_lsof(lock, root, False), "macOS: a dashed git-commit with its fd closed keeps the lock"
+    monkeypatch.setattr(er.subprocess, "run", ps_lists("git commit -a", tmp_path / "hermes-backup"))
+    assert er._held_open_lsof(lock, root, False) is False, "a commit in another repository is not this checkout's"
     monkeypatch.setattr(er.subprocess, "run", ps_lists("git log --oneline"))
     assert er._held_open_lsof(lock, root, False) is False and er._held_open_lsof(lock, root, True)
     monkeypatch.undo()

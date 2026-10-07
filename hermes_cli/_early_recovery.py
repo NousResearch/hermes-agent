@@ -762,13 +762,40 @@ def _held_open_lsof(path: Path, root: Path | None, any_git: bool) -> _Holder | b
         return _Holder(f"pid {pids[0]} ({names[0] if names else '?'})")
     if found.returncode not in (0, 1):  # lsof exits 1 when nothing has the file open
         return None
-    return False if root is None else _ps_git_holder(path.parent, any_git)
+    return False if root is None else _ps_git_holder(lsof, path.parent, root, any_git)
 
 
-def _ps_git_holder(git_dir: Path, any_git: bool) -> _Holder | bool | None:
+def _lsof_cwds(lsof: str, pids: list[str]) -> dict[str, str] | None:
+    """Each pid's cwd from ``lsof -d cwd`` (macOS has no /proc); None when lsof cannot answer."""
+    try:
+        out = subprocess.run([lsof, "-a", "-d", "cwd", "-F", "pn", "-p", ",".join(pids)], capture_output=True,
+                             text=True, encoding="utf-8", errors="replace", timeout=20, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode not in (0, 1):
+        return None
+    cwds: dict[str, str] = {}
+    pid = None
+    for line in out.stdout.splitlines():
+        if line.startswith("p"):
+            pid = line[1:]
+        elif line.startswith("n") and pid is not None:
+            cwds[pid] = line[1:]
+    return cwds
+
+
+def _still_running(pid: int) -> bool:
+    import psutil
+
+    return psutil.pid_exists(pid)
+
+
+def _ps_git_holder(lsof: str, git_dir: Path, root: Path, any_git: bool) -> _Holder | bool | None:
     """An empty ``lsof`` is no proof: ``git commit`` waiting in the editor has closed its lock fd.
-    ``ps`` cannot say where a git works, so every git (by executable name, dashed forms included)
-    that could write ``git_dir`` and is not a pure reader keeps the lock."""
+    Every git (by executable name, dashed forms included) that could write ``git_dir``, is not a pure
+    reader, and works in the checkout (its cwd from ``lsof -d cwd``, or a path argument) keeps the
+    lock; one whose cwd cannot be read makes the answer None. Gits elsewhere on the machine do not
+    count, or any commit open in another repository would block every launch-time repair."""
     def ps(*columns: str) -> list[list[str]] | None:
         try:
             out = subprocess.run(["ps", "-A", *(f"-o{c}=" for c in columns)], capture_output=True,
@@ -785,6 +812,7 @@ def _ps_git_holder(git_dir: Path, any_git: bool) -> _Holder | bool | None:
     if named is None or commands is None:
         return None
     argv = {row[0]: row[1].split() for row in commands if len(row) == 2}
+    candidates: dict[str, list[str]] = {}
     for row in named:
         if len(row) != 3 or not (row[0].isdigit() and row[1].isdigit()) or int(row[0]) == os.getpid():
             continue
@@ -794,7 +822,19 @@ def _ps_git_holder(git_dir: Path, any_git: bool) -> _Holder | bool | None:
         if _git_program(args[0]) is None:
             args = [row[2]]  # an argv[0] with spaces: no subcommand, so it counts
         if _could_write(int(row[1]), git_dir) and _counts_as_holder(args, any_git):
-            return _Holder(f"pid {row[0]} ({' '.join([os.path.basename(args[0]), *args[1:3]])})")
+            candidates[row[0]] = args
+    if not candidates:
+        return False
+    cwds = _lsof_cwds(lsof, sorted(candidates))
+    if cwds is None:
+        return None
+    places = _checkout_places(root, git_dir)
+    for pid, args in candidates.items():
+        cwd = cwds.get(pid)
+        if cwd is None and _still_running(int(pid)):
+            return None  # a lock-keeping git we cannot place may be working here
+        if git_works_in(args, cwd, None, places):
+            return _Holder(f"pid {pid} ({' '.join([os.path.basename(args[0]), *args[1:3]])})")
     return False
 
 

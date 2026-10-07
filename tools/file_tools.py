@@ -20,11 +20,11 @@ from pathlib import Path
 
 from agent.file_safety import get_nt_namespace_error, get_read_block_error
 from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
-from tools.binary_extensions import has_binary_extension
 from tools.skill_provenance import is_background_review
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_blocks
+from tools.file_tools_read_navigation import read_navigation_result, validate_read_options
 from tools import file_state
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
@@ -615,10 +615,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
     """
     try:
         offset, limit = normalize_read_pagination(offset, limit)
-        if mode not in ("read", "outline"):
-            return tool_error("mode must be 'read' or 'outline'")
-        if cursor is not None and (mode != "outline" or not isinstance(cursor, str)):
-            return tool_error("cursor must be a string used with mode='outline'")
+        validate_read_options(mode, cursor)
 
         # On the RAW model-supplied string, before any expanduser()/resolve():
         # on Windows resolving \??\UNC\host\share already sends SMB auth (NTLM
@@ -655,62 +652,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         block_error = get_read_block_error(str(_resolved))
         if block_error:
             return tool_error(block_error)
-        if mode == "outline":
-            resolved_str = str(_resolved)
-            cached = _check_not_found_cache("read", resolved_str, task_id)
-            if cached is not None:
-                return cached
-            # Same dedup stub as the body path for a repeated first page of an
-            # unchanged file. Continuation pages are distinct by cursor, so only
-            # the loop counter sees them. No file_state stamp: an outline is not
-            # a body read and must not refresh (or downgrade) an earlier one.
-            dedup_key = (resolved_str, "outline", offset, limit)
-            with _read_tracker_lock:
-                task_data = _task_data(task_id)
-                cached_mtime = task_data["dedup"].get(dedup_key) if cursor is None else None
-                served = dedup_key in task_data["dedup_generation_reads"]
-            if cached_mtime is not None and served:
-                try:
-                    if os.path.getmtime(resolved_str) == cached_mtime:
-                        return _dedup_stub_or_block(task_data, dedup_key, path)
-                except OSError:
-                    pass
-            from tools.file_outline import outline_page
-            result_dict = outline_page(_get_file_ops(task_id), path, resolved_str,
-                                       task_id, offset, limit, cursor)
-            if "error" not in result_dict:
-                with _read_tracker_lock:
-                    if cursor is None:
-                        task_data["dedup_hits"].pop(dedup_key, None)
-                        task_data["dedup_generation_reads"].add(dedup_key)
-                        try:
-                            task_data["dedup"][dedup_key] = os.path.getmtime(resolved_str)
-                        except OSError:
-                            pass
-                    count = _bump_consecutive(
-                        task_data, ("read", path, "outline", cursor or offset, limit))
-                    _cap_read_tracker_data(task_data)
-                if count >= 4:
-                    return tool_error(
-                        f"BLOCKED: You have requested this exact outline {count} times in a row. "
-                        "The file has NOT changed. Use the outline you already have.",
-                        path=path, already_read=count)
-                if count >= 3:
-                    result_dict["_warning"] = (
-                        f"You have requested this exact outline {count} times consecutively. "
-                        "The file has not changed; use the outline you already have.")
-            return json.dumps(result_dict, ensure_ascii=False)
-
-        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
-        if extracted is not None:
-            return extracted
-
-        # The extension is a claim, so this message names only the extension;
-        # the content-sniffing path names the actual magic-byte type.
-        if has_binary_extension(str(_resolved)):
-            return tool_error(
-                f"Cannot read binary file '{path}' ({_resolved.suffix.lower()}). "
-                "Use vision_analyze for images, or terminal to inspect binary files.")
+        navigation = read_navigation_result(path, _resolved, offset, limit, task_id, mode, cursor)
+        if navigation is not None:
+            return navigation
 
         resolved_str = str(_resolved)
         cached_not_found = _check_not_found_cache("read", resolved_str, task_id)

@@ -54,14 +54,18 @@ import {
 import { forgetPendingRuntimeTabs } from './preview-ownership'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
+import { $projectTree } from './project-tree'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
 import {
   $activeSessionId,
   $connection,
+  $cronSessions,
   $currentCwd,
   $lastReadAtBySessionId,
+  $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
+  $unlistedSessionOwnerRows,
   $workspaceCwdOwner,
   clearReadBaseline,
   getSessionOwnerHint,
@@ -212,84 +216,17 @@ export function liveSessionScopes(): Set<string> {
   return scopes
 }
 
-// ── Owner hold across the create → foreground gap ───────────────────────────
-// A routed session.create returns a stored id on the owner's socket, but the
-// surface that will PIN that socket (the selected primary thread, or a tile)
-// is published later and asynchronously: navigate → route effect →
-// $selectedStoredSessionId, or openSessionTile → $sessionTiles. In that gap
-// the entry has no active request, is not yet foreground-bound and, if the
-// user switched source meanwhile, is not the active key either — so the
-// live-work pruner or a refcount-0 lease release could close the socket that
-// holds the just-minted runtime before the first prompt.submit. The hold
-// names the owner in foregroundSessionScopes from the moment the create
-// returns until the foreground publication takes over (the stored id becomes
-// selected or tiled), the caller releases it (failed create / drift close),
-// or a bounded TTL expires — nothing latches.
-const SESSION_OWNER_HOLD_TTL_MS = 60_000
-
-const sessionOwnerHolds = new Map<
-  string,
-  { owner: SessionOwnerScope; timer: ReturnType<typeof setTimeout>; until: number }
->()
-
-export const $sessionOwnerHoldRevision = atom(0)
-
-function bumpSessionOwnerHoldRevision(): void {
-  $sessionOwnerHoldRevision.set($sessionOwnerHoldRevision.get() + 1)
-}
-
-function forgetSessionOwnerHold(storedSessionId: string, publish: boolean): boolean {
-  const hold = sessionOwnerHolds.get(storedSessionId)
-
-  if (!hold) {
-    return false
-  }
-
-  clearTimeout(hold.timer)
-  sessionOwnerHolds.delete(storedSessionId)
-
-  if (publish) {
-    bumpSessionOwnerHoldRevision()
-  }
-
-  return true
-}
-
-export function holdSessionOwnerUntilForeground(storedSessionId: string, owner: SessionOwnerScope): () => void {
-  const id = storedSessionId.trim()
-
-  if (!id || !owner) {
-    return () => undefined
-  }
-
-  forgetSessionOwnerHold(id, false)
-  const until = Date.now() + SESSION_OWNER_HOLD_TTL_MS
-  const timer = setTimeout(() => releaseSessionOwnerHold(id), SESSION_OWNER_HOLD_TTL_MS)
-
-  sessionOwnerHolds.set(id, { owner, timer, until })
-  bumpSessionOwnerHoldRevision()
-
-  return () => releaseSessionOwnerHold(id)
-}
-
-export function releaseSessionOwnerHold(storedSessionId: string): void {
-  forgetSessionOwnerHold(storedSessionId.trim(), true)
-}
-
-/** @internal Tests. */
-export function _resetSessionOwnerHoldsForTests(): void {
-  const hadHolds = sessionOwnerHolds.size > 0
-
-  for (const hold of sessionOwnerHolds.values()) {
-    clearTimeout(hold.timer)
-  }
-
-  sessionOwnerHolds.clear()
-
-  if (hadHolds) {
-    bumpSessionOwnerHoldRevision()
-  }
-}
+// The owner hold itself (the map, TTL, hold/release/reset, and the
+// foreground-scope sweep) lives in ./session-owner-holds; re-exported here
+// because session-states.ts is where the rest of the ownership ladder lives
+// and most call sites already import from it.
+export {
+  $sessionOwnerHoldRevision,
+  _resetSessionOwnerHoldsForTests,
+  holdSessionOwnerUntilForeground,
+  releaseSessionOwnerHold
+} from './session-owner-holds'
+import { sweepSessionOwnerHolds } from './session-owner-holds'
 
 /**
  * Registry scopes owned by an open foreground surface, when known.
@@ -366,24 +303,7 @@ export function foregroundSessionScopes(): Set<string> {
   // Create → foreground holds. A hold whose scope the rungs above already
   // name (the runtime's event scope once selected, a mounted tile's route) is
   // covered and retires; an expired one retires too.
-  const now = Date.now()
-
-  for (const [storedSessionId, hold] of [...sessionOwnerHolds]) {
-    const scope =
-      typeof hold.owner === 'string'
-        ? normalizeProfileKey(hold.owner)
-        : hold.owner?.connectionId?.trim()
-          ? registryBackendScopeKey(hold.owner.connectionId.trim(), normalizeProfileKey(hold.owner.profile))
-          : null
-
-    if (!scope || hold.until <= now || scopes.has(scope)) {
-      // This recompute was already triggered by the covering publication (or
-      // is itself observing expiry), so avoid recursively publishing.
-      forgetSessionOwnerHold(storedSessionId, false)
-
-      continue
-    }
-
+  for (const scope of sweepSessionOwnerHolds(scopes)) {
     scopes.add(scope)
   }
 
@@ -3095,10 +3015,42 @@ export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates]
   runtimeId ? states[runtimeId] : undefined
 )
 
+/** The best cached row for a stored session id, across every slice the sidebar
+ *  has loaded (#76535): the owner-lookup rows (recents + cron + messaging +
+ *  unlisted-draft/hidden stubs) and the project tree (a tile's session is
+ *  often older than the paginated recents page, so the tree is the only
+ *  loaded copy). Never a by-id fetch — a computed must stay synchronous. */
+function focusedSessionRow(storedSessionId: string): SessionInfo | undefined {
+  return (
+    ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, storedSessionId)) ??
+    $projectTree
+      .get()
+      .flatMap(project => [
+        ...(project.previewSessions ?? []),
+        ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
+      ])
+      .find(s => sessionMatchesStoredId(s, storedSessionId))
+  )
+}
+
 /** The workspace CWD of the currently focused session (the focused tile's cwd,
  *  else the primary session's confirmed workspace cwd, with fallback to historical session cwd). */
 export const $focusedWorkspaceCwd = computed(
-  [$focusedStoredSessionId, $selectedStoredSessionId, $focusedSessionState, $sessions, $currentCwd, $workspaceCwdOwner],
+  [
+    $focusedStoredSessionId,
+    $selectedStoredSessionId,
+    $focusedSessionState,
+    $sessions,
+    $currentCwd,
+    $workspaceCwdOwner,
+    $unlistedSessionOwnerRows,
+    $projectTree,
+    // focusedSessionRow reads the cron/messaging slices through the owner
+    // lookup; listing them keeps a cron/messaging row landing reactive without
+    // reading them eagerly in the computed body.
+    $cronSessions,
+    $messagingSessions
+  ],
   (
     focusedStoredId,
     selectedStoredId,
@@ -3113,6 +3065,7 @@ export const $focusedWorkspaceCwd = computed(
       const tileCwd = (
         focusedSessionState?.cwd ||
         sessions.find(s => sessionMatchesStoredId(s, focusedStoredId))?.cwd ||
+        focusedSessionRow(focusedStoredId)?.cwd ||
         ''
       ).trim()
 
@@ -3129,6 +3082,7 @@ export const $focusedWorkspaceCwd = computed(
       const fallbackCwd = (
         focusedSessionState?.cwd ||
         sessions.find(s => sessionMatchesStoredId(s, selectedStoredId))?.cwd ||
+        focusedSessionRow(selectedStoredId)?.cwd ||
         ''
       ).trim()
 

@@ -58,11 +58,22 @@ class TestActiveDetection:
 
 class TestModelPicker:
 
-    def test_catalog_matches_runtime_model_sets(self):
-        from tools.transcription_common import GROQ_MODELS, OPENAI_MODELS
+    def test_every_model_picker_lists_the_runtime_catalog(self):
+        """Dashboard selects and Desktop suggestions offer exactly STT_MODEL_CATALOG per cloud provider."""
+        import re
 
-        assert set(STT_MODEL_CATALOG["openai"]) == OPENAI_MODELS
-        assert set(STT_MODEL_CATALOG["groq"]) == GROQ_MODELS
+        from hermes_cli.web_server_config import _SCHEMA_OVERRIDES
+        from tools.transcription_common import BUILTIN_STT_PROVIDERS, STT_MODEL_CONFIG_KEY
+
+        desktop = (Path(__file__).resolve().parents[2] / "apps/desktop/src/app/settings/constants.ts").read_text()
+        for provider, models in STT_MODEL_CATALOG.items():
+            if provider == "local":
+                continue
+            key = f"stt.{provider}.{STT_MODEL_CONFIG_KEY.get(provider, 'model')}"
+            assert _SCHEMA_OVERRIDES[key]["options"] == models, key
+            listed = re.search(rf"'{re.escape(key)}': \[([^\]]*)\]", desktop)
+            assert listed and re.findall(r"'([^']+)'", listed.group(1)) == models, key
+        assert set(_SCHEMA_OVERRIDES["stt.provider"]["options"]) == BUILTIN_STT_PROVIDERS - {"local_command"}
 
     def test_configure_stt_model_defaults_to_current(self):
         config = {"stt": {"openai": {"model": "gpt-transcribe"}}}

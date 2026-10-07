@@ -80,16 +80,48 @@ def _last_announced_surface(conversation_history: Any) -> str:
     return ""
 
 
+def _surface_scoped_tool_names() -> set:
+    """Names of tools reachable ONLY from a client surface (``CLIENT_SURFACE_TOOLSETS``).
+
+    These are the tools ``_load_enabled_toolsets(platform)`` folds in per SESSION, so a surface
+    lacking them made no configuration choice — the toolset itself is the gate (root rubric:
+    "surface capability is a property of the SESSION").  A tool outside this set is reachable on
+    every surface and can never be inert here, whatever the pin carried forward."""
+    try:
+        from toolsets import CLIENT_SURFACE_TOOLSETS, TOOLSETS
+    except Exception:  # toolsets import is cheap, but never let the note break a turn
+        logger.debug("surface toolset lookup unavailable; no tool named inert", exc_info=True)
+        return set()
+    names: set = set()
+    for toolset in CLIENT_SURFACE_TOOLSETS:
+        names.update((TOOLSETS.get(toolset) or {}).get("tools") or ())
+    return names
+
+
 def note_inert_pinned_tools(agent: Any, built_for_this_surface: List[str]) -> None:
     """Name, at the end of the staged note, the pinned tools THIS surface did not build.
 
     The freeze keeps a previous surface's tools on the wire deliberately — removing them is the one
     thing that would still re-prefill the request behind the preserved prompt — so the model has
     to be TOLD they are inert here, or it plans around a ``focus_pane`` a terminal turn can only
-    answer with ``tool_error("desktop only")``."""
+    answer with ``tool_error("desktop only")``.
+
+    Only genuinely surface-scoped tools qualify.  ``built_for_this_surface`` is what this surface
+    built BEFORE the pin merged a previous surface's tools back in
+    (``conversation_loop.py::_restore_pinned_tools``), so the set-difference against it is NOT
+    "unavailable on this surface": a canonical Bot Chat never forks, and its persisted ``tools[]``
+    is a fossil of session creation (``_refresh_bot_chat_tools``) carrying names this surface never
+    built but which are fully callable — ``message_agent`` on desktop was the live reproduction,
+    where the note named it inert and two calls right after returned ``{status: queued}``.  Naming
+    such a tool costs the model a working capability, so intersect with the surface-gated set.
+    """
     from tools.mcp_tool_agent import agent_tool_names
     surface_names = set(built_for_this_surface)
-    inert = [name for name in agent_tool_names(agent) if name not in surface_names]
+    surface_scoped = _surface_scoped_tool_names()
+    inert = [
+        name for name in agent_tool_names(agent)
+        if name not in surface_names and name in surface_scoped
+    ]
     note = getattr(agent, "_surface_switch_note", "") or ""
     if not inert or not note:
         return

@@ -123,6 +123,51 @@ def test_incomplete_canary_redispatches_the_existing_receipt(canary_repo, monkey
     assert not any(call[1:3] == ["release", "create"] for call in calls)
 
 
+def test_an_oversized_canary_body_is_refused_before_the_tag(canary_repo, monkeypatch):
+    """GitHub's refusal is not atomic, so the check must precede the tag.
+
+    A body over the limit still writes the release row: the tag ends up pushed
+    with a stub draft behind it, and every later run resumes that draft instead
+    of its notes (the 2026-09-28 canary run on a repository whose changelog had
+    no earlier tag to start from).
+    """
+    from scripts.releases.release_body import GITHUB_BODY_LIMIT
+
+    git, remote, calls = canary_repo
+    git("commit", "--allow-empty", "-qm", "stable")
+    git("tag", "v1.2.3")
+    git("commit", "--allow-empty", "-qm", "feat: next")
+    monkeypatch.setattr(release, "generate_changelog", lambda *args, **kwargs: "x" * (GITHUB_BODY_LIMIT + 1))
+    args = SimpleNamespace(date="20260818T103000Z", publish=True, no_changelog=False, remote="origin")
+
+    with pytest.raises(ValueError, match="--no-changelog"):
+        release.cmd_canary(args)
+
+    # Nothing was tagged and nothing was created, so the next run starts clean.
+    assert git("tag", "--list").splitlines() == ["v1.2.3"]
+    assert git("--git-dir", str(remote), "tag", "--list") == ""
+    assert not any(call[1:3] in (["release", "create"], ["workflow", "run"]) for call in calls)
+
+
+def test_the_same_canary_cuts_with_no_changelog(canary_repo, monkeypatch):
+    """--no-changelog is the documented remedy for an oversized body."""
+    git, remote, calls = canary_repo
+    git("commit", "--allow-empty", "-qm", "stable")
+    git("tag", "v1.2.3")
+    git("commit", "--allow-empty", "-qm", "feat: next")
+    monkeypatch.setattr(
+        release, "generate_changelog",
+        lambda *args, **kwargs: "short notes" if kwargs.get("no_changelog") else "x" * 200_000,
+    )
+    args = SimpleNamespace(date="20260818T103000Z", publish=True, no_changelog=True, remote="origin")
+
+    release.cmd_canary(args)
+
+    tag = "v1.2.3+canary.20260818T103000Z"
+    assert git("--git-dir", str(remote), "rev-parse", tag + "^{commit}") == git("rev-parse", "HEAD")
+    assert any(call[1:3] == ["release", "create"] and call[3] == tag for call in calls)
+
+
 def test_tag_shape_and_prune_use_canonical_receipts(canary_repo, monkeypatch, capsys):
     git, _, calls = canary_repo
     assert release.canary_tag_for_date("0.27.4", "20260818T103000Z") == "v0.27.4+canary.20260818T103000Z"

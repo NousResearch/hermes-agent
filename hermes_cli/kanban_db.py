@@ -2041,20 +2041,27 @@ def _latest_event(
 
 
 def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
-    """``review`` when the newest lifecycle event carries a review
-    ``resume_status``/``retry_status``/``source_status``, else ``ready`` (legacy)."""
-    row = conn.execute(
-        "SELECT payload FROM task_events "
+    """``review`` when the newest phase-bearing lifecycle event carries a review
+    ``resume_status``/``retry_status``/``source_status``, else ``ready``
+    (legacy). Classification-only ``blocked`` annotations are skipped: they
+    re-kind a parked block, never its resumable phase."""
+    rows = conn.execute(
+        "SELECT kind, payload FROM task_events "
         "WHERE task_id = ? AND kind IN ("
         "'blocked', 'block_loop_detected', 'dependency_wait', 'gave_up', "
         "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
         "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
-        ") ORDER BY id DESC LIMIT 1", (task_id,),
-    ).fetchone()
-    payload = _json_dict(_row_get(row, "payload"))
-    for key in ("resume_status", "retry_status", "source_status"):
-        if payload.get(key) == "review":
-            return "review"
+        ") ORDER BY id DESC", (task_id,),
+    )
+    for row in rows:
+        payload = _json_dict(row["payload"])
+        # Classifying a parked block changes its kind, never its resumable phase.
+        if row["kind"] == "blocked" and payload.get("classified_in_place") is True:
+            continue
+        return "review" if any(
+            payload.get(key) == "review"
+            for key in ("resume_status", "retry_status", "source_status")
+        ) else "ready"
     return "ready"
 
 
@@ -2655,6 +2662,18 @@ def _claim_is_live(trow) -> bool:
     )
 
 
+def _completion_is_review(conn: sqlite3.Connection, task_id: str, row) -> bool:
+    """Resolve the review phase across claimed and suspended task states."""
+    if row is None:
+        return False
+    if row["status"] == "running":
+        return _retry_status_for_run(conn, task_id, row["current_run_id"]) == "review"
+    return row["status"] == "review" or (
+        row["status"] in ("blocked", "ready") and
+        _resume_status_from_events(conn, task_id) == "review"
+    )
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
@@ -2682,6 +2701,18 @@ def complete_task(
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
+    from hermes_cli.kanban_transition_admission import Admission, admit
+    review_row = conn.execute(
+        "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    admission = Admission(None)
+    if _completion_is_review(conn, task_id, review_row):
+        admission = admit(
+            "complete_review", task_id, status=review_row["status"],
+            run_id=review_row["current_run_id"], force=force,
+        )
+        if admission is None:
+            return False
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
@@ -2697,13 +2728,18 @@ def complete_task(
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
             return False
-        if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
-            return False
         trow = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+            "SELECT status, current_run_id, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         prior_status = trow["status"] if trow else None
+        if _completion_is_review(conn, task_id, trow) and admit(
+            "complete_review", task_id, status=prior_status,
+            run_id=trow["current_run_id"], force=force, previous=admission,
+        ) is None:
+            return False
+        if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
+            return False
         # Refuse to close a LIVE worker's run without proof of ownership
         # (expected_run_id) or an explicit human override (force=True); see
         # _claim_is_live for what "live" means.
@@ -3310,6 +3346,20 @@ def request_review(
     # must be durable BEFORE anything can clean the scratch workspace up: for a
     # review-bound card the reviewer's completion is the cleanup trigger.
     metadata = _merge_completion_prose_artifacts(conn, task_id, metadata, summary=summary, result=None)
+    from hermes_cli.kanban_transition_admission import Admission, admit
+    # Slow plugin loading/callback execution happens before acquiring SQLite's
+    # writer lock; the binding and active config are rechecked under the CAS txn.
+    row_before = conn.execute(
+        "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    admission = Admission(None)
+    if row_before and row_before["status"] in ("running", "ready"):
+        admission = admit(
+            "request_review", task_id, status=row_before["status"],
+            run_id=row_before["current_run_id"], force=force,
+        )
+        if admission is None:
+            return _ret(False, "required transition admission denied")
     now = int(time.time())
     # Staged copies live outside the txn: a rollback after staging must not
     # leave orphans that make the retry stage ``name_1.ext`` beside them.
@@ -3357,6 +3407,11 @@ def request_review(
                     (trow["current_run_id"],),
                 ).fetchone()
                 implementer = arow["profile"] if arow else None
+            if trow["status"] in ("running", "ready"):
+                if admit("request_review", task_id, status=trow["status"],
+                         run_id=trow["current_run_id"], force=force,
+                         previous=admission) is None:
+                    return _ret(False, "required transition admission denied")
             if implementer is None and trow["assignee"] != reviewer:
                 implementer = trow["assignee"]
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
@@ -3501,7 +3556,8 @@ def promote_task(
     conn: sqlite3.Connection, task_id: str, *, actor: str, reason: Optional[str] = None,
     dry_run: bool = False,
 ) -> tuple[bool, Optional[str]]:
-    """Operator promotion ``todo``/``blocked`` -> ``ready`` with an audit event.
+    """Operator promotion ``todo``/``blocked`` -> its resumable phase (``review``
+    when that is where it left off, else ``ready``) with an audit event.
     Refused while a parent is unfinished; ``dry_run`` only validates.
     Returns ``(ok, reason)``."""
     cur_status = _task_status(conn, task_id)
@@ -3535,13 +3591,20 @@ def promote_task(
         return True, None
 
     with write_txn(conn):
+        # Preserve the resumable phase like unblock_task / recompute_ready:
+        # stranding a review-suspended card in plain ``ready`` lets a
+        # maker-lane claim stamp ``source_status=ready`` and bypass admission.
+        new_status = _resume_status_from_events(conn, task_id)
         upd = conn.execute(
-            "UPDATE tasks SET status = 'ready' "
-            "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
+            "UPDATE tasks SET status = ? "
+            "WHERE id = ? AND status IN ('todo', 'blocked')", (new_status, task_id),
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
-        _append_event(conn, task_id, "promoted_manual", {"actor": actor, "reason": reason})
+        _append_event(
+            conn, task_id, "promoted_manual",
+            {"actor": actor, "reason": reason, "status": new_status},
+        )
 
     return True, None
 

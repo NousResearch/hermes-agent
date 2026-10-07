@@ -693,14 +693,18 @@ def _patch_title_body(conn, task_id: str, payload: UpdateTaskBody, board: Option
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         _require_task(conn, task_id)
-        # For a combined assignee+review patch, request_review must capture the
-        # current implementer before the task is routed to the reviewer.
+        # A combined completion + reassignment cannot change the assignee before
+        # the core's required transition admission has had a chance to deny it.
         review_assignee_deferred = payload.status == "review" and payload.assignee is not None
-        if payload.assignee is not None and not review_assignee_deferred:
+        done_assignee_deferred = payload.status == "done" and payload.assignee is not None
+        if payload.assignee is not None and not (review_assignee_deferred or done_assignee_deferred):
             with _map_errors(409, RuntimeError):
                 _require_ok(kanban_db.assign_task(conn, task_id, payload.assignee or None))
         if payload.status is not None:
             _patch_status(conn, task_id, payload, review_assignee_deferred)
+        if done_assignee_deferred:
+            with _map_errors(409, RuntimeError):
+                _require_ok(kanban_db.assign_task(conn, task_id, payload.assignee or None))
         for wanted, apply, _refused in _OVERRIDE_OPS:
             if wanted(payload):
                 with _map_errors(400, ValueError, RuntimeError):
@@ -836,6 +840,7 @@ def _bulk_apply_one(conn, tid: str, payload: BulkTaskBody, board: Optional[str],
         s = payload.status
         if not _apply_status(conn, tid, s, payload, f"unknown status {s!r}"):
             entry.update(ok=False, error=_open_parent_refusal(conn, tid, s) or f"transition to {s!r} refused")
+            return  # a refused transition must not persist other edits to this task
     if payload.assignee is not None:
         try:
             ok = (kanban_db.reassign_task(conn, tid, payload.assignee or None, reclaim_first=True) if payload.reclaim_first

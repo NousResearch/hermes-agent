@@ -773,7 +773,7 @@ def _gather_generic_candidates(provider_norm: str, base_url: str = "", force_ref
 
 def get_candidate_models(
     provider: str = "nous",
-    base_url: str = "",
+    base_url: str | None = "",
     force_refresh: bool = False,
 ) -> list[ModelCandidateMetadata]:
     """Gather candidate models for a provider, enriched with metadata. Defaults to 'nous'."""
@@ -781,7 +781,8 @@ def get_candidate_models(
 
     provider_norm = provider.lower().strip()
     home_key = hermes_home_key()
-    cache_key = (home_key, provider_norm, base_url.strip())
+    base_url_norm = (base_url or "").strip()
+    cache_key = (home_key, provider_norm, base_url_norm)
     now = time.monotonic()
 
     if not force_refresh and cache_key in _CANDIDATE_CACHE:
@@ -796,7 +797,7 @@ def get_candidate_models(
     elif provider_norm == "openrouter":
         candidates_by_id.update(_gather_openrouter_candidates(provider_norm, force_refresh))
     else:
-        candidates_by_id.update(_gather_generic_candidates(provider_norm, base_url, force_refresh))
+        candidates_by_id.update(_gather_generic_candidates(provider_norm, base_url_norm, force_refresh))
 
     res = list(candidates_by_id.values())
     if res:

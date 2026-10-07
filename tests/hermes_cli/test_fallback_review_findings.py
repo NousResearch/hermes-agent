@@ -285,6 +285,15 @@ class TestReviewFindings(unittest.TestCase):
         rc_heur = resolve_fallback_entry_reasoning_config(cfg, "stepfun/step-3.7-flash:free", heuristic_entry)
         self.assertEqual(rc_heur, {"native": True}, "Heuristic route must default to native default")
 
+    # ─── P3: get_candidate_models tolerates base_url=None ─────────────────────
+
+    def test_p3_get_candidate_models_tolerates_none_base_url(self):
+        """get_candidate_models must not crash with AttributeError when base_url=None."""
+        cand = ModelCandidateMetadata(id="model-free", provider="nous", is_free=True)
+        with patch("hermes_cli.fallback_heuristics._gather_nous_candidates", return_value={"model-free": cand}):
+            res = get_candidate_models(provider="nous", base_url=None, force_refresh=True)
+            self.assertEqual([c.id for c in res], ["model-free"])
+
 
 if __name__ == "__main__":
     unittest.main()

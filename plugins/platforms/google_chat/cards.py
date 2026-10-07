@@ -40,7 +40,10 @@ def format_message(content: str) -> str:
     placeholders: Dict[str, str] = {}
 
     def _ph(value: str) -> str:
-        key = f"\x00GC{len(placeholders)}\x00"
+        # U+F0000 (Supplementary Private Use Area) instead of \x00: Chat's REST
+        # API strips null bytes from message payloads, so a null-delimited key
+        # arrives as bare 'GC0' text. PUA is passed through unchanged.
+        key = f"\U000F0000{len(placeholders)}\U000F0000"
         placeholders[key] = value
         return key
 
@@ -58,7 +61,10 @@ def format_message(content: str) -> str:
     text = _INVISIBLE_RE.sub("", text)
     # Collapse double spaces left over from stripped chars.
     text = re.sub(r"  +", " ", text)
-    for key, value in placeholders.items():
+    # Restore protected regions in reverse insertion order so nested
+    # placeholders (e.g. bold wrapping inline code: **`code`**) are
+    # resolved outermost first, then inner.
+    for key, value in reversed(list(placeholders.items())):
         text = text.replace(key, value)
     return text
 

@@ -1024,7 +1024,8 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
     """_make_agent kwargs for a deferred (first-prompt) build. A lazy-resumed (watch) session carries the
     stored conversation id so the upgrade continues it; a cold deferred resume restores the full persisted
     runtime identity (like the eager resume's overrides splat) so the build can't drop the provider. No
-    stored runtime, or an unroutable provider → this session's picked model/effort/tier, else the default."""
+    stored runtime → this session's picked model/effort/tier, else the default. An unroutable stored
+    provider still restores the stored model/reasoning/tier — only the dead provider pin falls back."""
     kw = {"session_db": session_db, "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(current),
           "platform_override": _session_source(current), "cwd_override": _session_cwd(current)}
     if resume_sid := current.get("resume_session_id"):
@@ -1035,6 +1036,15 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
     else:
         if override := current.get("model_override"):
             kw["model_override"] = override
+        if isinstance(resume_overrides, dict):
+            # A dead provider pin must fall back, but the stored model/reasoning/tier are still
+            # this session's identity (#103498): dropping the whole dict silently rebuilds the
+            # agent with the profile defaults while the persisted row stays correct.
+            kw.update({k: v for k, v in (("reasoning_config_override",
+                                          resume_overrides.get("reasoning_config_override")),
+                                         ("service_tier_override",
+                                          resume_overrides.get("service_tier_override")))
+                       if v is not None})
         kw.update({k: v for k, v in (("reasoning_config_override", current.get("create_reasoning_override")),
                                      ("service_tier_override", current.get("create_service_tier_override")))
                    if v is not None})
@@ -1639,6 +1649,45 @@ def _parse_model_config(raw, *, quiet: bool = False) -> dict:
     return {}
 
 
+def _row_has_explicit_override(row: dict | None) -> bool:
+    """True when the row carries an EXPLICIT session-scoped model override
+    (written by `config.set model|reasoning --session`). Bot Mode plumbing and
+    canonical sessions normally always follow the profile's current config; the
+    explicit marker is the one sanctioned exception — a deliberate per-session
+    pin that must survive idle reaping and apply on resume."""
+    if not row:
+        return False
+    return bool(_parse_model_config(row.get("model_config"), quiet=True).get("session_override"))
+
+
+def _persist_session_row_override(
+    session_id: str, patch: dict, model: str = ""
+) -> bool:
+    """Persist an explicit session-scoped model/reasoning override into the
+    session row's `model_config`, stamped with the `session_override` marker so
+    `_stored_session_runtime_overrides` honors it on resume even for Bot Mode
+    plumbing/canonical sessions. Best-effort: a write failure must never break
+    the in-memory switch that already happened."""
+    try:
+        db = _get_db()
+        if db is None:
+            return False
+        row = db.get_session(session_id)
+        if not row:
+            return False
+        config = _parse_model_config(row.get("model_config"), quiet=True)
+        # Merge only what the patch actually knows: a blank provider/reasoning must
+        # not clobber the fuller runtime ``_persist_live_session_runtime`` writes.
+        config.update({k: v for k, v in patch.items() if v})
+        config["session_override"] = True
+        if hasattr(db, "update_session_meta"):
+            db.update_session_meta(session_id, json.dumps(config), model or None)
+            return True
+    except Exception:
+        logger.debug("failed to persist session override", exc_info=True)
+    return False
+
+
 def _row_follows_profile(row: dict | None) -> bool:
     """Whether a stored row is a canonical Bot Chat whose runtime follows the member profile's config.
     Identity is the persisted ``follow_profile_config`` marker; the bare title compare stays ONLY here as
@@ -1654,7 +1703,9 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     resume restores the model/provider/reasoning THAT chat used, not the global pick. Plugin-owned Bot-Mode
     sessions normally rebuild from the member profile's CURRENT config (a stale provider pin left room bots
     "out of Nous credits" after a profile switch). A canonical Bot Chat may instead restore an explicit
-    composer pick while the profile model it diverged from remains unchanged."""
+    composer pick while the profile model it diverged from remains unchanged. An EXPLICIT per-session
+    override (``session_override`` marker, written by ``config.set model|reasoning --session``) beats
+    every exemption."""
     if not row:
         return {}
     model_config = _parse_model_config(row.get("model_config"), quiet=True)
@@ -1665,7 +1716,9 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         str(composer_profile.get("model") or "").strip(),
         str(composer_profile.get("provider") or "").strip(),
     ) == _config_model_target()
-    if room_plumbing or (_row_follows_profile(row) and not composer_profile_matches):
+    if not _row_has_explicit_override(row) and (
+        room_plumbing or (_row_follows_profile(row) and not composer_profile_matches)
+    ):
         return {}
     overrides: dict = {}
     model = str(row.get("model") or model_config.get("model") or "").strip()

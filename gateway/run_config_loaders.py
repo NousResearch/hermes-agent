@@ -183,6 +183,7 @@ class GatewayConfigLoadersMixin:
         """
         resolved_session_key = self._resolve_session_key_or_none(source, session_key)
         if resolved_session_key:
+            self._rehydrate_session_reasoning_override(resolved_session_key)
             _r_state = self._peek_session_state(resolved_session_key)
             if _r_state is not None and _r_state.conversation.reasoning_override is not None:
                 return _r_state.conversation.reasoning_override
@@ -197,6 +198,37 @@ class GatewayConfigLoadersMixin:
         self._session_state(session_key).conversation.reasoning_override = (
             None if reasoning_config is None else dict(reasoning_config)
         )
+        # Write through so the override survives a gateway restart, mirroring the /model leg.
+        # Clearing (None) nulls the persisted field too, so a later rehydrate cannot undo it.
+        store = getattr(self, "session_store", None)
+        if store is None:
+            return
+        try:
+            store.set_reasoning_override(session_key, reasoning_config)
+        except Exception:
+            logger.debug("Failed to persist session reasoning override", exc_info=True)
+
+    def _rehydrate_session_reasoning_override(self, session_key: str) -> None:
+        """Lazily restore a persisted /reasoning override after a restart (mirrors
+        ``_rehydrate_session_model_override``). The override carries no credential, so it is restored
+        verbatim. No-op when an in-memory override exists (live state wins) or nothing is persisted
+        (conversation boundaries drop the persisted field with the route)."""
+        state = self._peek_session_state(session_key)
+        if state is not None and state.conversation.reasoning_override is not None:
+            return
+        store = getattr(self, "session_store", None)
+        if store is None:
+            return
+        try:
+            persisted = store.get_reasoning_override(session_key)
+        except Exception:
+            logger.debug("Failed to read persisted session reasoning override", exc_info=True)
+            return
+        if not isinstance(persisted, dict) or not persisted:
+            return
+        restored = dict(persisted)
+        self._session_state(session_key).conversation.reasoning_override = restored
+        logger.info("Rehydrated persisted /reasoning override for session=%s: %s", session_key, restored)
 
     def _resolve_session_service_tier(self, source=None, session_key: Optional[str] = None) -> Optional[str]:
         """Effective service tier: a session-scoped /fast override beats the config default.

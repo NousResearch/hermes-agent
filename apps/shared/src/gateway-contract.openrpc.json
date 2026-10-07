@@ -8702,6 +8702,18 @@
             "default": null,
             "title": "Provider"
           },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scope"
+          },
           "providers": {
             "anyOf": [
               {

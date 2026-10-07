@@ -74,7 +74,8 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
     """No live swap while a turn streams (agent.switch_model() mutates fields the worker thread
     reads every iteration): stash the pick for the NEXT turn start. Selection guards run HERE (the
     only moment a confirm round-trip is possible; an unconfirmed stashed pick is dropped at turn
-    start) — on a warning nothing is stashed."""
+    start) — on a warning nothing is stashed. Returns ``(envelope, stashed)`` so the caller only
+    persists a pick that was actually queued."""
     try:
         pending_model = parsed.model_input
     except Exception:
@@ -83,12 +84,12 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
     if not confirmed:
         pending_warning = _pending_switch_selection_warning(pending_model, pending_provider)
         if pending_warning is not None:
-            return _cfgset_model_ok(rid, key, pending_model, pending_warning, pending_warning, deferred=False)
+            return _cfgset_model_ok(rid, key, pending_model, pending_warning, pending_warning, deferred=False), False
     # display_*: _session_info shows the user's pick while pending, not the live old model.
     session["pending_model_switch"] = {
         "raw": value, "confirm_expensive_model": confirmed,
         "display_model": pending_model, "display_provider": pending_provider}
-    return _cfgset_model_ok(rid, key, pending_model, deferred=True)
+    return _cfgset_model_ok(rid, key, pending_model, deferred=True), True
 
 
 def _cfgset_guarded(fn):
@@ -120,7 +121,18 @@ def _set_model(rid, params, key, value, session):
         # model. The stash crosses the boundary in the turn frame and the child's
         # turn thread applies it (_apply_pending_model_switch).
         if session.get("running") or session.get("_compute_host_active"):
-            return _stash_pending_model_switch(rid, key, value, session, confirmed, parsed_flags)
+            result, stashed = _stash_pending_model_switch(rid, key, value, session, confirmed, parsed_flags)
+            # Reap-safe: persist only a pick that was actually queued, and only a
+            # session-scoped one. A guarded/unconfirmed pick is never queued, and
+            # --global/--once must not stamp the durable row marker.
+            if stashed and not (parsed_flags.is_global or parsed_flags.is_once):
+                _persist_session_row_override(
+                    sid,
+                    {"model": getattr(parsed_flags, "model_input", "") or str(value).strip(),
+                     "provider": getattr(parsed_flags, "explicit_provider", "") or ""},
+                    model=getattr(parsed_flags, "model_input", "") or str(value).strip(),
+                )
+            return result
         explicit_provider = parsed_flags.explicit_provider
         failed_agent_init = session.get("agent") is None and session.get("agent_error") is not None
         failed_ready = session.get("agent_ready") if failed_agent_init else None
@@ -145,7 +157,37 @@ def _set_model(rid, params, key, value, session):
                 return init_err
             with _session_profile_runtime_scope(session):
                 _persist_live_session_runtime(session)
+        # Reap-safe: persist the applied pick only when it is a true session-scoped
+        # override. --global already wrote config.yaml and --once restores after one
+        # turn; neither may stamp the durable row marker. Provider comes from the live
+        # agent (the switch resolved it), so an unknown one is never written.
+        if result.get("scope") == "session" and not result.get("confirm_required"):
+            _persist_session_row_override(
+                sid,
+                {"model": result.get("value") or "",
+                 "provider": explicit_provider or str(getattr(session.get("agent"), "provider", "") or "")},
+                model=result.get("value") or "",
+            )
     else:
+        # A session-scoped write for a session that is not live in this process:
+        # persist as explicit row override instead of a GLOBAL config.yaml write.
+        if params.get("session_id"):
+            try:
+                from hermes_cli.model_switch import parse_model_switch_args as _parse_switch
+                parsed_flags = _parse_switch(value)
+                if getattr(parsed_flags, "is_session", False) and not getattr(parsed_flags, "is_global", False):
+                    model_input = str(getattr(parsed_flags, "model_input", "") or "").strip()
+                    provider = str(getattr(parsed_flags, "explicit_provider", "") or "").strip()
+                    if model_input:
+                        _persist_session_row_override(
+                            params.get("session_id", ""),
+                            {"model": model_input, "provider": provider},
+                            model=model_input,
+                        )
+                        return _kv(rid, key, model_input, warning="", confirm_required=False,
+                                  confirm_message="", scope="session", deferred=True)
+            except Exception:
+                pass
         # --once keeps its specific 5001; other sessionless model sets 4001 so
         # --global cannot persist profile defaults before session.create (#106397:
         # an older Desktop client sent a fresh-draft pick this way).
@@ -319,6 +361,13 @@ def _set_reasoning(rid, params, key, value, session):
     if parsed is None:
         return _err(rid, 4002, f"unknown reasoning value: {value}")
     if scope == "global" or session is None:
+        if session is None and params.get("session_id") and scope != "global":
+            # Session-scoped reasoning for a non-live session: persist as row override
+            _persist_session_row_override(
+                params.get("session_id", ""),
+                {"reasoning_config": parsed},
+            )
+            return _kv(rid, key, arg)
         _write_config_key("agent.reasoning_effort", arg)
         if session is not None:
             # /new is a full conversation boundary: session-scoped runtime overrides (/model, /reasoning,
@@ -329,6 +378,10 @@ def _set_reasoning(rid, params, key, value, session):
             session.pop("create_reasoning_override", None)
     else:  # session-scoped like the gateway's `/reasoning <level>`; a menu pick must not rewrite the global
         session["create_reasoning_override"] = parsed
+        _persist_session_row_override(
+            params.get("session_id", ""),
+            {"reasoning_config": parsed},
+        )
     if session and session.get("agent") is not None:
         session["agent"].reasoning_config = parsed
         _persist_live_session_runtime(session)

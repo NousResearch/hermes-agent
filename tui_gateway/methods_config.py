@@ -203,12 +203,42 @@ def _cfg_get_personality(params):
     return {"value": active_personality_name(_load_cfg()) or "none"}
 
 
+def _profile_model_provider() -> str:
+    """Provider from the profile's ``model`` config. Handles both the dict shape and
+    the legacy string shape of ``model:`` (the model-key canon leaves a plain string as-is)."""
+    model_cfg = _load_cfg().get("model")
+    return str(model_cfg.get("provider") or "").strip() if isinstance(model_cfg, dict) else ""
+
+
+def _stored_row_session_override(params) -> dict:
+    """The stored row's ``model_config`` when it carries the explicit ``session_override``
+    marker, else ``{}``. The one read shared by the session-aware ``model`` and ``reasoning``
+    getters for a session that is not live in this process."""
+    session_id = str(params.get("session_id") or "")
+    if not session_id:
+        return {}
+    try:
+        db = _get_db()
+        row = db.get_session(session_id) if db else None
+    except Exception:
+        return {}
+    if not row:
+        return {}
+    config = _parse_model_config(row.get("model_config"), quiet=True)
+    return config if config.get("session_override") else {}
+
+
 def _cfg_get_reasoning(params):
     cfg = _load_cfg()
     session = _sessions.get(params.get("session_id", "")) or {}
     reasoning_config = session.get("create_reasoning_override")
     if session and not isinstance(reasoning_config, dict):
         reasoning_config = getattr(session.get("agent"), "reasoning_config", None)
+    if not isinstance(reasoning_config, dict) and not session:
+        # For a non-live session the persisted explicit override is the only source left.
+        row_reasoning = _stored_row_session_override(params).get("reasoning_config")
+        if isinstance(row_reasoning, dict):
+            reasoning_config = row_reasoning
     if isinstance(reasoning_config, dict):
         enabled = reasoning_config.get("enabled") is not False
         effort = str(reasoning_config.get("effort") or "medium") if enabled else "none"
@@ -222,6 +252,44 @@ def _cfg_get_reasoning(params):
         effort = "none" if raw_effort is False else str(raw_effort or "medium")
     display = "show" if (cfg.get("display") or {}).get("show_reasoning", True) else "hide"
     return {"value": effort, "display": display}
+
+
+def _cfg_get_model(params):
+    """Session-aware model read: the model a session actually runs on.
+    Precedence: deferred pending switch > live model_override > live agent (only when it actually
+    has a model) > persisted row override > profile default. The provider comes from the profile's
+    configured ``model.provider``, never the model-slug prefix (a ``deepseek/...`` slug routed
+    through Nous Portal reports ``nous``)."""
+    model = ""
+    provider = ""
+    scope = "default"
+    session = _sessions.get(params.get("session_id", ""))
+    if session is not None:
+        pending = session.get("pending_model_switch") or {}
+        override = session.get("model_override")
+        agent = session.get("agent")
+        pending_model = str(pending.get("display_model") or "").strip()
+        override_model = str(override.get("model") or "").strip() if isinstance(override, dict) else ""
+        agent_model = str(getattr(agent, "model", "") or "").strip()
+        if pending_model:
+            model, provider = pending_model, str(pending.get("display_provider") or "").strip()
+        elif override_model:
+            model, provider = override_model, str(override.get("provider") or "").strip()
+        elif agent_model:
+            model, provider = agent_model, str(getattr(agent, "provider", "") or "").strip()
+        if model:
+            scope = "session"
+    if not model:
+        # A non-live session's persisted override must be reported BEFORE the profile default.
+        row_cfg = _stored_row_session_override(params)
+        row_model = str(row_cfg.get("model") or "").strip()
+        if row_model:
+            model, provider, scope = row_model, str(row_cfg.get("provider") or "").strip(), "session"
+    if not model:
+        model = _resolve_model()
+    if not provider:
+        provider = _profile_model_provider() or "unknown"
+    return {"model": model, "provider": provider, "scope": scope}
 
 
 def _cfg_get_fast(params):
@@ -257,6 +325,7 @@ def _cfg_get_mtime(params):
 # key -> getter(params); bind_module rebinds the table's functions onto server.py's globals.
 _CONFIG_GETTERS = {
     "provider": _cfg_get_provider,
+    "model": _cfg_get_model,
     "profile": lambda params: {"home": str(_hermes_home), "display": _display_hermes_home()},
     "project": _cfg_get_project,
     "full": lambda params: {"config": _load_cfg()},

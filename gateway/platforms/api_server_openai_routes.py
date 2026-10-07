@@ -25,6 +25,18 @@ except ImportError:  # pragma: no cover - mirrors api_server's optional import
 # Logger parity with the origin module (moved log records keep their name).
 logger = logging.getLogger("gateway.platforms.api_server")
 
+_HTTP_HEADER_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def _api_error_header_value(value: Any, *, limit: int = 200) -> str:
+    """Return redacted error text that is safe to serialize in an HTTP header."""
+    from gateway.platforms.api_server import _redact_api_error_text
+
+    redacted = _redact_api_error_text(value)
+    header_safe = _HTTP_HEADER_CONTROL_RE.sub(" ", redacted).strip()
+    return header_safe[:limit]
+
+
 async def _iter_stream_items(stream_q, agent_task, response):
     """Yield agent stream items until EOS, writing SSE keepalives while idle.
 
@@ -837,7 +849,7 @@ class OpenAICompatRoutesMixin:
             response_headers["X-Hermes-Completed"] = "false"
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
             if err_msg and not presentation_muted:
-                response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
+                response_headers["X-Hermes-Error"] = _api_error_header_value(err_msg)
         return web.json_response(response_data, headers=response_headers)
 
     async def _run_idempotent(

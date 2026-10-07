@@ -2,7 +2,9 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
+import { deLocalModels } from './de_local_models'
 import { deModelMenu } from './de_model_menu'
+import { deNotices } from './de_notices'
 import { deSharedMetrics } from './de_shared_metrics'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
@@ -509,10 +511,7 @@ export const deOverrides = {
       creditsTitle: 'Credits'
     }
   },
-  remoteDisplayBanner: {
-    message: reason =>
-      `Software-Rendering aktiv — Remote-Display erkannt (${reason}). GPU-Beschleunigung ist deaktiviert, um Flackern zu verhindern.`
-  },
+  ...deNotices,
   billingBlock: {
     titleNous: 'Keine Nous-Credits mehr',
     titleProvider: provider => `Keine Credits mehr — ${provider}`,
@@ -2032,125 +2031,7 @@ export const deOverrides = {
       moaReferenceHint: 'berät standardmäßig einmal pro Turn',
       tasks: deAuxTasks
     },
-    localModels: {
-      connectionChanged: 'Verbindung für lokale Modelle geändert',
-      title: 'Lokale Modelle',
-      runtimeTitle: 'Lokale Laufzeit',
-      runtimeReady: backend => `Bereit · ${backend}`,
-      serverRunning: 'Läuft',
-      runtimeInstalled: 'llama.cpp-Laufzeit installiert',
-      runtimeInstalledDetail: (tag, backend) =>
-        `Build ${tag}, ${backend}-Backend. Hermes startet und verwaltet den Server für Sie.`,
-      installTitle: 'Lokale Laufzeit installieren',
-      installDetail:
-        'Lädt die llama.cpp-Inferenz-Engine herunter (einige hundert MB). Heruntergeladene Modelle laufen komplett auf diesem Rechner – kein Konto, nichts verlässt Ihren Computer.',
-      installAction: 'Laufzeit installieren',
-      installing: 'Laufzeit wird installiert…',
-      installFailed: 'Laufzeit-Installation fehlgeschlagen',
-      hardwareTitle: 'Dieser Rechner',
-      hardwareLoading: 'Ihre Hardware wird geprüft…',
-      vram: label => `${label} GPU-Speicher`,
-      ram: label => `${label} RAM`,
-      unifiedMemory: 'Kombinierter Speicher',
-      modelsTitle: 'Modelle',
-      recommended: 'Empfohlen',
-      recommendedReason: {
-        'best-quality-resident':
-          'Das Modell mit der höchsten Qualität, das komplett auf Ihrer GPU mit voller Geschwindigkeit läuft. Die Auswahl wägt Qualität gegen die erwartete Geschwindigkeit auf dieser Hardware ab.',
-        'speed-gated-quality':
-          'Ein besseres Modell würde auf diesen Rechner passen, aber bei seiner Speicherbandbreite zu langsam reagieren — das ist das beste Modell, das schnell bleibt.',
-        'fastest-resident':
-          'Kein Modell erreicht volle Geschwindigkeit auf dieser Hardware; dieses kommt am nächsten und läuft komplett im GPU-Speicher.'
-      },
-      noRecommendationTitle: 'Keine automatische Empfehlung für diesen Rechner',
-      noRecommendationDetail:
-        'Die automatische Einrichtung braucht ein kuratiertes Modell, das vollständig in den Grafikspeicher oder den gemeinsamen Speicher passt. Sie können unten trotzdem ein Modell wählen oder weitere Modelle durchsuchen.',
-      noRecommendationAction: 'Modelle durchsuchen',
-      downloaded: 'Heruntergeladen',
-      downloadAction: size => `Download · ${size}`,
-      downloadProgress: (done, total) => `${done} von ${total} werden heruntergeladen`,
-      downloadDoneToast: model => `${model} ist bereit.`,
-      installDoneToast: 'Lokale Laufzeit installiert und bereit.',
-      quickstartTitle: 'Ein Modell auf diesem Rechner ausführen',
-      quickstartDetail: (model, size) =>
-        `Ein Klick richtet alles ein: die lokale Engine, ${model} (${size} Download) und Ihre Voreinstellung für neue Chats. Nichts verlässt diesen Computer.`,
-      quickstartDetailReady: model =>
-        `Ein Klick macht ${model} zu Ihrer Voreinstellung für neue Chats. Alles läuft auf diesem Rechner.`,
-      quickstartAction: 'Für mich einrichten',
-      quickstartConfigure: 'Konfigurieren…',
-      quickstartDoneToast: model => `${model} ist eingerichtet — neue Chats laufen auf diesem Rechner.`,
-      quickstartFailed: 'Einrichtung des lokalen Modells fehlgeschlagen',
-      quickstartStageEngine: 'Engine',
-      quickstartStageModel: 'Modell',
-      quickstartStageFinish: 'Fertig',
-      useAction: 'Verwenden',
-      activePill: 'Voreinstellung',
-      updateTitle: 'Engine-Update verfügbar',
-      updateDetail: (next, current) =>
-        `Eine neuere llama.cpp-Version (${next}) ist bereit zur Installation – Sie verwenden ${current}. Während des Downloads laufen die Modelle weiter.`,
-      updateAction: 'Engine aktualisieren',
-      updating: 'Engine wird aktualisiert…',
-      upToDateTitle: 'Engine aktuell',
-      upToDateDetail: (tag, backend) =>
-        `llama.cpp ${tag} (${backend}) wird ausgeführt — der neueste Build, den Hermes mitliefert.`,
-      activeDetail: 'Neue Chats verwenden dieses Modell – es wird geladen, wenn Sie Ihre erste Nachricht senden',
-      activeNotLoaded: 'Wird bei Ihrer ersten Nachricht geladen',
-      loadedPill: 'Im Speicher',
-      placementResident: 'komplett auf GPU',
-      placementSpilled: 'teils im RAM',
-      placementResidentTip: 'Läuft komplett im GPU-Speicher bei diesem Kontextfenster — volle Geschwindigkeit.',
-      placementSpilledTip:
-        'Ein Teil dieses Modells läuft aus dem Arbeitsspeicher — es funktioniert, aber langsamer. Ein kompakterer Build oder ein kleinerer Kontext würde komplett passen.',
-      loadingPill: 'Wird geladen…',
-      ejectTip: 'GPU-Speicher freigeben (wird bei der nächsten Nachricht wieder geladen)',
-      ejected: 'Modell entladen — GPU-Speicher freigegeben.',
-      ejectFailed: 'Das Modell konnte nicht entladen werden',
-      stopServer: 'Ausschalten',
-      startServer: 'Einschalten',
-      runtimeRunningDetail:
-        'Der lokale Server läuft. Wenn Sie ihn ausschalten, wird der gesamte GPU-Speicher freigegeben, und neue Chats können keine lokalen Modelle verwenden, bis Sie ihn wieder einschalten.',
-      serverStopped: 'Lokaler Server gestoppt — GPU-Speicher freigegeben.',
-      serverStarted: 'Lokaler Server läuft.',
-      serverStopFailed: 'Der lokale Server konnte nicht gestoppt werden',
-      serverStartFailed: 'Der lokale Server konnte nicht gestartet werden',
-      activating: 'Wird gestartet…',
-      activateFailed: model => `Konnte nicht zu ${model} wechseln`,
-      activateDoneToast: model => `Neue Chats verwenden ${model}.`,
-      downloadFailed: model => `Download von ${model} fehlgeschlagen`,
-      pillFitsGpu: 'Passt auf Ihre GPU',
-      pillUsesRam: 'Verwendet Arbeitsspeicher',
-      pillTooBig: 'Zu groß für diesen Rechner',
-      browseTitle: 'Weitere Modelle finden',
-      browseHint:
-        'Durchsuchen Sie ganz Hugging Face. Hier heruntergeladene Modelle werden automatisch an Ihren Rechner angepasst, aber nicht von uns getestet.',
-      browsePlaceholder: 'Modelle nach Name oder Autor suchen…',
-      browseSearching: 'Hugging Face wird durchsucht',
-      browseListing: 'Modelldateien werden gelesen',
-      browseShowFiles: 'Dateien anzeigen',
-      browseRefresh: 'Aktualisieren',
-      browseDownloads: 'Downloads',
-      browseLikes: 'Likes',
-      browseGated: 'erfordert Hugging-Face-Anmeldung',
-      browseNoGguf: 'Keine kompatiblen Modelldateien gefunden.',
-      browseFitUnknown: 'Passform unbekannt',
-      browseAlreadyDownloaded: 'Bereits heruntergeladen.',
-      addedByYou: 'Von Ihnen hinzugefügt',
-      browseDownloadStarted: '{name} wird heruntergeladen',
-      browseDownloadAria: '{name} herunterladen',
-      sideloadButton: 'Modelldatei hinzufügen',
-      sideloadTitle: 'Eine GGUF-Modelldatei wählen',
-      sideloadDone: '{name} hinzugefügt.',
-      sideloadAlreadyPresent: 'Bereits in Ihrer Bibliothek.',
-      pillFullContext: max => `Voller ${max}-Kontext`,
-      pillFullContextTip: 'Läuft von Anfang an mit dem kompletten Kontextfenster des Modells',
-      pillUpTo: max => `Bis zu ${max} Kontext`,
-      pillGrowsTip: 'Wächst automatisch, wenn Ihr Gespräch mehr Platz braucht',
-      pillVision: 'Sieht Bilder',
-      deleteAction: 'Modell löschen',
-      deleteConfirm: model => `${model} von der Festplatte löschen?`,
-      deleted: model => `${model} gelöscht.`,
-      deleteFailed: 'Löschen fehlgeschlagen'
-    },
+    localModels: deLocalModels,
     billing: {
       perMonth: (amount: string) => `${amount}/Monat`,
       creditsPerMonth: (amount: string) => `${amount} Credits/Monat`,

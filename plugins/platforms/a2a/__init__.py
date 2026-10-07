@@ -93,14 +93,15 @@ def register(ctx) -> None:
     except Exception:
         logger.warning("A2A: failed to register client tools", exc_info=True)
     try:
-        from .adapter import A2AAdapter
+        from .adapter import A2AAdapter, _standalone_send
         ctx.register_platform(
             name="a2a", label="A2A", adapter_factory=lambda cfg: A2AAdapter(cfg),
             check_fn=check_requirements, validate_config=validate_config, is_connected=is_connected,
             required_env=[], install_hint="No extra packages needed (stdlib only)", setup_fn=interactive_setup,
             emoji="\U0001f9e9",  # puzzle piece
             allowed_users_env="A2A_ALLOWED_USERS", allow_all_env="A2A_ALLOW_ALL_USERS",
-            cron_deliver_env_var="A2A_HOME_CHANNEL", allow_update_command=False, platform_hint=_PLATFORM_HINT,
+            cron_deliver_env_var="A2A_HOME_CHANNEL", allow_update_command=False,
+            standalone_sender_fn=_standalone_send, platform_hint=_PLATFORM_HINT,
         )
     except Exception:
         logger.warning("A2A: failed to register platform adapter", exc_info=True)

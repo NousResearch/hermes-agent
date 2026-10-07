@@ -135,7 +135,10 @@ class TestCommandTimeoutRecovery:
         monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
         bt_lifecycle.cleanup_browser(task_id)
         provider.close_session.assert_called_once_with("cloud-session-1")
-        assert supervisor_events == ["ensure", "stop", "stop"]
+        # Timeout keeps the supervisor attached (its dialog responder may still be
+        # needed, #134648); the lone stop is the final teardown closing our WebSocket
+        # before the backend releases the endpoint.
+        assert supervisor_events == ["ensure", "stop"]
 
     def test_stale_timeout_cannot_remove_concurrent_replacement(self, tmp_path):
         stale, replacement = {"session_name": "stale"}, {"session_name": "replacement"}

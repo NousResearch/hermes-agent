@@ -325,3 +325,100 @@ class TestBackendLevelFailureRecycles:
         assert len(spawns) == 1  # no retry
         assert bt._active_sessions[TASK] is session_info  # cache untouched
         assert bt._suspect_browser_sessions == {}
+
+
+class TestTimeoutKeepsCdpSupervisorAnswerable:
+    """#134648: a CDP-backed session's command timeout replaces only the stuck client
+    generation. The browser endpoint (and the CDP supervisor's dialog responder)
+    survives, so ``browser_dialog`` stays answerable for a pending JS dialog."""
+
+    def _cdp_session(self):
+        return {
+            "session_name": "cdp_stuck",
+            "bb_session_id": None,
+            "cdp_url": "ws://127.0.0.1:9222/devtools/browser/x",
+            "features": {"cdp_override": True},
+        }
+
+    def test_cdp_timeout_keeps_supervisor_and_replaces_generation(
+        self, monkeypatch, tmp_path
+    ):
+        session_info = self._cdp_session()
+        bt._active_sessions[TASK] = session_info
+        socket_dir = str(tmp_path / "agent-browser-cdp-stuck")
+
+        stopped = []
+        monkeypatch.setattr(
+            "tools.browser_tool_cdp._stop_cdp_supervisor",
+            lambda tid: stopped.append(tid),
+        )
+        monkeypatch.setattr("agent.deadline.kill_process_tree", lambda pid, **_k: True)
+
+        bt_session._handle_browser_command_timeout(TASK, session_info, socket_dir)
+
+        assert stopped == []  # the dialog responder must survive the timeout
+        replacement = bt._active_sessions[TASK]
+        assert replacement is not session_info
+        assert replacement["session_name"] != "cdp_stuck"  # fresh client generation
+        # same browser endpoint
+        assert replacement["cdp_url"] == session_info["cdp_url"]
+
+    def test_browser_dialog_answers_after_cdp_snapshot_timeout(
+        self, monkeypatch, tmp_path
+    ):
+        from tools.browser_dialog_tool import browser_dialog
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        class FakeSupervisor:
+            def respond_to_dialog(self, *, action, prompt_text=None, dialog_id=None):
+                return {
+                    "ok": True,
+                    "dialog": {"id": dialog_id or "d1", "type": "confirm"},
+                }
+
+        SUPERVISOR_REGISTRY._by_task[TASK] = FakeSupervisor()
+        try:
+            session_info = self._cdp_session()
+            bt._active_sessions[TASK] = session_info
+            stopped = []
+            monkeypatch.setattr(
+                "tools.browser_tool_cdp._stop_cdp_supervisor",
+                lambda tid: stopped.append(tid),
+            )
+            monkeypatch.setattr(
+                "agent.deadline.kill_process_tree", lambda pid, **_k: True
+            )
+
+            bt_session._handle_browser_command_timeout(
+                TASK, session_info, str(tmp_path / "s")
+            )
+            out = json.loads(browser_dialog(action="accept", task_id=TASK))
+        finally:
+            SUPERVISOR_REGISTRY._by_task.pop(TASK, None)
+
+        assert out == {
+            "success": True,
+            "action": "accept",
+            "dialog": {"id": "d1", "type": "confirm"},
+        }
+        assert stopped == []
+
+    def test_local_daemon_teardown_still_stops_supervisor(self, monkeypatch, tmp_path):
+        """Negative probe: the daemon tree-kill path kills the browser the supervisor
+        talks to, so its supervisor is dropped with it."""
+        session_info = _local_session("local-stuck")
+        bt._active_sessions[TASK] = session_info
+        bt._session_last_activity[TASK] = 1.0
+        socket_dir = str(tmp_path / "agent-browser-local-stuck")
+
+        stopped = []
+        monkeypatch.setattr(
+            "tools.browser_tool_cdp._stop_cdp_supervisor",
+            lambda tid: stopped.append(tid),
+        )
+        monkeypatch.setattr("agent.deadline.kill_process_tree", lambda pid, **_k: True)
+
+        bt_session._handle_browser_command_timeout(TASK, session_info, socket_dir)
+
+        assert stopped == [TASK]
+        assert TASK not in bt._active_sessions

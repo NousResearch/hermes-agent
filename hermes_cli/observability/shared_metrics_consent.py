@@ -32,10 +32,13 @@ _NO_THANKS = len(OFFER_CHOICES) - 1
 DOCS_URL = "https://hermes-agent.nousresearch.com/docs/developer-guide/relay-shared-metrics"
 _OFFER_DESCRIPTION = "\n".join((
     "Shared metrics are bounded counters: activity, outcomes, error classes (with a",
-    "fixed-list reason when a memory write or compression fails), model routes,",
-    "token totals, feature use and coarse machine facts. Never prompts, files, paths,",
+    "fixed-list reason when a memory write, compression, update or install fails),",
+    "model routes, token totals, feature use and coarse machine facts. A failed or",
+    "finished fresh install is noted on this machine and counted only if you opt in.",
+    "Never prompts, files, paths,",
     "setting values or error text. Collection stays on this machine; sending to Nous is",
-    "a separate choice, and data from before you opt in is never sent.",
+    "a separate choice, and apart from that install note, data from before you opt in",
+    "is never sent.",
     f"Details: {DOCS_URL}",
     "Change it any time: hermes setup telemetry",
 ))
@@ -108,6 +111,12 @@ def save_consent(enabled: bool, send: bool, config: dict | None = None) -> None:
         set_answer(config, enabled, send)
     # Unconditional: a send key already false may still have an open consent window.
     _record_send_consent_change(enabled=send)
+    if not enabled:
+        from hermes_constants import get_hermes_home
+
+        from .shared_metrics_process import purge_pending_receipts
+
+        purge_pending_receipts(get_hermes_home())
 
 
 def offer_consent(config: dict | None = None, *, reask: bool = False) -> bool:

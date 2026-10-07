@@ -220,8 +220,8 @@ def consume_prepared_guard(command, env_type, has_host_access):
     # Re-gate after an earlier slot in the same batch failed (#113158): the
     # user approved a batch where every command was expected to run; once one
     # failed, that informed consent is stale for the commands after it, so
-    # drop the pre-made decision and let the guard run its live flow (tirith
-    # scan, allowlist, human approval). Nothing is auto-denied: an explicit
+    # drop the pre-made decision and let the guard run its live flow
+    # (allowlist, human approval). Nothing is auto-denied: an explicit
     # human answer still wins; the prepared (often auto/policy) decision is
     # simply not consumed.
     if slot.batch.failure_seen and slot.decision is not None:

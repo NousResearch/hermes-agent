@@ -174,3 +174,75 @@ def test_codex_gpt55_autoraise_still_applies_to_builtin_compressor():
     assert agent.context_compressor.threshold_percent == 0.85
     # Gateway parity: the notice is stashed for replay on turn 1.
     assert agent._compression_warning
+
+
+class _ConditionalRequiredEngine(_StubEngine):
+    """Engine whose tool schema carries a top-level ``allOf`` conditional-required hint —
+    the exact shape that 400s strict backends when it reaches the wire unsanitized."""
+
+    def get_tool_schemas(self):
+        return [
+            {
+                "name": "lcm_compile_evidence",
+                "description": "Compile evidence.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {"type": "string", "enum": ["review", "proposal"]},
+                        "proposal": {"type": "string"},
+                    },
+                    "required": ["mode"],
+                    "allOf": [
+                        {
+                            "if": {"properties": {"mode": {"const": "proposal"}}},
+                            "then": {"required": ["proposal"]},
+                        }
+                    ],
+                },
+            }
+        ]
+
+
+def test_context_engine_tool_top_level_combinator_sanitized():
+    """Late-injected engine schemas must get the same top-level combinator strip as
+    registry tools (#134383): model_tools' sanitize_tool_schemas pass has already run
+    when these are appended, so without it one conditional-required allOf poisons the
+    whole request — strict backends 400 with "input_schema does not support oneOf, allOf,
+    or anyOf at the top level"."""
+    import uuid
+
+    engine = _ConditionalRequiredEngine()
+    cfg = {"context": {"engine": "stub"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.context_engine.load_context_engine", return_value=engine),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key=f"test-key-{uuid.uuid4().hex[:10]}",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    injected = [
+        tool
+        for tool in agent.tools
+        if tool.get("function", {}).get("name") == "lcm_compile_evidence"
+    ]
+    assert injected, "engine tool never reached the tool surface"
+    params = injected[0]["function"]["parameters"]
+    for combinator in ("allOf", "anyOf", "oneOf"):
+        assert combinator not in params, (
+            f"top-level {combinator} survived the injection"
+        )
+    # Only the TOP level is stripped: the legitimate parts survive untouched.
+    assert params["required"] == ["mode"]
+    assert params["properties"]["mode"]["enum"] == ["review", "proposal"]

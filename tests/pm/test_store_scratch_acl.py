@@ -136,7 +136,9 @@ def test_install_reports_acl_reset_failure_without_publishing(tmp_path, monkeypa
     package.name = "acl-probe"
     lockfile = SimpleNamespace(
         version=lambda _name: "1.0",
-        artifacts=lambda *_args: [{"url": "https://example.invalid/tool.zip", "sha256": "a" * 64}],
+        artifacts=lambda *_args: [
+            {"url": "https://example.invalid/tool.zip", "sha256": "a" * 64}
+        ],
     )
     store = Store(tmp_path)
 
@@ -229,7 +231,12 @@ Set-Acl -LiteralPath $env:HERMES_ACL_TEST_STORE -AclObject $acl
         env["HERMES_ACL_TEST_CHILD"] = str(path)
         env["HERMES_ACL_EXPECT_INHERITED"] = "1" if inherited else "0"
         subprocess.run(
-            [str(powershell), "-NoProfile", "-NonInteractive", "-Command", r"""
+            [
+                str(powershell),
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                r"""
 $ErrorActionPreference = 'Stop'
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $acl = Get-Acl -LiteralPath $env:HERMES_ACL_TEST_CHILD
@@ -240,7 +247,8 @@ foreach ($ace in $acl.Access) {
 }
 $expected = $env:HERMES_ACL_EXPECT_INHERITED -eq '1'
 if ($inherited -ne $expected) { throw "current-user ACE inheritance mismatch" }
-"""],
+""",
+            ],
             capture_output=True,
             check=True,
             timeout=60,

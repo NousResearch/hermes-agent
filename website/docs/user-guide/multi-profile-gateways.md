@@ -1050,9 +1050,24 @@ pkill caffeinate
 | `-w P` | exit when PID `P` exits                           |
 
 :::warning Lid-close still sleeps the Mac
-`caffeinate` cannot override the hardware-driven lid-close sleep on MacBooks.
-For lid-closed operation, change your Energy Saver / Battery preferences or
-use a third-party tool.
+`caffeinate`, `pmset sleep 0` and the Battery setting "Prevent automatic
+sleeping on power adapter when the display is off" only block *idle* sleep.
+Closing a MacBook's lid still puts it to sleep, even on AC power, and the
+gateway stays offline until the lid opens. To keep a gateway reachable with
+the lid closed, use one of:
+
+- **Closed-display mode:** connect an external display, keyboard or mouse,
+  and power. macOS then keeps running with the lid closed.
+- **`sudo pmset -a disablesleep 1`:** blocks all sleep, including lid close.
+  Undo with `sudo pmset -a disablesleep 0`. It also applies on battery, so a
+  closed MacBook in a bag keeps running, heats up and drains.
+- **A keep-awake app with a closed-display mode** that toggles the same
+  setting for you, ideally only while on AC. Because `disablesleep` needs
+  root, these apps install a helper and ask for an administrator password.
+
+To check: `pmset -g | grep SleepDisabled` shows `SleepDisabled 1` while
+lid-close sleep is blocked, and `pmset -g log | grep "Clamshell Sleep"` lists
+every lid-close sleep.
 :::
 
 ### Linux — `systemd-inhibit` or `loginctl`

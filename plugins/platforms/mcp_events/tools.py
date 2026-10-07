@@ -37,6 +37,13 @@ def _callback_base() -> str:
 
 def _guard_emitter(url: str) -> Optional[str]:
     """Returns an error string, or None when the emitter URL is acceptable."""
+    # An emitter the operator lists in mcp_events.trusted_emitters is allowed even on
+    # loopback: a webhook secret (which spec-following emitters require) otherwise
+    # rules out an MCP server on the same machine.
+    sec = security.MCPEventsSecurityContext.capture()
+    host = (__import__("urllib.parse", fromlist=["urlparse"]).urlparse(url).hostname or "").lower()
+    if host in sec.trusted_emitters or url in sec.trusted_emitters:
+        return None
     if not security.is_safe_emitter_url(url):
         return (f"Refusing emitter URL {url!r}: not a public http(s) address. "
                 "Subscribe to public emitters, or run the receiver in localhost mode for local development.")

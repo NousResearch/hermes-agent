@@ -563,3 +563,14 @@ class TestStoreReload:
         time.sleep(0.01)
         protocol.SubscriptionStore(home_dir=str(tmp_path)).add({"id": "sub_1", "event": "e", "callback_url": "c"})
         assert [r["id"] for r in reader.list()] == ["sub_1"]
+
+
+class TestTrustedLoopbackEmitter:
+    def test_a_trusted_emitter_on_loopback_is_allowed_with_a_secret(self, monkeypatch):
+        from plugins.platforms.mcp_events import tools as tools_mod
+
+        monkeypatch.setattr(security.MCPEventsSecurityContext, "capture",
+                            classmethod(lambda cls: _sec(trusted_emitters=frozenset({"127.0.0.1"}))))
+        assert tools_mod._guard_emitter("http://127.0.0.1:8080/mcp/x") is None
+        monkeypatch.setattr(security.MCPEventsSecurityContext, "capture", classmethod(lambda cls: _sec()))
+        assert tools_mod._guard_emitter("http://127.0.0.1:8080/mcp/x") is not None

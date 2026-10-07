@@ -4420,14 +4420,14 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Recognize a handoff the model paraphrased behind the bracketed marker.
 
         The marker alone is not enough (a reply could quote it while discussing
-        compaction), so the paraphrased boilerplate AFTER the marker must also
-        carry compaction vocabulary; the marker is skipped so its own words can
-        never confirm itself."""
+        compaction), so the boilerplate AFTER the marker must carry compaction
+        vocabulary (the marker's own words never count) and the body must keep a
+        template "## " section, which an explanatory reply lacks."""
         if not text.startswith(_HANDOFF_MARKER_PREFIX):
             return False
         head_end = len(_HANDOFF_MARKER_PREFIX)
         window = text[head_end:head_end + _PARAPHRASED_HANDOFF_WINDOW].lower()
-        return any(token in window for token in _PARAPHRASED_HANDOFF_TOKENS)
+        return any(token in window for token in _PARAPHRASED_HANDOFF_TOKENS) and bool(re.search(r"(?m)^##\s", text))
 
     @classmethod
     def classify_summary_content(cls, content: Any, paraphrased: bool = False) -> Optional[str]:

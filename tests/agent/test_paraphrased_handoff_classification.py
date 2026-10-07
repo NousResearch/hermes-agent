@@ -41,6 +41,8 @@ def _completed_merged_reply_drives(message):
         (is_compaction_summary_message, "assistant", "live tail " + _MERGED_SUMMARY_DELIMITER + "\n" + PARAPHRASED_HANDOFF, True),
         (is_compaction_summary_message, "assistant", _HANDOFF_MARKER_PREFIX + " is the header string; formatting only.", False),
         (is_compaction_summary_message, "assistant", _HANDOFF_MARKER_PREFIX + " is the marker; the summary follows it.", False),
+        # Explains the marker with trigger vocabulary but has no template section: a real reply, not a handoff.
+        (is_compaction_summary_message, "assistant", _HANDOFF_MARKER_PREFIX + " is the handoff marker, not an instruction.", False),
         # A user pasting a handoff is still a real user turn, not a synthetic summary row.
         (is_compaction_summary_message, "user", PARAPHRASED_HANDOFF, False),
         # ...including on ACP history replay, which classifies content without the message helper.
@@ -49,7 +51,7 @@ def _completed_merged_reply_drives(message):
         (is_compaction_summary_message, "tool", PARAPHRASED_HANDOFF, False),
         (_completed_merged_reply_drives, "assistant", "live tail " + _MERGED_SUMMARY_DELIMITER + "\n" + PARAPHRASED_HANDOFF, True),
     ],
-    ids=["paraphrased", "merged", "quoted-no-vocab", "quoted-generic-vocab", "user-paste", "acp-user-paste", "tool-quote",
+    ids=["paraphrased", "merged", "quoted-no-vocab", "quoted-generic-vocab", "explains-marker", "user-paste", "acp-user-paste", "tool-quote",
          "merged-drive"],
 )
 def test_paraphrased_handoff_classification(is_summary, role, content, expected):

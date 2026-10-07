@@ -1716,6 +1716,10 @@ class SendResult:
     # SEND_ERROR_KINDS member (failures only) via :func:`classify_send_error`, so consumers
     # branch without substring-matching ``error``.
     error_kind: Optional[str] = None
+    # ``None`` keeps the legacy contract (a successful send reached the user). An adapter that
+    # intentionally discards a send (e.g. route-specific interim commentary suppression) sets
+    # ``False`` so consumers don't record invisible text as delivered and dedup a later final.
+    delivered: Optional[bool] = None
 
 
 # Longest server ``retry_after`` ``_send_with_retry`` will sleep inline. Longer penalties return the

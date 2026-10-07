@@ -353,6 +353,9 @@ class StreamFallbackMixin:
             # with interim text and orphan the true final.
             _md = self._metadata_for_send(final=False) or {}
             _md["_interim_send"] = True
+            # Semantic marker: this is optional assistant commentary, not a mandatory send
+            # (approval, clarification, recovered final). Adapters may suppress it per route.
+            _md["interim_assistant_message"] = True
             # reply_to only for reply-anchored threading; Discord/Telegram use
             # thread_id metadata and reply_to on every commentary is spam.
             _plat = getattr(getattr(self.adapter, "platform", None), "value", None)
@@ -363,7 +366,7 @@ class StreamFallbackMixin:
                 reply_to=self._initial_reply_to_id if _needs_reply_anchor else None, metadata=_md)
             # Do NOT set _already_sent: commentary is interim, and the flag would
             # suppress the real final after multiple tool calls.
-            if result.success:
+            if result.success and getattr(result, "delivered", None) is not False:
                 self._notify_new_message()
                 # Lets run.py confirm whether an interim send carried the final.
                 # Record the exact delivered text so run.py can confirm whether an interim "preview"

@@ -165,11 +165,10 @@ def outage_covers(cron_dir: Path, due_at: float, grace: float) -> bool:
 def forget_homes(home_keys) -> None:
     """Drop the state of stores whose profile home (``hermes_home_key``) this process no longer
     ticks, so a profile that left this gateway cannot keep the host-wide gauges at writable=0."""
-    from hermes_constants import hermes_home_key
-    keys = set(home_keys)
+    stores = {_key(Path(home) / "cron") for home in home_keys}  # a symlinked cron/ resolves elsewhere
     with _lock:
         for records in (_degraded, _recovered):
-            for store in [s for s in records if hermes_home_key(Path(s).parent) in keys]:
+            for store in [s for s in records if s in stores]:
                 del records[store]
 
 

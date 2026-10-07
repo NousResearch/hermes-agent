@@ -380,7 +380,10 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
         return True
 
     home = SimpleNamespace(chat_id="c1", thread_id=None)
-    runner = SimpleNamespace(_send_home_channel_message=send, _served_profile_homes={"p": cron_store},
+    profile = cron_store / "profile"  # its cron/ is a symlink to the store on another disk
+    profile.mkdir()
+    (profile / "cron").symlink_to(cron_dir, target_is_directory=True)
+    runner = SimpleNamespace(_send_home_channel_message=send, _served_profile_homes={"p": profile},
                              _served_home_channel_transports=lambda: iter([("p", "telegram", None, home, object())]))
     monkeypatch.setattr("hermes_constants.get_routing_process_hermes_home", lambda: cron_store / "launch")
     # A manual loop clock: the real one-hour "recovered" window only elapses when the test says

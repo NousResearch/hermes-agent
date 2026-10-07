@@ -342,10 +342,14 @@ def _truthy_env(name: str, default: bool = False) -> bool:
 def _credentials(config) -> Tuple[str, str]:
     """Return ``(channel_access_token, channel_secret)`` from scoped secrets, then ``extra``."""
     extra = getattr(config, "extra", {}) or {}
-    # Stripped: a whitespace-only secret must read as unset, not key the HMAC with blanks.
-    return (
-        str(_get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") or extra.get("channel_access_token") or "").strip(),
-        str(_get_scoped_secret("LINE_CHANNEL_SECRET") or extra.get("channel_secret") or "").strip())
+
+    def read(env: str, key: str) -> str:
+        # A whitespace-only or non-string value (YAML ``true``/``0``/null) reads as unset: it must
+        # not key the HMAC with blanks or a guessable str() form such as "True".
+        value = _get_scoped_secret(env) or extra.get(key)
+        return value.strip() if isinstance(value, str) else ""
+
+    return read("LINE_CHANNEL_ACCESS_TOKEN", "channel_access_token"), read("LINE_CHANNEL_SECRET", "channel_secret")
 
 
 def _coerce(cast: Callable[[Any], Any], value: Any, default: Any) -> Any:

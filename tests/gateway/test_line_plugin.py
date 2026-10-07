@@ -418,8 +418,8 @@ class TestAdapterInit:
         assert ad.channel_access_token == "tok"
         assert ad.channel_secret == "sec"
         # A whitespace-only secret reads as unset, so connect fails closed instead of keying HMAC with blanks.
-        # So does an explicit null (an empty YAML value), which must not become the string "None".
-        for blank in ("   ", None):
+        # So do null and other non-strings, which must not become guessable keys like "None" or "True".
+        for blank in ("   ", None, True, 0):
             assert LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": "tok",
                                                                    "channel_secret": blank})).channel_secret == ""
             assert LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": blank,

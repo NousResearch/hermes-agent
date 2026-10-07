@@ -5958,6 +5958,54 @@ describe('usePromptActions stale-closure session routing', () => {
     )
   })
 
+  it('drops a 4033 confirm answered after the user switched sessions (#133716)', async () => {
+    const submits: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submits.push(params ?? {})
+
+        if (!params?.confirm_deep_truncate) {
+          throw new JsonRpcGatewayError('truncation would archive later user turns', { code: 4033 })
+        }
+      }
+
+      return {} as never
+    }) as unknown as GatewayMock
+
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    setMessages([
+      { id: 'u1', parts: [textPart('prompt A')], role: 'user', timestamp: 0 },
+      { id: 'a1', parts: [textPart('reply')], role: 'assistant', timestamp: 1 }
+    ] as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={RUNTIME_SESSION_ID}
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={{ current: null }}
+      />
+    )
+
+    // Session A's tail regenerate is refused; the user switches to B, then accepts.
+    const stopConfirming = $confirmRequest.listen(request => {
+      if (request) {
+        activeSessionIdRef.current = RUNTIME_SESSION_B
+        settleConfirm(true)
+      }
+    })
+
+    await handle!.reloadFromMessage(null)
+    stopConfirming()
+
+    expect(submits).toHaveLength(1)
+    expect(submits[0]).toMatchObject({ session_id: RUNTIME_SESSION_ID })
+  })
+
   it('regenerates against the CURRENT session, not the stale closure session', async () => {
     const requestGateway = vi.fn(async () => ({}) as never) as unknown as GatewayMock
 

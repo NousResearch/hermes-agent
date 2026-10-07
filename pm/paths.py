@@ -57,7 +57,7 @@ def partials_root() -> Path:
     """
     # The tool-only bootstrap stage carries just PM and hermes_constants.
     # Store packages carry the complete application and a sealed manifest.
-    if os.name != "nt" or not (store_root().parent / "manifest.json").is_file():
+    if not (store_root().parent / "manifest.json").is_file():
         from hermes_constants import get_default_hermes_root
 
         return get_default_hermes_root() / "cache" / "partials"
@@ -73,10 +73,6 @@ def facts_path() -> Path:
 def writable_store_root() -> Path:
     if not (store_root().parent / "manifest.json").is_file():
         return store_root()
-    if os.name != "nt":
-        from hermes_constants import get_default_hermes_root
-
-        return get_default_hermes_root() / "tools"
     from hermes_cache import managed_cache_dir
 
     return managed_cache_dir("tools")

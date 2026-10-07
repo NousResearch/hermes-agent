@@ -70,6 +70,7 @@ def perform_api_call(
     _moa_prepared_request: Any, _retry: Any, thinking_spinner: Any, retry_count: Any,
     api_call_count: Any, api_request_id: Any, effective_task_id: Any, turn_id: Any,
     interrupted: Any,
+    max_retries: Any = None,
 ) -> ApiCallVerdict:
     """Issue the request (see ``_should_stream`` for the streaming decision)."""
     response = None
@@ -85,6 +86,9 @@ def perform_api_call(
         thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
 
     _use_streaming = _should_stream(agent)
+    from agent.turn_copilot_retry import copilot_retry_observation
+    observed_count, observed_budget = copilot_retry_observation(agent, _retry, retry_count, max_retries)
+    agent._current_api_retry_metadata = {"retry_count": observed_count, "max_retries": observed_budget}
 
     def _perform_api_call(next_api_kwargs):
         if agent.api_mode == "codex_responses":
@@ -114,7 +118,8 @@ def perform_api_call(
                     if int(getattr(agent, "_fallback_index", 0) or 0) > 0
                     else "primary"
                 ),
-                "retry_count": retry_count,
+                "retry_count": observed_count,
+                "max_retries": observed_budget,
             },
             defer_logical_completion=True,
         )

@@ -63,6 +63,9 @@ def handle_api_error(
     _provider_overflow_recovery_pending = False
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ApiErrorVerdict:
+        if result is not None:
+            from agent.turn_copilot_retry import add_copilot_403_guidance
+            add_copilot_403_guidance(agent, api_error, result)
         return ApiErrorVerdict(
             action=action, thinking_spinner=thinking_spinner, messages=messages,
             active_system_prompt=active_system_prompt, conversation_history=conversation_history,
@@ -79,12 +82,17 @@ def handle_api_error(
     if agent.thinking_callback:
         agent.thinking_callback("")
 
-    _recovered, active_system_prompt = recover_before_classification(
-        agent, api_error, messages=messages, api_messages=api_messages, api_kwargs=api_kwargs,
-        active_system_prompt=active_system_prompt,
-    )
-    if _recovered:
-        return _verdict("continue")
+    from agent.turn_copilot_retry import copilot_403_retry_enabled, handle_copilot_403
+
+    _copilot_403_retry = copilot_403_retry_enabled(agent, api_error)
+    _retry.scheduled_retry_policy = "copilot_403" if _copilot_403_retry else "generic"
+    if not _copilot_403_retry:
+        _recovered, active_system_prompt = recover_before_classification(
+            agent, api_error, messages=messages, api_messages=api_messages, api_kwargs=api_kwargs,
+            active_system_prompt=active_system_prompt,
+        )
+        if _recovered:
+            return _verdict("continue")
 
     status_code = getattr(api_error, "status_code", None)
     error_context = agent._extract_api_error_context(api_error)
@@ -121,13 +129,32 @@ def handle_api_error(
         classified.retryable, classified.should_compress,
         classified.should_rotate_credential, classified.should_fallback,
     )
+    observed_count, observed_budget, observed_retryable = retry_count, max_retries, classified.retryable
+    if _copilot_403_retry:
+        observed_count = _retry.copilot_403_retries_used
+        observed_budget = agent._copilot_403_max_retries + 1
+        observed_retryable = observed_count < agent._copilot_403_max_retries
+        log_api_error_attempt(
+            agent, api_error, retry_count=observed_count + 1, max_retries=observed_budget,
+            status_code=status_code, elapsed_time=time.time() - api_start_time,
+            api_messages=api_messages, approx_tokens=approx_tokens, retryable=observed_retryable,
+        )
     agent._invoke_api_request_error_hook(
         task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
         api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
         error_type=type(api_error).__name__, error_message=str(api_error), status_code=status_code,
-        retry_count=retry_count, max_retries=max_retries, retryable=classified.retryable,
+        retry_count=observed_count, max_retries=observed_budget, retryable=observed_retryable,
         reason=classified.reason.value,
     )
+
+    if _copilot_403_retry:
+        action, result, active_system_prompt = handle_copilot_403(
+            agent, api_error, classified, _retry, messages=messages, api_messages=api_messages,
+            api_kwargs=api_kwargs, active_system_prompt=active_system_prompt,
+            conversation_history=conversation_history, api_call_count=api_call_count,
+            approx_tokens=approx_tokens, current_turn_user_idx=current_turn_user_idx,
+        )
+        return _verdict(action, result)
 
     _recovered, recovered_with_pool = recover_after_classification(
         agent, api_error, classified, _retry, status_code=status_code, error_context=error_context,

@@ -45,6 +45,7 @@ def _fire_pre_api_request_hook(
     original_user_message: Any, approx_tokens: Any, total_chars: Any, retry_count: Any,
     api_call_count: Any, api_request_id: Any, api_start_time: Any, effective_task_id: Any,
     turn_id: Any,
+    max_retries: Any,
 ) -> None:
     from agent.conversation_loop import _system_prompt_for_hooks
 
@@ -75,6 +76,7 @@ def _fire_pre_api_request_hook(
                 api_mode=agent.api_mode,
                 api_call_count=api_call_count,
                 retry_count=retry_count,
+                max_retries=max_retries,
                 request_messages=list(request_messages) if isinstance(request_messages, list) else [],
                 system_prompt=_system_prompt_for_hooks(api_kwargs, request_messages),
                 message_count=len(api_messages),
@@ -95,6 +97,7 @@ def build_api_request(
     system_message: Any, messages: Any, original_user_message: Any, approx_tokens: Any,
     total_chars: Any, retry_count: Any, api_call_count: Any, api_request_id: Any,
     api_start_time: Any, effective_task_id: Any, turn_id: Any,
+    _retry: Any = None, max_retries: Any = None,
 ) -> ApiRequestBuild:
     """Assemble the attempt's request in the original order (every mutation happens BEFORE
     middleware/hooks/debug dumps observe the payload)."""
@@ -155,10 +158,13 @@ def build_api_request(
         _original_api_kwargs = dict(api_kwargs)
         _llm_middleware_trace = []
 
+    from agent.turn_copilot_retry import copilot_retry_observation
+    observed_count, observed_budget = copilot_retry_observation(agent, _retry, retry_count, max_retries)
     _fire_pre_api_request_hook(
         agent, api_kwargs, api_messages, _llm_middleware_trace, messages=messages,
         original_user_message=original_user_message, approx_tokens=approx_tokens,
-        total_chars=total_chars, retry_count=retry_count, api_call_count=api_call_count,
+        total_chars=total_chars, retry_count=observed_count, max_retries=observed_budget,
+        api_call_count=api_call_count,
         api_request_id=api_request_id, api_start_time=api_start_time,
         effective_task_id=effective_task_id, turn_id=turn_id,
     )

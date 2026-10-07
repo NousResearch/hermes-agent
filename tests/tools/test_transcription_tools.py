@@ -1395,6 +1395,130 @@ class TestShellSafety:
         language_index = invocation["command"].index("--language") + 1
         assert invocation["command"][language_index] == expected
 
+    def test_local_command_renders_mode_and_target_language_from_config(
+        self, monkeypatch, sample_wav, tmp_path
+    ):
+        """stt.local.mode / stt.local.target_language reach the local_command template."""
+        from tools.transcription_tools import LOCAL_STT_COMMAND_ENV, _transcribe_local_command
+
+        output_dir = tmp_path / "transcript-output"
+        output_dir.mkdir()
+        monkeypatch.setenv(
+            LOCAL_STT_COMMAND_ENV,
+            "stt {input_path} --mode {mode} --target {target_language} --output_dir {output_dir}",
+        )
+
+        class _TempDir:
+            def __enter__(self):
+                return str(output_dir)
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        invocation = {}
+
+        def fake_run(command, **kwargs):
+            invocation["command"] = command
+            (output_dir / "transcript.txt").write_text("ok", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(
+            "tools.transcription_local.tempfile.TemporaryDirectory", lambda prefix=None: _TempDir()
+        )
+        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {"local": {"mode": "translate", "target_language": "de"}},
+        )
+
+        result = _transcribe_local_command(sample_wav, "base")
+
+        assert result["transcript"] == "ok"
+        cmd = invocation["command"]
+        assert cmd[cmd.index("--mode") + 1] == "translate"
+        assert cmd[cmd.index("--target") + 1] == "de"
+
+    def test_local_command_mode_defaults_to_transcribe_en(self, monkeypatch, sample_wav, tmp_path):
+        """Without stt.local config the placeholders fall back to transcribe/en."""
+        from tools.transcription_tools import LOCAL_STT_COMMAND_ENV, _transcribe_local_command
+
+        output_dir = tmp_path / "transcript-output"
+        output_dir.mkdir()
+        monkeypatch.setenv(
+            LOCAL_STT_COMMAND_ENV,
+            "stt {input_path} --mode {mode} --target {target_language} --output_dir {output_dir}",
+        )
+
+        class _TempDir:
+            def __enter__(self):
+                return str(output_dir)
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        invocation = {}
+
+        def fake_run(command, **kwargs):
+            invocation["command"] = command
+            (output_dir / "transcript.txt").write_text("ok", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(
+            "tools.transcription_local.tempfile.TemporaryDirectory", lambda prefix=None: _TempDir()
+        )
+        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
+        monkeypatch.setattr("tools.transcription_tools._load_stt_config", lambda: {})
+
+        result = _transcribe_local_command(sample_wav, "base")
+
+        assert result["transcript"] == "ok"
+        cmd = invocation["command"]
+        assert cmd[cmd.index("--mode") + 1] == "transcribe"
+        assert cmd[cmd.index("--target") + 1] == "en"
+
+    def test_local_command_template_without_new_placeholders_is_unaffected(
+        self, monkeypatch, sample_wav, tmp_path
+    ):
+        """Pre-existing templates (no {mode}/{target_language}) keep working unchanged."""
+        from tools.transcription_tools import LOCAL_STT_COMMAND_ENV, _transcribe_local_command
+
+        output_dir = tmp_path / "transcript-output"
+        output_dir.mkdir()
+        monkeypatch.setenv(
+            LOCAL_STT_COMMAND_ENV,
+            "whisper {input_path} --language {language} --output_dir {output_dir}",
+        )
+
+        class _TempDir:
+            def __enter__(self):
+                return str(output_dir)
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        invocation = {}
+
+        def fake_run(command, **kwargs):
+            invocation["command"] = command
+            (output_dir / "transcript.txt").write_text("ok", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(
+            "tools.transcription_local.tempfile.TemporaryDirectory", lambda prefix=None: _TempDir()
+        )
+        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {"local": {"mode": "translate", "target_language": "it"}},
+        )
+
+        result = _transcribe_local_command(sample_wav, "base")
+
+        assert result["transcript"] == "ok"
+        # The old template never references the new keys, so they must not leak in.
+        assert "--mode" not in " ".join(invocation["command"])
+        assert "--target" not in " ".join(invocation["command"])
+
 
 class TestLocalModelLock:
     """#24767 — concurrent first-use must not double-load the whisper model."""

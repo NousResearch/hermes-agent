@@ -4080,6 +4080,11 @@ class BasePlatformAdapter(ABC):
     async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
         """Route a message that arrived while ``session_key`` is busy: bypass
         commands / clarify replies dispatch inline, everything else is queued."""
+        if event.session_id is None:
+            peek = getattr(getattr(self, "_session_store", None), "peek_session_id", None)
+            if callable(peek):
+                with contextlib.suppress(Exception):
+                    event.session_id = peek(session_key)
         # Bypass commands run inline: queued they'd leak as user text (/new) or deadlock
         # (/approve, /deny — the agent is blocked on Event.wait).  Dispatch inline by
         # calling the message handler directly and sending the response.  Do NOT use

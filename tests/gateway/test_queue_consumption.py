@@ -6,8 +6,10 @@ after the agent finishes its current task — not silently dropped.
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 
 from gateway.run import _dequeue_pending_event
 from gateway.platforms.base import (
@@ -16,6 +18,7 @@ from gateway.platforms.base import (
     Platform,
 )
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session import SessionSource
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +89,21 @@ class TestQueueMessageStorage:
         # The interrupt event should NOT be set
         assert not adapter._active_sessions[session_key].is_set()
         assert not adapter.has_pending_interrupt(session_key)
+
+
+@pytest.mark.asyncio
+async def test_adapter_busy_follow_up_pins_real_event_session_id():
+    adapter = _StubAdapter()
+    key = "agent:main:telegram:dm:123"
+    adapter.set_session_store(SimpleNamespace(peek_session_id=lambda _key: "owned-session"))
+    adapter._active_sessions[key] = asyncio.Event()
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm", user_id="123")
+    event = MessageEvent(text="follow up", source=source)
+
+    await adapter._handle_message_while_active(event, key)
+
+    assert event.session_id == "owned-session"
+    assert adapter._pending_messages[key] is event
 
 
 class TestQueueConsumptionAfterCompletion:

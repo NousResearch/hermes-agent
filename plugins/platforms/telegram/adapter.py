@@ -661,6 +661,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         # Live @username: PTB caches getMe() at initialize() and only rewrites it inside get_me(), so a
         # BotFather rename leaves self._bot.username stale; routing reads _current_bot_username().
         self._bot_username_observed: Optional[str] = None
+        # Captured during construction while this adapter's profile scope is active. Peer-address
+        # discovery must not read whichever profile happens to own a later inbound turn.
+        self._peer_allowed_chats_snapshot = self._telegram_allowed_chats()
+        self._peer_group_allowed_chats_snapshot = self._telegram_group_allowed_chats()
         # None = never checked. Must NOT be 0.0: compared against time.monotonic(), which on a fresh host
         # starts near zero, so 0.0 would suppress the first refresh for a TTL.
         self._bot_identity_checked_at: Optional[float] = None
@@ -5899,6 +5903,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if observed:
             return observed
         return (getattr(self._bot, "username", None) or "").lstrip("@").lower()
+
+    def set_peer_identity_provider(self, provider) -> None:
+        from plugins.platforms.telegram.telegram_context import set_peer_identity_provider
+
+        set_peer_identity_provider(self, provider)
+
+    def group_peer_identity(self, chat_id: str) -> Optional[str]:
+        from plugins.platforms.telegram.telegram_context import group_peer_identity
+
+        return group_peer_identity(self, chat_id)
 
     def _note_bot_username(self, username: Optional[str]) -> None:
         """Record the bot's current @username, logging real renames."""

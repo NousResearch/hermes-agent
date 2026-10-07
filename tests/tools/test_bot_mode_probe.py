@@ -140,19 +140,23 @@ def test_soul_legacy_protocol_no_longer_suppresses_live_section(tmp_path):
         "# Me\n\n## Messaging other agents\nold plugin text\n", encoding="utf-8"
     )
     assert "`@coder`" in bot_mode_probe.get_bot_mode_protocol_section(home)
-    assert bot_mode_probe.strip_legacy_protocol((home / "SOUL.md").read_text()) == "# Me\n"
+    assert bot_mode_probe.strip_legacy_protocol(
+        (home / "SOUL.md").read_text(encoding="utf-8-sig"),
+    ) == "# Me\n"
 
 
-def test_deterministic_across_calls(tmp_path):
+def test_protocol_cache_is_stable_until_capability_epoch_changes(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
     _make_bot_profile(home, "researcher", managed=True)
     first = bot_mode_probe.get_bot_mode_protocol_section(home)
-    # Even if the filesystem changes, the cached result must be byte-stable
-    # for the life of the process (prompt-cache invariant).
+    assert bot_mode_probe.get_bot_mode_protocol_section(home) == first
+
     _make_bot_profile(home, "newbot", managed=True)
     second = bot_mode_probe.get_bot_mode_protocol_section(home)
-    assert first == second
+    assert second != first
+    assert "`@newbot`" in second
+    assert bot_mode_probe.get_bot_mode_protocol_section(home) == second
 
 
 def test_never_raises_on_garbage(tmp_path, monkeypatch):

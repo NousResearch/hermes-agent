@@ -190,8 +190,11 @@ DEFAULT_CONFIG = {
         # something non-default is detected (no pip module, pip/python mismatch, PEP 668 without
         # uv); zero tokens when clean. Skipped for docker/modal/ssh backends (own probe).
         "environment_probe": True,
-        # Bot Mode teammate-messaging protocol section (silent unless desktop Bot Mode manages it).
+        # Bot Mode teammate protocol (silent unless Desktop metadata or agent.bot_mode enables it).
         "bot_mode_protocol": True,
+        # Optional headless/multiplex Bot Mode authority. ``enabled`` opts an install in without
+        # Desktop metadata; ``roster`` is a directed list of {from, to} profile relationships.
+        "bot_mode": {},
         # Embedder-supplied text appended to the system prompt's environment-hints block, so a host
         # wrapping Hermes (sandbox runner, managed platform) can describe proxy/credential/ mount
         # layout without editing SOUL.md. Env HERMES_ENVIRONMENT_HINT overrides it.

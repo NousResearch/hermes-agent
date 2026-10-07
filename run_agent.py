@@ -304,16 +304,35 @@ class AIAgent(
             return None
 
     def _session_row_model_config(self) -> Any:
-        """``model_config`` for the session row: the init config plus the live YOLO bypass.
+        """``model_config`` for the session row: init config plus session authority flags.
 
         The row is created lazily on the first turn, so this is the only chance to record a pre-first-turn
-        /yolo toggle for ``hermes --resume``.
+        /yolo toggle and the frozen Bot Mode presentation decision for ``hermes --resume``.
         """
-        model_config = self._session_init_model_config
+        initial = self._session_init_model_config
+        model_config = dict(initial) if isinstance(initial, dict) else {}
+        try:
+            from tools.bot_mode_dm import MESSAGE_AGENT_TOOL_NAME
+            from tools.bot_mode_probe import (
+                _SESSION_AUTH_CONFIG_KEY,
+                _new_session_authorization_state,
+            )
+
+            model_config[_SESSION_AUTH_CONFIG_KEY] = _new_session_authorization_state(
+                self,
+                authorized=MESSAGE_AGENT_TOOL_NAME in (
+                    getattr(self, "valid_tool_names", None) or ()
+                ),
+            )
+        except Exception:
+            model_config["_bot_mode_authorized"] = {
+                "authorized": False,
+                "source": "__untrusted__",
+                "gateway_session_key": "",
+            }
         try:
             from tools.approval import is_session_yolo_enabled
             if is_session_yolo_enabled(self.session_id):
-                model_config = dict(model_config or {})
                 model_config["yolo_mode"] = True
         except Exception:
             pass

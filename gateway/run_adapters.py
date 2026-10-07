@@ -892,6 +892,36 @@ class GatewayAdapterLifecycleMixin:
         self._sync_voice_mode_state_to_adapter(adapter)
         self._bind_voice_input_callback(adapter)
 
+    def _platform_peer_identities(
+        self, owner: BasePlatformAdapter, chat_id: str,
+    ) -> tuple[tuple[str, str], ...]:
+        """Connected same-platform profile identities explicitly admitted to ``chat_id``."""
+        primary = getattr(self, "_primary_profile_name", None) or "default"
+        primary_adapters = getattr(self, "adapters", None) or {}
+        profile_adapters = dict(getattr(self, "_profile_adapters", None) or {})
+        profile_maps = [(primary, primary_adapters), *sorted(profile_adapters.items())]
+        peers: list[tuple[str, str]] = []
+        for profile, adapters in profile_maps:
+            candidate = adapters.get(owner.platform)
+            if candidate is None or candidate is owner:
+                continue
+            identity_for_chat = getattr(candidate, "group_peer_identity", None)
+            if not callable(identity_for_chat):
+                continue
+            try:
+                identity = identity_for_chat(chat_id)
+            except Exception:
+                logger.debug(
+                    "Failed to resolve %s peer identity for profile %s",
+                    owner.platform.value,
+                    profile,
+                    exc_info=True,
+                )
+                continue
+            if identity:
+                peers.append((profile, str(identity)))
+        return tuple(peers)
+
     def _schedule_planned_restart_replay(self) -> None:
         """Replay the owed planned-restart notice after a reconnect, in the background: notification delivery
         must not hold up adapter recovery or other platforms' reconnects."""
@@ -1359,6 +1389,11 @@ class GatewayAdapterLifecycleMixin:
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)
+        _set_peer_identities = getattr(adapter, "set_peer_identity_provider", None)
+        if callable(_set_peer_identities):
+            _set_peer_identities(
+                functools.partial(self._platform_peer_identities, adapter),
+            )
         adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
         adapter.set_authorization_check(
             authorization_check or self._make_adapter_auth_check(adapter.platform)

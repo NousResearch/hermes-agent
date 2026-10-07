@@ -1122,6 +1122,18 @@ def build_turn_context(
     # System prompt is cached per session for prefix caching.
     if agent._cached_system_prompt is None:
         restore_or_build_system_prompt(agent, system_message, conversation_history)
+    else:
+        try:
+            from tools.bot_mode_probe import bot_mode_cached_prompt_needs_rebuild
+
+            if bot_mode_cached_prompt_needs_rebuild(agent):
+                restore_or_build_system_prompt(
+                    agent,
+                    system_message,
+                    conversation_history,
+                )
+        except Exception:
+            logger.debug("Bot Mode warm-prompt validation skipped", exc_info=True)
     active_system_prompt = agent._cached_system_prompt
 
     # Bot Mode DM tool — injected ONLY into a bot's canonical "Bot Chat" session (same
@@ -1134,6 +1146,12 @@ def build_turn_context(
         logger.debug("message_agent injection skipped", exc_info=True)
 
     _ensure_session_row(agent, pending_cli_message)
+    try:
+        from tools.bot_mode_probe import persist_bot_mode_session_authorization
+
+        persist_bot_mode_session_authorization(agent)
+    except Exception:
+        logger.debug("Bot Mode session authorization persistence skipped", exc_info=True)
 
     # A turn interrupted before admission could not write its accepted input because
     # it did not own the session lease. Persist that carried-forward row now, before

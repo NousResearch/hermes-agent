@@ -11,7 +11,7 @@ import threading
 import time
 import hermes_yaml as yaml
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -798,6 +798,16 @@ def _plugin_api_mount_skip_reason(plugin: Dict[str, Any], enabled_set: set, disa
     return None
 
 
+# Names whose backend API routes are live on the running app. Guarded by
+# ``_plugin_api_mount_lock``: the hot-mount fallback below may fire from
+# concurrent requests and must never import/mount the same plugin twice.
+_plugin_api_mounted_names: set = set()
+_plugin_api_mount_lock = threading.Lock()
+# The hot-mount catch-all route object (set by _register_plugin_api_fallback);
+# re-appended after each hot mount so real routers always match first.
+_plugin_api_fallback_route = None
+
+
 async def _plugin_route_secret_scope(profile: Optional[str] = None):
     """Home + secret scope for one ``/api/plugins/<name>/`` request: the launch profile's, or the
     ``?profile=``-requested one — the same ``_config_profile_scope`` seam the built-in routers use.
@@ -880,64 +890,164 @@ def _mount_plugin_api_routes():
         disabled_set = set()
 
     for plugin in _get_dashboard_plugins():
-        api_file_name = plugin.get("_api_file")
-        if not api_file_name:
-            continue
-        skip = _plugin_api_mount_skip_reason(plugin, enabled_set, disabled_set)
-        if skip:
-            _log.debug("Plugin %s: skipping API mount (%s)", plugin.get("name", ""), skip)
-            continue
-        if plugin.get("source") not in ("bundled", "project"):
-            from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
-            if isolation_mode() == ISOLATION_HOST:
-                _mount_hosted_plugin_api(app, plugin, api_file_name)
+        with _plugin_api_mount_lock:
+            _mount_one_plugin_api(app, plugin, enabled_set, disabled_set)
+    _register_plugin_api_fallback(app)
+
+
+def _try_hot_mount_plugin_api(name: str) -> bool:
+    """Attempt to mount plugin ``name``'s backend API on the running app.
+
+    Called from the hot-mount fallback when a ``/api/plugins/<name>/...`` request
+    misses every mounted router — the case of a plugin installed/enabled AFTER
+    server start (previously a guaranteed 404 until restart, #130150-class).
+    Re-runs discovery (force rescan: the plugin dir did not exist at startup)
+    and applies the exact same trust gates as the import-time sweep via
+    ``_mount_one_plugin_api``; a not-enabled plugin is never imported.
+    """
+    if not name or "/" in name or "\\" in name or name == "..":
+        return False
+    from hermes_cli.web_server import _get_dashboard_plugins, app
+    try:
+        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
+        enabled_set = _get_enabled_set()
+        disabled_set = _get_disabled_set()
+    except Exception:
+        enabled_set = set()
+        disabled_set = set()
+    with _plugin_api_mount_lock:
+        if name in _plugin_api_mounted_names:
+            # Already mounted: this request simply missed every route the plugin
+            # defines. Returning False keeps it a plain 404 — returning True here
+            # would 307-redirect into the fallback again, forever.
+            return False
+        for plugin in _get_dashboard_plugins(force_rescan=True):
+            if plugin.get("name") != name:
                 continue
-        if plugin.get("source") == "project":
-            _log.warning(
-                "Plugin %s: ignoring backend api=%s (project plugins may "
-                "not auto-import Python code; move the plugin to "
-                "~/.hermes/plugins/ if you trust it)",
-                plugin["name"], api_file_name,
-            )
-            continue
-        dashboard_dir = Path(plugin["_dir"])
-        api_path = dashboard_dir / api_file_name
+            if _mount_one_plugin_api(app, plugin, enabled_set, disabled_set):
+                _keep_plugin_api_fallback_last(app)
+                return True
+            return False
+    return False
+
+
+def _keep_plugin_api_fallback_last(app) -> None:
+    """Re-append the fallback route after a hot mount.
+
+    ``include_router`` appends the fresh plugin router AFTER the fallback, and
+    FastAPI matches in list order — without this reorder the catch-all would
+    keep shadowing the just-mounted router and 307 forever."""
+    routes = app.router.routes
+    for i, route in enumerate(routes):
+        if route is _plugin_api_fallback_route:
+            routes.append(routes.pop(i))
+            break
+
+
+def _register_plugin_api_fallback(app) -> None:
+    """Register the hot-mount fallback route, LAST so every real router wins.
+
+    FastAPI matches routes in registration order, so a mounted plugin router
+    always beats this catch-all; it only sees requests for plugin APIs that are
+    not (yet) mounted. On a successful hot-mount it redirects (307, method and
+    body preserved) so the retried request is routed to the fresh router; on
+    failure it returns the 404 the request would have produced anyway.
+    """
+
+    async def _plugin_api_hot_mount_fallback(name: str, path: str, request: Request):
+        import anyio
+        mounted = await anyio.to_thread.run_sync(_try_hot_mount_plugin_api, name)
+        if mounted:
+            _log.info("Hot-mounted plugin API routes on first request: /api/plugins/%s/", name)
+            url = request.url.path
+            if request.url.query:
+                url = f"{url}?{request.url.query}"
+            return RedirectResponse(url, status_code=307)
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+    app.add_api_route(
+        "/api/plugins/{name}/{path:path}",
+        _plugin_api_hot_mount_fallback,
+        include_in_schema=False,
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+        dependencies=[Depends(_plugin_route_secret_scope)],
+    )
+    global _plugin_api_fallback_route
+    _plugin_api_fallback_route = app.router.routes[-1]
+
+
+def _mount_one_plugin_api(app, plugin: Dict[str, Any], enabled_set: set, disabled_set: set) -> bool:
+    """Mount one plugin's backend API routes on ``app`` if its trust gates pass.
+
+    Returns True when routes were added (and records the name in
+    ``_plugin_api_mounted_names``). Callers must hold ``_plugin_api_mount_lock``.
+    Shared by the import-time sweep and the hot-mount fallback so both paths
+    apply the exact same gates (GHSA-mcfc-hp25-cjv7, GHSA-5qr3-c538-wm9j).
+    """
+    api_file_name = plugin.get("_api_file")
+    if not api_file_name:
+        return False
+    if plugin.get("name") in _plugin_api_mounted_names:
+        return False
+    skip = _plugin_api_mount_skip_reason(plugin, enabled_set, disabled_set)
+    if skip:
+        _log.debug("Plugin %s: skipping API mount (%s)", plugin.get("name", ""), skip)
+        return False
+    if plugin.get("source") not in ("bundled", "project"):
+        from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+        if isolation_mode() == ISOLATION_HOST:
+            _mount_hosted_plugin_api(app, plugin, api_file_name)
+            _plugin_api_mounted_names.add(plugin["name"])
+            return True
+    if plugin.get("source") == "project":
+        _log.warning(
+            "Plugin %s: ignoring backend api=%s (project plugins may "
+            "not auto-import Python code; move the plugin to "
+            "~/.hermes/plugins/ if you trust it)",
+            plugin["name"], api_file_name,
+        )
+        return False
+    dashboard_dir = Path(plugin["_dir"])
+    api_path = dashboard_dir / api_file_name
+    try:
+        api_path.resolve().relative_to(dashboard_dir.resolve())
+    except (OSError, RuntimeError, ValueError):
+        # Discovery already filters this; defence in depth in case ``_dir`` was tampered
+        # with after caching or a future caller bypasses the validator.
+        _log.warning(
+            "Plugin %s: refusing to import api file outside its "
+            "dashboard directory (%s)", plugin["name"], api_path,
+        )
+        return False
+    if not api_path.exists():
+        _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
+        return False
+    try:
+        module_name = f"hermes_dashboard_plugin_{plugin['name']}"
+        spec = importlib.util.spec_from_file_location(module_name, api_path)
+        if spec is None or spec.loader is None:
+            return False
+        mod = importlib.util.module_from_spec(spec)
+        # Register in sys.modules BEFORE exec_module so pydantic/FastAPI can resolve
+        # string annotations (``from __future__ import annotations``) by module name.
+        sys.modules[module_name] = mod
         try:
-            api_path.resolve().relative_to(dashboard_dir.resolve())
-        except (OSError, RuntimeError, ValueError):
-            # Discovery already filters this; defence in depth in case ``_dir`` was tampered
-            # with after caching or a future caller bypasses the validator.
-            _log.warning(
-                "Plugin %s: refusing to import api file outside its "
-                "dashboard directory (%s)", plugin["name"], api_path,
-            )
-            continue
-        if not api_path.exists():
-            _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
-            continue
-        try:
-            module_name = f"hermes_dashboard_plugin_{plugin['name']}"
-            spec = importlib.util.spec_from_file_location(module_name, api_path)
-            if spec is None or spec.loader is None:
-                continue
-            mod = importlib.util.module_from_spec(spec)
-            # Register in sys.modules BEFORE exec_module so pydantic/FastAPI can resolve
-            # string annotations (``from __future__ import annotations``) by module name.
-            sys.modules[module_name] = mod
-            try:
-                spec.loader.exec_module(mod)
-            except Exception:
-                sys.modules.pop(module_name, None)
-                raise
-            router = getattr(mod, "router", None)
-            if router is None:
-                _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])
-                continue
-            app.include_router(
-                router,
-                prefix=f"/api/plugins/{plugin['name']}",
-                dependencies=[Depends(_plugin_route_secret_scope)],
-            )
-            _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
-        except Exception as exc:
-            _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
+            spec.loader.exec_module(mod)
+        except Exception:
+            sys.modules.pop(module_name, None)
+            raise
+        router = getattr(mod, "router", None)
+        if router is None:
+            _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])
+            return False
+        app.include_router(
+            router,
+            prefix=f"/api/plugins/{plugin['name']}",
+            dependencies=[Depends(_plugin_route_secret_scope)],
+        )
+        _plugin_api_mounted_names.add(plugin["name"])
+        _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
+        return True
+    except Exception as exc:
+        _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
+        return False

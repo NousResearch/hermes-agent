@@ -96,8 +96,8 @@ class TestPluginDispatch:
         assert len(fal_calls) == 1 and fal_calls[0]["fal_model"] == ig.DEFAULT_MODEL
         assert result["fallback_from"] == "krea"
         assert result["fallback_reason"] == "Krea connection error"
-        assert "FAL" in result["note"]
         assert result["success"] is fal_ok
+        assert ("generated on FAL" if fal_ok else "also failed") in result["note"]
 
     def test_deepinfra_key_alone_does_not_select_image_backend(self, monkeypatch):
         """DeepInfra chat credentials do not imply consent to image billing."""

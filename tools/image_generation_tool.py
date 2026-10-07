@@ -813,9 +813,11 @@ def _fall_back_to_fal(raw: str, prompt: str, aspect_ratio: str, sources: dict[st
         return raw
     logger.warning("Managed Krea refused the request before starting a job; falling back to FAL: %s", result.get("error"))
     fal_result = json.loads(image_generate_tool(prompt, aspect_ratio, upscale=sources.get("upscale"), fal_model=DEFAULT_MODEL))
+    note = (f"Krea was unavailable, so this image was generated on FAL ({DEFAULT_MODEL}) instead."
+            if fal_result.get("success") else
+            f"Krea was unavailable and the fallback to FAL ({DEFAULT_MODEL}) also failed.")
     fal_result.update(
-        provider="fal", model=DEFAULT_MODEL, fallback_from="krea", fallback_reason=result.get("error"),
-        note=f"Krea was unavailable, so this image was generated on FAL ({DEFAULT_MODEL}) instead.")
+        provider="fal", model=DEFAULT_MODEL, fallback_from="krea", fallback_reason=result.get("error"), note=note)
     return json.dumps(fal_result)
 
 

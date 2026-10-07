@@ -162,10 +162,16 @@ def outage_covers(cron_dir: Path, due_at: float, grace: float) -> bool:
                for r in (_degraded.get(_key(cron_dir)), _recovered.get(_key(cron_dir))))
 
 
-def forget_homes(home_keys) -> None:
-    """Drop the state of stores whose profile home (``hermes_home_key``) this process no longer
-    ticks, so a profile that left this gateway cannot keep the host-wide gauges at writable=0."""
-    stores = {_key(Path(home) / "cron") for home in home_keys}  # a symlinked cron/ resolves elsewhere
+def store_key(home) -> str:
+    """Record key of a profile home's cron store (a symlinked cron/ resolves elsewhere)."""
+    return _key(Path(home) / "cron")
+
+
+def forget_homes(stores) -> None:
+    """Drop the state of ``stores`` (``store_key`` values, resolved while each home existed) whose
+    profile this process no longer ticks, so a profile that left this gateway cannot keep the
+    host-wide gauges at writable=0."""
+    stores = set(stores)
     with _lock:
         for records in (_degraded, _recovered):
             for store in [s for s in records if s in stores]:

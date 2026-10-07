@@ -18,6 +18,7 @@ import json
 import asyncio
 import logging
 import os
+import shutil
 import sqlite3
 from datetime import timedelta
 
@@ -453,3 +454,10 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
     assert f"fix permissions on {cron_dir}" in sent[0][1]
     assert "writable again; 1 skipped run(s), catching up once per job" in sent[1][1]
     assert any(r.levelname == "WARNING" and "unwritable notice for" in r.getMessage() for r in caplog.records)
+    from cron import scheduler_ownership  # the profile leaves this gateway, its home already deleted
+    monkeypatch.setattr(scheduler_ownership, "_ticked_homes", {})
+    scheduler_ownership.register_ticked_homes([profile])
+    assert store_health.degraded_record(cron_dir) is not None
+    shutil.rmtree(profile)  # removes the cron/ symlink, never the store it points at
+    scheduler_ownership.register_ticked_homes([])
+    assert store_health.degraded_record(cron_dir) is None

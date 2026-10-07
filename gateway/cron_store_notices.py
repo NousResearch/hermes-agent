@@ -91,17 +91,17 @@ async def send_cron_store_notice(runner, event: str, record) -> None:
     """Post one ``unwritable``/``recovered`` notice to the home channels of the store's profile."""
     from gateway.run import _async_profile_runtime_scope
     from gateway.warning_notifications import present_notification
-    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+    from cron.store_health import store_key
+    from hermes_constants import get_routing_process_hermes_home
 
     fields = record.notice_fields()
     key = "gateway.cron_store.unwritable" if event == "unwritable" else "gateway.cron_store.recovered"
-    store_key = hermes_home_key(record.store)
     served_homes = runner._served_profile_homes or {}
     logger.info("Broadcasting cron store %s notice for %s", event, record.store)
     for profile, platform, _cfg, home, transport in list(runner._served_home_channel_transports()):
         served_home = served_homes.get(profile) if profile is not None else None
         # record.store is resolved: a cron/ symlinked to another disk has a foreign parent.
-        if hermes_home_key(Path(served_home or get_routing_process_hermes_home()) / "cron") != store_key:
+        if store_key(served_home or get_routing_process_hermes_home()) != record.store:
             continue
         # The opt-out is the owning profile's; the launch profile needs no extra scope.
         scope = _async_profile_runtime_scope(Path(served_home)) if served_home else contextlib.nullcontext()

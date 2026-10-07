@@ -5255,7 +5255,8 @@ def _api_key_profile_supplied_client(provider: str, **client_kwargs: Any) -> Any
     and the ``external_process`` branch below: a profile whose wire protocol is not
     OpenAI-over-HTTP overrides ``ProviderProfile.create_client()`` to supply its transport.
     A profile that raises is logged and skipped — a third-party plugin can only fail to
-    provide a client, never take the auxiliary resolution down."""
+    provide a client, never take the auxiliary resolution down — unless it sets
+    ``strict_client``, whose errors propagate."""
     try:
         from providers import get_provider_profile
         profile = get_provider_profile(provider)

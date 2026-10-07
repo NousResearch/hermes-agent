@@ -111,6 +111,7 @@ Full definition in `providers/base.py`. The most useful ones:
 | `supports_vision` | bool | Declares the provider's API accepts image content inside **tool-result** messages (a provider-wide wire capability). Per-model user-image routing comes from `model_capabilities` / models.dev, not from this flag |
 | `model_capabilities` | `dict[str, dict[str, Any]]` | Per-model capability declarations in the `model_overrides` schema — see [Declaring model capabilities](#declaring-model-capabilities) |
 | `default_headers` | `dict[str, str]` | Sent on every request (e.g. Copilot's `Editor-Version`); also forwarded by the default `fetch_models()` catalog request |
+| `strict_client` | bool | `create_client()` is the provider's only correct transport: it is consulted only when the runtime's provider name resolves to this profile (never by base-URL match), and its errors propagate instead of falling back to the standard client (Gemini's native REST client) |
 | `fixed_temperature` | Any | `None` = use caller's value; `OMIT_TEMPERATURE` sentinel = don't send temperature at all (Kimi) |
 | `default_max_tokens` | `int \| None` | Provider-level max_tokens cap (Nvidia: 16384) |
 | `unsupported_response_formats` | `tuple` | `response_format` types the API rejects outright; auxiliary requests omit them instead of paying a guaranteed 400 (DeepSeek: `("json_schema",)`) |
@@ -210,9 +211,11 @@ class AcmeProfile(ProviderProfile):
         Default returns None (= use the standard client). Override when the
         wire protocol is not OpenAI-over-HTTP — e.g. an ACP subprocess shim.
         client_kwargs is what the core would have passed to openai.OpenAI
-        (api_key, base_url, command, args, timeouts, headers…); accept **kwargs
-        and pick what you need. A raise is logged and falls back to the
-        standard client."""
+        (api_key, base_url, command, args, timeouts, headers…), plus
+        httpx_verify on the main agent path; accept **kwargs and pick what you
+        need, never forward the whole mapping to a constructor. A raise is
+        logged and falls back to the standard client, unless strict_client
+        is set (then it propagates)."""
         return None
 ```
 

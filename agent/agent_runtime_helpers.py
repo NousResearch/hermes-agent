@@ -1894,7 +1894,8 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
     """Ask the registered ProviderProfile for a custom client, if any. Resolves by provider name,
     then by ``base_url`` prefix so a URL-only runtime (``acp://…``) still reaches its profile.
     A profile that raises is logged and skipped: a third-party plugin must not be able to take
-    the turn down, it can only fail to provide a client."""
+    the turn down, it can only fail to provide a client. A ``strict_client`` profile is the
+    exception: it is matched only by its exact provider name and its errors propagate."""
     try:
         from providers import get_provider_profile
     except Exception:
@@ -1907,13 +1908,14 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
             profile = get_provider_profile(provider_name)
         except Exception:
             profile = None
-    exact_name = profile is not None and provider_name == raw_name
+    # Unpadded only: the inline branch strict profiles replaced was an exact set membership test.
+    by_name = profile is not None and raw_name == provider_name
     if profile is None:
         base_url = str(client_kwargs.get("base_url", "") or "").strip()
         if base_url:
             profile = _profile_for_base_url(base_url)
     # A strict profile's client is keyed on its exact provider name, never a URL or a padded name.
-    if profile is None or (profile.strict_client and not exact_name):
+    if profile is None or (profile.strict_client and not by_name):
         return None
     try:
         return profile.create_client(**client_kwargs)

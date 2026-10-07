@@ -1686,9 +1686,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                                        output_mode, context, order)
         exclusions = self._macos_search_exclusions(path)
         if exclusions and not result.error:
-            skipped = ", ".join(item.split("/")[-1] for item in exclusions)
-            result.warning = (
-                "Skipped macOS protected folders during broad search to avoid "
-                f"an unattended privacy prompt: {skipped}. Search a protected "
-                "folder directly when access is intentional.")
+            # Only claim the folders were "Skipped" when the backend's transport
+            # genuinely pruned them (find -prune). rg's exclusion globs keep the
+            # contents out of the results but still open the folder entry itself,
+            # so the TCC prompt can fire mid-search (#134775) — say that instead.
+            if result._macos_exclusion_mode == "prune":
+                result.warning = self._macos_protected_search_warning(exclusions)
+            else:
+                result.warning = self._macos_glob_exclusion_search_warning(exclusions)
         return result

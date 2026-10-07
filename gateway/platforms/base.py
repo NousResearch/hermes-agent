@@ -2305,16 +2305,15 @@ class BasePlatformAdapter(ABC):
     _plugin_handlers_wired: Optional[set] = None
 
     def _wire_plugin_handlers(self, native: Any = None) -> None:
-        """Invoke plugin-registered native handler factories (``ctx.register_platform_handler``)
-        with ``(native, adapter)``; adapters call this from ``connect()`` once the native
-        client exists and :meth:`rewire_plugin_handlers` re-runs it for plugins loaded later.
-        Idempotent per native client: a factory is keyed by ``(plugin, qualname)`` and skipped once
-        wired on this ``native`` (a force re-discovery hands back NEW function objects for the same
-        plugin, so identity alone would double-register). Each factory is isolated so a bad plugin
-        can't block connecting."""
+        """Invoke native factories with ``(native, adapter)`` at connect or reload.
+        Legacy factories deduplicate by ``(plugin, qualname)`` to avoid duplicate native handlers;
+        opted-in reload-safe factories also key on their registration generation. Each factory
+        is isolated so a bad plugin cannot block connecting."""
         try:
             from hermes_cli.plugins import get_plugin_manager
-            factories = get_plugin_manager().get_platform_handler_factories(
+            from gateway.platforms.base_plugin_handlers import platform_handler_key
+            manager = get_plugin_manager()
+            factories = manager.get_platform_handler_factories(
                 getattr(self.platform, "value", str(self.platform)))
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[%s] Could not load plugin handler factories: %s", self.name, e)
@@ -2323,8 +2322,9 @@ class BasePlatformAdapter(ABC):
             # A rebuilt native client (transient-init rebuild, reconnect) starts with nothing wired.
             self._plugin_handler_native = native
             self._plugin_handlers_wired = set()
-        for factory, plugin_name in factories:
-            key = (plugin_name, getattr(factory, "__qualname__", None) or repr(factory))
+        for registration in factories:
+            factory, plugin_name = registration
+            key = platform_handler_key(manager, registration)
             if key in self._plugin_handlers_wired:
                 continue
             try:

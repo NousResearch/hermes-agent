@@ -60,6 +60,38 @@ class PluginRegistration:
 
 
 class PluginLedgerMixin:
+    def _register_platform_handler_factory(
+        self, context: Any, platform: str, factory: Callable, reload_safe: bool,
+    ) -> None:
+        """Own a native factory and its opt-in wiring generation until plugin unload."""
+        if not callable(factory):
+            raise context._refuse("a platform handler factory with a non-callable factory")
+        if type(reload_safe) is not bool:
+            raise context._refuse("a platform handler factory with a non-boolean reload_safe value")
+        key = (platform or "").strip().lower()
+        if not key:
+            raise context._refuse("a platform handler factory with an empty platform name")
+        factories = self._platform_handler_factories.setdefault(key, [])
+        entry = (factory, context.manifest.name)
+        factories.append(entry)
+        generation = object() if reload_safe else None
+        if generation is not None:
+            self._platform_handler_reload_generations[id(entry)] = generation
+
+        def release() -> None:
+            self._remove_identity(factories, entry)
+            if self._platform_handler_reload_generations.get(id(entry)) is generation:
+                self._platform_handler_reload_generations.pop(id(entry), None)
+
+        factory_name = getattr(factory, "__qualname__", None) or repr(factory)
+        context._track("platform_handler", f"{key}:{factory_name}", release)
+        logger.debug("Plugin %s registered %s handler factory: %s", context.manifest.name, key,
+                     getattr(factory, "__name__", repr(factory)))
+
+    def get_platform_handler_factory_generation(self, registration: tuple) -> object | None:
+        """Opaque rewire generation for an opted-in live factory registration."""
+        return self._platform_handler_reload_generations.get(id(registration))
+
     def _track_registration(
         self, manifest: PluginManifest, kind: str, key: str, release: Callable[[], None], *,
         persistent: bool = False,

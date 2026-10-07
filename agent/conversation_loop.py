@@ -40,6 +40,7 @@ from agent.turn_retry_state import TurnRetryState
 # skewed phase mid-turn.
 from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
 from agent.turn_api_error import handle_api_error
+from agent.turn_usage import record_pending_moa_usage
 from agent.turn_api_request import build_api_request
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, failed_turn_notice, site_copy
 from agent.turn_final_response import finish_text_response
@@ -1509,8 +1510,10 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
             return _ng.result
         if _ng.action == "break":
             return None
+        attempt_client = agent.client
         try:
             _run_phase(build_api_request, agent, s)
+            attempt_client = agent.client
             if _run_phase(perform_api_call, agent, s).action == "break":
                 return None
             _rc = _run_phase(check_api_response, agent, s)
@@ -1519,9 +1522,11 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
             if _rc.action == "break":
                 return None
         except InterruptedError:
+            record_pending_moa_usage(agent, attempt_client)
             if _run_phase(handle_api_interrupt, agent, s).action == "break":
                 return None
         except Exception as api_error:
+            record_pending_moa_usage(agent, attempt_client)
             _ae = _run_phase(handle_api_error, agent, s, api_error=api_error)
             if _ae.action == "return":
                 return _ae.result

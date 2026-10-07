@@ -407,8 +407,7 @@ class TestBuildCallKwargsMaxTokens:
 
 
     def test_moa_task_exact_match(self):
-        """Only task == "moa_reference" triggers the cap — not the aggregator,
-        not arbitrary 'moa_' prefixed tasks."""
+        """Explicit MoA budgets are retained only for known model-call tasks."""
         from agent.auxiliary_client import _build_call_kwargs
 
         # 'moa_reference' → honored
@@ -421,7 +420,7 @@ class TestBuildCallKwargsMaxTokens:
         )
         assert kw["max_tokens"] == 500
 
-        # 'moa_aggregator' → dropped (aggregator is the acting model, not an advisor)
+        # The acting model has its own budget, including continuation increases.
         kw2 = _build_call_kwargs(
             provider="zai", model="glm-5.2",
             messages=[{"role": "user", "content": "hi"}],
@@ -429,9 +428,9 @@ class TestBuildCallKwargsMaxTokens:
             base_url="https://api.z.ai/api/coding/paas/v4",
             task="moa_aggregator",
         )
-        assert "max_tokens" not in kw2
+        assert kw2["max_tokens"] == 500
 
-        # 'moa_custom_future' → dropped (only moa_reference is whitelisted)
+        # A name prefix alone must not change another task's output policy.
         kw3 = _build_call_kwargs(
             provider="zai", model="glm-5.2",
             messages=[{"role": "user", "content": "hi"}],

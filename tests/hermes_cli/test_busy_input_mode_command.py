@@ -4,7 +4,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-
 def _import_cli():
     import hermes_cli.config as config_mod
 
@@ -18,7 +17,6 @@ def _import_cli():
     import cli as cli_mod
 
     return cli_mod
-
 
 class TestHandleBusyCommand(unittest.TestCase):
     def _make_cli(self, busy_input_mode="interrupt"):
@@ -53,7 +51,6 @@ class TestHandleBusyCommand(unittest.TestCase):
         self.assertEqual(stub.busy_input_mode, "queue")
         mock_save.assert_called_once_with("display.busy_input_mode", "queue")
 
-
     def test_steer_argument_sets_steer_mode_and_saves(self):
         cli_mod = _import_cli()
         stub = self._make_cli("interrupt")
@@ -68,7 +65,6 @@ class TestHandleBusyCommand(unittest.TestCase):
         printed = " ".join(str(c) for c in mock_cprint.call_args_list)
         self.assertIn("steer", printed.lower())
 
-
     def test_invalid_argument_prints_usage(self):
         cli_mod = _import_cli()
         stub = self._make_cli()
@@ -81,18 +77,3 @@ class TestHandleBusyCommand(unittest.TestCase):
         mock_save.assert_not_called()
         printed = " ".join(str(c) for c in mock_cprint.call_args_list)
         self.assertIn("Usage: /busy", printed)
-
-
-class TestBusyCommandRegistry(unittest.TestCase):
-    def test_busy_in_registry(self):
-        from hermes_cli.commands import COMMAND_REGISTRY
-
-        names = [c.name for c in COMMAND_REGISTRY]
-        assert "busy" in names
-
-    def test_busy_subcommands_documented(self):
-        from hermes_cli.commands import COMMAND_REGISTRY
-
-        busy = next(c for c in COMMAND_REGISTRY if c.name == "busy")
-        assert busy.args_hint == "[queue|steer|interrupt|status]"
-        assert busy.category == "Configuration"

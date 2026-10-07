@@ -10,9 +10,10 @@ import os
 import re
 from typing import Any, Dict, Optional
 
+from agent.azure_identity_adapter import is_token_provider
 from agent.secret_scope import get_secret_str
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches
+from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
 
 def _rp():
@@ -31,8 +32,8 @@ def _azure_entra_credentials(cfg_entra: Dict[str, Any]) -> Any:
         from agent.azure_identity_adapter import SCOPE_AI_AZURE_DEFAULT, EntraIdentityConfig, build_token_provider
     except Exception as exc:
         raise AuthError(
-            "Azure Foundry Entra ID auth requires the 'azure-identity' "
-            "package. Install it with: pip install azure-identity "
+            "Could not load the Azure Foundry Entra ID adapter. "
+            "Run hermes pm repair, then restart Hermes. "
             f"(import failed: {exc})"
         ) from exc
     scope = str(cfg_entra.get("scope") or "").strip() or SCOPE_AI_AZURE_DEFAULT
@@ -69,7 +70,10 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: Dict[s
     ``.env``/env or a per-request Entra ID token, trailing ``/v1`` stripped for Anthropic-style
     endpoints (the Anthropic SDK appends /v1/messages itself)."""
     rp = _rp()
-    explicit_api_key = str(explicit_api_key or "").strip()
+    # Aux ``provider: auto`` forwards the main runtime's api_key — under entra_id that is the token
+    # provider callable; str() would turn it into a function repr sent as a static key (401, #72421).
+    forwarded_token_provider = explicit_api_key if is_token_provider(explicit_api_key) else None
+    explicit_api_key = "" if forwarded_token_provider else str(explicit_api_key or "").strip()
     explicit_base_url_clean = str(explicit_base_url or "").strip().rstrip("/")
     cfg_base_url, cfg_api_mode, cfg_auth_mode, cfg_entra = "", "chat_completions", "api_key", {}
     if rp._cfg_provider(model_cfg) == "azure-foundry":
@@ -97,9 +101,8 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: Dict[s
             api_key, source, auth_mode, entra = explicit_api_key, "explicit", "api_key", {}
         else:
             scope = str(cfg_entra.get("scope") or "").strip()
-            api_key, source, auth_mode, entra = _azure_entra_credentials(cfg_entra), "entra_id", "entra_id", (
-                {"scope": scope} if scope else {}
-            )
+            api_key = forwarded_token_provider or _azure_entra_credentials(cfg_entra)
+            source, auth_mode, entra = "entra_id", "entra_id", ({"scope": scope} if scope else {})
         return rp._runtime("azure-foundry", cfg_api_mode, base_url, api_key, auth_mode=auth_mode, entra=entra, source=source,
                            requested_provider=requested_provider)
     return rp._runtime("azure-foundry", cfg_api_mode, base_url, _azure_foundry_api_key(rp, explicit_api_key),
@@ -115,8 +118,9 @@ def _resolve_openrouter_runtime(
 ) -> Dict[str, Any]:
     """Terminal resolver: OpenRouter, or a bare/aliased ``custom`` endpoint. base_url precedence:
     explicit > CUSTOM_BASE_URL > trusted ``model.base_url`` > OPENROUTER_BASE_URL > default.
-    OPENAI_BASE_URL is deliberately NOT consulted — config.yaml is the single source of truth for
-    endpoint URLs. OpenRouter contexts prefer OPENROUTER_API_KEY; custom endpoints never receive the
+    OPENAI_BASE_URL never picks the endpoint (config.yaml is the single source of truth for endpoint
+    URLs); it is read only to keep an OPENAI_API_KEY bound to another host out of the OpenRouter
+    fallback. OpenRouter contexts prefer OPENROUTER_API_KEY; custom endpoints never receive the
     OpenRouter key and only get env keys gated on their authoritative hosts."""
     rp = _rp()
     model_cfg = rp._get_model_config()
@@ -153,9 +157,30 @@ def _resolve_openrouter_runtime(
         )
     )
     if is_openrouter_context:
-        candidates = [explicit_api_key, get_secret_str("OPENROUTER_API_KEY"), get_secret_str("OPENAI_API_KEY")]
+        # Same read order as the credential pool and _resolve_api_key_provider_secret
+        # (.env, then scope-aware os.environ, raw op:// references yielding to the resolved
+        # scoped value). get_secret_str sees os.environ only, so a key living solely in
+        # ~/.hermes/.env was lost once the pool entry went exhausted/benched (#117667).
+        # OPENAI_API_KEY is a legacy home for an OpenRouter key. When OPENAI_BASE_URL binds it, it
+        # goes only to that origin: another scheme or port on the same host is another endpoint.
+        # Unbound, openrouter.ai gets it only when it is OpenRouter-shaped (sk-or-), so a real OpenAI
+        # key never reaches a third party.
+        from hermes_cli.config import get_env_value_prefer_dotenv
+        openai_key = get_env_value_prefer_dotenv("OPENAI_API_KEY") or ""
+        openai_base_url = get_secret_str("OPENAI_BASE_URL", "").strip()
+        if base_url_hostname(openai_base_url):
+            openai_origin = base_url_origin(openai_base_url)  # empty on a bad port: bound, matches nothing
+            openai_key_ok = bool(openai_origin[1]) and openai_origin == base_url_origin(base_url)
+        else:
+            openai_key_ok = not is_openrouter_url or rp.looks_like_openrouter_key(openai_key)
+        candidates = [explicit_api_key, get_env_value_prefer_dotenv("OPENROUTER_API_KEY"),
+                      openai_key if openai_key_ok else ""]
     else:
+        # ``model.api_key`` and ``model.key_env`` back a trusted config base_url only; the key_env
+        # rung is what a bare ``provider: custom`` block relies on (#67453).
+        from hermes_cli.runtime_provider_custom import _model_cfg_key_env_for
         candidates = [explicit_api_key, (cfg_api_key if use_config_base_url else ""),
+                      (_model_cfg_key_env_for(model_cfg, base_url) if use_config_base_url else ""),
                       *rp._host_gated_env_key_candidates(base_url, ollama=True)]
     api_key = next((str(c or "").strip() for c in candidates if rp.has_usable_secret(c)), "")
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
@@ -178,12 +203,13 @@ def _resolve_openrouter_runtime(
 
 
 def _resolve_bedrock_runtime(requested_provider: str, model_cfg: Dict[str, Any], target_model: Optional[str]) -> Dict[str, Any]:
-    """AWS Bedrock with triple-path routing: OpenAI models → Bedrock Mantle's Responses endpoint;
+    """AWS Bedrock with triple-path routing: bare in-Region OpenAI IDs → Bedrock Mantle's Responses
+    endpoint (their ``us.``/``global.`` profile IDs are bedrock-runtime IDs and take Converse);
     Claude → AnthropicBedrock SDK (prompt caching, thinking budgets); others → Converse API.
     AWS_BEARER_TOKEN_BEDROCK auth is unsupported by AnthropicBedrock (SigV4 only), so bearer users
     go through Converse regardless of model."""
-    from agent.bedrock_adapter import (bedrock_openai_base_url, has_aws_credentials, is_anthropic_bedrock_model,
-                                       is_openai_bedrock_model, resolve_aws_auth_env_var, resolve_bedrock_bearer_token,
+    from agent.bedrock_adapter import (bedrock_openai_base_url, bedrock_openai_uses_mantle, has_aws_credentials,
+                                       is_anthropic_bedrock_model, resolve_aws_auth_env_var, resolve_bedrock_bearer_token,
                                        resolve_bedrock_runtime_region, bedrock_guardrail_config)
     from hermes_cli.config import load_config  # direct (not the origin delegate), as before
     rp = _rp()
@@ -208,7 +234,7 @@ def _resolve_bedrock_runtime(requested_provider: str, model_cfg: Dict[str, Any],
     has_bearer_token = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
     runtime = rp._runtime("bedrock", "bedrock_converse", f"https://bedrock-runtime.{region}.amazonaws.com", "aws-sdk",
                           source=auth_source, region=region, requested_provider=requested_provider)
-    if is_openai_bedrock_model(current_model):
+    if bedrock_openai_uses_mantle(current_model):
         bearer = resolve_bedrock_bearer_token()
         runtime.update(api_mode="codex_responses", base_url=bedrock_openai_base_url(region), api_key=bearer or "aws-sdk",
                        source="AWS_BEARER_TOKEN_BEDROCK" if bearer else auth_source, model=current_model, bedrock_openai=True)

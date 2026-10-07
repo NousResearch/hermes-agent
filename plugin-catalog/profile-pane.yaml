@@ -1,0 +1,14 @@
+name: profile-pane
+repo: https://github.com/taxbax/profile-pane
+sha: 2b480df77307e263df800dac03c220d009c0fae8
+description: "Disclosure — copies .env key values (and opt-in auth.json backups) between profiles; rewrites other profiles' SOUL, memory and config.yaml. Cross-profile config pane with copy+manifest reconcile and per-group scope."
+maintainer: taxbax
+tier: community
+category: desktop
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+platforms:
+- macos

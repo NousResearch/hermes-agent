@@ -173,7 +173,11 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         if name in BRIDGE_TOOL_NAMES:
             return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
         raw_args = raw.get("arguments")
-        if raw_args is None:
+        if raw_args is None or (isinstance(raw_args, str) and not raw_args.strip()):
+            # "" / whitespace is how some OpenAI-compatible gateways spell "no arguments" for a
+            # parameterless tool (#83937); the loop already treats an empty outer arguments string
+            # as {} (turn_tool_validation), and a missing required param still surfaces below via
+            # validate_deferred_call_args instead of an opaque JSON parse error.
             raw_args = {}
         if isinstance(raw_args, str):
             try:
@@ -210,7 +214,7 @@ def not_deferrable_error(name: str) -> str:
     """Rejection for a ``tool_call`` naming something that is not a deferred tool.
     Two different mistakes reach here and need opposite corrections: a directly-listed
     tool (call it without the bridge) vs. an unknown name — typically a deferred MCP tool
-    cited by its bare suffix instead of the full ``mcp__<server>__<tool>`` name. Telling
+    cited by its bare suffix instead of the full ``mcp__<server>__{tool}`` name. Telling
     the second group 'call it directly' is the opposite of what they must do."""
     from tools.tool_search import _core_tool_names  # late: tool_search imports this module
     if name in _core_tool_names() or _registry_entry(name) is not None:
@@ -225,4 +229,4 @@ def not_deferrable_error(name: str) -> str:
     hint = (f" Did you mean {', '.join(repr(c) for c in candidates)}?" if candidates
             else " Use tool_search to find the exact name.")
     return (f"'{name}' is not a known tool name. Deferred tools must be invoked through tool_call "
-            f"by the exact name tool_search returns (e.g. mcp__<server>__<tool>).{hint}")
+            f"by the exact name tool_search returns (e.g. mcp__<server>__{{tool}}).{hint}")

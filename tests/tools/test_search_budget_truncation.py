@@ -167,7 +167,9 @@ def test_no_rg_multi_root_modified_is_one_globally_sorted_scan():
     assert result.truncated is True
     assert len(env.find_commands) == 1
     command, kwargs = env.find_commands[0]
-    assert "find '/one/.hidden' '/two/.cache'" in command
+    # ``-H``: the operands are stat'ed, so a symlinked root is walked instead of
+    # matching nothing at all (#116270). The single globally-sorted scan is unchanged.
+    assert "find -H '/one/.hidden' '/two/.cache'" in command
     assert "sort -rn" in command
     assert "head -n 2" in command
     assert "! -path '/one/.hidden'" in command

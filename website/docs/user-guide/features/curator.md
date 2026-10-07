@@ -21,7 +21,7 @@ The curator is triggered by an inactivity check, not a cron job. On CLI session 
 1. Enough time has passed since the last curator run (`interval_hours`, default **7 days**), and
 2. The agent has been idle long enough (`min_idle_hours`, default **2 hours**).
 
-Desktop and other `hermes serve` backends share the existing hourly maintenance timer (first poll after 90 seconds), independently of cron jobs. They measure inactivity from process startup and the most recent chat activity in the same profile, retaining that activity timestamp after a session closes or is reaped, and skip curator while a turn in that profile is running. A connected but inactive window does not block maintenance. This timer also polls personal and organization Skill Sync, subject to those features' own opt-in gates. A running messaging gateway for the same profile owns these chores instead.
+Desktop and other `hermes serve` backends share the existing hourly maintenance timer (first poll after 90 seconds), independently of cron jobs. They measure inactivity from process startup and the most recent chat activity in the same profile, retaining that activity timestamp after a session closes or is reaped, and skip curator while a turn in that profile is running. A connected but inactive window does not block maintenance. A running messaging gateway for the same profile owns these chores instead.
 
 The timer services its backend's profile. In-flight maintenance runs in a worker thread; closing the backend does not cooperatively interrupt that pass. Starting multiple independent serve processes for the same profile can still race the curator's interval check.
 
@@ -175,6 +175,13 @@ skills:
   ledger: false
 ```
 
+The file is also size-bounded: once it grows past `skills.ledger_max_bytes` (default 5 MB), the next mutation first rewrites it through the unchanged-file dedup (exactly what `hermes curator ledger --compact` does) and, if genuinely-divergent entries still exceed the cap, drops the oldest ones regardless of shape — the newest entry always survives, lines in the retained tail are never rewritten or parsed (a malformed line there survives verbatim), and the sweep frees blobs nothing references anymore and older than an hour (a fresh unreferenced blob may belong to a capture another process has not yet recorded). Set it to `0` to keep the ledger append-only forever.
+
+```yaml
+skills:
+  ledger_max_bytes: 5242880   # 0 = never auto-maintain
+```
+
 ## Archive TTL purge
 
 Archived skills are kept forever by default. If you want `~/.hermes/skills/.archive/` bounded, set a TTL and purge explicitly — purging never runs automatically, and every purged skill is captured into the ledger (with blobs) first, so even a purge leaves an auditable, recoverable trail:
@@ -269,11 +276,15 @@ existing `last_activity_at`, so handing over a library you already stopped
 using does not buy it a fresh 90-day window. Expect adopted long-idle skills to
 go `stale` (or `archived`) on the next pass; that is the point.
 
-Adoption is also what unblocks autonomous *improvement*. The background review
-fork refuses to patch a skill that isn't curator-managed, so if it notices one
-of your skills is outdated it will say so and recommend adoption rather than
-edit it. Foreground (user-directed) edits are never affected — you and the
-agent can always edit your own skills on request.
+Adoption only governs *archival*. The background self-improvement review can
+patch, rewrite, and add support files to any skill it learns from (hand-written,
+URL-installed, bundled, hub-installed, external, or pinned), so lessons land in
+the skill that governs the task whoever wrote it. Every such write is recorded
+in the skill ledger. It may archive (delete) only curator-managed skills, never
+pinned ones. To review those writes before they land, turn on
+`skills.write_approval` (see [Gating agent skill writes](./skills.md#gating-agent-skill-writes-skillswrite_approval)).
+A bundled or hub-installed skill the review has edited counts as locally
+modified, so `hermes update` / `hermes skills update` stop overwriting it.
 
 :::note `created_by` is a policy flag, not a provenance claim
 The stored field is named `created_by`, but it is consumed as "may autonomous

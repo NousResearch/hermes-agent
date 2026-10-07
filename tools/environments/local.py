@@ -20,13 +20,12 @@ from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
-from tools.environments.local_env_policy import (
-    _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
-    _is_hermes_internal_secret, _is_terminal_first_party_env,
-    _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys, strip_profile_gate_env)
-from tools.environments.local_gitbash_probe import (
-    _bash_probe_details_cache, _bash_starts, _git_bash_aslr_help,
-    _looks_like_msys_spawn_failure, _mandatory_aslr_enabled)
+from tools.environments.local_env_policy import (  # noqa: F401 — _HERMES_PROVIDER_ENV_BLOCKLIST stays importable from here
+    _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
+    _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
+    _home_adapter_secret_env, _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys,
+    _registered_adapter_secret_env, _registry_adapter_secret_env,
+    strip_profile_gate_env)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
 
@@ -38,8 +37,9 @@ logger = logging.getLogger(__name__)
 # --- Terminal temp-cache pruning ---
 # get_temp_dir() defaults to HERMES_HOME/cache/terminal (real storage, not tmpfs), so
 # stale artifacts don't vanish on reboot: the gateway housekeeping loop prunes hourly
-# and a once-per-process sweep covers CLI-only installs.
-TERMINAL_TEMP_MAX_AGE_HOURS = 72
+# and a once-per-process sweep covers CLI-only installs. Retention is idle-based like
+# the scratch dir: an entry goes 24h after the last write anywhere inside it.
+TERMINAL_TEMP_MAX_IDLE_HOURS = 24
 _terminal_temp_prune_lock = threading.Lock()
 _terminal_temp_pruned_once = False
 # Background artifacts come in triplets (hermes_bg_<id>.log/.pid/.exit). A live
@@ -57,9 +57,13 @@ def _default_terminal_temp_dir() -> "Path | None":
         return None
 
 
-def cleanup_terminal_temp_cache(max_age_hours: int = TERMINAL_TEMP_MAX_AGE_HOURS) -> int:
-    """Delete session temp artifacts older than *max_age_hours*; return count.
+def cleanup_terminal_temp_cache(max_age_hours: float = TERMINAL_TEMP_MAX_IDLE_HOURS) -> int:
+    """Delete session temp artifacts idle for *max_age_hours* (no write anywhere in a
+    directory's subtree; the kwarg name is the ``cleanup_*_cache`` signature the gateway
+    housekeeping loop calls every entry with); return count.
     Only the managed default dir is pruned — never a user-pointed ``terminal.temp_dir``."""
+    from hermes_constants_scratch import subtree_touched_since
+
     root = _default_terminal_temp_dir()
     if root is None:
         return 0
@@ -82,7 +86,10 @@ def cleanup_terminal_temp_cache(max_age_hours: int = TERMINAL_TEMP_MAX_AGE_HOURS
     removed = 0
     for f, mt in mtimes.items():
         m = _BG_GROUP_RE.match(f.name)
-        if (group_newest[m.group(1)] if m else mt) >= cutoff:
+        if m:
+            if group_newest[m.group(1)] >= cutoff:
+                continue
+        elif subtree_touched_since(f, cutoff):
             continue
         try:
             shutil.rmtree(f, ignore_errors=True) if f.is_dir() else f.unlink()
@@ -244,6 +251,8 @@ def _filter_secret_env(
         from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
     except Exception:
         is_env_passthrough, resolve_passthrough_value = (lambda _: False), (lambda _n, fb: fb)
+    plugin_strip_folded = frozenset(k.upper() for k in plugin_strip)
+    registered = _registered_adapter_secret_env()
     for key, value in items.items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             if not unwrap_force:
@@ -252,11 +261,11 @@ def _filter_secret_env(
             if not _is_hermes_internal_secret(key):
                 out[key] = value
             continue
-        if _is_hermes_internal_secret(key) or key in plugin_strip:
+        if _is_hermes_internal_secret(key) or key.upper() in plugin_strip_folded:
             continue
         first_party = _is_terminal_first_party_env(key)
         passthrough = is_env_passthrough(key)
-        if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not (passthrough or first_party):
+        if _is_provider_env_blocklisted(key, registered) and not (passthrough or first_party):
             continue
         if passthrough and not first_party:
             value = resolve_passthrough_value(key, value)
@@ -305,25 +314,34 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
                          _plugin_terminal_env_strip_keys(), lambda p: p)
 
 
-def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]:
-    """Sanitized env for the **non-terminal** spawn surface (browser, ACP/CLI executors,
-    computer-use driver, TUI Node host). Tier 1 (``_ALWAYS_STRIP_KEYS``, plugin keys,
-    force-prefixed hints, dynamic internal secrets) is always removed; Tier 2 (the
-    provider/tool blocklist) unless ``inherit_credentials`` — pass that **only** for
-    children that legitimately need LLM credentials (user-blessed claude/codex/gemini
-    CLI, TUI Node host). Terminal/execute_code use ``_sanitize_subprocess_env``."""
-    env = _scrub_credentials(os.environ.copy(), inherit_credentials=inherit_credentials)
+def hermes_subprocess_env(
+    *, inherit_credentials: bool = False, base_env: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Sanitize a non-terminal child's environment (no skill passthrough).
+
+    Bot, GitHub and remote-compute secrets never pass through; provider/tool
+    credentials pass only with ``inherit_credentials=True`` for children that
+    need them. Callers needing one other secret should add only that key back.
+    ``base_env`` lets an already curated environment use the same policy.
+    Terminal and execute_code spawns use the skill-aware sanitizer instead.
+    """
+    env = dict(base_env) if base_env is not None else os.environ.copy()
+    env = _scrub_credentials(env, inherit_credentials=inherit_credentials)
     env.setdefault("PYTHONUTF8", "1")  # Windows UTF-8 safety for spawned processes
     return _finalize_child_env(env)
 
 
 def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
     """Tier 1 (always) and, unless ``inherit_credentials``, Tier 2 provider/tool credentials, in place."""
-    strip = _ALWAYS_STRIP_KEYS | _plugin_terminal_env_strip_keys()
-    if not inherit_credentials:
-        strip |= _HERMES_PROVIDER_ENV_BLOCKLIST
+    # Credential names fold to uppercase for membership: on Windows the env block
+    # itself is case-insensitive, so a lowercase-stored ``gh_token`` IS GH_TOKEN.
+    home_secrets = _home_adapter_secret_env()  # one manifest stamp per scrub
+    strip_folded = _ALWAYS_STRIP_FOLDED | {k.upper() for k in _plugin_terminal_env_strip_keys()} | home_secrets
+    registered = _registry_adapter_secret_env()  # home_secrets already strip above
     for key in list(env):
-        if (key in strip or key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
+        if (key.upper() in strip_folded
+                or (not inherit_credentials and _is_provider_env_blocklisted(key, registered))
+                or key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
                 or _is_hermes_internal_secret(key)):
             del env[key]
     return env
@@ -340,10 +358,21 @@ def build_subprocess_env(
     bridges HERMES_HOME + HOME and ``extra`` is applied last so caller overrides win.
     ``strip_launch_profile`` drops the LAUNCH profile's ``.env`` residue from the base first
     (:func:`strip_launch_profile_env`; a no-op unless a routed home is active) so a child that
-    acts for a routed profile sees only that profile's declared names, never the launch profile's."""
+    acts for a routed profile sees only that profile's declared names, never the launch profile's.
+    Under multiplex semantics it then overlays the bound secret scope (the routed profile's own
+    ``.env`` + source values, which never enter ``os.environ``) and re-applies the managed keys,
+    all BEFORE the scrub, so those values pass the same scrub / passthrough rules as any other."""
     env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
     if strip_launch_profile:
         strip_launch_profile_env(env)
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+        if is_multiplex_active():
+            # Single-profile: the scope IS os.environ, so overlaying it would only re-sanitize
+            # values the child already inherits byte-identical.
+            env.update(current_secret_scope() or {})
+            # Administrator-managed values keep their precedence over the routed profile's own .env,
+            # exactly as they do in the launch process (``_apply_managed_env`` applies them last).
+            restore_managed_env(env)
     if scrub_secrets:
         return _sanitize_subprocess_env(env, dict(extra) if extra else None)
     if inherit_profile_home:
@@ -375,11 +404,12 @@ def served_profile_child_env(
     ``hermes_subprocess_env`` snapshot."""
     from agent.secret_scope import (
         UnscopedSecretError, build_profile_secret_scope, current_secret_scope, is_multiplex_active)
-    from hermes_constants import get_hermes_home_override
+    from hermes_constants import apply_scratch_tmp_env, get_hermes_home_override
     env = dict(base) if base is not None else hermes_subprocess_env(inherit_credentials=inherit_credentials)
     target = str(target_home or get_hermes_home_override() or "")
     if target:
         env["HERMES_HOME"] = target
+        apply_scratch_tmp_env(env)  # TMPDIR follows the served home, like HOME does
         if _is_routed_home(target):
             strip_launch_profile_env(env, target)
             _scrub_credentials(env, inherit_credentials=False)
@@ -397,11 +427,30 @@ def served_profile_child_env(
     return env
 
 
+def host_gateway_child_env(
+    base: "Mapping[str, str] | None" = None,
+) -> dict[str, str]:
+    """Child env for the host gateway: the default profile's secrets, never the launcher's.
+
+    ``served_profile_child_env`` — not ``os.environ.copy()``. A profile-scoped parent
+    (desktop, fleet restart, detached watcher) must not donate its dotenv to the
+    multiplexer that owns the primary adapter map.
+    """
+    from hermes_constants import get_default_hermes_root
+    return served_profile_child_env(
+        base=base, target_home=get_default_hermes_root(), inherit_credentials=True,
+    )
+
+
 def _is_routed_home(target_home: "str | Path") -> bool:
-    """True when ``target_home`` is not the process's own (launch) home."""
-    from hermes_constants import get_process_hermes_home
+    """True when ``target_home`` is not the process's own (launch) home.
+
+    Same launch-home identity as ``agent.secret_scope.serves_routed_profile()``: under a host that
+    mirrors the served profile into ``HERMES_HOME``, the live env var names the served home and the
+    launch residue would never be stripped from that profile's child env."""
+    from hermes_constants import get_routing_process_hermes_home
     try:
-        return Path(target_home).resolve() != get_process_hermes_home().resolve()
+        return Path(target_home).resolve() != get_routing_process_hermes_home().resolve()
     except OSError:
         return True
 
@@ -417,72 +466,65 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
     gateway-wide multiplex flag on": the Desktop/dashboard backend serves ``?profile=B`` by
     installing a HERMES_HOME override without that flag."""
     from agent.secret_scope import _is_global_env, load_env_file
-    from hermes_constants import get_hermes_home_override, get_process_hermes_home
+    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
     target = target_home or get_hermes_home_override()
     if not target or not _is_routed_home(target):
         return env
-    launch_home = get_process_hermes_home()
+    launch_home = get_routing_process_hermes_home()
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
-    for key in set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values()):
-        if not _is_global_env(key) or key.startswith("TERMINAL_"):
-            env.pop(key, None)
+    # Folded strip: on Windows the env block is case-insensitive, so residue
+    # stored under a variant casing is the same variable and must go too. The
+    # selection folds the same way so a lowercase ``path`` in .env is still
+    # recognized as a global name and left alone.
+    # Current file AND every key any dotenv load put into os.environ this process lifetime: a key
+    # removed or renamed in the launch .env after boot is still in os.environ with the old value, and
+    # a re-parse of the file alone no longer names it (#107695 review). External secret sources
+    # (vault, 1Password, ...) write their names into the same shared os.environ, and a name the
+    # LAUNCH profile's source supplied is not the target profile's to see; the caller's scope
+    # overlay puts back exactly the ones the target's own sources supply. The administrator-managed
+    # .env is NOT residue: its values are policy for every profile (``_apply_managed_env`` applies
+    # it last, with override, so it beats the user's own .env) — leave them in place.
+    from hermes_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys, source_supplied_names
+    managed_names = {key.upper() for key in managed_dotenv_keys()}
+    residue_names = {
+        key.upper() for key in
+        set(load_env_file(launch_home / ".env")) | set(launch_dotenv_keys())
+        | set(TERMINAL_CONFIG_ENV_MAP.values()) | set(source_supplied_names())
+        if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")} - managed_names
+    for key in [k for k in env if k.upper() in residue_names]:
+        del env[key]
     # Authorization gates are the one residue a name list cannot see: a unit-file ``Environment=``
     # or an operator export never appears in the launch ``.env``, the secret scrub ignores
     # non-credentials, and the target's own ``.env`` rarely defines the key to overwrite it (#113270).
     return strip_profile_gate_env(env)
 
 
+def restore_managed_env(env: dict) -> dict:
+    """Re-apply the administrator-managed ``.env`` values over *env* — call AFTER a routed profile's scope
+    has been overlaid. ``_apply_managed_env`` gives those keys precedence over the user's own ``.env`` in
+    the launch process; a routed child must see the same precedence, or the routed user's value for a
+    managed key (``ORG_POLICY_FLAG=user-value``) silently wins over policy."""
+    from hermes_cli.env_loader import managed_dotenv_keys
+    for key in managed_dotenv_keys():
+        if key in os.environ:
+            env[key] = os.environ[key]
+    return env
+
+
 # --- Shell discovery ---
-def _windows_bash_candidates(custom: "str | None") -> list[str]:
-    """Ordered bash.exe candidates on Windows: HERMES_GIT_BASH_PATH, our portable Git
-    under %LOCALAPPDATA%\\hermes\\git (PortableGit ``bin`` and MinGit ``usr\\bin``),
-    known Git-for-Windows dirs, then PATH last — ``shutil.which`` may return WSL's
-    bash, which fails silently on Windows paths."""
-    getenv = os.environ.get
-    lad = getenv("LOCALAPPDATA", "")
-    roots = [
-        lad and os.path.join(lad, "hermes", "git", "bin"),
-        lad and os.path.join(lad, "hermes", "git", "usr", "bin"),
-        os.path.join(getenv("ProgramFiles", r"C:\Program Files"), "Git", "bin"),
-        os.path.join(getenv("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin"),
-        lad and os.path.join(lad, "Programs", "Git", "bin"),
-    ]
-    raw = [custom or "", *(os.path.join(r, "bash.exe") for r in roots if r)]
-    candidates = list(dict.fromkeys(c for c in raw if c and os.path.isfile(c)))
-    found = shutil.which("bash")
-    if found and found not in candidates:
-        candidates.append(found)
-    return candidates
-
-
 def _find_bash() -> str:
-    """Find bash for command execution."""
-    if not _IS_WINDOWS:
-        return (shutil.which("bash")
-                or next((p for p in ("/usr/bin/bash", "/bin/bash") if os.path.isfile(p)), None)
-                or os.environ.get("SHELL") or "/bin/sh")
-    custom = os.environ.get("HERMES_GIT_BASH_PATH")
-    candidates = _windows_bash_candidates(custom)
-    # First candidate that can actually start wins: a stale HERMES_GIT_BASH_PATH
-    # pointing at a broken install must not beat a healthy portable Git.
-    for candidate in candidates:
-        if _bash_starts(candidate):
-            if candidate != custom and custom and os.path.isfile(custom):
-                logger.warning(
-                    "HERMES_GIT_BASH_PATH=%s fails to start; using %s instead", custom, candidate)
-            return candidate
-    if candidates:
-        probe_details = "\n".join(
-            detail for c in candidates if (detail := _bash_probe_details_cache.get(c)))
-        if _mandatory_aslr_enabled() is True or _looks_like_msys_spawn_failure(probe_details):
-            raise RuntimeError(_git_bash_aslr_help(candidates[0], probe_details))
-        # Unknown failure class: return the first path so the caller sees the
-        # real bash error instead of a less useful "not found".
-        return candidates[0]
+    """Resolve the shell Hermes runs commands with. Owned by pm (the store
+    is the authority on bundled bash); this is a thin wrapper over
+    pm.shell() for callers that need a bash binary."""
+    import pm.shell
+
+    bash = pm.shell.bash()
+    if bash:
+        return bash
     raise RuntimeError(
-        "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
-        "Install it from: https://git-scm.com/download/win\n"
-        "Or set HERMES_GIT_BASH_PATH to your bash.exe location.")
+        "No shell found. Hermes needs bash (Git for Windows on Windows). "
+        "Run `hermes pm install` or reinstall the bundle."
+    )
 
 
 _git_bash_bin_dirs_cache: "list[str] | None" = None
@@ -554,16 +596,27 @@ _SANE_PATH = ("/opt/homebrew/bin:/opt/homebrew/sbin:"
 # ``_SENTINEL`` distinguishes "not resolved yet" from a resolved ``None``.
 _SENTINEL = object()
 _HERMES_BIN_DIR: "str | None | object" = _SENTINEL
+# True when the cached dir is a sealed payload's own launcher dir (see below).
+_HERMES_BIN_DIR_IS_PAYLOAD = False
 
 
 def _resolve_hermes_bin_dir() -> str | None:
     """Directory holding the ``hermes`` console-script, or None (cached). A gateway
     launched by systemd/cron/a desktop launcher lacks the install dir on PATH and bare
-    ``hermes`` exits 127. Order: ``which``; absolute ``sys.argv[0]`` naming a real
-    hermes executable; ``sys.executable``'s dir if it holds the shim."""
-    global _HERMES_BIN_DIR
+    ``hermes`` exits 127. Order: a sealed payload's own launcher dir; ``which``; absolute
+    ``sys.argv[0]`` naming a real hermes executable; ``sys.executable``'s dir if it holds
+    the shim."""
+    global _HERMES_BIN_DIR, _HERMES_BIN_DIR_IS_PAYLOAD
     if _HERMES_BIN_DIR is not _SENTINEL:
         return _HERMES_BIN_DIR  # type: ignore[return-value]
+    from pm.environments import payload_command_dir
+
+    # A payload's venv also holds a `hermes`, but on Windows its redirector names the
+    # build machine's interpreter, so PATH order must not decide which copy children get.
+    payload_dir = payload_command_dir(Path(__file__).resolve().parents[2])
+    if payload_dir is not None and payload_dir.is_dir():
+        _HERMES_BIN_DIR, _HERMES_BIN_DIR_IS_PAYLOAD = str(payload_dir), True
+        return _HERMES_BIN_DIR
     which = shutil.which("hermes")
     argv0 = sys.argv[0] if sys.argv else ""
     base = os.path.basename(argv0).lower()
@@ -577,22 +630,48 @@ def _resolve_hermes_bin_dir() -> str | None:
     else:
         candidate = exe_dir if exe_dir and os.path.isfile(os.path.join(exe_dir, shim)) else None
     _HERMES_BIN_DIR = candidate if candidate and os.path.isdir(candidate) else None
+    _HERMES_BIN_DIR_IS_PAYLOAD = False
     return _HERMES_BIN_DIR
 
 
 def _prepend_hermes_bin_dir(existing_path: str) -> str:
-    """Prepend the hermes install dir to ``existing_path`` if missing."""
+    """Prepend the hermes install dir to ``existing_path`` if missing. A sealed payload's
+    launcher dir moves to the front even when already listed: a login PATH can list
+    another install's ``hermes`` ahead of it."""
     bin_dir = _resolve_hermes_bin_dir()
+    if bin_dir and _HERMES_BIN_DIR_IS_PAYLOAD:
+        rest = [entry for entry in existing_path.split(os.pathsep) if entry and entry != bin_dir]
+        return os.pathsep.join([bin_dir, *rest])
     return _prepend_missing_path_entries(existing_path, [bin_dir] if bin_dir else [])
 
 
 def _managed_runtime_path_entries() -> list[str]:
-    """Existing Hermes-managed runtime dirs: ``$HERMES_HOME/node`` (+``/bin``) and
-    ``$HERMES_HOME/bin`` (managed ``uv``). Per call, not cached: home is
-    profile-scoped and a managed tree can appear mid-process."""
+    """Return existing Hermes-managed runtime dirs for the terminal subshell PATH.
+
+    The terminal tool spawns a subshell whose PATH is the agent process's PATH
+    plus ``_SANE_PATH``. Neither carries the runtimes Hermes installs for
+    itself, so on a machine where Hermes provisioned its own toolchain a
+    command the agent runs resolves a system copy instead — or nothing at all:
+
+    - the pm store's node/npm entries — installed to satisfy the desktop and
+      browser toolchain. ``tools/browser_tool.py`` already does this for its own
+      subprocesses; the agent's shell deserves the same.
+    - ``$HERMES_HOME/bin`` — the managed ``uv``. ``install.sh`` writes it there
+      and nothing has ever put that directory on PATH, so an install whose only
+      uv is the managed one looks uv-less to both the agent and the model.
+
+    Resolved per call rather than cached in a module constant because
+    ``get_hermes_home()`` is profile-scoped and a managed runtime can appear
+    mid-process (a lazy pm install, a first browser install).
+    """
     try:
-        from hermes_constants import get_hermes_home, iter_hermes_node_dirs
-        return [str(d) for d in (*iter_hermes_node_dirs(), get_hermes_home() / "bin") if d.is_dir()]
+        import pm
+        from hermes_constants import get_hermes_home
+
+        env = pm.env_for("npm", base_env={"PATH": ""})
+        managed = [Path(d) for d in env.get("PATH", "").split(os.pathsep) if d]
+        candidates = [*managed, get_hermes_home() / "bin"]
+        return [str(d) for d in candidates if d.is_dir()]
     except Exception:
         return []
 
@@ -656,8 +735,27 @@ def _make_run_env(env: dict) -> dict:
     the LAUNCH profile's; under a routed home override its ``.env`` residue is dropped first
     (``strip_launch_profile_env``, a no-op for the launch profile) so the backend's own ``env``
     and the served profile's declared passthrough names are what the child sees."""
-    return _scrubbed_env([(dict(strip_launch_profile_env(os.environ.copy()) | env), True)], frozenset(),
-                         lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)))
+    run_env = _scrubbed_env(
+        [(dict(strip_launch_profile_env(os.environ.copy()) | env), True)],
+        frozenset(),
+        lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)),
+    )
+    # While this profile's Bot Desktop is running, its DISPLAY/XAUTHORITY/DBUS ride along so GUI
+    # apps the agent launches from the terminal open on the Bot Screen the user is watching, not
+    # on the user's own seat (#125830). published_env() is the pure read (no activity stamp — a
+    # plain ``ls`` must not keep the screen alive past idle_stop_minutes), and it wins over the
+    # login snapshot's seat DISPLAY; a user who wants their own seat uses an inline
+    # ``DISPLAY=:0 cmd`` prefix, which bash applies after this env. Empty (or module missing) →
+    # the seat env passes through untouched.
+    try:
+        from tools.bot_desktop.runtime import published_env
+        published = published_env()
+    except Exception:
+        published = {}
+    if published:
+        run_env.update(published)
+        run_env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
+    return run_env
 
 
 # --- Hermes venv / repo-root detection (module-level, computed once) ---
@@ -759,31 +857,101 @@ def _sweep_escaped_descendants(descendants: list, pgid: int) -> None:
             continue
 
 
+def _leader_is_ours(pgid, expected_start) -> bool:
+    """The setsid group leader's PID == its PGID.  Confirm it is still the process we
+    spawned before signalling the whole group, so a recycled PID/PGID can never take
+    down an unrelated process group (#43044).  The baseline and the current reading
+    come from the same host at different times, so they go through the drift-tolerant
+    fingerprint comparator — same-host readings drift ~1 s on macOS (#117505), and
+    exact equality made the guard refuse to kill live, legitimately-owned groups.
+    When no baseline was captured, or the current reading is unreadable, keep the
+    legacy best-effort behaviour rather than refusing to kill: only a LIVE leader with
+    a different start time proves recycling."""
+    if pgid is None:
+        return False
+    if expected_start is None:
+        return True
+    from gateway.status import get_process_start_time, start_time_fingerprints_match
+    try:
+        current = get_process_start_time(pgid)
+    except Exception:  # noqa: BLE001 — the guard must never break signalling
+        return True
+    if current is None:
+        # Unreadable while alive: best effort. Gone: POSIX never reuses a PGID while any
+        # member of the group lives, so the group (if it still exists) is ours and its
+        # reparented grandchildren still need the signal; an empty group is just ESRCH.
+        return True
+    try:
+        return start_time_fingerprints_match(expected_start, current)
+    except (TypeError, ValueError):  # junk fingerprints: best-effort, never break signalling
+        return True
+
+
 def _kill_process_group_posix(proc) -> None:
     """TERM the group, wait, KILL, then sweep setsid escapees. Descendants are
     snapshotted BEFORE the first signal — once the wrapper dies they reparent to
     init — and we wait on the group, not the wrapper, which can exit before
-    grandchildren under load. POSIX-only (_IS_WINDOWS handled by the caller)."""
+    grandchildren under load. POSIX-only (_IS_WINDOWS handled by the caller).
+    PID-reuse guard (#43044): the group is only signalled while its leader's start
+    time still matches the spawn-time baseline — a recycled PGID is never killed."""
+    expected_start = getattr(proc, "_hermes_pgid_start", None)
     try:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
         if (pgid := getattr(proc, "_hermes_pgid", None)) is None:
             raise
+    if not _leader_is_ours(pgid, expected_start):
+        # Leader exited and its PID/PGID may have been recycled onto an unrelated
+        # process group; signalling the stale number is unsafe. Bail out — a rare
+        # orphaned grandchild may leak, which is strictly preferable to killing a
+        # stranger. Sweep the snapshotted descendants by PID (identity-checked)
+        # so we still reach escapees that are verifiably ours.
+        descendants = []
+        try:
+            import psutil
+            descendants = psutil.Process(proc.pid).children(recursive=True)
+        except Exception:
+            pass
+        _sweep_escaped_descendants(descendants, pgid)
+        return
     try:  # psutil children snapshot; empty on any failure (must never break the kill)
         import psutil
         descendants = psutil.Process(proc.pid).children(recursive=True)
     except Exception:
         descendants = []
-    try:
-        os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
-        if not _wait_for_group_exit(proc, pgid, 1.0):
-            os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
-            _wait_for_group_exit(proc, pgid, 2.0)
-            with contextlib.suppress(subprocess.TimeoutExpired, OSError):
-                proc.wait(timeout=0.2)
-    except ProcessLookupError:
-        pass
+    if pgid == os.getpgrp():
+        # The child shares OUR group (a spawner that skipped setsid — the Darwin gateway's
+        # posix_spawn shim, #107029): killpg would signal the caller itself. Tear down by PID.
+        _kill_known_pids(proc, descendants)
+    else:
+        try:
+            os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
+            if not _wait_for_group_exit(proc, pgid, 1.0):
+                if not _leader_is_ours(pgid, expected_start):
+                    # Leader exited during the grace window; do not escalate to
+                    # SIGKILL on a possibly-recycled PGID.
+                    return
+                os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
+                _wait_for_group_exit(proc, pgid, 2.0)
+                with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                    proc.wait(timeout=0.2)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            # macOS answers killpg with EPERM (not ESRCH) once the group's only members are
+            # unreaped zombies — rg exiting between the caller's poll() and the TERM after the
+            # drain hit its limit (#116855). Nothing group-wide is signalable, and the error
+            # must not escape: the caller still owns the output it drained. Signal the known
+            # PIDs instead so a live child (a group we may not signal) cannot outlive us.
+            _kill_known_pids(proc, descendants)
     _sweep_escaped_descendants(descendants, pgid)
+
+
+def _kill_known_pids(proc, descendants) -> None:
+    """KILL the wrapper and its snapshotted descendants by PID (idempotent on zombies)."""
+    for target in (proc, *descendants):
+        with contextlib.suppress(Exception):
+            target.kill()
 
 
 def _kill_process_windows(proc) -> None:
@@ -825,12 +993,16 @@ class LocalEnvironment(BaseEnvironment):
 
     def get_temp_dir(self) -> str:
         """Shell-safe writable temp dir. Precedence: ``TERMINAL_TEMP_DIR``, TMPDIR/TMP/TEMP
-        (Termux has no /tmp), ``HERMES_HOME/cache/terminal`` (real storage: tmpfs /tmp
-        fills under Hermes load; pruned by ``cleanup_terminal_temp_cache``), /tmp,
+        (Termux has no system temp dir), ``HERMES_HOME/cache/terminal`` (real storage: a
+        tmpfs system temp dir fills under Hermes load; pruned by ``cleanup_terminal_temp_cache``),
         ``tempfile.gettempdir()``; backend env before process env so terminal.env
         overrides work. Windows: ``%TEMP%`` often has spaces that break unquoted bash,
         so always the HERMES_HOME cache dir with forward slashes (bash- and Python-valid)."""
         if _IS_WINDOWS:
+            for key in ("TERMINAL_TEMP_DIR", "TMPDIR"):
+                candidate = self.env.get(key) or os.environ.get(key)
+                if candidate and os.path.isabs(candidate) and os.path.isdir(candidate):
+                    return Path(candidate).as_posix()
             cache_dir = (_default_terminal_temp_dir()
                          or Path(tempfile.gettempdir()) / "hermes_terminal")
             cache_dir.mkdir(parents=True, exist_ok=True)
@@ -852,10 +1024,9 @@ class LocalEnvironment(BaseEnvironment):
                 return _posix(resolved)
         except Exception:
             pass
-        if os.path.isdir("/tmp") and os.access("/tmp", os.W_OK | os.X_OK):
-            return "/tmp"
+        # tempfile's own candidate walk already covers the system temp dir.
         fallback = tempfile.gettempdir()
-        return _posix(fallback) if fallback.startswith("/") else "/tmp"
+        return _posix(fallback if fallback.startswith("/") else os.path.abspath(fallback))
 
     @staticmethod
     def _quote_cwd_for_cd(cwd: str) -> str:
@@ -904,6 +1075,12 @@ class LocalEnvironment(BaseEnvironment):
         if not _IS_WINDOWS:
             with contextlib.suppress(ProcessLookupError):
                 proc._hermes_pgid = os.getpgid(proc.pid)
+                # Record the group leader's start-time fingerprint so _kill_process can
+                # detect PID/PGID recycling before signalling the group (#43044). The
+                # psutil fallback in get_process_start_time captures a baseline on every
+                # platform, macOS included.
+                from gateway.status import get_process_start_time
+                proc._hermes_pgid_start = get_process_start_time(proc.pid)
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
@@ -915,6 +1092,21 @@ class LocalEnvironment(BaseEnvironment):
         except OSError:  # ProcessLookupError / PermissionError included
             with contextlib.suppress(Exception):
                 proc.kill()
+
+    def _force_kill_process(self, proc):
+        """SIGKILL the whole group with no TERM grace or wait: the caller os._exit()s next."""
+        if _IS_WINDOWS:  # already a forced tree kill
+            return self._kill_process(proc)
+        with contextlib.suppress(OSError):
+            pgid = getattr(proc, "_hermes_pgid", None) or os.getpgid(proc.pid)
+            # PID-reuse guard (#43044): never SIGKILL a group whose leader's start time
+            # no longer matches the spawn-time baseline — the PGID may have been recycled
+            # onto an unrelated process group. Comparison is drift-tolerant (#117505);
+            # without a baseline keep the legacy best-effort behaviour.
+            if pgid != os.getpgrp() and _leader_is_ours(pgid, getattr(proc, "_hermes_pgid_start", None)):
+                os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (_IS_WINDOWS returned above)
+        with contextlib.suppress(OSError):
+            proc.kill()
 
     def _extract_cwd_from_output(self, result: dict):
         """Base semantics plus: Git Bash ``pwd -P`` emits MSYS form on Windows —

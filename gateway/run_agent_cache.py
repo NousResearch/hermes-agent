@@ -15,8 +15,9 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform
 from gateway.session import SessionSource, build_session_context_prompt
+from gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
 from gateway.run_shutdown import _log_suppressed
-from hermes_cli.config import cfg_get
+from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -47,18 +48,21 @@ class GatewayAgentCacheMixin:
 
     @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
-        """Values that must bust the cached agent, as a flat dict keyed by 'section.key'. Missing keys /
-        non-dict sections yield None (still enters the signature). Includes the live tool registry
+        """Values that must bust the cached agent, as a flat dict keyed by 'section.key'. ``user_config``
+        is the raw file (no DEFAULT_CONFIG merge), so absent keys and non-dict sections take the
+        DEFAULT_CONFIG value — what the agent was actually built with — while an explicit ``null`` stays
+        None so opting out of a non-None default still rebuilds. Includes the live tool registry
         generation: MCP reloads mutate the registry without touching config.yaml."""
         out: Dict[str, Any] = {}
         cfg = user_config if isinstance(user_config, dict) else {}
         for section, key in cls._CACHE_BUSTING_CONFIG_KEYS:
+            default = cfg_get(DEFAULT_CONFIG, section, key)
             section_val = cfg.get(section)
             if section == "checkpoints" and isinstance(section_val, bool):
                 # Legacy ``checkpoints: true``: a live toggle must still rebuild the cached agent.
-                out[f"{section}.{key}"] = section_val if key == "enabled" else None
+                out[f"{section}.{key}"] = section_val if key == "enabled" else default
             else:
-                out[f"{section}.{key}"] = section_val.get(key) if isinstance(section_val, dict) else None
+                out[f"{section}.{key}"] = cfg_get(cfg, section, key, default=default)
         try:
             from tools.registry import registry
             out["tools.registry_generation"] = getattr(registry, "_generation", None)
@@ -82,7 +86,9 @@ class GatewayAgentCacheMixin:
             instance = cls._MEMORY_IDENTITY_PROVIDER_MEMO.get(name)
             if instance is None:
                 from plugins.memory import load_memory_provider
-                instance = load_memory_provider(name, register_skills=False)
+                from plugins.plugin_loader import bounded_load_wait
+                with bounded_load_wait():  # runs every turn: never stall on another thread's hung import
+                    instance = load_memory_provider(name, register_skills=False)
                 if instance is None:
                     return {}
                 cls._MEMORY_IDENTITY_PROVIDER_MEMO[name] = instance
@@ -102,9 +108,8 @@ class GatewayAgentCacheMixin:
         freezes them at init; omitting them in shared-thread keys would cross-attribute messages.
 
         ``user_id`` and ``user_id_alt`` are the runtime user identities carried by the current message's
-        gateway source. They participate in the cache key because the Honcho memory provider freezes them
-        into ``HonchoSessionManager`` at first-message init (see
-        ``plugins/memory/honcho/__init__.py::_do_session_init``). Without them in the signature, a
+        gateway source. They participate in the cache key because memory providers freeze them at
+        first-message init (the Honcho plugin resolves its user peer from them once). Without them in the signature, a
         shared-thread session_key (one in which ``build_session_key`` intentionally omits the participant
         ID, e.g. ``thread_sessions_per_user=False``) would reuse the cached AIAgent across distinct users,
         causing the second user's messages to be attributed to the first user's resolved Honcho peer. This
@@ -157,10 +162,13 @@ class GatewayAgentCacheMixin:
             return
         override: Dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
         provider = persisted.get("provider")
+        from hermes_cli.runtime_provider import is_foreign_provider_endpoint
+        if is_foreign_provider_endpoint(provider, override.get("base_url")):
+            override["base_url"] = None  # left over from a switch that kept the previous provider's URL
         if provider:
             # Re-resolve credentials for the persisted provider. On failure (e.g. credentials removed
             # since the switch) keep the credential-less override — _resolve_session_agent_runtime
-            # falls back to env resolution and layers model/provider.
+            # retries the resolution for that provider on each turn (default route + notice meanwhile).
             try:
                 runtime = _resolve_runtime_agent_kwargs_for_provider(provider, target_model=persisted.get("model") or None)
                 for k in ("api_key", "api_mode", "credential_pool", "requested_provider", "max_tokens"):
@@ -171,6 +179,11 @@ class GatewayAgentCacheMixin:
                     # The managed llama.cpp supervisor owns its live port; a persisted loopback URL from a
                     # boot that fell back to an ephemeral port would strand the session on a dead endpoint.
                     override["base_url"] = runtime.get("base_url")
+                from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
+                if opencode_provider_family(provider) is not None and override.get("base_url"):
+                    # api_mode was just re-derived from the target model; a relay URL persisted by an older
+                    # build for another wire (/v1-stripped) or the other family is healed to match (#96066).
+                    override["base_url"] = normalize_opencode_base_url(provider, override.get("api_mode"), override["base_url"])
             except Exception:
                 logger.debug(
                     "Credential re-resolution failed for persisted override "
@@ -243,6 +256,38 @@ class GatewayAgentCacheMixin:
         # Exactly the recorded move (alias -> backing): a later fallback onto some other model is
         # ordinary drift and still evicts.
         return getattr(agent, "_nous_model_switch", None) == (config_model, agent.model)
+
+    def _fallback_baseline_model(self, session_key: str, source: Optional[SessionSource], agent: Any) -> str:
+        """The model *agent* was built to run, for the post-turn fallback check: what
+        ``_resolve_session_agent_runtime`` chose (session /model, then channel_overrides on the chat,
+        thread or parent, then the global model), canonicalized as ``AIAgent.__init__`` did on the
+        agent's PRIMARY route. The route a fallback moved it to would make that fallback look primary."""
+        from gateway.run import _resolve_gateway_model
+        primary = getattr(agent, "_primary_runtime", None) or {}
+        provider = primary.get("provider", getattr(agent, "provider", "")) or ""
+        # An override whose provider was unavailable this turn ran on the default route instead.
+        override = self._session_model_override(session_key) or {}
+        if override.get("model") and override.get("provider") in (None, "", provider):
+            model = override["model"]
+        elif source is not None:
+            model = self._resolve_model_for_channel(
+                source.platform, str(source.chat_id) if source.chat_id else "",
+                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+            )
+        else:
+            model = _resolve_gateway_model()
+        # Vendor prefix stripped on native providers, else the cached agent is evicted every turn,
+        # destroying prompt caching.
+        with suppress(Exception):
+            from hermes_cli.model_normalize import _AGGREGATOR_PROVIDERS, normalize_model_for_provider
+            if provider and provider not in _AGGREGATOR_PROVIDERS:
+                model = normalize_model_for_provider(model, provider)
+        # The Nous welcome host runs its one model whatever the chat configured (pin_model_for_route).
+        with suppress(Exception):
+            from hermes_cli.anon_auth import pin_model_for_route
+            model = pin_model_for_route(provider, primary.get("base_url", getattr(agent, "base_url", None)), model)
+        return model
 
     def _release_running_agent_state(
         self, session_key: str, *, run_generation: Optional[int] = None
@@ -607,18 +652,101 @@ class GatewayAgentCacheMixin:
             return None
         return f"[Voice channel now: {vc_now or 'not connected to a voice channel'}]"
 
-    def _pinned_session_context_prompt(self, context, redact_pii: bool, session_key: Optional[str]) -> str:
+    async def _rehydrate_prompt_pins(self, session_key: str, expected_session_id: Optional[str]) -> None:
+        """Adopt the durable pin snapshot for an internal turn when this process holds no pins for
+        *session_key* (a restart). Eviction clears only ``ephemeral_pin`` and keeps ``channel_pin``,
+        so an evicted agent still re-renders instead of reviving the snapshot."""
+        state = self._peek_session_state(session_key)
+        if state is not None and (
+            state.conversation.ephemeral_pin is not None or state.conversation.channel_pin is not None
+        ):
+            return
+        try:
+            pin = sanitize_prompt_pin(await self.async_session_store.get_prompt_pin(
+                session_key, expected_session_id=expected_session_id))
+        except Exception:
+            # Cache continuity only: a routing-store fault must not fail the turn.
+            logger.debug("Failed to read persisted prompt pin for %s", session_key, exc_info=True)
+            return
+        if pin is None:
+            return
+        conversation = self._session_state(session_key).conversation
+        conversation.ephemeral_pin = (pin["context_key"], pin["context_prompt"], pin["redact_pii"])
+        conversation.channel_pin = (pin["channel_prompt"], pin["parent_chat_id"])
+
+    async def _persist_prompt_pins(self, session_key: Optional[str], expected_session_id: Optional[str]) -> None:
+        """Persist this conversation's pins before the agent runs; the store no-ops an unchanged
+        snapshot and refuses a session that has moved on."""
+        state = self._peek_session_state(session_key) if session_key else None
+        if state is None:
+            return
+        ephemeral_pin, channel_pin = state.conversation.ephemeral_pin, state.conversation.channel_pin
+        if ephemeral_pin is None or channel_pin is None:
+            return
+        snapshot = {
+            "version": PROMPT_PIN_VERSION, "context_key": ephemeral_pin[0],
+            "context_prompt": ephemeral_pin[1], "redact_pii": ephemeral_pin[2],
+            "channel_prompt": channel_pin[0], "parent_chat_id": channel_pin[1],
+        }
+        try:
+            await self.async_session_store.set_prompt_pin(
+                session_key, snapshot, expected_session_id=expected_session_id)
+        except Exception:
+            # Durability protects cache continuity; a store outage must not block the user turn.
+            logger.debug("Failed to persist prompt pin for %s", session_key, exc_info=True)
+
+    def _pinned_session_context_prompt(
+        self, context, redact_pii: bool, session_key: Optional[str], *, internal: bool = False,
+    ) -> str:
         """Session-context prompt pinned per session: key hit → pinned bytes reused VERBATIM (immune
-        to renderer nondeterminism); key miss → re-render and re-pin (rename, topic edit, /sethome)."""
-        _eph_key = self._ephemeral_change_key(context, redact_pii)
+        to renderer nondeterminism); key miss → re-render and re-pin (rename, topic edit, /sethome).
+
+        ``internal`` events (kanban wakes, delegation completions, watch notifications) carry a
+        source rebuilt from the persisted origin, without chat_name/user_name/message_id. Rendering
+        from it re-keyed the pin, and the next human turn re-keyed it back (A→B→A), rewriting
+        already-sent system bytes each time. An internal event is never a real metadata change, so
+        it reuses an existing pin verbatim (restored by ``_rehydrate_prompt_pins`` after a restart); with
+        no pin yet it renders and pins as usual. The pin records the ``privacy.redact_pii`` it was
+        rendered under: bytes from another privacy policy are never reused, even by an internal
+        event."""
         _pin_state = self._peek_session_state(session_key) if session_key else None
         _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
+        if _eph_pin is not None and _eph_pin[2] != redact_pii:
+            _eph_pin = None
+        if internal and _eph_pin is not None:
+            return _eph_pin[1]
+        _eph_key = self._ephemeral_change_key(context, redact_pii)
         if _eph_pin is not None and _eph_pin[0] == _eph_key:
             return _eph_pin[1]
         text = build_session_context_prompt(context, redact_pii=redact_pii)
         if session_key:
-            self._session_state(session_key).conversation.ephemeral_pin = (_eph_key, text)
+            self._session_state(session_key).conversation.ephemeral_pin = (_eph_key, text, redact_pii)
         return text
+
+    def _pinned_channel_inputs(
+        self, session_key: Optional[str], channel_prompt: Optional[str], source: SessionSource, *, internal: bool,
+    ):
+        """``(channel_prompt, source)`` for this turn's agent run.
+
+        The ephemeral system prompt also appends ``channel_prompt`` and the ``channel_overrides``
+        prompt (looked up by chat/thread/``parent_chat_id``). Internal events carry
+        ``channel_prompt=None`` and a source without ``parent_chat_id``, so they dropped both and
+        toggled the system prompt like the context pin did. Human turns record their inputs;
+        internal turns reuse them (``_rehydrate_prompt_pins`` restores both after a restart)."""
+        if not session_key:
+            return channel_prompt, source
+        if not internal:
+            self._session_state(session_key).conversation.channel_pin = (channel_prompt, source.parent_chat_id)
+            return channel_prompt, source
+        state = self._peek_session_state(session_key)
+        pin = state.conversation.channel_pin if state else None
+        if pin is None:
+            return channel_prompt, source
+        pinned_prompt, pinned_parent = pin
+        if pinned_parent and not source.parent_chat_id:
+            from gateway.session_identity import replace_source
+            source = replace_source(source, parent_chat_id=pinned_parent)
+        return pinned_prompt, source
 
     @staticmethod
     def _ephemeral_change_key(context, redact_pii: bool) -> str:
@@ -636,11 +764,9 @@ class GatewayAgentCacheMixin:
         if src.platform == Platform.DISCORD:
             from gateway.session import _discord_tools_loaded
             discord_tools = "1" if _discord_tools_loaded() else "0"
-            # message_id: only PRESENCE is rendered (the id itself arrives per-turn in the user
-            # message) — keying on the value would re-render every message for zero byte change.
+            # message_id is not rendered (value nor presence): it arrives per-turn in the user message.
             discord_ids = (
                 _s(src.guild_id), _s(src.parent_chat_id), _s(src.thread_id), _s(src.chat_id),
-                "1" if src.message_id else "0",
             )
         # Slack's capability-aware platform note is gated on _slack_tools_loaded() — the gate state must
         # be in the key (same parity contract as the Discord gate above) so a config / MCP-registration

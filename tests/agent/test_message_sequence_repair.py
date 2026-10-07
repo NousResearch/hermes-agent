@@ -1,13 +1,15 @@
 """Tests for pre-API-call message-sequence repair.
 
-Covers ``_repair_message_sequence`` and the extended
-``_drop_trailing_empty_response_scaffolding`` behavior that rewinds past
-orphan tool-result tails. Together these prevent the self-reinforcing empty-
+Covers ``_repair_message_sequence`` and
+``_drop_trailing_empty_response_scaffolding`` (which keeps the executed
+tool pair under the scaffolding). Together these prevent the self-reinforcing empty-
 response loop observed in session 20260507_044111_fa7e65, where a tool-result
 followed directly by a user message produced silent empty responses from
 providers (violating role alternation), which retriggered the empty-retry
 recovery every turn.
 """
+
+import pytest
 
 from run_agent import AIAgent
 
@@ -18,26 +20,23 @@ def _bare_agent():
 
 # ── _drop_trailing_empty_response_scaffolding ──────────────────────────────
 
-def test_drop_scaffolding_rewinds_orphan_tool_tail():
-    """When scaffolding is stripped, also rewind the orphan assistant+tool pair."""
+def test_drop_scaffolding_keeps_executed_tool_pair():
+    """Only the sentinel goes: the assistant+tool pair already ran and was saved."""
     agent = _bare_agent()
-    messages = [
+    executed = [
         {"role": "user", "content": "task"},
         {"role": "assistant", "content": "",
          "tool_calls": [{"id": "t1", "type": "function",
                          "function": {"name": "f", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "t1", "content": "out"},
+    ]
+    messages = executed + [
         {"role": "assistant", "content": "(empty)",
          "_empty_terminal_sentinel": True},
     ]
 
     AIAgent._drop_trailing_empty_response_scaffolding(agent, messages)
-
-    assert messages == [{"role": "user", "content": "task"}]
-
-
-
-
+    assert messages == executed
 
 
 # ── _repair_message_sequence ───────────────────────────────────────────────
@@ -67,6 +66,69 @@ def test_repair_preserves_user_content_when_one_side_empty():
     AIAgent._repair_message_sequence(agent, messages)
 
     assert messages == [{"role": "user", "content": "real message"}]
+
+
+def test_repair_marker_user_merge_keeps_plain_row_addressable():
+    """#94486: a display-marker user row (model-switch marker, persisted as
+    role=user on purpose per #48338) merging with the plain user row after it
+    must keep the pair addressable — the merged row drops the display
+    classification and carries the plain row's durable id, so rewind/submit
+    addressing (which indexes non-display user turns) can still resolve it.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "assistant", "content": "reply"},
+        {
+            "role": "user",
+            "display_kind": "model_switch",
+            "_row_id": 12134,
+            "content": "[System: The active model for this chat has changed to ds4.]",
+        },
+        {"role": "user", "_row_id": 12135, "content": "the user's real prompt"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 2
+    merged = messages[1]
+    assert merged["role"] == "user"
+    assert not merged.get("display_kind")
+    assert merged["_row_id"] == 12135
+    assert "the user's real prompt" in merged["content"]
+    assert "[System:" in merged["content"]
+
+
+def test_repair_plain_user_then_marker_stays_addressable():
+    """The mirror shape (plain user, then a display marker) already keeps the
+    plain row's identity; pin that the merge does not resurrect a display
+    classification or swap in the marker's id.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "_row_id": 12134, "content": "the user's real prompt"},
+        {
+            "role": "user",
+            "display_kind": "model_switch",
+            "_row_id": 12135,
+            "content": "[System: The active model for this chat has changed to ds4.]",
+        },
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 1
+    survivor = messages[0]
+    # The plain row keeps its own identity; the marker's id is retired onto
+    # the absorbed list and no display classification is resurrected.
+    assert survivor["role"] == "user"
+    assert survivor["_row_id"] == 12134
+    assert not survivor.get("display_kind")
+    assert survivor["content"] == (
+        "the user's real prompt\n\n[System: The active model for this chat has changed to ds4.]"
+    )
+    assert 12135 in (survivor.get("_absorbed_row_ids") or [])
 
 
 def test_repair_does_not_rewind_ongoing_dialog_tool_pair():
@@ -155,18 +217,6 @@ def test_repair_keeps_tool_matching_only_call_id():
 
     assert repairs == 0
     assert any(m.get("role") == "tool" for m in messages)
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_repair_keeps_tool_result_keyed_by_response_item_id():
@@ -387,7 +437,6 @@ def test_repair_merge_preserves_api_content_sidecar_with_multimodal_content():
     assert messages[1]["api_content"] == "wire bytes"
 
 
-
 def test_sanitize_consumes_all_responses_id_variants_for_duplicate_result():
     """A sibling-id replay must not replace the first real result."""
     from agent.agent_runtime_helpers import sanitize_api_messages
@@ -427,7 +476,6 @@ def test_tool_executor_uses_canonical_responses_pairing_id():
     assert _pairing_tool_call_id(
         SimpleNamespace(id="call_ABC|fc_123")
     ) == "call_ABC"
-
 
 
 # ── repair_message_sequence_with_cursor (#44837) ───────────────────────────
@@ -473,9 +521,6 @@ def test_cursor_rewinds_when_compaction_happens_before_cursor():
     assert messages[agent._last_flushed_db_idx] is unflushed_assistant
 
 
-
-
-
 def test_flush_guard_clamps_overshooting_cursor():
     """_flush_messages_to_session_db safety net: an overshooting cursor must
     not produce a negative-start slice that skips everything (#44837)."""
@@ -512,19 +557,9 @@ def test_flush_guard_clamps_overshooting_cursor():
 # ── Pass 0: merge consecutive assistant messages (issue #29148, #49147) ─────
 
 
-
-
-
-
-
-
-
-
 # ── tool_call_id de-duplication (#58327) ────────────────────────────────────
 # Strict providers (DeepSeek) reject a payload where the same tool_call_id
 # appears more than once with HTTP 400 "Duplicate value for 'tool_call_id'".
-
-
 
 
 def test_sanitize_deduplicates_duplicate_tool_results():
@@ -820,10 +855,6 @@ def test_repair_keeps_tool_result_when_tool_calls_are_sdk_objects():
     assert tool_msg["content"] == "file contents"
 
 
-
-
-
-
 # ── Self-recovery: heal empty-content non-final messages ──────────────────
 # Repro of the production incident: a dead stream persisted an empty-content
 # assistant stub mid-transcript, and every later request 400'd with
@@ -1073,14 +1104,6 @@ def test_compressor_sanitize_keeps_composite_keyed_pair():
 
 # ── _classify_tool_call_orphans ─────────────────────────────────────────
 
-def test_classify_orphans_empty():
-    from agent.agent_runtime_helpers import _classify_tool_call_orphans
-    sv, rs, orphaned, missing = _classify_tool_call_orphans([])
-    assert sv == set()
-    assert rs == set()
-    assert orphaned == []
-    assert missing == []
-
 
 def test_classify_orphans_clean_pair():
     from agent.agent_runtime_helpers import _classify_tool_call_orphans
@@ -1093,26 +1116,6 @@ def test_classify_orphans_clean_pair():
     assert rs == {"call_1"}
     assert orphaned == []
     assert missing == []
-
-
-def test_classify_orphans_detects_orphaned_result():
-    from agent.agent_runtime_helpers import _classify_tool_call_orphans
-    messages = [
-        {"role": "tool", "tool_call_id": "orphan_1", "content": "no matching call"},
-    ]
-    sv, rs, orphaned, missing = _classify_tool_call_orphans(messages)
-    assert [m["tool_call_id"] for m in orphaned] == ["orphan_1"]
-    assert missing == []
-
-
-def test_classify_orphans_detects_missing_result():
-    from agent.agent_runtime_helpers import _classify_tool_call_orphans
-    messages = [
-        {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
-    ]
-    sv, rs, orphaned, missing = _classify_tool_call_orphans(messages)
-    assert orphaned == []
-    assert [tc["id"] for tc in missing] == ["call_1"]
 
 
 def test_classify_orphans_mixed():
@@ -1388,8 +1391,6 @@ def test_sanitize_stubs_interrupted_first_occurrence_keeps_replay_pair():
     assert out[5]["content"] == "real result"
 
 
-
-
 # ── Bridged tool_call: wire-visible response name must echo the call name ──
 # Google matches functionResponse.name against functionCall.name and rejects a
 # mismatch with HTTP 400 INVALID_ARGUMENT. #72089 fixed this for the native
@@ -1494,3 +1495,222 @@ def test_sanitize_drops_bridged_result_whose_call_frame_was_pruned():
     ]
     out = sanitize_api_messages(list(messages))
     assert [m.get("role") for m in out] == ["user"]
+
+
+# ── persist-marker contract: in-place mutations of stamped live dicts ──────
+#
+# ``_DB_PERSISTED_MARKER`` asserts the whole durable row (content, tool_calls,
+# reasoning sidecars) is already in session.db. Repair passes that mutate a
+# stamped survivor in place must pop it, or the flush scan identity-skips the
+# dict forever and the DB keeps the pre-repair row (silent live/DB divergence
+# on resume) — the same contract the micro-compaction defrag/merge sites honor.
+
+from agent.context_compressor import _DB_PERSISTED_MARKER
+
+
+def test_repair_user_merge_pops_persist_marker_on_stamped_survivor():
+    """Two adjacent stamped user rows (an interrupted turn's flushed prompt plus
+    the next turn's prompt) merge in place; the survivor must lose its marker so
+    the merged text reaches session.db instead of the pre-merge row."""
+    agent = _bare_agent()
+    stamped = {"role": "user", "content": "first", _DB_PERSISTED_MARKER: True}
+    messages = [stamped, {"role": "user", "content": "second"}]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 1
+    assert messages[0]["content"] == "first\n\nsecond"
+    assert _DB_PERSISTED_MARKER not in messages[0]
+
+
+def test_repair_assistant_merge_pops_persist_marker_on_content_rewrite():
+    agent = _bare_agent()
+    stamped = {"role": "assistant", "content": "first reply", _DB_PERSISTED_MARKER: True}
+    messages = [
+        {"role": "user", "content": "Q1"},
+        stamped,
+        {"role": "assistant", "content": "second reply"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert messages[1]["content"] == "first reply\nsecond reply"
+    assert _DB_PERSISTED_MARKER not in messages[1]
+
+
+def test_repair_prune_unanswered_tool_calls_pops_persist_marker():
+    """Pass 2 rewrites ``msg["tool_calls"]`` in place on a stamped assistant
+    row; the marker must go or the DB keeps the unpruned call list."""
+    agent = _bare_agent()
+    stamped = {
+        "role": "assistant", "content": "calling tools",
+        "tool_calls": [
+            {"id": "t1", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+            {"id": "t2", "type": "function", "function": {"name": "g", "arguments": "{}"}},
+        ],
+        _DB_PERSISTED_MARKER: True,
+    }
+    messages = [
+        {"role": "user", "content": "Q1"},
+        stamped,
+        {"role": "tool", "tool_call_id": "t1", "content": "out1"},
+        {"role": "user", "content": "next"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    surviving = next(m for m in messages if m is stamped)
+    assert [tc["id"] for tc in surviving["tool_calls"]] == ["t1"]
+    assert _DB_PERSISTED_MARKER not in surviving
+
+
+def test_repair_cursor_invalidates_scan_prefix_when_stamped_dict_dirtied():
+    """``repair_message_sequence_with_cursor`` must clear the bounded flush-scan
+    snapshot when a repair popped a marker inside it, per the marker contract."""
+    agent = _bare_agent()
+    stamped = {"role": "user", "content": "first", _DB_PERSISTED_MARKER: True}
+    messages = [stamped, {"role": "user", "content": "second"}]
+    agent._last_flushed_db_idx = 2
+    agent._db_flush_scan_prefix = messages[:]
+
+    repairs = repair_message_sequence_with_cursor(agent, messages)
+
+    assert repairs == 1
+    assert _DB_PERSISTED_MARKER not in messages[0]
+    assert agent._db_flush_scan_prefix is None
+
+
+# ── sentinel-encoded multimodal content (#125299) ──────────────────────────
+
+def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
+    """A multimodal turn re-inserted as its ``\x00json:`` string (e.g. after a proactive prune
+    re-inserts history) must be decoded back to structured content, not glued onto an adjacent
+    text turn as a giant base64 blob; an undecodable one is left unmerged (#125299)."""
+    from hermes_state import SessionDB
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    parts = [
+        {"type": "text", "text": "look at this"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 4000}},
+    ]
+    encoded = SessionDB._encode_content(parts)
+    messages = [
+        {"role": "user", "content": encoded},
+        {"role": "user", "content": "any follow-up thoughts?"},
+    ]
+
+    repair_message_sequence(_bare_agent(), messages)
+
+    # The encoded turn is restored to structured content and left un-merged; the base64 image
+    # never leaks into the neighbouring text turn.
+    assert len(messages) == 2
+    assert messages[0]["content"] == parts
+    assert messages[1]["content"] == "any follow-up thoughts?"
+
+    # A body that no longer parses stays encoded and is never welded onto the next text turn.
+    corrupt = SessionDB._CONTENT_JSON_PREFIX + '[{"type": "text"} EXTRA garbage'
+    messages = [{"role": "user", "content": corrupt}, {"role": "user", "content": "still there?"}]
+
+    repair_message_sequence(_bare_agent(), messages)
+
+    assert [m["content"] for m in messages] == [corrupt, "still there?"]
+
+
+def test_repair_decode_of_durable_sentinel_row_does_not_reappend(tmp_path):
+    """ehz0ah #125331 (blocking): decoding a *durable* sentinel row is representation-only —
+    ``SessionDB._encode_content(decoded)`` reproduces the exact ``\\x00json:`` scalar already stored —
+    so the row must KEEP its ``_db_persisted`` marker. Dropping it makes the append-only flush treat
+    the historical user turn as new (user ``_row_id`` values are never update targets in
+    ``resolve_and_repair_transcript_batch``), re-appending a duplicate user turn on the durable
+    transcript. This drives the real repair + ``_persist_session`` flush and asserts the stored row
+    count and role order do not change — a regression the content-only repair tests cannot catch."""
+    import os
+    from unittest.mock import patch
+    from hermes_state import SessionDB
+    from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    parts = [
+        {"type": "text", "text": "look"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 2000}},
+    ]
+    # The stored durable scalar is exactly what _encode_content(parts) produces; a resumed row re-enters
+    # the working set as this same string (e.g. after a proactive prune re-inserts history, #124102).
+    encoded = SessionDB._encode_content(parts)
+
+    db = SessionDB(db_path=tmp_path / "t.db")
+    sid = "20260928_000000_dup"
+    db.create_session(sid, "cli", model="test/model")
+    db.append_message(session_id=sid, role="user", content=encoded)
+    db.append_message(session_id=sid, role="assistant", content="ok")
+
+    def _active_rows():
+        return db._conn.execute(
+            "SELECT role FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+            (sid,),
+        ).fetchall()
+
+    before = [r[0] for r in _active_rows()]
+    assert before == ["user", "assistant"]
+
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            session_db=db,
+            session_id=sid,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+    agent._session_db_created = True
+    agent._last_flushed_db_idx = 2
+
+    # Live/resumed set: both durable rows carry their persistence markers; the user row arrives as its
+    # stored sentinel scalar.
+    messages = [
+        {"role": "user", "content": encoded, _DB_PERSISTED_MARKER: True},
+        {"role": "assistant", "content": "ok", _DB_PERSISTED_MARKER: True},
+    ]
+
+    repairs = repair_message_sequence_with_cursor(agent, messages)
+
+    # Decode restored the structured content but kept the durable marker (storage-equivalent): a
+    # valid user→assistant sequence needs no alternation repair, so decode adds nothing to the count.
+    assert repairs == 0
+    assert messages[0]["content"] == parts
+    assert messages[0].get(_DB_PERSISTED_MARKER) is True
+
+    # The symptom: run the persist walk twice (turn finalize + close safety-net). The append-only flush
+    # must skip the already-durable user row — no re-INSERT, row count and role order stay put.
+    agent._persist_session(messages, conversation_history=None)
+    agent._persist_session(messages, conversation_history=None)
+
+    after = [r[0] for r in _active_rows()]
+    assert after == ["user", "assistant"], f"flush changed the durable transcript: {before} -> {after}"
+
+
+_UNANSWERED_CALL = {"role": "assistant", "content": "", "_row_id": 21,
+                    "tool_calls": [{"id": "unanswered", "type": "function",
+                                    "function": {"name": "f", "arguments": "{}"}}]}
+_STRAY_RESULT = {"role": "tool", "tool_call_id": "orphan", "content": "out", "_row_id": 21}
+
+
+@pytest.mark.parametrize("ahead", [False, True], ids=["behind_survivor", "ahead_of_first_survivor"])
+@pytest.mark.parametrize("dropped", [_UNANSWERED_CALL, _STRAY_RESULT], ids=["unanswered_call", "stray_result"])
+def test_repair_records_dropped_tool_row_on_survivor(dropped, ahead):
+    """A dropped row is recorded on the survivor before it, or on the first survivor when nothing is kept
+    ahead of it (#129162)."""
+    agent = _bare_agent()
+    prompt = {"role": "user", "content": "prompt", "_row_id": 20}
+    messages = [dict(dropped), prompt] if ahead else [prompt, dict(dropped)]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 1
+    assert messages[0]["_absorbed_row_ids"] == [21]

@@ -1,5 +1,8 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
+import { runFreeTierChallenge } from '@/store/free-tier-challenge'
+import { setModeContext } from '@/store/interface-mode'
+import { $onboardingGate, guidedOnboardingActive } from '@/store/onboarding-gate'
 import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { FreeTierStatus } from '@/types/hermes'
 
@@ -21,6 +24,20 @@ export type FreeTierRequester = <T = unknown>(method: string, params?: Record<st
  * render as if there were no free tier until an answer lands.
  */
 export const $freeTierStatus = atom<FreeTierStatus | null>(null)
+
+/**
+ * A signed-out free-tier user who should see the standing Sign in: the tier is
+ * on with an identity (`available`; a sign-in replaces that identity, so it
+ * reads false afterwards) and no guided setup owns the moment. The statusbar
+ * chip shows on it, and Simple mode keeps the statusbar up on it.
+ */
+export const $freeTierSignInOpen = computed(
+  [$freeTierStatus, $onboardingGate],
+  status => Boolean(status?.available) && !guidedOnboardingActive()
+)
+
+// Fed here, beside the atom, so every importer of this store gets the same link.
+$freeTierSignInOpen.subscribe(open => setModeContext({ freeTierSignInOpen: open }))
 
 function isFreeTierStatus(value: unknown): value is FreeTierStatus {
   return typeof value === 'object' && value !== null && typeof (value as FreeTierStatus).has_guest === 'boolean'
@@ -44,6 +61,9 @@ export async function refreshFreeTierStatus(requestGateway: FreeTierRequester): 
     }
 
     $freeTierStatus.set(status)
+    // A client that connected after the `free_tier.challenge` event still has
+    // a window to open; the run is de-duplicated per URL.
+    void runFreeTierChallenge(status.challenge, requestGateway)
 
     return status
   } catch {
@@ -153,7 +173,7 @@ export async function ackFreeTierNotice(requestGateway: FreeTierRequester): Prom
 }
 
 /**
- * Whether the SELECTED route runs on the free tier: `setup.runtime_check.free_tier`, keyed on the
+ * Whether the SELECTED route runs on the free tier: `setup.runtime_check.free_tier_route`, keyed on the
  * endpoint the backend resolved, not on profile state. `null` until a readiness round answers. A
  * free-tier identity beside the user's own key reads `false` here while `$freeTierStatus.available`
  * stays true — that split is what picks the intro's shape.

@@ -2,7 +2,7 @@
 
 Run from the repo with a clean environment and a temporary HERMES_HOME:
   .venv/bin/python evals/heartbeat_idle_wire.py
-Pass --base-poller /tmp/run_goals_base.py to compare the old poller. No network.
+Pass --base-poller <path>/run_goals_base.py to compare the old poller. No network.
 """
 
 import argparse
@@ -68,6 +68,10 @@ async def main(base_poller):
     async def drain():
         while adapter._background_tasks:
             await asyncio.gather(*list(adapter._background_tasks))
+            # gather() over tasks that are ALL already done completes without yielding (3.12+), so a
+            # finished task whose queued _background_tasks.discard callback has not run yet would spin
+            # this loop forever; yield once so those done-callbacks run before re-checking.
+            await asyncio.sleep(0)
 
     def snapshot():
         return {"turns": len(received), "queue_depth": runner._queue_depth(key, adapter=adapter),

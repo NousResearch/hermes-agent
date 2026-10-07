@@ -54,13 +54,13 @@ The same subscription unlocks the [Tool Gateway](../user-guide/features/tool-gat
 
 | Tool | Partner | What it does |
 |------|---------|--------------|
-| **Web search & extract** | Firecrawl | Agent-grade search and full-page extraction. No Firecrawl API key, no rate limit babysitting. |
+| **Web search & extract** | Nous-managed | Agent-grade search and full-page extraction. No search API key, no rate limit babysitting. |
 | **Image generation** | FAL | Nine models under one endpoint: FLUX 2 Klein 9B, FLUX 2 Pro, Z-Image Turbo, Nano Banana Pro (Gemini 3 Pro Image), GPT Image 1.5, GPT Image 2, Ideogram V3, Recraft V4 Pro, Qwen Image. |
 | **Text-to-speech** | OpenAI TTS | High-quality TTS without a separate OpenAI key. Enables [voice mode](../user-guide/features/voice-mode.md) across messaging platforms. |
 | **Cloud browser automation** | Browser Use | Headless Chromium sessions for `browser_navigate`, `browser_click`, `browser_type`, `browser_vision`. No Browserbase account needed. |
 | **Cloud terminal sandbox** | Modal | Serverless terminal sandboxes for code execution (optional add-on). |
 
-Without the gateway, hooking each of those up means a Firecrawl account, a FAL account, a Browser Use account, an OpenAI key, and a Modal account — five separate signups, five separate dashboards, five separate top-up flows. With the gateway, all of it routes through one subscription.
+Without the gateway, hooking each of those up means a web search account, a FAL account, a Browser Use account, an OpenAI key, and a Modal account — five separate signups, five separate dashboards, five separate top-up flows. With the gateway, all of it routes through one subscription.
 
 You can also enable just specific gateway tools (e.g. web search but not image generation) — see [Mixing the gateway with your own backends](#mixing-the-gateway-with-your-own-backends) below.
 
@@ -70,7 +70,7 @@ Because everything routes through one OAuth-authenticated Portal session, you do
 
 ### Cross-platform parity
 
-[Native Windows](../user-guide/windows-native.md) makes per-tool API key setup its rough edge — installing a Firecrawl account, a FAL account, a Browser Use account, an OpenAI key from Windows is the highest-friction part of getting a useful agent. A Portal subscription smooths that out: one OAuth covers the model and every gateway tool, so Windows users get the same experience as macOS/Linux without manually configuring four backends.
+[Native Windows](../user-guide/windows-native.md) makes per-tool API key setup its rough edge — installing a web search account, a FAL account, a Browser Use account, an OpenAI key from Windows is the highest-friction part of getting a useful agent. A Portal subscription smooths that out: one OAuth covers the model and every gateway tool, so Windows users get the same experience as macOS/Linux without manually configuring four backends.
 
 ## A note on Hermes 4
 
@@ -124,9 +124,7 @@ OAuth needs a browser, but the loopback callback runs on the machine where Herme
 
 ### Profile setup {#profile-setup}
 
-If you use [Hermes profiles](../user-guide/profiles.md), the Portal refresh token is shared across profiles via a shared token store — but the store **refreshes an existing login, it does not create one**. Profiles are independent islands ([#111724](https://github.com/NousResearch/hermes-agent/issues/111724)), so a profile that has never signed in to the Portal has no Nous credentials of its own: at boot it fails closed with `Profile '<name>' is not connected to any AI provider yet` rather than silently adopting another profile's session.
-
-Sign in **once per profile** with `hermes -p <name> portal` (alias for `hermes -p <name> auth add nous --type oauth`). When a shared Portal session already exists on the machine, that command offers to import it — one confirmation, no browser round-trip. After that first import the profile keeps its own state, and the shared store keeps its token current whenever any profile refreshes or re-logs in. `hermes profile create <name> --clone-all` from a signed-in profile also carries the Portal login (only single-use grants such as Anthropic/Codex are stripped from clones).
+If you use [Hermes profiles](../user-guide/profiles.md), the Portal refresh token is automatically shared across all profiles via a shared token store. Sign in once on any profile, and the rest pick it up automatically — no need to repeat the OAuth flow per profile.
 
 ## Using the Portal day-to-day
 

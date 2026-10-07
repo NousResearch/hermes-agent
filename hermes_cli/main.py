@@ -2796,8 +2796,8 @@ def cmd_chat(args):
         os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
 
     # --ignore-rules: skip auto-injection of AGENTS.md/SOUL.md/.cursorrules
-    # (rules), memory entries, and any preloaded skills coming from user config.
-    # Maps to AIAgent(skip_context_files=True, skip_memory=True).
+    # (rules). Maps to AIAgent(skip_context_files=True, skip_memory=False) so
+    # durable memory remains enabled while context rule files are skipped.
     if getattr(args, "ignore_rules", False):
         os.environ["HERMES_IGNORE_RULES"] = "1"
 

@@ -63,6 +63,7 @@ def _make_agent(
 
 
 def test_skip_memory_with_memory_toolset_creates_store(monkeypatch, tmp_path):
+    """Memory toolset enabled despite skip_memory=True must still build the built-in store."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hm"))
     agent = _make_agent(monkeypatch, enabled_toolsets=["memory"], skip_memory=True)
     assert agent._memory_store is not None, (
@@ -153,3 +154,94 @@ def test_ignore_rules_memory_disabled_leaves_no_store(monkeypatch, tmp_path):
         user_profile_enabled=False,
     )
     assert agent._memory_store is None
+
+
+def test_cli_agent_setup_mixin_ignore_rules_passes_skip_context_files_only(monkeypatch):
+    """CLIAgentSetupMixin._init_agent with ignore_rules=True passes
+    skip_context_files=True and skip_memory=False to AIAgent constructor."""
+    from unittest.mock import MagicMock
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+
+    class DummyCLI(CLIAgentSetupMixin):
+        def __init__(self):
+            self.agent = None
+            self.ignore_rules = True
+            self.verbose = False
+            self.system_prompt = None
+            self.prefill_messages = None
+            self.reasoning_config = None
+            self.service_tier = None
+            self._providers_only = None
+            self._providers_ignore = None
+            self._providers_order = None
+            self._provider_sort = None
+            self._provider_require_params = False
+            self._provider_data_collection = False
+            self._openrouter_min_coding_score = None
+            self.session_id = "test-session"
+            self._session_db = None
+            self._clarify_callback = None
+            self._fallback_model = None
+            self._on_thinking = None
+            self.checkpoints_enabled = False
+            self.checkpoint_max_snapshots = 1
+            self.checkpoint_max_total_size_mb = 10
+            self.checkpoint_max_file_size_mb = 5
+            self.pass_session_id = False
+            self._on_tool_progress = None
+            self._inline_diffs_enabled = False
+            self.streaming_enabled = False
+            self._on_notice = None
+            self._on_notice_clear = None
+            self._on_reaction = None
+            self._resumed = False
+            self.conversation_history = []
+            self.model = "test-model"
+            self.provider = "openrouter"
+            self.base_url = "http://test"
+            self.api_key = "test-key"
+            self.api_mode = "chat_completions"
+            self.max_tokens = 100
+            self.temperature = 0.7
+            self.max_turns = 1
+            self.exec_timeout = 30
+            self.enabled_toolsets = []
+            self.disabled_toolsets = []
+            self.acp_command = None
+            self.acp_args = []
+            self.agent_kwargs = {}
+            self._pending_title = None
+
+        def finalize_preloaded_skills(self):
+            pass
+
+        def _install_tool_callbacks(self):
+            pass
+
+        def _ensure_tirith_security(self):
+            pass
+
+        def _ensure_runtime_credentials(self):
+            return True
+
+        def _current_reasoning_callback(self):
+            return None
+
+    dummy = DummyCLI()
+    captured_kwargs = {}
+
+    def fake_ai_agent(**kwargs):
+        captured_kwargs.update(kwargs)
+        return MagicMock()
+
+    monkeypatch.setattr("cli.AIAgent", fake_ai_agent)
+    monkeypatch.setattr("cli._prepare_deferred_agent_startup", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
+        lambda **kw: None,
+    )
+
+    success = dummy._init_agent()
+    assert success is True
+    assert captured_kwargs.get("skip_context_files") is True
+    assert captured_kwargs.get("skip_memory") is False

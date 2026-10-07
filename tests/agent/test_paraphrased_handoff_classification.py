@@ -11,6 +11,7 @@ from agent.context_compressor import (
     ContextCompressor,
     is_compaction_summary_message,
 )
+from agent.context_compressor_handoff_drive import reference_handoff_would_drive_next_model_call
 
 # The observed #132934 shape: the bracketed marker survives, the boilerplate after it
 # is rewritten by the model (38 shared chars, then diverges).
@@ -26,6 +27,13 @@ def _acp_tags_summary(message):
     return _history_summary_meta(message, message["content"]) is not None
 
 
+def _completed_merged_reply_drives(message):
+    # A finished merged assistant row drives the next call exactly like its exact-prefix twin (#80622 guard).
+    return reference_handoff_would_drive_next_model_call(
+        [{"role": "user", "content": "hi"}, {**message, "finish_reason": "stop"}]
+    )
+
+
 @pytest.mark.parametrize(
     ("is_summary", "role", "content", "expected"),
     [
@@ -39,8 +47,10 @@ def _acp_tags_summary(message):
         (_acp_tags_summary, "user", PARAPHRASED_HANDOFF, False),
         # A tool result quoting the marker is real output: classifying it drops it and orphans its call.
         (is_compaction_summary_message, "tool", PARAPHRASED_HANDOFF, False),
+        (_completed_merged_reply_drives, "assistant", "live tail " + _MERGED_SUMMARY_DELIMITER + "\n" + PARAPHRASED_HANDOFF, True),
     ],
-    ids=["paraphrased", "merged", "quoted-no-vocab", "quoted-generic-vocab", "user-paste", "acp-user-paste", "tool-quote"],
+    ids=["paraphrased", "merged", "quoted-no-vocab", "quoted-generic-vocab", "user-paste", "acp-user-paste", "tool-quote",
+         "merged-drive"],
 )
 def test_paraphrased_handoff_classification(is_summary, role, content, expected):
     assert is_summary({"role": role, "content": content}) is expected

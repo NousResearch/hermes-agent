@@ -124,11 +124,33 @@ def release_dead_index_lock(repo_root: Path) -> bool:
 
     root = Path(repo_root)
     git_dir = _git_dir(root)
-    if not (git_dir / "index.lock").exists() or interrupted_pull_marker(root).exists():
+    lock = git_dir / "index.lock"
+    if not lock.exists() or interrupted_pull_marker(root).exists():
+        return False
+    # No holder is not proof of a dead one: a git that just created the lock may not have it
+    # open yet. Only a lock a killed update left is ours to take; anything else waits for the
+    # age-floor sweep and the update refuses on it truthfully.
+    if not _killed_update_owns(lock):
         return False
     if os.name == "nt" and _windows_git_in_checkout(root) is not False:
         return False
     return _release_dead_index_lock(git_dir, root)
+
+
+def _killed_update_owns(lock: Path) -> bool:
+    """The latest update run died without finishing and ``lock`` was created after it started."""
+    from datetime import datetime
+
+    from hermes_cli.update_receipt import _owner_alive, read_latest_receipt
+
+    latest = read_latest_receipt() or {}
+    if latest.get("outcome") not in ("running", "interrupted") or _owner_alive(latest):
+        return False
+    try:
+        started = datetime.fromisoformat(str(latest.get("started_at"))).timestamp()
+        return lock.stat().st_mtime >= started
+    except (OSError, ValueError):
+        return False
 
 
 def _windows_git_in_checkout(root: Path) -> "bool | None":

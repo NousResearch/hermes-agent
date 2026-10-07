@@ -349,9 +349,11 @@ def _status_blocked_on_a_fifo(repo: Path, *argv: str) -> subprocess.Popen:
 def test_a_killed_gits_index_lock_goes_at_once_and_a_live_ones_stays(repo: Path) -> None:
     """The next update must not die on the lock a killed one left (the age floor kept it for 10
     minutes), and must never take the lock of a git that is still running."""
+    from hermes_cli import update_receipt
     from hermes_cli.gitlock import release_dead_index_lock
 
     lock = repo / ".git" / "index.lock"
+    _killed_update_receipt()
     proc = _status_blocked_on_a_fifo(repo)
     try:
         assert release_dead_index_lock(repo) is False
@@ -361,5 +363,32 @@ def test_a_killed_gits_index_lock_goes_at_once_and_a_live_ones_stays(repo: Path)
         proc.wait()
 
     assert lock.exists(), "premise: a SIGKILLed status strands index.lock"
+    assert update_receipt.read_latest_receipt()["outcome"] == "running"
     assert release_dead_index_lock(repo) is True
     assert not lock.exists()
+
+
+def test_a_fresh_lock_with_no_killed_update_behind_it_is_kept(repo: Path) -> None:
+    """No process holding a lock it just created proves nothing (the git may not have opened it
+    yet): without a killed update run behind it, the update refuses on it and the lock stays."""
+    from hermes_cli.gitlock import release_dead_index_lock
+
+    lock = repo / ".git" / "index.lock"
+    lock.write_text("", encoding="utf-8")
+    assert release_dead_index_lock(repo) is False
+    assert lock.exists()
+
+
+def _killed_update_receipt() -> None:
+    """A real running receipt whose owner is a pid that already exited (the killed update)."""
+    import json
+
+    from hermes_cli import update_receipt
+
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    update_receipt.begin_update_receipt()
+    current = update_receipt._current.get()
+    current.data.update(pid=dead.pid, pid_create_time=None, writer_pid=dead.pid, writer_create_time=None)
+    update_receipt._write_latest((json.dumps(current.data) + "\n").encode("utf-8"))
+    update_receipt._current.set(None)

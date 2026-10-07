@@ -32,7 +32,9 @@ async def refuse_until_started(runner: Any, job_id: str, *, received_at: float) 
     loop = asyncio.get_running_loop()
     deadline = received_at + FIRE_STARTUP_WAIT_SECONDS
     while runner is not None and not getattr(runner, "_running", True):
-        if loop.time() >= deadline:
+        # A gateway stopping mid-boot never reaches _running: refuse now, not after the full wait.
+        draining = getattr(runner, "_draining", False) or getattr(runner, "_external_drain_active", False)
+        if draining or loop.time() >= deadline:
             return web.json_response(
                 {"error": "gateway unreachable; retry", "job_id": job_id}, status=503, headers={"Retry-After": "60"})
         await asyncio.sleep(_POLL_SECONDS)

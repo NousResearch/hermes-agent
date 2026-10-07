@@ -107,6 +107,24 @@ async def test_fire_is_retryable_and_never_claimed_when_startup_does_not_finish(
 
 
 @pytest.mark.asyncio
+async def test_gateway_that_starts_draining_mid_boot_is_refused_without_the_full_wait(
+        adapter, provider, monkeypatch):
+    monkeypatch.setattr(api_server_fire_startup, "FIRE_STARTUP_WAIT_SECONDS", 30.0)
+    runner = SimpleNamespace(_draining=False, _external_drain_active=False, _running=False, adapters={})
+
+    async def _stop_during_startup():
+        await asyncio.sleep(0.3)
+        runner._draining = True
+
+    stopper = asyncio.ensure_future(_stop_during_startup())
+    resp = await asyncio.wait_for(_post_fire(adapter, runner), timeout=10.0)
+    await stopper
+
+    assert resp.status == 503 and resp.headers["Retry-After"] == "60"
+    assert provider.claimed == [] and provider.fired == []
+
+
+@pytest.mark.asyncio
 async def test_started_gateway_is_accepted_immediately(adapter, provider):
     runner = SimpleNamespace(_draining=False, _external_drain_active=False, _running=True, adapters={"relay": object()})
 

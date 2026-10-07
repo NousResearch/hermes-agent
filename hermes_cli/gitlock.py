@@ -116,8 +116,9 @@ def release_dead_index_lock(repo_root: Path) -> bool:
     died at its fast-forward (#132089; the Windows crash cell ``mid_fetch``). Ownership is the
     launch-time repair's proof (``_early_recovery._release_dead_index_lock``): a live holder keeps
     it. Windows can only prove it by the unlink, which a lock-keeping git with its fd closed (a
-    ``git commit`` waiting in the editor) would not stop, so there any running git keeps it. An
-    interrupted tree move owns its own lock judgement, so its marker defers to that repair.
+    ``git commit`` waiting in the editor) would not stop, so there a git working in this checkout
+    keeps it. An interrupted tree move owns its own lock judgement, so its marker defers to that
+    repair.
     """
     from hermes_cli._early_recovery import _git_dir, _release_dead_index_lock, interrupted_pull_marker
 
@@ -125,9 +126,35 @@ def release_dead_index_lock(repo_root: Path) -> bool:
     git_dir = _git_dir(root)
     if not (git_dir / "index.lock").exists() or interrupted_pull_marker(root).exists():
         return False
-    if os.name == "nt" and _git_proc_running():
+    if os.name == "nt" and _windows_git_in_checkout(root) is not False:
         return False
     return _release_dead_index_lock(git_dir, root)
+
+
+def _windows_git_in_checkout(root: Path) -> "bool | None":
+    """Whether a ``git.exe`` works in ``root`` (its cwd or argv names it); None when unknowable.
+
+    Scoped to the checkout: a system-wide check would keep the lock whenever any editor or
+    terminal elsewhere runs git, which on Windows is most of the time.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return None
+    inside = os.path.normcase(os.path.realpath(root))
+    try:
+        for proc in psutil.process_iter(["name", "cwd", "cmdline"]):
+            if (proc.info.get("name") or "").lower() != "git.exe":
+                continue
+            cwd = proc.info.get("cwd")
+            if not cwd:
+                return None  # a git we cannot inspect may be working here
+            places = [cwd, *(arg for arg in proc.info.get("cmdline") or () if os.path.isabs(arg))]
+            if any(os.path.normcase(os.path.realpath(place)).startswith(inside) for place in places):
+                return True
+    except Exception:  # health: allow BLE001 -- a failed scan keeps the lock, never drops it
+        return None
+    return False
 
 
 def _pack_dir(repo_root: Path) -> Path:

@@ -125,6 +125,25 @@ async def test_gateway_that_starts_draining_mid_boot_is_refused_without_the_full
 
 
 @pytest.mark.asyncio
+async def test_gateway_that_finishes_starting_into_a_drain_is_refused(adapter, provider, monkeypatch):
+    """A restart drain keeps ``_running`` True, so readiness alone must not admit a fire that waited."""
+    monkeypatch.setattr(api_server_fire_startup, "FIRE_STARTUP_WAIT_SECONDS", 30.0)
+    runner = SimpleNamespace(_draining=False, _external_drain_active=False, _running=False, adapters={})
+
+    async def _start_into_drain():
+        await asyncio.sleep(0.3)
+        runner._running = True
+        runner._draining = True
+
+    flipper = asyncio.ensure_future(_start_into_drain())
+    resp = await asyncio.wait_for(_post_fire(adapter, runner), timeout=10.0)
+    await flipper
+
+    assert resp.status == 503
+    assert provider.claimed == [] and provider.fired == []
+
+
+@pytest.mark.asyncio
 async def test_started_gateway_is_accepted_immediately(adapter, provider):
     runner = SimpleNamespace(_draining=False, _external_drain_active=False, _running=True, adapters={"relay": object()})
 

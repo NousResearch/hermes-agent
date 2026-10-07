@@ -41,6 +41,9 @@ def test_cron_store_writability_is_exported(monkeypatch, tmp_path):
     from cron import store_health
     monkeypatch.setattr(store_health, "_degraded", {})
     monkeypatch.setattr(store_health, "_listener", None)
+    monkeypatch.setattr(store_health, "_recovered", {})
+    from cron import scheduler_ownership
+    monkeypatch.setattr(scheduler_ownership, "_ticked_homes", {})
     store_health.note_unwritable(OSError(errno.ENOSPC, "full"), "x", "advance",
                                  [{"id": "job", "next_run_at": "2026-06-22T12:00:00+00:00"}])
     degraded = build_cron_health_snapshot()
@@ -49,9 +52,12 @@ def test_cron_store_writability_is_exported(monkeypatch, tmp_path):
     store_health._degraded.clear()
     assert _metric(build_cron_health_snapshot(), "hermes.cron.store.writable").value == 1
     # A secondary profile's store (not the exporter's scope) must not read as healthy.
+    from cron.scheduler_ownership import register_ticked_homes
+    register_ticked_homes([tmp_path / "other"])
     store_health.note_unwritable(OSError(errno.ENOSPC, "full"), "x", "scan", cron_dir=tmp_path / "other" / "cron")
     assert _metric(build_cron_health_snapshot(), "hermes.cron.store.writable").value == 0
-    store_health._degraded.clear()
+    register_ticked_homes([])  # the profile left this gateway: its store no longer counts
+    assert _metric(build_cron_health_snapshot(), "hermes.cron.store.writable").value == 1
 
 @pytest.mark.parametrize("message", ["oauth refresh failed", "tokenizer crashed", "HTTP 4015"])
 def test_error_classification_avoids_auth_substring_false_positives(message):

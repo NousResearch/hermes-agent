@@ -152,6 +152,17 @@ def outage_covers(cron_dir: Path, due_at: float, grace: float) -> bool:
                for r in (_degraded.get(str(cron_dir)), _recovered.get(str(cron_dir))))
 
 
+def forget_homes(home_keys) -> None:
+    """Drop the state of stores whose profile home (``hermes_home_key``) this process no longer
+    ticks, so a profile that left this gateway cannot keep the host-wide gauges at writable=0."""
+    from hermes_constants import hermes_home_key
+    keys = set(home_keys)
+    with _lock:
+        for records in (_degraded, _recovered):
+            for store in [s for s in records if hermes_home_key(Path(s).parent) in keys]:
+                del records[store]
+
+
 def degraded_records() -> list:
     with _lock:
         return list(_degraded.values())
@@ -259,10 +270,12 @@ def probe_store(cron_dir: Path) -> Optional[OSError]:
     if os.path.exists(target) and not os.access(target, os.W_OK):  # e.g. a read-only symlink target
         return OSError(errno.EACCES, os.strerror(errno.EACCES), target)
     tmp = None
+    chunk = b"\0" * 65536
     try:
         fd, tmp = mkstemp_beside(jobs_file, prefix=".probe_")
         with os.fdopen(fd, "wb") as f:
-            f.write(b"\0" * size)
+            for offset in range(0, size, len(chunk)):  # bounded memory for a large jobs.json
+                f.write(chunk[:size - offset])
             f.flush()
             os.fsync(f.fileno())
     except OSError as exc:

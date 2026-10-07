@@ -140,6 +140,8 @@ def is_delegated_child_process_context() -> bool:
 
     if _DELEGATED_CHILD_CONTEXT.get():
         return True
+    if _NON_DISPATCHER_OWNED_CONTEXT.get():
+        return False
     if _LINEAGE_WAS_CHILD:
         return True
     marker = os.environ.pop(DELEGATED_CHILD_ENV_MARKER, None)

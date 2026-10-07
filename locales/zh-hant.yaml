@@ -2329,6 +2329,7 @@ cli:
   goal:
     barrier_lifted: "▶ 目標屏障已解除 — 正在恢復。"
     paused_interrupted: "⏸ 目標已暫停 — 回合被中斷。使用 /goal resume 繼續，或 /goal clear 停止。"
+    paused_provider_failure: "⏸ 目標已暫停——供應商拒絕了此回合（{reason}）。修正額度或憑證後，使用 /goal resume 繼續，或 /goal clear 停止。"
   loop:
     wakeup_firing: "↻ /loop 第 {tick} 次喚醒觸發中…"
     paused_interrupted: "⏸ 循環已暫停 — 喚醒回合被中斷。使用 /loop resume 繼續，或 /loop stop 結束。"

@@ -2329,6 +2329,7 @@ cli:
   goal:
     barrier_lifted: "▶ رُفع حاجز الهدف — جارٍ الاستئناف."
     paused_interrupted: "⏸ الهدف متوقّف مؤقتًا — قُطع الدور. استخدم /goal resume للمتابعة، أو /goal clear للإيقاف."
+    paused_provider_failure: "⏸ تم إيقاف الهدف مؤقتًا — رفض المزوّد الدور ({reason}). أصلح الرصيد أو بيانات الاعتماد، ثم استخدم /goal resume للمتابعة، أو /goal clear للإيقاف."
   loop:
     wakeup_firing: "↻ تنبيه /loop رقم #{tick} قيد التنفيذ…"
     paused_interrupted: "⏸ الحلقة متوقّفة مؤقتًا — قُطع دور التنبيه. استخدم /loop resume للمتابعة، أو /loop stop لإنهائها."

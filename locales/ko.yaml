@@ -2329,6 +2329,7 @@ cli:
   goal:
     barrier_lifted: "▶ 목표 장벽이 해제됐어요 — 재개해요."
     paused_interrupted: "⏸ 목표 일시 중지됨 — 턴이 중단됐어요. 계속하려면 /goal resume, 중지하려면 /goal clear를 사용해 주세요."
+    paused_provider_failure: "⏸ 목표가 일시 중지되었습니다 — 제공자가 턴을 거부했습니다 ({reason}). 크레딧 또는 자격 증명을 해결한 뒤 /goal resume으로 계속하거나 /goal clear로 중지하세요."
   loop:
     wakeup_firing: "↻ /loop 웨이크업 #{tick} 실행 중…"
     paused_interrupted: "⏸ 루프 일시 중지됨 — 웨이크업 턴이 중단됐어요. 계속하려면 /loop resume, 종료하려면 /loop stop을 사용해 주세요."

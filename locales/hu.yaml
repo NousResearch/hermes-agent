@@ -2346,6 +2346,7 @@ cli:
   goal:
     barrier_lifted: "▶ Célkorlát feloldva — folytatás."
     paused_interrupted: "⏸ Cél szüneteltetve — a kör megszakadt. Folytatás: /goal resume, leállítás: /goal clear."
+    paused_provider_failure: "⏸ Cél szüneteltetve — a szolgáltató elutasította a kört ({reason}). Javítsd a kreditet vagy a hitelesítő adatokat, majd folytatás: /goal resume, leállítás: /goal clear."
   loop:
     wakeup_firing: "↻ /loop ébresztés #{tick} indul…"
     paused_interrupted: "⏸ Ciklus szüneteltetve — az ébresztő kör megszakadt. Folytatás: /loop resume, befejezés: /loop stop."

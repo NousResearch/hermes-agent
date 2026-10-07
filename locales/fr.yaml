@@ -2602,6 +2602,7 @@ cli:
   goal:
     barrier_lifted: "▶ Barrière d'objectif levée — reprise."
     paused_interrupted: "⏸ Objectif en pause — le tour a été interrompu. Utilisez /goal resume pour continuer, ou /goal clear pour arrêter."
+    paused_provider_failure: "⏸ Objectif en pause — le fournisseur a refusé le tour ({reason}). Corrigez les crédits ou les identifiants, puis utilisez /goal resume pour continuer, ou /goal clear pour arrêter."
   loop:
     wakeup_firing: "↻ Réveil /loop n°{tick} en cours…"
     paused_interrupted: "⏸ Boucle en pause — le tour de réveil a été interrompu. Utilisez /loop resume pour continuer, ou /loop stop pour y mettre fin."

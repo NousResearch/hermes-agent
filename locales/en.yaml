@@ -2429,6 +2429,7 @@ cli:
   goal:
     barrier_lifted: "▶ Goal barrier lifted — resuming."
     paused_interrupted: "⏸ Goal paused — turn was interrupted. Use /goal resume to continue, or /goal clear to stop."
+    paused_provider_failure: "⏸ Goal paused — the provider rejected the turn ({reason}). Fix credits or credentials, then use /goal resume to continue, or /goal clear to stop."
   loop:
     wakeup_firing: "↻ /loop wakeup #{tick} firing…"
     paused_interrupted: "⏸ Loop paused — wakeup turn was interrupted. Use /loop resume to continue, or /loop stop to end it."

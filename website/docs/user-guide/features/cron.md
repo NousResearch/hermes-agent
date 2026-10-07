@@ -356,8 +356,8 @@ When the cron store (`~/.hermes/cron/`, or the profile's own `cron/` directory) 
 
 - `hermes cron status` probes the store itself and leads with `⚠ Cron store is NOT writable — scheduled jobs are being skipped`. Below that it shows the store path, the OS error, the last successful write and how many due runs have not fired. `hermes cron list` prints a one-line banner.
 - `hermes doctor` warns when the store is not writable, or when its filesystem has less than 100 MB free.
-- The gateway posts one notice to the profile's home channels when the store becomes unwritable and one when it has stayed writable for an hour (a store that fails again within that hour posts nothing more, so the last notice always matches its state). Both respect `display.suppress_warning_notifications`.
-- Monitoring exports `hermes.cron.store.writable` (0/1) and `hermes.cron.store.skipped_runs`.
+- The gateway posts one notice to the profile's home channels when the store becomes unwritable and one when it has stayed writable for an hour (a store that fails again within that hour posts nothing more, so the last notice always matches its state). Both respect `display.suppress_warning_notifications` and use the profile's `display.language`.
+- Monitoring exports `hermes.cron.store.writable` (0 while any profile's store served by this gateway is unwritable, else 1) and `hermes.cron.store.skipped_runs` (summed over those stores).
 
 To fix it, free disk space on the filesystem holding the store, remount it read-write, or fix the ownership and permissions of the store directory so the gateway user can write it. You don't need to restart anything. On the next tick that can write, each job that stayed due fires **once** under the normal [misfire catch-up](#misfire-catch-up) rules, not once per missed tick. A one-shot that came due during the outage fires once instead of expiring (unless the gateway restarts while the store is unwritable).
 

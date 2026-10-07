@@ -147,12 +147,11 @@ def _retirement_commit_proof(request: dict, terminal: dict, git_cmd, cwd,
     """Prove the installed source is not newer than the qualified retirement build.
 
     Returns whether the ancestry was proven. Raises for the rollback shapes
-    every transport can see: an installed version/commit newer than the
-    qualified build, a descendant commit, and — on the strict no-Git apply
-    path — an install that carries no evidence of being older than the
-    pinned build (no provably older version and no stamp naming it). Passive
-    checkers and Git-verified installs instead fail open to the unverified
-    answer rather than stranding the retirement (main's posture, with the
+    every transport can see: an installed commit newer than the qualified
+    build, a descendant commit, and — on the strict no-Git apply path — an
+    install that carries no stamp naming the pinned build. Passive checkers
+    and Git-verified installs instead fail open to the unverified answer
+    rather than stranding the retirement (main's posture, with the
     newer-source hole the reviews demonstrated closed).
 
     ``terminal["head"]`` is a raw record head (see :func:`_head`). The strict
@@ -160,48 +159,27 @@ def _retirement_commit_proof(request: dict, terminal: dict, git_cmd, cwd,
     additionally admits a stamp naming the pinned target commit.
     """
     from pathlib import Path
-    import tomllib
     if cwd is None:
         return True
-    proven_older_version = False
-    version_file = Path(cwd) / "pyproject.toml"
-    if version_file.exists():
-        with version_file.open("rb") as file:
-            project = tomllib.load(file).get("project")
-        installed_version = project.get("version") if isinstance(project, dict) else None
-        if not isinstance(installed_version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", installed_version, re.ASCII):
-            raise ValueError("Source retirement cannot verify the installed source version")
-        if tuple(map(int, installed_version.split("."))) > tuple(map(int, request["sourceVersion"].split("."))):
-            raise ValueError("Source retirement would downgrade a newer source version; select the destination channel explicitly")
-        proven_older_version = tuple(map(int, installed_version.split("."))) < tuple(map(int, request["sourceVersion"].split(".")))
     if git_cmd is not None:
         return _git_retirement_proof(request, terminal, git_cmd, cwd, strict)
-    # No Git: the ZIP updater and the embedded desktop checker. The version
-    # floor above is the only ordering evidence this transport has, and it
-    # already refused the provably newer installs. Publication heads carry
-    # buildId/sequence/manifestKey/sha256, not a commit, so Git-grade ancestry
-    # is unavailable here: a stamp naming the pinned target is proven, while
-    # any other stamp is unproven rather than proven-newer -- refusing it
-    # would strand supported older installs that the permissive posture
-    # admits. A stamp proves identity only against the pinned target: a
-    # destination-head comparison (when a head publishes a commit field)
-    # cannot distinguish "sitting on the destination" from "same version,
-    # different build", which is exactly the downgrade the retirement pins.
+    # No Git: the ZIP updater and the embedded desktop checker. The only
+    # ordering authority this transport has is the install stamp binding the
+    # tree to a commit: a stamp naming the pinned target is positive proof.
+    # pyproject.toml is NOT evidence — its 0.0.0 placeholder is inert on real
+    # checkouts (update_cmd_maint._checkout_version) and writable in any tree,
+    # so a version comparison against it proves nothing and fails the strict
+    # apply open. A stamp naming a different commit (or no stamp at all)
+    # cannot show the install predates the qualified build, and the strict
+    # apply path refuses rather than treating unverified ordering as rollback
+    # authorization; selecting the destination channel explicitly is the
+    # remedy. Passive checkers keep main's permissive answer (reported as
+    # ancestryUnverified) instead of stranding installs that cannot prove
+    # anything without Git.
     stamp = _stamp_commit(cwd)
     if stamp is not None and stamp == request["commit"]:
         return True
-    if strict and version_file.exists() and not proven_older_version:
-        # The strict apply path cannot treat unverified ordering as
-        # authorization when the tree carries build evidence: publication
-        # heads carry buildId/sequence/sha256 and no commit, so an equal
-        # version with a different (or absent) stamp is exactly the
-        # same-version different-build rollback the retirement pins — refuse
-        # it with the explicit-destination remedy instead of applying the
-        # pinned archive. A tree with no build evidence at all keeps main's
-        # permissive ZIP/desktop flow: the version floor and the packaged
-        # stamps are the only ordering authorities this transport has, and
-        # refusing evidence-less installs would strand the supported
-        # updater mode (the tagless-ZIP contract).
+    if strict:
         raise ValueError(
             "Source retirement cannot verify that this install is not newer than the "
             f"qualified {terminal['name']} build; select the destination channel explicitly "
@@ -289,6 +267,67 @@ def _git_retirement_proof(request: dict, terminal: dict, git_cmd, cwd,
     return _classify_strict_ancestry(request, git_cmd, cwd, run_git)
 
 
+def _guarded_history_refill(git_cmd, cwd, target: str, timeout: int) -> subprocess.CompletedProcess:
+    """The history-refill fetch: guarded preparation, custody runner, partial-clone policy.
+
+    A grafted-history refill needs the commits behind a shallow boundary, not
+    their file contents, so it must not hydrate blob history. It applies the
+    same filter selection as :func:`hermes_cli.gitlock.fetch_full_commit_graph`
+    — preserve an existing partial-clone filter; convert a depth-limited full
+    clone whose boundary commits really lack parents to ``blob:none`` instead
+    of a raw ``--unshallow`` that downloads every historical file version —
+    while keeping :func:`_strict_git_fetch`'s stale-lock preparation and
+    custody lane. The pinned target rides along so the re-judge below sees it
+    when the refill lands a different boundary. Raises on fetch failure.
+    """
+    from pathlib import Path
+
+    from hermes_cli.gitlock import (
+        _batch_missing_parents,
+        _partial_clone_filter,
+        _shallow_file_path,
+        disable_tree0_auto_maintenance,
+        mark_unmarked_packs_promisor,
+    )
+    from hermes_cli.gitlock import clear_stale_git_locks
+    from hermes_cli.source_check import source_git_env
+    from hermes_cli.update_custody import run_git as custody_git
+
+    root = Path(cwd)
+    clear_stale_git_locks(root)
+    shallow_path = _shallow_file_path(root)
+    if shallow_path is None:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    fetch_filter = _partial_clone_filter(root)
+    # git writes the partial-clone config before it fetches, so mark the packs
+    # even when the fetch fails (#124272) — same contract as the gitlock owner.
+    converts = fetch_filter is None and bool(
+        _batch_missing_parents(root, shallow_path.read_text(encoding="utf-8-sig").split()))
+    if converts:
+        # The one deliberate conversion: a depth-limited full clone whose
+        # boundary commits really lack parents unshallows as a partial clone,
+        # because an unfiltered --unshallow downloads every historical file
+        # version and ancestry proof does not need them.
+        fetch_filter = "blob:none"
+    try:
+        fetch = custody_git(
+            git_cmd,
+            ["fetch", "--quiet", "--unshallow",
+             *([f"--filter={fetch_filter}"] if fetch_filter else []),
+             "--no-tags", "origin", target],
+            cwd=cwd, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout,
+            stdin=subprocess.DEVNULL, env=source_git_env(),
+        )
+    finally:
+        if converts:
+            mark_unmarked_packs_promisor(root)
+            disable_tree0_auto_maintenance(root)
+    if fetch.returncode != 0:
+        raise ValueError("Source retirement cannot verify that the installed source is not newer; select the destination channel explicitly")
+    return fetch
+
+
 def _strict_git_fetch(git_cmd, cwd, fetch_args, timeout: int) -> subprocess.CompletedProcess:
     """The one strict-fetch lane: guarded preparation, then the custody fetch.
 
@@ -327,10 +366,12 @@ def _classify_strict_ancestry(request: dict, git_cmd, cwd, run_git) -> bool:
     decided, and unconditionally ``--unshallow``-ing it would download the
     whole blob history behind the boundary (the reason the updater owns
     ``fetch_full_commit_graph`` and its ``blob:none`` conversion). Only an
-    inconclusive shallow result enters the guarded refill: ``--unshallow``
-    under the same guarded fetch lane, then re-judge on real history; only a
-    real-history descendant or divergent pair is refused, so the first attempt
-    admits an eligible older install instead of requiring a retry.
+    inconclusive shallow result enters the guarded refill — policy-aware
+    (an existing partial-clone filter is preserved, a depth-limited full
+    clone is converted to ``blob:none``) and under the same stale-lock
+    preparation and custody lane — then re-judge on real history; only a
+    real-history descendant or divergent pair is refused, so the first
+    attempt admits an eligible older install instead of requiring a retry.
     """
     result = run_git("rev-list", "--ancestry-path", f"{request['commit']}..HEAD")
     if result.returncode == 0 and not result.stdout.strip():
@@ -340,8 +381,7 @@ def _classify_strict_ancestry(request: dict, git_cmd, cwd, run_git) -> bool:
     shallow = run_git("rev-parse", "--is-shallow-repository")
     if shallow.returncode == 0 and shallow.stdout.strip() == "true":
         try:
-            _strict_git_fetch(git_cmd, cwd,
-                              ["fetch", "--unshallow", "--no-tags", "origin", request["commit"]], 900)
+            _guarded_history_refill(git_cmd, cwd, request["commit"], 900)
         except (OSError, subprocess.SubprocessError, ValueError):
             pass  # the classification below keeps the refusal honest
     result = run_git("rev-list", "--ancestry-path", f"{request['commit']}..HEAD")

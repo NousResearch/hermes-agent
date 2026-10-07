@@ -23,8 +23,14 @@ Every read, stat, existence check and write of a profile's user `config.yaml` go
 | `supports_file_tooling()` / `require_file_tooling(what)` | Gate for tools that copy, edit or back up the file itself (`config edit`, backup/restore, profile clone) |
 
 Caches keyed on `config_version` miss when a remote poll installs a new layer, exactly as
-they do after a local file edit. The managed scope (`/etc/hermes`) stays an overlay on top
-of whatever user layer the backend returns.
+they do after a local file edit. With the file backend, the managed scope (`/etc/hermes`)
+stays an overlay on top of the user layer. The remote backend ignores the managed
+`config.yaml`: config and locks come only from Remote Config, and `hermes doctor` flags the
+file if it exists. The managed `.env` still applies in both modes.
+
+Related keys that must change together (a model switch's `model.*` keys, the TUI `/focus`
+toggle) go through `write_config_keys(path, {key: value, ...})`. A remote backend sends them
+as one CAS write, so a lock on any of them refuses all of them.
 
 ## Lints
 

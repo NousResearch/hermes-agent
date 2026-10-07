@@ -25,6 +25,7 @@ def hosted(monkeypatch, tmp_path):
         env={"HOME": str(tmp_path), "HERMES_HOME": str(server._hermes_home), "HERMES_RUNTIME_DIR": str(tmp_path / "runtime")},
         rpc_sink=server._relay_compute_host_rpc, respawn_max=0)
     supervisor.conditional_admission_sink = getattr(server, "_host_admission_allowed", None)
+    supervisor.conditional_membership_sink = getattr(server, "_host_membership_allowed", None)
     monkeypatch.setattr(server, "_compute_host_supervisor", supervisor)
     monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda *a: supervisor)
     monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda: {"turn_isolation": True})

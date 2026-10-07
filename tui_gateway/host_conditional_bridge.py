@@ -244,3 +244,23 @@ def _host_admission_allowed(frame):
         return False
     with _host_parent_cut(pending["params"], session, pending["peer"], admission=True) as valid:
         return valid and not session.get("_turn_cancel_requested") and _host_existing_authority(session) is not None
+
+
+def _host_membership_allowed(frame):
+    """Renew only exact registered parent peers; no release tombstones are needed."""
+    accepted = []
+    with _sessions_lock, _session_transport_lock:
+        for entry in frame.get("members", []):
+            session = _sessions.get(entry.get("sid"))
+            origin = (session or {}).get("creation_binding")
+            if origin is None or origin.runtime_record is not session:
+                continue
+            for peer, member in session.get("host_bound_subscribers", {}).items():
+                if (member["boot"] == frame.get("boot_id")
+                        and member["subscription"] == entry.get("subscription")
+                        and member["supervisor"].conditional_boot() == member["boot"]
+                        and _transport_is_live_peer(peer) and _session_transport_contains(session, peer)
+                        and session.get("bound_subscribers", {}).get(peer) == origin.fields_for(
+                            _transport_auth_user_id(peer), origin.store_path).get("creation_binding")):
+                    accepted.append(member["subscription"])
+    return accepted

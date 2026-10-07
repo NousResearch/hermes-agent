@@ -41,7 +41,7 @@ def _get_compute_host_supervisor(cfg: dict | None = None):
         if _compute_host_supervisor is None:
             from tui_gateway.host_supervisor import HostSupervisor
             _compute_host_supervisor = HostSupervisor(
-                rpc_sink=_relay_compute_host_rpc, conditional_admission_sink=_host_admission_allowed,
+                rpc_sink=_relay_compute_host_rpc, conditional_admission_sink=_host_admission_allowed, conditional_membership_sink=_host_membership_allowed,
                 heartbeat_secs=int(isolation_cfg.get("compute_host_heartbeat_secs") or 15),
                 respawn_max=int(isolation_cfg.get("compute_host_respawn_max") or 3))
         return _compute_host_supervisor

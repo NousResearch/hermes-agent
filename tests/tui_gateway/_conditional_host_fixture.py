@@ -81,7 +81,9 @@ def lease_release(host, frame, session):
 
 
 def inspect(host, frame, session):
-    return {"members": len(host._conditional._members), "running": session["running"],
+    return {"members": len(host._conditional._members), "logical_live": sum(
+                type(peer).__name__ == "HostBoundPeer" for peer in server._session_live_transports(session)),
+            "running": session["running"],
             "messages": session["agent"]._session_db.get_messages(session["session_key"]),
             "requests": {rid: req.result for rid, req in server_requests._open.items()},
             "lease_wait": bool(session.get("_test_lease_entered") and session["_test_lease_entered"].is_set()),
@@ -89,10 +91,29 @@ def inspect(host, frame, session):
             "holder": getattr(session["agent"], "_active_session_turn_lease_holder", None)}
 
 
+def membership_freeze(host, frame, session):
+    manager = getattr(host._conditional, "_membership", None)
+    if manager is not None:
+        manager.stop.set()
+    return {}
+
+
+def membership_expire(host, frame, session):
+    # Advance the lease boundary without wall-clock sleeps, including on the old candidate.
+    with host._conditional._lock:
+        for peer, _record in host._conditional._members.values():
+            with getattr(peer, "_lease_lock", host._conditional._lock):
+                peer._expires_at = 0
+    manager = getattr(host._conditional, "_membership", None)
+    if manager is not None:
+        manager.poll()
+    return inspect(host, frame, session)
+
+
 def test_control(host, frame):
     from functools import partial
     handlers = {"rotate": rotate, "replace": replace, "request": request, "foreign_request": partial(request, foreign=True),
-                "notice": notice, "lease_barrier": lease_barrier, "lease_release": lease_release, "inspect": inspect}
+                "notice": notice, "lease_barrier": lease_barrier, "lease_release": lease_release, "inspect": inspect, "membership_freeze": membership_freeze, "membership_expire": membership_expire}
     result = handlers[frame["test_action"]](host, frame, server._sessions[frame["sid"]])
     host._reply("control.ack", frame["sid"], frame["request_id"], result=result)
 

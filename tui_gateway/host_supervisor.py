@@ -145,6 +145,7 @@ class HostSupervisor(HostConditionalSupervisorMixin):
         cwd: str | Path | None = None, env: dict[str, str] | None = None,
         rpc_sink: Callable[[dict], None] | None = None, respawn_max: int = 3,
         conditional_admission_sink: Callable[[dict], bool] | None = None,
+        conditional_membership_sink: Callable[[dict], list[str]] | None = None,
         heartbeat_secs: int = 15, expected_build_sha: str | None = None,
         expected_hermes_home: str | None = None, autostart: bool = True) -> None:
         self.registry_path = (
@@ -155,6 +156,7 @@ class HostSupervisor(HostConditionalSupervisorMixin):
         self.env = env
         self.rpc_sink = rpc_sink or (lambda _obj: None)
         self.conditional_admission_sink = conditional_admission_sink
+        self.conditional_membership_sink = conditional_membership_sink
         self.respawn_max = max(0, int(respawn_max))
         self.heartbeat_secs = max(1, int(heartbeat_secs))
         self.expected_build_sha = _build_sha() if expected_build_sha is None else expected_build_sha
@@ -419,6 +421,8 @@ class HostSupervisor(HostConditionalSupervisorMixin):
         request_id = str(frame.get("request_id") or "")
         if ftype in _CONTROL_REPLY_TYPES or (ftype == "error" and request_id):
             self._deliver_control_frame(request_id, frame)
+        elif ftype == "conditional.membership":
+            self.conditional_membership(frame)
         elif ftype == "conditional.admit":
             self.conditional_admit(frame)
         elif ftype == "hello":

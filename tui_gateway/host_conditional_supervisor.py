@@ -113,7 +113,7 @@ class HostConditionalSupervisorMixin:
         try:
             self._conditional_send_to_current(boot, payload)
         except RuntimeError:
-            return  # unavailable child/queue: reservation expires, authority cannot be reused
+            return  # unavailable child/queue: reservations and child membership leases expire
 
     def conditional_admit(self, frame):
         import logging
@@ -125,6 +125,17 @@ class HostConditionalSupervisorMixin:
             allowed = False
         self._conditional_best_effort(frame.get("boot_id"), {"action": "admitted",
             "turn_id": frame.get("turn_id"), "allowed": bool(allowed)})
+
+    def conditional_membership(self, frame):
+        import logging
+
+        try:
+            members = self.conditional_membership_sink(frame) if self.conditional_membership_sink else []
+        except Exception:
+            logging.getLogger(__name__).exception("Conditional parent membership check failed")
+            members = []
+        self._conditional_best_effort(frame.get("boot_id"), {"action": "membership",
+            "challenge": frame.get("challenge"), "members": members})
 
     def conditional_track_turn(self, turn_id, sid, callback):
         with self._lock:

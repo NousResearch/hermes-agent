@@ -218,7 +218,20 @@ reaping. Their events are dropped, so recovery must retain explicit loss/gap evi
 Refusal exposes no snapshot or tentative events and leaves parent viewers and
 orphan-reap state unchanged. Only the tentative sink is removed; existing peers
 are retained. Abandoned reservations expire; unused logical child subscriptions
-are released asynchronously. Repeating an accepted activation on the same peer
+are released asynchronously. Child membership is also leased: a child-clock lease
+lasts at most 15 seconds without fresh parent confirmation. Every two seconds the
+child challenges the parent with a boot-pinned snapshot of subscription tokens.
+Only exact peers still registered on their original parent records can be confirmed.
+A single bounded private response renews that snapshot; its deadline is measured
+from challenge issuance, so delayed/replayed replies cannot extend expired authority.
+A confirmed peer omitted from a fresh response is revoked; the first commit has only
+its bounded initial lease while the parent publishes membership. Direct detach release
+is a prompt cleanup hint, not the lifetime authority. A dropped/full/unavailable writer
+cannot strand live authority indefinitely: expiry makes the logical peer dead before
+any transport-lock cleanup, removes its retained token and frees the 64-member cap.
+Physical transport removal follows asynchronously without restoring concurrent peers.
+Expiry never cancels or retries an accepted operation; reactivation independently
+compares identity and obtains a new subscription if its old lease has expired. Repeating an accepted activation on the same peer
 reuses its child membership token. A peer-only activation gate serializes
 concurrent retries without holding gateway guards. Repeating after a lost receipt can reconcile
 membership, but cannot prove history or operation outcomes.
@@ -276,7 +289,8 @@ Expired/missing request IDs also refuse; absence is not evidence an earlier answ
 was accepted. Request identity lookup and settlement share the request registry
 lock. This does not add revision-CAS for editable request params or outcome lookup.
 
-Only an original ready local engine can execute an operation. Prompts are plain
+An original ready local engine or a child-authoritatively qualified original
+ready compute-host engine can execute an operation. Prompts are plain
 text deliberate new **idle** turns without staged attachments; busy input returns
 `4009` and cannot steer, interrupt, queue or persist a follow-up. Rewinds, media
 staging, slash commands, subagent controls and other mutators are outside this
@@ -301,14 +315,13 @@ old binding after rotation. Admission is not a delivery/completion guarantee: a
 prompt accepted before worker refusal can retain its original submit row/error;
 never retry it automatically or infer a provider executed it.
 
-Compute-host support needs a child-authoritative identity/subscription and operation
-admission protocol tied to child lifetime and engine revision. Asynchronous parent
-mirrors and supervisor liveness alone cannot hold a child identity transaction
-through a parent subscription cut. This candidate provides enforceable refusal
-for that topology, not positive host reattachment or a cross-process ownership proof.
-A reconnecting client must qualify the supported contract and quarantine superseded
-connection generations before consuming this bounded local API. Full recovery and
-request/outcome settlement requirements remain unchanged.
+Compute-host support uses the child-authoritative identity/subscription and
+operation-admission protocol described above. The four operation envelopes work
+against both qualified topologies; parent mirrors or process liveness alone do
+not certify a host engine. Unbuilt/unproven host records, replacement/restarted
+lifetimes and changed engine revisions still refuse. Clients must independently
+qualify the supported contract and quarantine superseded connection generations
+before consuming it. Full recovery and request/outcome settlement remain separate.
 
 ### Rebuilding the in-flight turn on reconnect
 

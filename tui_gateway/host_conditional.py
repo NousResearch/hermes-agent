@@ -13,22 +13,9 @@ from pydantic import ValidationError
 from .contracts.sessions import SessionActivateBoundParams, SessionCreationBinding, SessionInvokeBoundParams
 from .session_creation_binding import CreationBinding, EngineCreationBinding
 from .transport import bind_transport, reset_transport
+from .host_conditional_membership import HostBoundPeer, HostMemberships
 
 RESERVATION_SECONDS = 5.0
-
-
-class HostBoundPeer:
-    """Logical subscriber; delivery remains on the host's existing relay exactly once."""
-    def __init__(self, owner):
-        provider, _, user = owner.partition(":")
-        self.auth_identity = {"provider": provider, "user_id": user}
-        self._closed = False
-
-    def write(self, _obj):
-        return not self._closed
-
-    def close(self):
-        self._closed = True
 
 
 class HostConditionalProtocol:
@@ -41,6 +28,8 @@ class HostConditionalProtocol:
         self._lock = threading.RLock()
         self._slots = threading.BoundedSemaphore(2)
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="host-conditional")
+        self._membership = HostMemberships(self)
+        self._membership.start()
 
     def capture(self, server, session, frame):
         """Only the first actual child record can capture the parent's original origin."""
@@ -76,7 +65,7 @@ class HostConditionalProtocol:
             self._reply(frame, error=4007)
             return
         handler = {"prepare": self._prepare, "commit": self._commit, "admitted": self._admitted,
-                   "abort": self._abort, "release": self._release}.get(frame.get("action"))
+                   "abort": self._abort, "release": self._release, "membership": self._membership.answer}.get(frame.get("action"))
         if handler is None:
             self._reply(frame, error=4000)
         else:
@@ -111,16 +100,7 @@ class HostConditionalProtocol:
                 pending["event"].set()
 
     def _release(self, frame):
-        with self._lock:
-            member = self._members.pop(frame.get("subscription"), None)
-            for pending in self._pending.values():
-                if pending.get("subscription") == frame.get("subscription"):
-                    pending["peer"].close()
-                    pending["event"].set()
-        if member is not None:
-            from . import server
-            member[0].close()
-            self._executor.submit(server._detach_session_transport, member[1], member[0])
+        self._membership.release(frame.get("subscription"))
 
     def _reply(self, frame, **payload):
         self.host.emit({"type": "conditional.ack", "request_id": frame.get("request_id"),
@@ -149,6 +129,7 @@ class HostConditionalProtocol:
                 yield tip == params["expected_binding"]["stored_session_id"]
 
     def _resolve(self, server, frame):
+        self._membership.reap()
         params = frame.get("params")
         operation = isinstance(params, dict) and "operation" in params
         model = SessionInvokeBoundParams if operation else SessionActivateBoundParams
@@ -223,7 +204,7 @@ class HostConditionalProtocol:
                     if not operation and "result" in response:
                         with self._lock:
                             if not peer._closed:
-                                self._members[subscription] = (peer, session)
+                                self._members.setdefault(subscription, (peer, session))
                     self._reply(commit, response=response, subscription=subscription)
                     if operation and params["operation"]["method"] == "prompt.submit" and "result" in response:
                         future = self.host._executor.submit(self._watch_turn, session, params["session_id"], frame["turn_id"])
@@ -274,6 +255,7 @@ class HostConditionalProtocol:
         self.host._reply("turn.end", sid, turn_id, **meta, interrupted=bool(session.get("_turn_cancel_requested")))
 
     def close(self):
+        self._membership.close()
         with self._lock:
             for pending in self._pending.values():
                 pending["event"].set()

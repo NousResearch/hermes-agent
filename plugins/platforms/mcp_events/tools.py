@@ -181,6 +181,9 @@ def register_tools(ctx) -> None:
         parameters: dict[str, Any] = {"type": "object", "properties": properties}
         if required:
             parameters["required"] = required
-        ctx.register_tool(name=name, toolset=_TOOLSET, handler=handler, description=description,
+        # The registry calls handler(args_dict, **context); these handlers take named parameters.
+        def dispatch(args, _handler=handler, **_context):
+            return _handler(**(args or {}))
+        ctx.register_tool(name=name, toolset=_TOOLSET, handler=dispatch, description=description,
                           schema={"name": name, "description": description, "parameters": parameters},
                           emoji="\U0001f4e1", check_fn=_tools_available)  # satellite antenna

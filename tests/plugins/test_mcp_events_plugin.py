@@ -536,3 +536,21 @@ class TestAdapterConstruction:
         monkeypatch.setattr(security.MCPEventsSecurityContext, "capture", classmethod(lambda cls: _sec()))
         adapter = MCPEventsAdapter(PlatformConfig())
         assert adapter.platform == Platform("mcp_events")
+
+
+class TestToolRegistration:
+    def test_registered_handlers_accept_the_registry_calling_convention(self, tmp_path, monkeypatch):
+        from plugins.platforms.mcp_events import tools as tools_mod
+
+        store = protocol.SubscriptionStore(home_dir=str(tmp_path))
+        monkeypatch.setattr(tools_mod.protocol, "SubscriptionStore", lambda: store)
+        registered = {}
+
+        class Ctx:
+            def register_tool(self, name, handler, **_kw):
+                registered[name] = handler
+
+        tools_mod.register_tools(Ctx())
+        # The registry calls handler(args_dict, **context); a TypeError here means the tool can never run.
+        assert isinstance(registered["mcp_events_subscriptions"]({}, task_id="t1"), str)
+        assert "No subscription" in registered["mcp_events_unsubscribe"]({"subscription_id": "sub_missing"}, task_id="t1")

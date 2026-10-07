@@ -394,6 +394,40 @@ def test_profile_fresh_add_with_no_login_anywhere_lands_in_the_profile(fleet, pr
     assert root_file.read_bytes() == root_before
 
 
+@pytest.mark.parametrize("root_rows", [[], [{
+    "id": "rootkey", "label": "root-key", "auth_type": "api_key", "priority": 0,
+    "source": "manual", "access_token": "root-api-key"}]], ids=["root_pool_empty", "root_api_key_row"])
+def test_anthropic_auth_add_survives_the_next_load_beside_a_root_singleton(fleet: dict, root_rows: list) -> None:
+    """``auth add anthropic`` saves a ``manual:hermes_pkce`` row, which the pool owns. When root's
+    login lives only in its ``.anthropic_oauth.json``, the next load must not take that row for a
+    copy of root's file: it stays in the profile, and root's file is left as it was."""
+    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+
+    root = fleet["root"]
+    store = json.loads((root / "auth.json").read_text(encoding="utf-8"))
+    store["credential_pool"]["anthropic"] = root_rows
+    (root / "auth.json").write_text(json.dumps(store), encoding="utf-8")
+    singleton = root / ".anthropic_oauth.json"
+    singleton.write_text(json.dumps({
+        "accessToken": "at-root", "refreshToken": "rt-root", "expiresAt": int((time.time() - 3600) * 1000),
+    }), encoding="utf-8")
+    singleton_before = singleton.read_bytes()
+    kid = _profile(fleet, "kid")
+
+    fleet["use"](kid)
+    load_pool("anthropic").add_entry(PooledCredential(
+        provider="anthropic", id="kid001", label="mine", auth_type=AUTH_TYPE_OAUTH, priority=0,
+        source="manual:hermes_pkce", access_token="at-kid", refresh_token="rt-kid",
+        expires_at_ms=int((time.time() + 8 * 3600) * 1000),
+    ))
+    assert [r["id"] for r in fleet["rows"](kid)] == ["kid001"]
+
+    fleet["use"](kid)  # a later process
+    assert "kid001" in [e.id for e in load_pool("anthropic").entries()]
+    assert [r["id"] for r in fleet["rows"](kid)] == ["kid001"]
+    assert singleton.read_bytes() == singleton_before
+
+
 def test_auth_add_never_reports_added_for_a_row_the_store_did_not_keep(fleet, monkeypatch, capsys):
     """"Added" is printed only for a credential the store holds afterwards."""
     from argparse import Namespace

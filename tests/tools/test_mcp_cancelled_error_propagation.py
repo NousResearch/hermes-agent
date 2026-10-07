@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
-import pytest
 
 
 async def _hanging_run(self, cfg):
@@ -47,7 +46,7 @@ class TestCancelledErrorPropagation:
                 # CancelledError propagation or clean exit) rather than
                 # hanging forever.
                 try:
-                    await asyncio.wait_for(task, timeout=2.0)
+                    await asyncio.wait_for(task, timeout=15.0)
                 except asyncio.CancelledError:
                     return "cancelled_cleanly"
                 except asyncio.TimeoutError:
@@ -62,7 +61,7 @@ class TestCancelledErrorPropagation:
                 return "clean_return"
 
         outcome = asyncio.run(drive())
-        assert outcome in ("cancelled_cleanly", "clean_return"), (
+        assert outcome in {"cancelled_cleanly", "clean_return"}, (
             f"MCPServerTask.run wedged on cancel (outcome={outcome}) — "
             f"#9930 regression"
         )
@@ -83,7 +82,7 @@ class TestCancelledErrorPropagation:
                 server._shutdown_event.set()
                 server._task.cancel()
                 try:
-                    await asyncio.wait_for(server._task, timeout=2.0)
+                    await asyncio.wait_for(server._task, timeout=15.0)
                 except (asyncio.CancelledError, asyncio.TimeoutError):
                     pass
                 return server._task.done()

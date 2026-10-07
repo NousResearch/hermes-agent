@@ -1,101 +1,45 @@
-"""Tests for tui_gateway/entry.py sys.path hardening (issue #15989).
+"""Regression test for tui_gateway/entry.py sys.path hardening (#15989, #51286).
 
-When the TUI backend is spawned by Node.js, the Python interpreter may have
-'' or '.' at the front of sys.path, allowing a local utils/ directory in CWD
-to shadow the installed utils module.  entry.py must sanitize sys.path before
-any non-stdlib import is resolved.
+The TUI backend is spawned by Node with the user's launch directory as CWD. A
+local package there (e.g. ``utils/``, ``proxy/``, ``ui/`` in tg-ws-proxy) shadowed
+Hermes's own top-level modules and crashed the backend on import
+(``ImportError: cannot import name ... from 'utils'``). entry.py must run
+``hermes_bootstrap.harden_import_path()`` before its first non-stdlib import.
+Sibling guard for the slash worker: test_slash_worker_sys_path.py.
 """
 
-import importlib
 import os
+import subprocess
 import sys
-from unittest.mock import patch
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _reload_entry_with_env(env_overrides: dict) -> None:
-    """Re-execute entry.py's module-level path setup under a controlled env."""
-    # We only want to exercise the sys.path fixup block, not the signal/import
-    # machinery that follows.  We do this by running the fixup code verbatim in
-    # a fresh copy of sys.path rather than importing the real module (which
-    # would trigger tui_gateway.server imports requiring heavy mocks).
-    original_path = sys.path[:]
-    original_env = {k: os.environ.get(k) for k in env_overrides}
-    try:
-        with patch.dict(os.environ, env_overrides, clear=False):
-            _src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
-            if _src_root and _src_root not in sys.path:
-                sys.path.insert(0, _src_root)
-            sys.path = [p for p in sys.path if p not in ("", ".")]
-        return sys.path[:]
-    finally:
-        sys.path = original_path
-        for k, v in original_env.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
+def test_entry_imports_from_cwd_with_colliding_packages(tmp_path):
+    """Importing the TUI entry point from a CWD that ships its own ``utils/``
+    (and friends) must succeed — the guard strips CWD so Hermes's modules win."""
+    for pkg in ("utils", "proxy", "ui"):
+        (tmp_path / pkg).mkdir()
+        (tmp_path / pkg / "__init__.py").write_text("", encoding="utf-8")
 
+    env = {k: v for k, v in os.environ.items() if k != "HERMES_PYTHON_SRC_ROOT"}
+    # Source importable via PYTHONPATH; CWD ('') still precedes it on sys.path
+    # for ``-c``, so the shadow (and thus the guard) is exercised.
+    env["PYTHONPATH"] = str(PROJECT_ROOT)
+    env["HERMES_HOME"] = str(tmp_path / "hermes_home")
 
-def test_empty_string_and_dot_removed_from_sys_path():
-    original = sys.path[:]
-    try:
-        sys.path.insert(0, "")
-        sys.path.insert(0, ".")
-        assert "" in sys.path
-        assert "." in sys.path
-
-        # Run the entry.py fixup logic directly
-        sys.path = [p for p in sys.path if p not in ("", ".")]
-
-        assert "" not in sys.path
-        assert "." not in sys.path
-    finally:
-        sys.path = original
-
-
-def test_hermes_src_root_inserted_at_front():
-    original = sys.path[:]
-    try:
-        fake_root = "/fake/hermes/src"
-        with patch.dict(os.environ, {"HERMES_PYTHON_SRC_ROOT": fake_root}):
-            _src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
-            if _src_root and _src_root not in sys.path:
-                sys.path.insert(0, _src_root)
-            sys.path = [p for p in sys.path if p not in ("", ".")]
-
-        assert sys.path[0] == fake_root
-    finally:
-        sys.path = original
-
-
-def test_src_root_not_duplicated_if_already_present():
-    original = sys.path[:]
-    try:
-        fake_root = "/already/present"
-        sys.path.insert(0, fake_root)
-        count_before = sys.path.count(fake_root)
-
-        with patch.dict(os.environ, {"HERMES_PYTHON_SRC_ROOT": fake_root}):
-            _src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
-            if _src_root and _src_root not in sys.path:
-                sys.path.insert(0, _src_root)
-            sys.path = [p for p in sys.path if p not in ("", ".")]
-
-        assert sys.path.count(fake_root) == count_before
-    finally:
-        sys.path = original
-
-
-def test_no_src_root_env_does_not_crash():
-    original = sys.path[:]
-    try:
-        env = {k: v for k, v in os.environ.items() if k != "HERMES_PYTHON_SRC_ROOT"}
-        with patch.dict(os.environ, {}, clear=True):
-            os.environ.update(env)
-            _src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
-            if _src_root and _src_root not in sys.path:
-                sys.path.insert(0, _src_root)
-            sys.path = [p for p in sys.path if p not in ("", ".")]
-        # No exception raised
-    finally:
-        sys.path = original
+    result = subprocess.run(
+        [sys.executable, "-c", "import tui_gateway.entry"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+    )
+    assert result.returncode == 0, (
+        "tui_gateway.entry failed to import from a CWD with a colliding utils/ "
+        f"package (#51286):\n{result.stderr[-2000:]}"
+    )

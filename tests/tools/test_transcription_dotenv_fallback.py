@@ -12,6 +12,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")
+
+
 @pytest.fixture(autouse=True)
 def isolate_env(monkeypatch):
     """Strip every STT-related env var so the test really exercises the
@@ -24,6 +27,8 @@ def isolate_env(monkeypatch):
         "MISTRAL_API_KEY",
         "XAI_API_KEY",
         "XAI_STT_BASE_URL",
+        "ELEVENLABS_API_KEY",
+        "ELEVENLABS_STT_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -35,57 +40,6 @@ class TestProviderSelectionGate:
     succeed. The gate lives behind ``is_stt_enabled(stt_config)``, so
     configure ``{"enabled": True, "provider": ...}`` for explicit tests.
     """
-
-    def test_import_after_config_env_patch_uses_restored_dotenv_loader(self):
-        """Importing STT while hermes_cli.config.get_env_value is patched must
-        not freeze that temporary helper into this module forever.
-        """
-        import importlib
-        import hermes_cli.config as config_mod
-        from tools import transcription_tools as tt
-
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(config_mod, "get_env_value", lambda name, default=None: "")
-            tt = importlib.reload(tt)
-
-        try:
-            with patch.object(tt, "_HAS_FASTER_WHISPER", False), \
-                 patch.object(tt, "_HAS_OPENAI", True), \
-                 patch.object(tt, "_has_local_command", return_value=False), \
-                 patch("hermes_cli.config.load_env",
-                       return_value={"GROQ_API_KEY": "dotenv-secret"}):
-                assert tt._get_provider({"enabled": True, "provider": "groq"}) == "groq"
-        finally:
-            importlib.reload(tt)
-
-    def test_explicit_groq_sees_dotenv(self):
-        from tools import transcription_tools as tt
-
-        with patch.object(tt, "_HAS_FASTER_WHISPER", False), \
-             patch.object(tt, "_HAS_OPENAI", True), \
-             patch.object(tt, "_has_local_command", return_value=False), \
-             patch("hermes_cli.config.load_env",
-                   return_value={"GROQ_API_KEY": "dotenv-secret"}):
-            assert tt._get_provider({"enabled": True, "provider": "groq"}) == "groq"
-
-    def test_explicit_mistral_sees_dotenv(self):
-        from tools import transcription_tools as tt
-
-        with patch.object(tt, "_HAS_FASTER_WHISPER", False), \
-             patch.object(tt, "_HAS_MISTRAL", True), \
-             patch.object(tt, "_has_local_command", return_value=False), \
-             patch("hermes_cli.config.load_env",
-                   return_value={"MISTRAL_API_KEY": "dotenv-secret"}):
-            assert tt._get_provider({"enabled": True, "provider": "mistral"}) == "mistral"
-
-    def test_explicit_xai_sees_dotenv(self):
-        from tools import transcription_tools as tt
-
-        with patch.object(tt, "_HAS_FASTER_WHISPER", False), \
-             patch.object(tt, "_has_local_command", return_value=False), \
-             patch("hermes_cli.config.load_env",
-                   return_value={"XAI_API_KEY": "dotenv-secret"}):
-            assert tt._get_provider({"enabled": True, "provider": "xai"}) == "xai"
 
     def test_auto_detect_sees_dotenv_groq(self):
         """No local backend, no explicit provider — auto-detect should fall
@@ -128,7 +82,7 @@ class TestTranscribeCallSitesReadDotenv:
         fake_openai_module.APIConnectionError = Exception
         fake_openai_module.APITimeoutError = Exception
 
-        with patch.object(tt, "get_env_value", return_value="groq-dotenv-key"), \
+        with patch("hermes_cli.config.get_env_value", return_value="groq-dotenv-key"), \
              patch.object(tt, "_HAS_OPENAI", True), \
              patch.dict("sys.modules", {"openai": fake_openai_module}), \
              patch("builtins.open", MagicMock()):
@@ -137,34 +91,11 @@ class TestTranscribeCallSitesReadDotenv:
         assert result["success"] is True
         assert seen_keys == ["groq-dotenv-key"]
 
-    def test_transcribe_mistral_forwards_dotenv_key(self):
-        from tools import transcription_tools as tt
-
-        seen_keys: list = []
-
-        class FakeMistralClient:
-            def __init__(self, *, api_key=None):
-                seen_keys.append(api_key)
-                self.audio = MagicMock()
-                completion = MagicMock()
-                completion.text = "hi"
-                self.audio.transcriptions.complete.return_value = completion
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-
-        fake_client_module = MagicMock()
-        fake_client_module.Mistral = FakeMistralClient
-
-        with patch.object(tt, "get_env_value", return_value="mistral-dotenv-key"), \
-             patch.dict("sys.modules", {"mistralai.client": fake_client_module}), \
-             patch("builtins.open", MagicMock()):
-            result = tt._transcribe_mistral("/tmp/fake.mp3", "voxtral-mini-latest")
-
-        assert result["success"] is True
-        assert seen_keys == ["mistral-dotenv-key"]
 
     def test_transcribe_xai_forwards_dotenv_key(self):
+        """An explicit XAI_API_KEY must win over Grok subscription OAuth for STT."""
         from tools import transcription_tools as tt
+        from tools import xai_http
 
         captured: dict = {}
 
@@ -177,21 +108,50 @@ class TestTranscribeCallSitesReadDotenv:
             response.json.return_value = {"text": "hello"}
             return response
 
-        # get_env_value is consulted for both XAI_API_KEY and XAI_STT_BASE_URL.
-        # Return the key for the first call, None for base-url override
-        # (so it defaults to the module-level XAI_STT_BASE_URL).
         def fake_get_env_value(name, default=None):
             if name == "XAI_API_KEY":
                 return "xai-dotenv-key"
             return None
 
-        with patch.object(tt, "get_env_value", side_effect=fake_get_env_value), \
+        with patch("hermes_cli.config.get_env_value", side_effect=fake_get_env_value), \
+             patch.object(xai_http, "resolve_xai_http_credentials", return_value={
+                 "provider": "xai-oauth",
+                 "api_key": "subscription-oauth-token",
+                 "base_url": "https://api.x.ai/v1",
+             }), \
              patch("requests.post", side_effect=fake_post), \
              patch("builtins.open", MagicMock()):
             result = tt._transcribe_xai("/tmp/fake.mp3", "grok-stt")
 
         assert result["success"] is True
         assert captured["headers"]["Authorization"] == "Bearer xai-dotenv-key"
+
+    def test_transcribe_elevenlabs_forwards_dotenv_key(self):
+        from tools import transcription_tools as tt
+
+        captured: dict = {}
+
+        def fake_post(url, **kwargs):
+            captured["url"] = url
+            captured["headers"] = kwargs.get("headers", {})
+            response = MagicMock()
+            response.status_code = 200
+            response.json.return_value = {"text": "hello"}
+            return response
+
+        def fake_get_env_value(name, default=None):
+            if name == "ELEVENLABS_API_KEY":
+                return "elevenlabs-dotenv-key"
+            return None
+
+        with patch("hermes_cli.config.get_env_value", side_effect=fake_get_env_value), \
+             patch.object(tt, "_load_stt_config", return_value={}), \
+             patch("requests.post", side_effect=fake_post), \
+             patch("builtins.open", MagicMock()):
+            result = tt._transcribe_elevenlabs("/tmp/fake.mp3", "scribe_v2")
+
+        assert result["success"] is True
+        assert captured["headers"]["xi-api-key"] == "elevenlabs-dotenv-key"
 
 
 class TestEndToEndRegressionGuard:

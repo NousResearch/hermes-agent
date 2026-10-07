@@ -1,12 +1,27 @@
 ---
 sidebar_position: 14
 title: "AWS Bedrock"
-description: "Use Hermes Agent with Amazon Bedrock — native Converse API, IAM authentication, Guardrails, and cross-region inference"
+description: "Use Hermes Agent with Amazon Bedrock — native Converse API, Anthropic SDK routing, OpenAI models via Bedrock Mantle, IAM authentication, Guardrails, and cross-region inference"
 ---
 
 # AWS Bedrock
 
-Hermes Agent supports Amazon Bedrock as a native provider using the **Converse API** — not the OpenAI-compatible endpoint. This gives you full access to the Bedrock ecosystem: IAM authentication, Guardrails, cross-region inference profiles, and all foundation models.
+Python dependency commands on this page use a
+[PM-prepared source checkout](../reference/package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
+Hermes Agent supports Amazon Bedrock as a native provider. This gives you full access to the Bedrock ecosystem: IAM authentication, Guardrails, cross-region inference profiles, and all foundation models.
+
+Hermes routes each model family through the API that serves it best:
+
+| Model family | API route | Why |
+|---|---|---|
+| Anthropic Claude | Anthropic SDK (`AnthropicBedrock`) | Prompt caching, thinking budgets, adaptive thinking — features not exposed via Converse |
+| OpenAI GPT-6 (Astra, Sol, Luna), GPT-6.1 Sol, GPT-5.6 (Sol, Terra, Luna), GPT-5.5 with a bare `openai.*` ID | Bedrock Mantle **OpenAI Responses** endpoint (`bedrock-mantle.<region>.api.aws/openai/v1`) | Bedrock Mantle serves the bare in-Region ID. `bedrock-runtime` does not accept it |
+| The same OpenAI models with a `us.` or `global.` inference-profile ID | Native **Converse API** (`bedrock-runtime`) | Cross-Region profiles exist only on `bedrock-runtime`, and the model cards list Converse as supported there |
+| Everything else (Nova, DeepSeek, Llama, GPT-OSS, …) | Native **Converse API** (`bedrock-runtime`) | Full Bedrock feature set: Guardrails, inference profiles, streaming |
+
+All three routes share the same AWS credential chain and region resolution — no separate configuration is needed. Requests to the Mantle endpoint are authenticated with `AWS_BEARER_TOKEN_BEDROCK` when set, or SigV4-signed via the standard boto3 credential chain otherwise.
 
 ## Prerequisites
 
@@ -15,10 +30,11 @@ Hermes Agent supports Amazon Bedrock as a native provider using the **Converse A
   - `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` environment variables
   - `AWS_PROFILE` for SSO or named profiles
   - `aws configure` for local development
-- **boto3** — install with `pip install hermes-agent[bedrock]`
+- **boto3** — install with `cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['bedrock'], explicit=True)"`
 - **IAM permissions** — at minimum:
   - `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` (for inference)
   - `bedrock:ListFoundationModels` and `bedrock:ListInferenceProfiles` (for model discovery)
+  - `bedrock:GetInferenceProfile` (only if `model.default` is an application inference profile ARN — used to size the context window from the wrapped model)
 
 :::tip EC2 / ECS / Lambda
 On AWS compute, attach an IAM role with `AmazonBedrockFullAccess` and you're done. No API keys, no `.env` configuration — Hermes detects the instance role automatically.
@@ -28,7 +44,7 @@ On AWS compute, attach an IAM role with `AmazonBedrockFullAccess` and you're don
 
 ```bash
 # Install with Bedrock support
-pip install hermes-agent[bedrock]
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['bedrock'], explicit=True)"
 
 # Select Bedrock as your provider
 hermes model
@@ -76,6 +92,10 @@ bedrock:
     trace: "disabled"                     # "enabled", "disabled", or "enabled_full"
 ```
 
+The guardrail is attached on the Converse route (`guardrailConfig`) and on the Claude route (InvokeModel headers via the Anthropic Bedrock SDK, so prompt caching and thinking are kept). A blocked request surfaces as a content-filter refusal rather than as model text. `stream_processing_mode` only applies to Converse.
+
+AWS does not apply Guardrails to the Mantle Responses endpoint used by bare `openai.gpt-*` IDs ([AWS docs](https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-mantle.html)). Use a Converse-served model, such as a `us.` or `global.` OpenAI inference profile, when a guardrail is required.
+
 ### Model Discovery
 
 Hermes auto-discovers available models via the Bedrock control plane. You can customize discovery:
@@ -88,6 +108,18 @@ bedrock:
     refresh_interval: 3600                     # Cache for 1 hour
 ```
 
+### Prompt caching (cachePoint)
+
+Hermes automatically applies prompt caching on the Bedrock **Converse API** path by inserting `cachePoint` markers after the system prompt, tool definitions, and the latest message. Because sending a `cachePoint` block to a model that doesn't support it raises a `ValidationException`, markers are only added for models on a known-good allowlist (Anthropic Claude and Amazon Nova model IDs); unknown models default to no cache markers. Claude models normally use the AnthropicBedrock SDK path, which has its own prompt caching — the Converse `cachePoint` path covers Nova and the bearer-token Claude fallback. No configuration needed; cache reads/writes show up in usage accounting.
+
+### Context-window probing
+
+For models whose context window isn't in Hermes' static table, Hermes can probe the real limit by sending oversized requests at fixed tiers (~1.3M and ~2.2M tokens) and parsing the `maximum` reported in Bedrock's length-validation error. Probed values feed the same metadata cache as the static table; stale cached entries that under-report a model's window (e.g. entries seeded before a model's 1M window went GA) are dropped automatically in favor of the larger known value.
+
+When neither the probe nor the static table knows a model, Hermes uses a 128,000-token fallback and logs a WARNING naming the model. Set `model.context_length` in `config.yaml` to the model's real window.
+
+**Application inference profiles.** An ARN such as `arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/abcdef123456` names no model, so neither the probe nor the static table can size it. Hermes calls `bedrock:GetInferenceProfile` in the ARN's region and sizes the window from the model the profile wraps (1M for a profile wrapping Claude Sonnet 4.6). Without that permission the 128,000-token default applies and a WARNING names the profile; set `model.context_length` explicitly to override either way.
+
 ## Available Models
 
 Bedrock models use **inference profile IDs** for on-demand invocation. The `hermes model` picker shows these automatically, with recommended models at the top:
@@ -97,6 +129,14 @@ Bedrock models use **inference profile IDs** for on-demand invocation. The `herm
 | Claude Sonnet 4.6 | `us.anthropic.claude-sonnet-4-6` | Recommended — best balance of speed and capability |
 | Claude Opus 4.6 | `us.anthropic.claude-opus-4-6-v1` | Most capable |
 | Claude Haiku 4.5 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Fastest Claude |
+| OpenAI GPT-6 Astra | `openai.gpt-6-astra` | Most capable OpenAI model, 1,050,000-token window |
+| OpenAI GPT-6.1 Sol | `openai.gpt-6.1-sol` | 1M-token window. Mantle in-Region access is `us-east-1` only |
+| OpenAI GPT-6 Sol | `openai.gpt-6-sol` | Coding and agentic work, 1,050,000-token window |
+| OpenAI GPT-6 Luna | `openai.gpt-6-luna` | Focused, high-volume tasks, 1,050,000-token window |
+| OpenAI GPT-5.6 Sol | `openai.gpt-5.6-sol` | 1,050,000-token window |
+| OpenAI GPT-5.6 Terra | `openai.gpt-5.6-terra` | Balanced, 1,050,000-token window |
+| OpenAI GPT-5.6 Luna | `openai.gpt-5.6-luna` | Fast, affordable, 1,050,000-token window |
+| OpenAI GPT-5.5 | `openai.gpt-5.5` | Mantle only, no inference profiles |
 | Amazon Nova Pro | `us.amazon.nova-pro-v1:0` | Amazon's flagship |
 | Amazon Nova Micro | `us.amazon.nova-micro-v1:0` | Fastest, cheapest |
 | DeepSeek V3.2 | `deepseek.v3.2` | Strong open model |
@@ -104,6 +144,8 @@ Bedrock models use **inference profile IDs** for on-demand invocation. The `herm
 
 :::info Cross-Region Inference
 Models prefixed with `us.` use cross-region inference profiles, which provide better capacity and automatic failover across AWS regions. Models prefixed with `global.` route across all available regions worldwide.
+
+OpenAI models have two endpoint forms. The bare `openai.*` ID is in-Region and Hermes sends it to Bedrock Mantle's Responses endpoint in the configured region. The `us.openai.*` and `global.openai.*` IDs are cross-Region inference profiles. Hermes sends them to `bedrock-runtime` through the Converse API, the same path as other inference profiles. Each AWS model card lists the profiles a model offers and the regions Mantle serves it in.
 :::
 
 ## Switching Models Mid-Session

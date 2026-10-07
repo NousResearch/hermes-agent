@@ -9,19 +9,20 @@ avoid retrying with a partial topic route that can render outside the lane.
 """
 
 import sys
+import socket
 import types
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.config import PlatformConfig, Platform
 from gateway.platforms.base import (
-    MessageEvent,
-    MessageType,
     SendResult,
     _reply_anchor_for_event,
     _thread_metadata_for_source,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import build_session_key
 
 
@@ -97,7 +98,9 @@ _fake_telegram_ext = types.ModuleType("telegram.ext")
 _fake_telegram_ext.Application = object
 _fake_telegram_ext.CommandHandler = object
 _fake_telegram_ext.CallbackQueryHandler = object
+_fake_telegram_ext.InlineQueryHandler = object
 _fake_telegram_ext.MessageHandler = object
+_fake_telegram_ext.TypeHandler = object
 _fake_telegram_ext.ContextTypes = SimpleNamespace(DEFAULT_TYPE=object)
 _fake_telegram_ext.filters = object
 _fake_telegram_request = types.ModuleType("telegram.request")
@@ -115,7 +118,7 @@ def _inject_fake_telegram(monkeypatch):
 
 
 def _make_adapter():
-    from gateway.platforms.telegram import TelegramAdapter
+    from plugins.platforms.telegram.adapter import TelegramAdapter
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = object.__new__(TelegramAdapter)
@@ -134,9 +137,73 @@ def _make_adapter():
     return adapter
 
 
+def test_non_forum_group_reply_thread_id_does_not_fork_session_key():
+    """Reply-derived thread ids in ordinary groups must not create topic lanes."""
+    import plugins.platforms.telegram.adapter as telegram_mod
+
+    adapter = _make_adapter()
+    message = SimpleNamespace(
+        text="Done",
+        caption=None,
+        chat=SimpleNamespace(
+            id=-100123,
+            type=telegram_mod.ChatType.SUPERGROUP,
+            is_forum=False,
+            title="Regular group",
+        ),
+        from_user=SimpleNamespace(id=456, full_name="Alice"),
+        message_thread_id=461,
+        is_topic_message=False,
+        reply_to_message=SimpleNamespace(
+            message_id=460,
+            text="Please complete the CAPTCHA/login, then reply done.",
+            caption=None,
+        ),
+        message_id=462,
+        date=None,
+    )
+
+    event = adapter._build_message_event(message, msg_type=MessageType.TEXT)
+
+    assert event.source.chat_id == "-100123"
+    assert event.source.chat_type == "group"
+    assert event.source.thread_id is None
+    assert build_session_key(event.source) == "agent:main:telegram:group:-100123:456"
+
+
+def test_forum_group_topic_message_preserves_thread_session_key():
+    """Real Telegram forum-topic messages should still route by topic id."""
+    import plugins.platforms.telegram.adapter as telegram_mod
+
+    adapter = _make_adapter()
+    message = SimpleNamespace(
+        text="hello from topic",
+        caption=None,
+        chat=SimpleNamespace(
+            id=-100123,
+            type=telegram_mod.ChatType.SUPERGROUP,
+            is_forum=True,
+            title="Forum group",
+        ),
+        from_user=SimpleNamespace(id=456, full_name="Alice"),
+        message_thread_id=17585,
+        is_topic_message=True,
+        reply_to_message=None,
+        message_id=10,
+        date=None,
+    )
+
+    event = adapter._build_message_event(message, msg_type=MessageType.TEXT)
+
+    assert event.source.chat_id == "-100123"
+    assert event.source.chat_type == "group"
+    assert event.source.thread_id == "17585"
+    assert build_session_key(event.source) == "agent:main:telegram:group:-100123:17585"
+
+
 def test_forum_general_topic_without_message_thread_id_keeps_thread_context():
     """Forum General-topic messages should keep synthetic thread context."""
-    from gateway.platforms import telegram as telegram_mod
+    import plugins.platforms.telegram.adapter as telegram_mod
 
     adapter = _make_adapter()
     message = SimpleNamespace(
@@ -163,159 +230,54 @@ def test_forum_general_topic_without_message_thread_id_keeps_thread_context():
 
 
 @pytest.mark.asyncio
-async def test_send_omits_general_topic_thread_id():
-    """Telegram sends to forum General should omit message_thread_id=1."""
+async def test_private_chat_explicit_thread_id_uses_message_thread_id_without_anchor():
+    """Cron-resolved private-chat forum topics route by message_thread_id."""
     adapter = _make_adapter()
     call_log = []
 
     async def mock_send_message(**kwargs):
         call_log.append(dict(kwargs))
-        return SimpleNamespace(message_id=42)
+        return SimpleNamespace(message_id=270454)
 
     adapter._bot = SimpleNamespace(send_message=mock_send_message)
 
     result = await adapter.send(
-        chat_id="-100123",
-        content="test message",
-        metadata={"thread_id": "1"},
+        chat_id="775566675",
+        content="cron topic delivery",
+        metadata={"thread_id": "270453"},
     )
 
     assert result.success is True
-    assert len(call_log) == 1
-    assert call_log[0]["chat_id"] == -100123
-    assert call_log[0]["text"] == "test message"
     assert call_log[0]["reply_to_message_id"] is None
-    assert call_log[0]["message_thread_id"] is None
+    assert call_log[0]["message_thread_id"] == 270453
+    assert "direct_messages_topic_id" not in call_log[0]
 
 
 @pytest.mark.asyncio
-async def test_send_typing_preserves_general_topic_thread_id():
-    """Typing for forum General must send message_thread_id=1, not None.
-
-    Asymmetric with _message_thread_id_for_send: sendMessage rejects
-    message_thread_id=1, but sendChatAction needs it to scope the typing
-    bubble to the General topic. Omitting it (message_thread_id=None) hides
-    the bubble from the General-topic view entirely.
-
-    Regression guard for the d5357f816 refactor that mapped "1" → None in
-    the typing resolver and silently killed typing indicators in every
-    forum-group General topic.
-    """
+async def test_private_dm_topic_reply_fallback_without_anchor_fails_loud():
+    """Anchor-required DM topic fallback must not silently send elsewhere."""
     adapter = _make_adapter()
     call_log = []
 
-    async def mock_send_chat_action(**kwargs):
+    async def mock_send_message(**kwargs):
         call_log.append(dict(kwargs))
+        return SimpleNamespace(message_id=270454)
 
-    adapter._bot = SimpleNamespace(send_chat_action=mock_send_chat_action)
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
 
-    await adapter.send_typing("-100123", metadata={"thread_id": "1"})
-
-    assert call_log == [
-        {"chat_id": -100123, "action": "typing", "message_thread_id": 1},
-    ]
-
-
-@pytest.mark.asyncio
-async def test_send_typing_does_not_fall_back_to_root_for_dm_topic():
-    """Typing failures in DM topics should not show an indicator in All Messages."""
-    adapter = _make_adapter()
-    call_log = []
-
-    async def mock_send_chat_action(**kwargs):
-        call_log.append(dict(kwargs))
-        raise FakeBadRequest("Message thread not found")
-
-    adapter._bot = SimpleNamespace(send_chat_action=mock_send_chat_action)
-
-    await adapter.send_typing("12345", metadata={"thread_id": "22182"})
-
-    assert call_log == [
-        {"chat_id": 12345, "action": "typing", "message_thread_id": 22182},
-    ]
-
-
-@pytest.mark.asyncio
-async def test_send_typing_skips_api_call_for_dm_topic_reply_fallback():
-    """Hermes-created DM topic lanes have no working Bot API typing route.
-
-    ``send_chat_action`` only accepts ``message_thread_id``, which Telegram's
-    Bot API 10.0 rejects for these lanes — the call would silently fail and
-    log a "thread not found" warning every typing tick (every 2s). Skipping
-    the call entirely keeps logs clean while preserving the user-visible
-    behavior (no typing indicator either way for these lanes).
-    """
-    adapter = _make_adapter()
-    call_log = []
-
-    async def mock_send_chat_action(**kwargs):
-        call_log.append(dict(kwargs))
-
-    adapter._bot = SimpleNamespace(send_chat_action=mock_send_chat_action)
-
-    await adapter.send_typing(
-        "12345",
+    result = await adapter.send(
+        chat_id="775566675",
+        content="missing anchor",
         metadata={
-            "thread_id": "20197",
+            "thread_id": "270453",
             "telegram_dm_topic_reply_fallback": True,
-            "telegram_reply_to_message_id": "462",
         },
     )
 
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error == adapter._dm_topic_missing_anchor_error()
     assert call_log == []
-
-
-@pytest.mark.asyncio
-async def test_send_retries_without_thread_on_thread_not_found():
-    """When message_thread_id causes 'thread not found', retry without it."""
-    adapter = _make_adapter()
-
-    call_log = []
-
-    async def mock_send_message(**kwargs):
-        call_log.append(dict(kwargs))
-        tid = kwargs.get("message_thread_id")
-        if tid is not None:
-            raise FakeBadRequest("Message thread not found")
-        return SimpleNamespace(message_id=42)
-
-    adapter._bot = SimpleNamespace(send_message=mock_send_message)
-
-    result = await adapter.send(
-        chat_id="123",
-        content="test message",
-        metadata={"thread_id": "99999"},
-    )
-
-    assert result.success is True
-    assert result.message_id == "42"
-    # First call has thread_id, second call retries without
-    assert len(call_log) == 2
-    assert call_log[0]["message_thread_id"] == 99999
-    assert call_log[1]["message_thread_id"] is None
-
-
-@pytest.mark.asyncio
-async def test_send_private_dm_topic_uses_direct_messages_topic_id():
-    """Private Telegram topics route sends via direct_messages_topic_id."""
-    adapter = _make_adapter()
-    call_log = []
-
-    async def mock_send_message(**kwargs):
-        call_log.append(dict(kwargs))
-        return SimpleNamespace(message_id=42)
-
-    adapter._bot = SimpleNamespace(send_message=mock_send_message)
-
-    result = await adapter.send(
-        chat_id="123",
-        content="test message",
-        metadata={"thread_id": "99999", "direct_messages_topic_id": "99999"},
-    )
-
-    assert result.success is True
-    assert call_log[0]["message_thread_id"] is None
-    assert call_log[0]["direct_messages_topic_id"] == 99999
 
 
 def test_base_gateway_metadata_marks_telegram_dm_topics_as_reply_fallback():
@@ -330,23 +292,9 @@ def test_base_gateway_metadata_marks_telegram_dm_topics_as_reply_fallback():
     assert metadata == {
         "thread_id": "20189",
         "telegram_dm_topic_reply_fallback": True,
+        "direct_messages_topic_id": "20189",
         "telegram_reply_to_message_id": "462",
     }
-
-
-def test_base_gateway_replies_to_triggering_message_for_telegram_dm_topic():
-    """Private DM topic lanes should anchor replies to the active user message."""
-    event = SimpleNamespace(
-        message_id="463",
-        reply_to_message_id="462",
-        source=SimpleNamespace(
-            platform=Platform.TELEGRAM,
-            chat_type="dm",
-            thread_id="20189",
-        ),
-    )
-
-    assert _reply_anchor_for_event(event) == "463"
 
 
 @pytest.mark.asyncio
@@ -407,185 +355,36 @@ async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegra
     assert adapter.calls[0]["metadata"] == {
         "thread_id": "20197",
         "telegram_dm_topic_reply_fallback": True,
+        "direct_messages_topic_id": "20197",
         "telegram_reply_to_message_id": "463",
     }
 
 
 @pytest.mark.asyncio
-async def test_send_uses_reply_fallback_for_hermes_dm_topics():
-    """Hermes-created Telegram DM topics route with thread id plus reply anchor."""
-    adapter = _make_adapter()
-    call_log = []
-
-    async def mock_send_message(**kwargs):
-        call_log.append(kwargs)
-        return SimpleNamespace(message_id=777)
-
-    adapter._bot = SimpleNamespace(send_message=mock_send_message)
-
-    result = await adapter.send(
-        chat_id="123",
-        content="test message",
-        reply_to="462",
-        metadata={
-            "thread_id": "20197",
-            "telegram_dm_topic_reply_fallback": True,
-        },
-    )
-
-    assert result.success is True
-    assert call_log[0]["reply_to_message_id"] == 462
-    assert call_log[0]["message_thread_id"] == 20197
-    assert "direct_messages_topic_id" not in call_log[0]
-
-
-@pytest.mark.asyncio
-async def test_send_uses_metadata_reply_fallback_for_streaming_dm_topics():
-    """Metadata-only sends still stay in Hermes-created Telegram DM topics."""
-    adapter = _make_adapter()
-    call_log = []
-
-    async def mock_send_message(**kwargs):
-        call_log.append(kwargs)
-        return SimpleNamespace(message_id=778)
-
-    adapter._bot = SimpleNamespace(send_message=mock_send_message)
-
-    result = await adapter.send(
-        chat_id="123",
-        content="streamed text",
-        metadata={
-            "thread_id": "20197",
-            "telegram_dm_topic_reply_fallback": True,
-            "telegram_reply_to_message_id": "462",
-        },
-    )
-
-    assert result.success is True
-    assert call_log[0]["reply_to_message_id"] == 462
-    assert call_log[0]["message_thread_id"] == 20197
-    assert "direct_messages_topic_id" not in call_log[0]
-
-
-@pytest.mark.asyncio
-async def test_send_reply_fallback_applies_to_every_chunk_for_dm_topics():
-    """Long Telegram DM-topic fallback sends must anchor every chunk."""
+async def test_created_private_topic_thread_not_found_fails_without_root_fallback():
+    """Created private-topic sends must not retry into All Messages on stale thread IDs."""
     adapter = _make_adapter()
     call_log = []
 
     async def mock_send_message(**kwargs):
         call_log.append(dict(kwargs))
-        return SimpleNamespace(message_id=len(call_log))
+        raise FakeBadRequest("Message thread not found")
 
     adapter._bot = SimpleNamespace(send_message=mock_send_message)
 
     result = await adapter.send(
         chat_id="123",
-        content="A" * 5000,
+        content="created topic message",
         metadata={
-            "thread_id": "20197",
-            "telegram_dm_topic_reply_fallback": True,
-            "telegram_reply_to_message_id": "462",
+            "thread_id": "32343",
+            "telegram_dm_topic_created_for_send": True,
         },
     )
 
-    assert result.success is True
-    assert len(call_log) > 1
-    assert all(call["reply_to_message_id"] == 462 for call in call_log)
-    assert all(call["message_thread_id"] == 20197 for call in call_log)
-    assert all("direct_messages_topic_id" not in call for call in call_log)
-
-
-@pytest.mark.asyncio
-async def test_send_model_picker_uses_metadata_reply_fallback_for_dm_topics():
-    """Inline keyboard sends also consume the metadata reply fallback."""
-    adapter = _make_adapter()
-    adapter._model_picker_state = {}
-    call_log = []
-
-    async def mock_send_message(**kwargs):
-        call_log.append(kwargs)
-        return SimpleNamespace(message_id=779)
-
-    adapter._bot = SimpleNamespace(send_message=mock_send_message)
-
-    result = await adapter.send_model_picker(
-        chat_id="123",
-        providers=[{"name": "OpenAI", "slug": "openai", "models": [], "total_models": 0}],
-        current_model="gpt-test",
-        current_provider="openai",
-        session_key="telegram:123:20197",
-        on_model_selected=lambda *_: None,
-        metadata={
-            "thread_id": "20197",
-            "telegram_dm_topic_reply_fallback": True,
-            "telegram_reply_to_message_id": "462",
-        },
-    )
-
-    assert result.success is True
-    assert call_log[0]["reply_to_message_id"] == 462
-    assert call_log[0]["message_thread_id"] == 20197
-    assert "direct_messages_topic_id" not in call_log[0]
-
-
-@pytest.mark.asyncio
-async def test_send_dm_topic_fallback_without_anchor_does_not_crash():
-    """DM-topic fallback without an anchor must not use message_thread_id alone."""
-    adapter = _make_adapter()
-    call_log = []
-
-    async def mock_send_message(**kwargs):
-        call_log.append(dict(kwargs))
-        return SimpleNamespace(message_id=780)
-
-    adapter._bot = SimpleNamespace(send_message=mock_send_message)
-
-    result = await adapter.send(
-        chat_id="123",
-        content="source-only send",
-        metadata={
-            "thread_id": "20197",
-            "telegram_dm_topic_reply_fallback": True,
-        },
-    )
-
-    assert result.success is True
-    assert call_log[0]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[0]
-    assert "direct_messages_topic_id" not in call_log[0]
-
-
-@pytest.mark.asyncio
-async def test_send_dm_topic_reply_not_found_retry_drops_thread_id():
-    """If Telegram deletes the reply anchor, private-topic retry must drop thread id too."""
-    adapter = _make_adapter()
-    call_log = []
-
-    async def mock_send_message(**kwargs):
-        call_log.append(dict(kwargs))
-        if len(call_log) == 1:
-            raise FakeBadRequest("Message to be replied not found")
-        return SimpleNamespace(message_id=781)
-
-    adapter._bot = SimpleNamespace(send_message=mock_send_message)
-
-    result = await adapter.send(
-        chat_id="123",
-        content="anchor disappeared",
-        metadata={
-            "thread_id": "20197",
-            "telegram_dm_topic_reply_fallback": True,
-            "telegram_reply_to_message_id": "462",
-        },
-    )
-
-    assert result.success is True
-    assert call_log[0]["reply_to_message_id"] == 462
-    assert call_log[0]["message_thread_id"] == 20197
-    assert call_log[1]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[1]
-    assert "direct_messages_topic_id" not in call_log[1]
+    assert result.success is False
+    assert "thread not found" in str(result.error).lower()
+    assert len(call_log) == 1
+    assert call_log[0]["message_thread_id"] == 32343
 
 
 @pytest.mark.asyncio
@@ -702,40 +501,6 @@ async def test_media_group_dm_topic_reply_not_found_retry_drops_thread_id(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_send_image_url_dm_topic_reply_not_found_retry_drops_thread_id(monkeypatch):
-    adapter = _make_adapter()
-    call_log = []
-
-    async def mock_send_photo(**kwargs):
-        call_log.append(dict(kwargs))
-        if len(call_log) == 1:
-            raise FakeBadRequest("Message to be replied not found")
-        return SimpleNamespace(message_id=784)
-
-    adapter._bot = SimpleNamespace(send_photo=mock_send_photo)
-    import tools.url_safety as url_safety
-
-    monkeypatch.setattr(url_safety, "is_safe_url", lambda _url: True)
-
-    result = await adapter.send_image(
-        chat_id="123",
-        image_url="https://example.com/photo.png",
-        metadata={
-            "thread_id": "20197",
-            "telegram_dm_topic_reply_fallback": True,
-            "telegram_reply_to_message_id": "462",
-        },
-    )
-
-    assert result.success is True
-    assert call_log[0]["reply_to_message_id"] == 462
-    assert call_log[0]["message_thread_id"] == 20197
-    assert call_log[1]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[1]
-    assert "direct_messages_topic_id" not in call_log[1]
-
-
-@pytest.mark.asyncio
 async def test_send_image_upload_dm_topic_reply_not_found_retry_drops_thread_id(monkeypatch):
     adapter = _make_adapter()
     call_log = []
@@ -767,15 +532,15 @@ async def test_send_image_upload_dm_topic_reply_not_found_retry_drops_thread_id(
         async def get(self, _url):
             return _FakeResponse()
 
-    monkeypatch.setitem(
-        sys.modules,
-        "httpx",
-        SimpleNamespace(AsyncClient=_FakeAsyncClient),
-    )
     adapter._bot = SimpleNamespace(send_photo=mock_send_photo)
     import tools.url_safety as url_safety
 
     monkeypatch.setattr(url_safety, "is_safe_url", lambda _url: True)
+    monkeypatch.setattr(
+        url_safety,
+        "create_ssrf_safe_async_client",
+        lambda **_kwargs: _FakeAsyncClient(),
+    )
 
     result = await adapter.send_image(
         chat_id="123",
@@ -798,45 +563,58 @@ async def test_send_image_upload_dm_topic_reply_not_found_retry_drops_thread_id(
 
 
 @pytest.mark.asyncio
-async def test_slash_confirm_private_topic_callback_followup_sends_thread_and_reply(monkeypatch):
+async def test_send_image_upload_fallback_blocks_connect_time_rebind(monkeypatch):
+    import httpcore
+    from httpcore._backends.auto import AutoBackend
+    from gateway.platforms.base import BasePlatformAdapter
+
     adapter = _make_adapter()
-    adapter._slash_confirm_state = {"confirm-1": "session-1"}
-    adapter._is_callback_user_authorized = lambda *args, **kwargs: True
-    call_log = []
+    adapter._bot = SimpleNamespace(
+        send_photo=AsyncMock(side_effect=RuntimeError("force URL upload fallback"))
+    )
 
-    async def mock_send_message(**kwargs):
-        call_log.append(dict(kwargs))
-        return SimpleNamespace(message_id=9001)
+    for proxy_var in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(proxy_var, raising=False)
 
-    async def resolve(_session_key, _confirm_id, _choice):
-        return "done"
+    answers = iter(("93.184.216.34", "169.254.169.254"))
 
-    from tools import slash_confirm
+    def fake_getaddrinfo(_host, port, *_args, **_kwargs):
+        ip = next(answers)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 0))]
 
-    monkeypatch.setattr(slash_confirm, "resolve", resolve)
-    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+    connect_attempts = []
 
-    class Query:
-        data = "sc:once:confirm-1"
-        from_user = SimpleNamespace(id=42, first_name="Alice")
-        message = SimpleNamespace(
-            chat_id=12345,
-            chat=SimpleNamespace(type=_fake_telegram_constants.ChatType.PRIVATE),
-            message_thread_id=20197,
-            message_id=462,
-        )
+    async def fake_connect_tcp(
+        _self,
+        host,
+        port,
+        timeout=None,
+        local_address=None,
+        socket_options=None,
+    ):
+        connect_attempts.append((host, port))
+        raise httpcore.ConnectError("stop before network")
 
-        async def answer(self, **kwargs):
-            return None
+    async def fake_base_send_image(*_args, **_kwargs):
+        return SendResult(success=False, error="fallback")
 
-        async def edit_message_text(self, **kwargs):
-            return None
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(AutoBackend, "connect_tcp", fake_connect_tcp)
+    monkeypatch.setattr(BasePlatformAdapter, "send_image", fake_base_send_image)
 
-    await adapter._handle_callback_query(SimpleNamespace(callback_query=Query()), SimpleNamespace())
+    await adapter.send_image(
+        chat_id="123",
+        image_url="http://rebind.example/photo.png",
+    )
 
-    assert call_log
-    assert call_log[0]["message_thread_id"] == 20197
-    assert call_log[0]["reply_to_message_id"] == 462
+    assert connect_attempts == []
 
 
 @pytest.mark.asyncio
@@ -888,7 +666,7 @@ async def test_base_send_image_fallback_preserves_metadata():
     from gateway.platforms.base import BasePlatformAdapter
 
     class _ConcreteBaseAdapter(BasePlatformAdapter):
-        async def connect(self):
+        async def connect(self, *, is_reconnect: bool = False):
             return True
 
         async def disconnect(self):
@@ -916,101 +694,6 @@ async def test_base_send_image_fallback_preserves_metadata():
 
 
 @pytest.mark.asyncio
-async def test_send_raises_on_other_bad_request():
-    """Non-thread BadRequest errors should NOT be retried — they fail immediately."""
-    adapter = _make_adapter()
-
-    async def mock_send_message(**kwargs):
-        raise FakeBadRequest("Chat not found")
-
-    adapter._bot = SimpleNamespace(send_message=mock_send_message)
-
-    result = await adapter.send(
-        chat_id="123",
-        content="test message",
-        metadata={"thread_id": "99999"},
-    )
-
-    assert result.success is False
-    assert "Chat not found" in result.error
-
-
-@pytest.mark.asyncio
-async def test_send_without_thread_id_unaffected():
-    """Normal sends without thread_id should work as before."""
-    adapter = _make_adapter()
-
-    call_log = []
-
-    async def mock_send_message(**kwargs):
-        call_log.append(dict(kwargs))
-        return SimpleNamespace(message_id=100)
-
-    adapter._bot = SimpleNamespace(send_message=mock_send_message)
-
-    result = await adapter.send(
-        chat_id="123",
-        content="test message",
-    )
-
-    assert result.success is True
-    assert len(call_log) == 1
-    assert call_log[0]["message_thread_id"] is None
-
-
-@pytest.mark.asyncio
-async def test_send_retries_network_errors_normally():
-    """Real transient network errors (not BadRequest) should still be retried."""
-    adapter = _make_adapter()
-
-    attempt = [0]
-
-    async def mock_send_message(**kwargs):
-        attempt[0] += 1
-        if attempt[0] < 3:
-            raise FakeNetworkError("Connection reset")
-        return SimpleNamespace(message_id=200)
-
-    adapter._bot = SimpleNamespace(send_message=mock_send_message)
-
-    result = await adapter.send(
-        chat_id="123",
-        content="test message",
-    )
-
-    assert result.success is True
-    assert attempt[0] == 3  # Two retries then success
-
-
-@pytest.mark.asyncio
-async def test_send_does_not_retry_timeout():
-    """TimedOut (subclass of NetworkError) should NOT be retried in send().
-
-    The request may have already been delivered to the user — retrying
-    would send duplicate messages.
-    """
-    adapter = _make_adapter()
-
-    attempt = [0]
-
-    async def mock_send_message(**kwargs):
-        attempt[0] += 1
-        raise FakeTimedOut("Timed out waiting for Telegram response")
-
-    adapter._bot = SimpleNamespace(send_message=mock_send_message)
-
-    result = await adapter.send(
-        chat_id="123",
-        content="test message",
-    )
-
-    assert result.success is False
-    assert "Timed out" in result.error
-    # CRITICAL: only 1 attempt — no retry for TimedOut
-    assert attempt[0] == 1
-
-
-@pytest.mark.asyncio
 async def test_thread_fallback_only_fires_once():
     """After clearing thread_id, subsequent chunks should also use None."""
     adapter = _make_adapter()
@@ -1029,7 +712,7 @@ async def test_thread_fallback_only_fires_once():
     # Send a long message that gets split into chunks
     long_msg = "A" * 5000  # Exceeds Telegram's 4096 limit
     result = await adapter.send(
-        chat_id="123",
+        chat_id="-100123",
         content=long_msg,
         metadata={"thread_id": "99999"},
     )
@@ -1041,23 +724,3 @@ async def test_thread_fallback_only_fires_once():
     # The key point: the message was delivered despite the invalid thread
 
 
-@pytest.mark.asyncio
-async def test_send_retries_retry_after_errors():
-    """Telegram flood control should back off and retry instead of failing fast."""
-    adapter = _make_adapter()
-
-    attempt = [0]
-
-    async def mock_send_message(**kwargs):
-        attempt[0] += 1
-        if attempt[0] == 1:
-            raise FakeRetryAfter(2)
-        return SimpleNamespace(message_id=300)
-
-    adapter._bot = SimpleNamespace(send_message=mock_send_message)
-
-    result = await adapter.send(chat_id="123", content="test message")
-
-    assert result.success is True
-    assert result.message_id == "300"
-    assert attempt[0] == 2

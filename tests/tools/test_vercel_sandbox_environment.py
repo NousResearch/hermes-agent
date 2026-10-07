@@ -221,7 +221,17 @@ def vercel_module(vercel_sdk, monkeypatch):
     monkeypatch.setattr("tools.credential_files.iter_cache_files", lambda **kwargs: [])
 
     module = importlib.import_module("tools.environments.vercel_sandbox")
-    return importlib.reload(module)
+    module = importlib.reload(module)
+    # These tests fully fake the vercel SDK via sys.modules (vercel_sdk
+    # fixture) — the real package is never exercised, so the lazy-install
+    # probe must not run: _ensure_vercel_sdk checks installed DISTRIBUTION
+    # metadata (not sys.modules), and on a host without the vercel dist +
+    # with lazy installs disabled (any hermetic env) it raises ImportError
+    # before the fake SDK is ever reached. 16 tests failed exactly this way
+    # in CI while passing on dev boxes that happened to have vercel==0.7.2
+    # installed.
+    monkeypatch.setattr(module, "_ensure_vercel_sdk", lambda: None)
+    return module
 
 
 @pytest.fixture()
@@ -327,7 +337,8 @@ class TestFileSync:
 
         result = env.execute("echo hello")
 
-        assert result == {"output": "hello\n", "returncode": 0}
+        assert result["output"] == "hello\n"
+        assert result["returncode"] == 0
         assert vercel_sdk.current.write_files_calls[-1] == [
             {
                 "path": "/home/vercel/.hermes/credentials/token.txt",
@@ -373,8 +384,18 @@ class TestFileSync:
         env.cleanup()
         env.cleanup()
 
-        assert src.read_text() == "remote-token"
-        assert (tmp_path / "new.txt").read_text() == "new-remote"
+        # The remote tar must skip live sockets (gateway.sock) instead of failing the download.
+        tar_scripts = [args[1] for cmd, args, _ in sandbox.run_command_calls
+                       if cmd == "bash" and args and args[1].startswith("tar cf ")]
+        assert tar_scripts and all("--exclude='*.sock'" in script for script in tar_scripts)
+
+        # Credential mounts are upload-only since bcfc7458fa ("fix remote
+        # sync-back credential overwrite"): the sandbox must never rewrite a
+        # host credential file, so token.txt keeps its host content, and the
+        # credential mapping cannot serve as an inference anchor for new
+        # remote files either — new.txt/skip.txt stay remote-only.
+        assert src.read_text() == "host-token"
+        assert not (tmp_path / "new.txt").exists()
         assert not (tmp_path / "skip.txt").exists()
         assert len(sandbox.snapshot_calls) == 1
         assert len(sandbox.stop_calls) == 1  # always stop after snapshot to avoid resource leaks
@@ -465,7 +486,8 @@ class TestExecute:
 
         result = env.execute("echo hello")
 
-        assert result == {"output": "hello\n", "returncode": 0}, label
+        assert result["output"] == "hello\n", label
+        assert result["returncode"] == 0, label
         assert original.closed == 1
         assert vercel_sdk.current is replacement
 
@@ -500,6 +522,25 @@ class TestExecute:
         assert cmd == "bash"
         assert args == ["-c", "echo done"]
         assert kwargs["cwd"] == "/vercel/sandbox"
+
+
+    def test_payload_stdin_is_staged_byte_exact_not_in_argv(self, make_env):
+        env = make_env()
+        sandbox = env._sandbox
+        raw = (b"A" * (160 * 1024)) + b"\x00\xff\xfeTAIL"
+        writes_before = len(sandbox.write_files_calls)
+
+        handle = env._run_bash("cat > /tmp/out", stdin_data=raw.decode("utf-8", "surrogateescape"))
+
+        assert handle.wait(timeout=2) == 0
+        (staged,) = sandbox.write_files_calls[writes_before]
+        assert staged["content"] == raw
+        assert staged["mode"] == 0o600
+        cmd, args, _ = sandbox.run_command_calls[-1]
+        assert cmd == "bash" and args[0] == "-c"
+        assert args[1].startswith(f"exec 0< {staged['path']} || exit $?\n")
+        assert args[1].endswith("\ncat > /tmp/out")
+        assert "AAAAAAAAAAAAAAAA" not in " ".join(args)
 
 
 class TestSnapshotPersistence:
@@ -604,3 +645,27 @@ class TestCleanup:
 
         assert len(sandbox.snapshot_calls) == 1
         assert sandbox.closed == 1
+
+
+class TestImageSelection:
+    def test_image_by_default_runtime_only_when_pinned_and_neither_on_restore(
+        self, make_env, vercel_module, vercel_sdk, monkeypatch, tmp_path
+    ):
+        """Vercel deprecated runtimes and rejects runtime+image together and runtime with a snapshot
+        source, so: fresh sandbox -> image only; legacy runtime pin -> runtime only; restore -> neither."""
+        from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE
+
+        make_env(runtime=None)
+        make_env(runtime=None, image="vercel/sandbox/python:3.14")
+        make_env(runtime="node22", image="vercel/sandbox/python:3.14")
+        fresh, custom, pinned = vercel_sdk.create_kwargs[-3:]
+        assert (fresh["image"], fresh["runtime"]) == (DEFAULT_VERCEL_IMAGE, None)
+        assert (custom["image"], custom["runtime"]) == ("vercel/sandbox/python:3.14", None)
+        assert (pinned["image"], pinned["runtime"]) == (None, "node22")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        vercel_module._store_snapshot("task-123", "snap_saved")
+        make_env(runtime="node22")
+        restore = vercel_sdk.create_kwargs[-1]
+        assert restore["source"]["snapshot_id"] == "snap_saved"
+        assert "runtime" not in restore and "image" not in restore

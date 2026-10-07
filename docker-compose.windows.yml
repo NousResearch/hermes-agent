@@ -1,0 +1,38 @@
+#
+# docker-compose.windows.yml — Windows Docker Desktop compatible
+#
+# Differences from docker-compose.yml:
+#   - Removes `network_mode: host` (not supported on Docker Desktop for Windows)
+#   - Uses explicit port mappings instead
+#   - Uses Windows-style volume path for ~/.hermes
+#
+# Usage:
+#   docker compose -f docker-compose.windows.yml up -d
+#
+services:
+  gateway:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes
+    restart: unless-stopped
+    volumes:
+      - ${USERPROFILE}/.hermes:/opt/data
+    environment:
+      - HERMES_UID=10000
+      - HERMES_GID=10000
+    command: ["gateway", "run"]
+
+  dashboard:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-dashboard
+    restart: unless-stopped
+    depends_on:
+      - gateway
+    volumes:
+      - ${USERPROFILE}/.hermes:/opt/data
+    environment:
+      - HERMES_UID=10000
+      - HERMES_GID=10000
+      - HERMES_DASHBOARD_HOST=0.0.0.0
+    ports:
+      - "127.0.0.1:9119:9119"
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]

@@ -17,14 +17,15 @@ import re
 import sys
 from collections import defaultdict
 from pathlib import Path
-from textwrap import dedent
 from typing import Any
 
-import yaml
-
 REPO = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(REPO))
+import hermes_yaml as yaml
+
 DOCS = REPO / "website" / "docs"
 SKILLS_PAGES = DOCS / "user-guide" / "skills"
+ZH_HANS_DOCS = REPO / "website" / "i18n" / "zh-Hans" / "docusaurus-plugin-content-docs" / "current"
 
 SKILL_SOURCES = [
     ("bundled", REPO / "skills"),
@@ -33,7 +34,7 @@ SKILL_SOURCES = [
 
 # Pages the user had previously hand-written in user-guide/skills/.
 # We leave these alone (they get first-class sidebar treatment separately).
-HAND_WRITTEN = {"godmode.md", "google-workspace.md"}
+HAND_WRITTEN = {"google-workspace.md"}
 
 
 _FENCE_RE = re.compile(r"^(?P<indent>\s*)(?P<fence>```+|~~~+)", re.MULTILINE)
@@ -286,7 +287,7 @@ def derive_skill_meta(skill_path: Path, source_dir: Path, source_kind: str) -> d
     rel = skill_path.parent.relative_to(source_dir)
     parts = rel.parts
     if len(parts) == 1:
-        # Top-level skill (e.g. skills/dogfood/SKILL.md) -- rare
+        # Top-level skill (e.g. skills/<name>/SKILL.md with no category) -- rare
         category = parts[0]
         sub = None
         slug = parts[0]
@@ -335,7 +336,7 @@ def render_skill_page(
 ) -> str:
     name = fm.get("name", meta["slug"])
     description = fm.get("description", "").strip()
-    short_desc = description.split(".")[0].strip() if description else name
+    short_desc = re.split(r"\.(?:\s|$)", description, maxsplit=1)[0].strip() if description else name
     if len(short_desc) > 160:
         short_desc = short_desc[:157] + "..."
 
@@ -397,9 +398,10 @@ def render_skill_page(
             if skill_index is not None:
                 target_meta = skill_index.get(r)
             if target_meta is not None:
+                # Relative file link: resolves on the site and on GitHub (#114428).
                 href = (
-                    f"/docs/user-guide/skills/{target_meta['source_kind']}"
-                    f"/{target_meta['category']}/{page_id(target_meta)}"
+                    f"../../{target_meta['source_kind']}"
+                    f"/{target_meta['category']}/{page_id(target_meta)}.md"
                 )
                 link_parts.append(f"[`{r}`]({href})")
             else:
@@ -497,7 +499,7 @@ def build_catalog_md_bundled(entries: list[tuple[dict[str, Any], dict[str, Any]]
             desc = (fm.get("description") or "").strip()
             if len(desc) > 240:
                 desc = desc[:237].rstrip() + "..."
-            link_target = f"/docs/user-guide/skills/bundled/{meta['category']}/{page_id(meta)}"
+            link_target = f"../user-guide/skills/bundled/{meta['category']}/{page_id(meta)}.md"
             path = f"`{meta['rel_path']}`"
             desc_esc = mdx_escape_body(desc).replace("|", "\\|").replace("\n", " ")
             lines.append(
@@ -558,7 +560,7 @@ def build_catalog_md_optional(entries: list[tuple[dict[str, Any], dict[str, Any]
             desc = (fm.get("description") or "").strip()
             if len(desc) > 240:
                 desc = desc[:237].rstrip() + "..."
-            link_target = f"/docs/user-guide/skills/optional/{meta['category']}/{page_id(meta)}"
+            link_target = f"../user-guide/skills/optional/{meta['category']}/{page_id(meta)}.md"
             desc_esc = mdx_escape_body(desc).replace("|", "\\|").replace("\n", " ")
             lines.append(f"| [**{name}**]({link_target}) | {desc_esc} |")
         lines.append("")
@@ -585,7 +587,7 @@ def build_sidebar_items(entries: list[tuple[dict[str, Any], dict[str, Any]]]) ->
 
     Structure:
     Skills
-    ├── (hand-written pages first: godmode, google-workspace)
+    ├── (hand-written pages first: google-workspace)
     ├── Bundled
     │   ├── apple
     │   │   ├── apple-apple-notes
@@ -602,7 +604,7 @@ def build_sidebar_items(entries: list[tuple[dict[str, Any], dict[str, Any]]]) ->
         else:
             optional[meta["category"]].append(meta)
 
-    def cat_section(bucket: dict[str, list[dict[str, Any]]]) -> list[dict]:
+    def cat_section(bucket: dict[str, list[dict[str, Any]]], source: str) -> list[dict]:
         result = []
         for category in sorted(bucket):
             items = sorted(bucket[category], key=lambda m: m["slug"])
@@ -610,6 +612,13 @@ def build_sidebar_items(entries: list[tuple[dict[str, Any], dict[str, Any]]]) ->
                 {
                     "type": "category",
                     "label": category,
+                    # Docusaurus generates a translation key from the label by
+                    # default (e.g. sidebar.docs.category.productivity). When
+                    # the same category name appears under both Bundled and
+                    # Optional, the duplicate keys break i18n extraction and
+                    # fail the build. Scope each category by source to keep
+                    # the keys unique.
+                    "key": f"skills-{source}-{category}",
                     "collapsed": True,
                     "items": [sidebar_doc_id(m) for m in items],
                 }
@@ -617,43 +626,77 @@ def build_sidebar_items(entries: list[tuple[dict[str, Any], dict[str, Any]]]) ->
         return result
 
     return {
-        "bundled_categories": cat_section(bundled),
-        "optional_categories": cat_section(optional),
+        "bundled_categories": cat_section(bundled, "bundled"),
+        "optional_categories": cat_section(optional, "optional"),
     }
 
 
-def write_sidebar(entries):
-    # The per-skill pages (`build_sidebar_items(entries)`) are still generated
-    # as standalone docs under `website/docs/user-guide/skills/{bundled,optional}/`
-    # and reachable via the catalog pages in Reference — but we intentionally
-    # do NOT explode them into the left sidebar. Two hundred-plus skill entries
-    # drown the actual product docs and make the site feel overwhelming to
-    # first-time visitors.
-    #
-    # Sidebar now shows:
-    #   Skills
-    #   ├── Bundled catalog →    (link to reference/skills-catalog)
-    #   └── Optional catalog →   (link to reference/optional-skills-catalog)
-    #
-    # The catalog pages are auto-regenerated tables with a link to every skill.
-    # Individual skill pages (including the two formerly hand-written guides,
-    # godmode and google-workspace) are still reachable at their URLs and are
-    # linked from the catalog tables and from the Skills overview page — they
-    # just aren't promoted in the left sidebar, because there's no principled
-    # rule for which skills would get promoted and which wouldn't.
-    _ = build_sidebar_items(entries)  # still called for any side effects / validation
+def _render_sidebar_item(item: Any, indent: int) -> list[str]:
+    """Render one sidebar item (string doc id, or category dict) as ts lines."""
+    pad = " " * indent
+    lines: list[str] = []
+    if isinstance(item, str):
+        lines.append(f"{pad}'{item}',")
+        return lines
+    # category dict
+    lines.append(f"{pad}{{")
+    lines.append(f"{pad}  type: 'category',")
+    lines.append(f"{pad}  label: '{item['label']}',")
+    if item.get("key"):
+        lines.append(f"{pad}  key: '{item['key']}',")
+    if item.get("collapsed", True):
+        lines.append(f"{pad}  collapsed: true,")
+    lines.append(f"{pad}  items: [")
+    for child in item.get("items", []):
+        lines.extend(_render_sidebar_item(child, indent + 4))
+    lines.append(f"{pad}  ],")
+    lines.append(f"{pad}}},")
+    return lines
 
-    skills_subtree = (
-        "        {\n"
-        "          type: 'category',\n"
-        "          label: 'Skills',\n"
-        "          collapsed: true,\n"
-        "          items: [\n"
-        "            'reference/skills-catalog',\n"
-        "            'reference/optional-skills-catalog',\n"
-        "          ],\n"
-        "        },\n"
-    )
+
+def write_sidebar(entries):
+    # Sidebar layout:
+    #   Skills
+    #   ├── reference/skills-catalog
+    #   ├── reference/optional-skills-catalog
+    #   ├── Bundled
+    #   │   ├── apple/
+    #   │   │   ├── apple-apple-notes
+    #   │   │   └── ...
+    #   │   └── ...
+    #   └── Optional
+    #       └── ...
+    #
+    # The two catalog index pages stay at the top of the Skills section so
+    # the at-a-glance table view is one click away, and the per-category
+    # subtrees give individual skill pages real sidebar navigation when
+    # users land on them directly.
+    tree = build_sidebar_items(entries)
+
+    skills_block: list[dict[str, Any]] = [
+        {
+            "label": "Bundled",
+            "collapsed": True,
+            "items": tree["bundled_categories"],
+        },
+        {
+            "label": "Optional",
+            "collapsed": True,
+            "items": tree["optional_categories"],
+        },
+    ]
+    skills_items: list[Any] = [
+        "reference/skills-catalog",
+        "reference/optional-skills-catalog",
+        *skills_block,
+    ]
+
+    skills_top = {
+        "label": "Skills",
+        "collapsed": True,
+        "items": skills_items,
+    }
+    skills_subtree = "\n".join(_render_sidebar_item(skills_top, 8)) + "\n"
 
     sidebar_path = REPO / "website" / "sidebars.ts"
     text = sidebar_path.read_text(encoding="utf-8")
@@ -693,6 +736,34 @@ def write_sidebar(entries):
     print(f"Updated sidebar: {sidebar_path}")
 
 
+def prune_stale_pages(written: set[Path]) -> int:
+    """Delete generated pages this run did not write, plus their zh-Hans mirror twins.
+
+    A skill that moves category, merges into a sibling, or leaves the shipped set
+    otherwise keeps its old page forever: the catalogs and sidebar stop pointing at
+    it, but cross-links still reach a page advertising a skill nobody can install
+    under that name. Only the generated subtrees are swept, never hand-authored
+    pages next to them.
+    """
+    pruned = 0
+    for kind in ("bundled", "optional"):
+        for page in sorted((SKILLS_PAGES / kind).rglob("*.md")):
+            if page.resolve() in written:
+                continue
+            page.unlink()
+            twin = ZH_HANS_DOCS / page.relative_to(DOCS)
+            if twin.exists():
+                twin.unlink()
+            pruned += 1
+        # Mirror copies whose English page is already gone (a hand-deleted page).
+        zh_kind = ZH_HANS_DOCS / SKILLS_PAGES.relative_to(DOCS) / kind
+        for twin in sorted(zh_kind.rglob("*.md")) if zh_kind.exists() else []:
+            if not (DOCS / twin.relative_to(ZH_HANS_DOCS)).exists():
+                twin.unlink()
+                pruned += 1
+    return pruned
+
+
 def main():
     entries = discover_skills()
     print(f"Discovered {len(entries)} skills")
@@ -706,7 +777,7 @@ def main():
             skill_index[name] = meta
 
     # Write per-skill pages
-    written = 0
+    written: set[Path] = set()
     for meta, parsed in entries:
         out_path = page_output_path(meta)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -714,8 +785,12 @@ def main():
             meta, parsed["frontmatter"], parsed["body"], skill_index=skill_index
         )
         out_path.write_text(content, encoding="utf-8")
-        written += 1
-    print(f"Wrote {written} per-skill pages under {SKILLS_PAGES}")
+        written.add(out_path.resolve())
+    print(f"Wrote {len(written)} per-skill pages under {SKILLS_PAGES}")
+
+    pruned = prune_stale_pages(written)
+    if pruned:
+        print(f"Pruned {pruned} page(s) whose skill no longer ships")
 
     # Regenerate catalogs
     bundled_catalog = build_catalog_md_bundled(entries)

@@ -70,7 +70,7 @@ def _ensure_authenticated():
 
 def _stored_token_scopes() -> list[str]:
     try:
-        data = json.loads(TOKEN_PATH.read_text())
+        data = json.loads(TOKEN_PATH.read_text(encoding="utf-8"))
     except Exception:
         return list(SCOPES)
     scopes = data.get("scopes")
@@ -108,7 +108,7 @@ def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None 
     result = subprocess.run(
         cmd,
         capture_output=True,
-        text=True,
+        text=True, encoding='utf-8', errors='replace',
         env=_gws_env(),
     )
     if result.returncode != 0:
@@ -129,7 +129,11 @@ def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None 
 
 
 def _headers_dict(msg: dict) -> dict[str, str]:
-    return {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+    return {
+        h["name"].lower(): h["value"]
+        for h in msg.get("payload", {}).get("headers", [])
+        if h.get("name")
+    }
 
 
 def _extract_message_body(msg: dict) -> str:
@@ -150,15 +154,79 @@ def _extract_message_body(msg: dict) -> str:
     return body
 
 
-def _extract_doc_text(doc: dict) -> str:
+def _extract_body_text(body: dict) -> str:
     text_parts = []
-    for element in doc.get("body", {}).get("content", []):
+    for element in body.get("content", []):
         paragraph = element.get("paragraph", {})
         for pe in paragraph.get("elements", []):
             text_run = pe.get("textRun", {})
             if text_run.get("content"):
                 text_parts.append(text_run["content"])
     return "".join(text_parts)
+
+
+def _extract_doc_text(doc: dict) -> str:
+    return _extract_body_text(doc.get("body", {}))
+
+
+def _flatten_doc_tabs(doc: dict) -> list[dict]:
+    """Flatten Google's recursive ``tabs``/``childTabs`` tree (preorder).
+
+    A tabbed Doc keeps each tab's content in its own body with an independent
+    index space; the legacy top-level ``body`` only carries the first tab, so
+    reads and writes that ignore ``tabs`` silently drop or mistarget content.
+    Returns [] for the legacy single-body response shape (no ``tabs`` field).
+    """
+    flat: list[dict] = []
+
+    def visit(tabs, level):
+        for tab in tabs or []:
+            props = tab.get("tabProperties") or {}
+            doc_tab = tab.get("documentTab") or {}
+            flat.append({
+                "tabId": props.get("tabId", ""),
+                "title": props.get("title", ""),
+                "level": level,
+                "body": doc_tab.get("body") or {},
+            })
+            visit(tab.get("childTabs"), level + 1)
+
+    visit(doc.get("tabs"), 0)
+    return flat
+
+
+def _resolve_write_tab(doc: dict, tab_arg: str | None) -> tuple[str | None, dict]:
+    """Pick exactly one tab body for a write; never merge index spaces.
+
+    Legacy docs (no ``tabs``) return (None, body) — the write carries no tabId.
+    A multi-tab doc requires an explicit --tab; an unknown ID errors instead of
+    quietly falling back to the first tab.
+    """
+    tabs = _flatten_doc_tabs(doc)
+    if not tabs:
+        return None, doc.get("body", {})
+    if tab_arg:
+        for tab in tabs:
+            if tab["tabId"] == tab_arg:
+                return tab["tabId"], tab["body"]
+        print(
+            json.dumps({
+                "error": f"unknown tab ID {tab_arg!r}",
+                "tabs": [{"tabId": t["tabId"], "title": t["title"]} for t in tabs],
+            }, indent=2, ensure_ascii=False),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if len(tabs) == 1:
+        return tabs[0]["tabId"], tabs[0]["body"]
+    print(
+        json.dumps({
+            "error": f"document has {len(tabs)} tabs; pass --tab <tabId> to pick one",
+            "tabs": [{"tabId": t["tabId"], "title": t["title"]} for t in tabs],
+        }, indent=2, ensure_ascii=False),
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def _datetime_with_timezone(value: str) -> str:
@@ -188,7 +256,7 @@ def get_credentials():
             json.dumps(
                 _normalize_authorized_user_payload(json.loads(creds.to_json())),
                 indent=2,
-            )
+            ), encoding="utf-8"
         )
     if not creds.valid:
         print("Token is invalid. Re-run setup.", file=sys.stderr)
@@ -207,7 +275,7 @@ def build_service(api, version):
 # =========================================================================
 
 
-def gmail_search(args):
+def gmail_search(args: argparse.Namespace) -> None:
     if _gws_binary():
         results = _run_gws(
             ["gmail", "users", "messages", "list"],
@@ -230,10 +298,10 @@ def gmail_search(args):
                 {
                     "id": msg["id"],
                     "threadId": msg["threadId"],
-                    "from": headers.get("From", ""),
-                    "to": headers.get("To", ""),
-                    "subject": headers.get("Subject", ""),
-                    "date": headers.get("Date", ""),
+                    "from": headers.get("from", ""),
+                    "to": headers.get("to", ""),
+                    "subject": headers.get("subject", ""),
+                    "date": headers.get("date", ""),
                     "snippet": msg.get("snippet", ""),
                     "labels": msg.get("labelIds", []),
                 }
@@ -246,9 +314,6 @@ def gmail_search(args):
         userId="me", q=args.query, maxResults=args.max
     ).execute()
     messages = results.get("messages", [])
-    if not messages:
-        print("No messages found.")
-        return
 
     output = []
     for msg_meta in messages:
@@ -260,10 +325,10 @@ def gmail_search(args):
         output.append({
             "id": msg["id"],
             "threadId": msg["threadId"],
-            "from": headers.get("From", ""),
-            "to": headers.get("To", ""),
-            "subject": headers.get("Subject", ""),
-            "date": headers.get("Date", ""),
+            "from": headers.get("from", ""),
+            "to": headers.get("to", ""),
+            "subject": headers.get("subject", ""),
+            "date": headers.get("date", ""),
             "snippet": msg.get("snippet", ""),
             "labels": msg.get("labelIds", []),
         })
@@ -281,10 +346,10 @@ def gmail_get(args):
         result = {
             "id": msg["id"],
             "threadId": msg["threadId"],
-            "from": headers.get("From", ""),
-            "to": headers.get("To", ""),
-            "subject": headers.get("Subject", ""),
-            "date": headers.get("Date", ""),
+            "from": headers.get("from", ""),
+            "to": headers.get("to", ""),
+            "subject": headers.get("subject", ""),
+            "date": headers.get("date", ""),
             "labels": msg.get("labelIds", []),
             "body": _extract_message_body(msg),
         }
@@ -300,10 +365,10 @@ def gmail_get(args):
     result = {
         "id": msg["id"],
         "threadId": msg["threadId"],
-        "from": headers.get("From", ""),
-        "to": headers.get("To", ""),
-        "subject": headers.get("Subject", ""),
-        "date": headers.get("Date", ""),
+        "from": headers.get("from", ""),
+        "to": headers.get("to", ""),
+        "subject": headers.get("subject", ""),
+        "date": headers.get("date", ""),
         "labels": msg.get("labelIds", []),
         "body": _extract_message_body(msg),
     }
@@ -314,12 +379,12 @@ def gmail_get(args):
 def gmail_send(args):
     if _gws_binary():
         message = MIMEText(args.body, "html" if args.html else "plain")
-        message["to"] = args.to
-        message["subject"] = args.subject
+        message["To"] = args.to
+        message["Subject"] = args.subject
         if args.cc:
-            message["cc"] = args.cc
+            message["Cc"] = args.cc
         if args.from_header:
-            message["from"] = args.from_header
+            message["From"] = args.from_header
 
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
         body = {"raw": raw}
@@ -336,12 +401,12 @@ def gmail_send(args):
 
     service = build_service("gmail", "v1")
     message = MIMEText(args.body, "html" if args.html else "plain")
-    message["to"] = args.to
-    message["subject"] = args.subject
+    message["To"] = args.to
+    message["Subject"] = args.subject
     if args.cc:
-        message["cc"] = args.cc
+        message["Cc"] = args.cc
     if args.from_header:
-        message["from"] = args.from_header
+        message["From"] = args.from_header
 
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
     body = {"raw": raw}
@@ -367,18 +432,18 @@ def gmail_reply(args):
         )
         headers = _headers_dict(original)
 
-        subject = headers.get("Subject", "")
+        subject = headers.get("subject", "")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
 
         message = MIMEText(args.body)
-        message["to"] = headers.get("From", "")
-        message["subject"] = subject
+        message["To"] = headers.get("from", "")
+        message["Subject"] = subject
         if args.from_header:
-            message["from"] = args.from_header
-        if headers.get("Message-ID"):
-            message["In-Reply-To"] = headers["Message-ID"]
-            message["References"] = headers["Message-ID"]
+            message["From"] = args.from_header
+        if headers.get("message-id"):
+            message["In-Reply-To"] = headers["message-id"]
+            message["References"] = headers["message-id"]
 
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
         result = _run_gws(
@@ -396,18 +461,18 @@ def gmail_reply(args):
     ).execute()
     headers = _headers_dict(original)
 
-    subject = headers.get("Subject", "")
+    subject = headers.get("subject", "")
     if not subject.startswith("Re:"):
         subject = f"Re: {subject}"
 
     message = MIMEText(args.body)
-    message["to"] = headers.get("From", "")
-    message["subject"] = subject
+    message["To"] = headers.get("from", "")
+    message["Subject"] = subject
     if args.from_header:
-        message["from"] = args.from_header
-    if headers.get("Message-ID"):
-        message["In-Reply-To"] = headers["Message-ID"]
-        message["References"] = headers["Message-ID"]
+        message["From"] = args.from_header
+    if headers.get("message-id"):
+        message["In-Reply-To"] = headers["message-id"]
+        message["References"] = headers["message-id"]
 
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
     body = {"raw": raw, "threadId": original["threadId"]}
@@ -721,7 +786,7 @@ def drive_share(args):
         "type": args.type,
         "role": args.role,
     }
-    if args.type in ("user", "group"):
+    if args.type in {"user", "group"}:
         if not args.email:
             print("ERROR: --email is required for type=user or type=group", file=sys.stderr)
             sys.exit(1)
@@ -949,23 +1014,41 @@ def sheets_create(args):
 
 
 def docs_get(args):
+    tab_arg = getattr(args, "tab", None)
+    params = {"documentId": args.doc_id, "includeTabsContent": True}
     if _gws_binary():
-        doc = _run_gws(["docs", "documents", "get"], params={"documentId": args.doc_id})
-        result = {
-            "title": doc.get("title", ""),
-            "documentId": doc.get("documentId", ""),
-            "body": _extract_doc_text(doc),
-        }
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-        return
+        doc = _run_gws(["docs", "documents", "get"], params=params)
+    else:
+        service = build_service("docs", "v1")
+        doc = service.documents().get(
+            documentId=args.doc_id, includeTabsContent=True,
+        ).execute()
 
-    service = build_service("docs", "v1")
-    doc = service.documents().get(documentId=args.doc_id).execute()
     result = {
         "title": doc.get("title", ""),
         "documentId": doc.get("documentId", ""),
-        "body": _extract_doc_text(doc),
     }
+    tabs = _flatten_doc_tabs(doc)
+    if not tabs:
+        # Legacy single-body response shape.
+        result["body"] = _extract_doc_text(doc)
+    elif tab_arg:
+        _, body = _resolve_write_tab(doc, tab_arg)
+        result["tab"] = tab_arg
+        result["body"] = _extract_body_text(body)
+    else:
+        result["tabs"] = [
+            {
+                "tabId": t["tabId"],
+                "title": t["title"],
+                "level": t["level"],
+                "body": _extract_body_text(t["body"]),
+            }
+            for t in tabs
+        ]
+        # Keep "body" populated for single-tab docs so existing callers work.
+        if len(tabs) == 1:
+            result["body"] = result["tabs"][0]["body"]
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
@@ -993,17 +1076,25 @@ def docs_create(args):
 
 
 def docs_append(args):
-    """Append text to the end of an existing Doc."""
+    """Append text to the end of an existing Doc (one tab of it, if tabbed)."""
     if _gws_binary():
-        doc = _run_gws(["docs", "documents", "get"], params={"documentId": args.doc_id})
+        doc = _run_gws(
+            ["docs", "documents", "get"],
+            params={"documentId": args.doc_id, "includeTabsContent": True},
+        )
     else:
         service = build_service("docs", "v1")
-        doc = service.documents().get(documentId=args.doc_id).execute()
+        doc = service.documents().get(
+            documentId=args.doc_id, includeTabsContent=True,
+        ).execute()
+
+    tab_id, body = _resolve_write_tab(doc, getattr(args, "tab", None))
 
     # The end-of-body index is one less than the segment endIndex of the body
     # (trailing newline is always at length-1). Docs indexes are 1-based; use
-    # endIndex - 1 to insert before the final newline.
-    content = doc.get("body", {}).get("content", [])
+    # endIndex - 1 to insert before the final newline. Each tab has its own
+    # index space, so the write location must carry the tab ID.
+    content = body.get("content", [])
     end_index = 1
     for element in content:
         ei = element.get("endIndex")
@@ -1012,21 +1103,27 @@ def docs_append(args):
     insert_index = max(end_index - 1, 1)
 
     text = args.text if args.text.endswith("\n") else args.text + "\n"
-    _docs_insert_text(args.doc_id, text, index=insert_index)
+    _docs_insert_text(args.doc_id, text, index=insert_index, tab_id=tab_id)
 
-    print(json.dumps({
+    result = {
         "status": "appended",
         "documentId": args.doc_id,
         "inserted_at": insert_index,
         "characters": len(text),
-    }, indent=2, ensure_ascii=False))
+    }
+    if tab_id:
+        result["tab"] = tab_id
+    print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
-def _docs_insert_text(doc_id: str, text: str, index: int) -> None:
+def _docs_insert_text(doc_id: str, text: str, index: int, tab_id: str | None = None) -> None:
     """Send a batchUpdate with a single insertText request."""
+    location: dict = {"index": index}
+    if tab_id:
+        location["tabId"] = tab_id
     requests = [{
         "insertText": {
-            "location": {"index": index},
+            "location": location,
             "text": text,
         }
     }]
@@ -1201,6 +1298,7 @@ def main():
 
     p = docs_sub.add_parser("get")
     p.add_argument("doc_id")
+    p.add_argument("--tab", default=None, help="Tab ID to read (tabbed Docs)")
     p.set_defaults(func=docs_get)
 
     p = docs_sub.add_parser("create")
@@ -1211,6 +1309,7 @@ def main():
     p = docs_sub.add_parser("append")
     p.add_argument("doc_id")
     p.add_argument("--text", required=True, help="Text to append to the end of the document")
+    p.add_argument("--tab", default=None, help="Tab ID to append to (required for multi-tab Docs)")
     p.set_defaults(func=docs_append)
 
     args = parser.parse_args()

@@ -28,10 +28,74 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from agent.auxiliary_client import (
+    OMIT_TEMPERATURE,
+    _TEMPERATURE_REJECTED_ROUTES,
+    _build_call_kwargs,
+    _fixed_temperature_for_model,
     call_llm,
     async_call_llm,
-    _is_unsupported_temperature_error,
+    _is_unsupported_parameter_error,
 )
+
+
+@pytest.fixture(autouse=True)
+def _forget_rejected_routes():
+    _TEMPERATURE_REJECTED_ROUTES.clear()
+    yield
+    _TEMPERATURE_REJECTED_ROUTES.clear()
+
+
+@pytest.mark.parametrize("model", ["gpt-5.5", "openai/gpt-5.5-pro", "gpt-5.1-2026-01-01", "gpt-5-codex", "o3-mini", "o4-mini"])
+def test_openai_default_only_families_omit_temperature_up_front(model):
+    """#51083: OpenAI reasoning families 400 on temperature != 1, so the first request already omits
+    it instead of paying a rejected round-trip; gpt-5-chat and gpt-4.1 still get the caller's value."""
+    assert _fixed_temperature_for_model(model) is OMIT_TEMPERATURE
+    kwargs = _build_call_kwargs("openai-api", model, [{"role": "user", "content": "hi"}], temperature=0.1)
+    assert "temperature" not in kwargs
+    for accepts in ("gpt-5-chat-latest", "gpt-4.1"):
+        assert _build_call_kwargs("openai-api", accepts, [], temperature=0.1)["temperature"] == 0.1
+
+
+def test_route_that_rejected_temperature_omits_it_next_call():
+    """#51083: after one ``unsupported_value`` on temperature the route+model is remembered and the
+    next call sends a single request without it; a different model on the route is unaffected."""
+    client = MagicMock()
+    client.base_url = "https://relay.example/v1"
+    client.chat.completions.create.side_effect = [
+        RuntimeError("Error code: 400 - {'error': {'message': \"Unsupported value: 'temperature' does not support 0.1 with this model. Only the default (1) value is supported.\", 'param': 'temperature', 'code': 'unsupported_value'}}"),
+        _dummy_response(), _dummy_response(), _dummy_response()]
+    with (
+        patch("agent.auxiliary_client._resolve_task_provider_model",
+              return_value=("custom", "relay-model-x", None, None, None)),
+        patch("agent.auxiliary_client._get_cached_client", return_value=(client, "relay-model-x")),
+        patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
+    ):
+        call_llm(task="vision", messages=[{"role": "user", "content": "a"}], temperature=0.1)
+        call_llm(task="vision", messages=[{"role": "user", "content": "b"}], temperature=0.1)
+    calls = client.chat.completions.create.call_args_list
+    assert [c.kwargs.get("temperature") for c in calls] == [0.1, None, None]
+    assert _fixed_temperature_for_model("relay-model-y", "https://relay.example/v1", "custom") is None
+
+
+def test_route_memory_keyed_on_effective_base_url_when_client_has_none():
+    """The rejection is recorded under the same key the kwargs builder looks up: when the client
+    exposes no ``base_url`` but the task resolved one, the resolved URL is the effective key, so the
+    second call still omits temperature instead of paying the 400 again."""
+    client = MagicMock()
+    client.base_url = None
+    client.chat.completions.create.side_effect = [
+        RuntimeError("Error code: 400 - {'error': {'message': \"Unsupported value: 'temperature' does not support 0.1 with this model. Only the default (1) value is supported.\", 'param': 'temperature', 'code': 'unsupported_value'}}"),
+        _dummy_response(), _dummy_response(), _dummy_response()]
+    with (
+        patch("agent.auxiliary_client._resolve_task_provider_model",
+              return_value=("custom", "relay-model-x", "https://relay.example/v1", "k", None)),
+        patch("agent.auxiliary_client._get_cached_client", return_value=(client, "relay-model-x")),
+        patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
+    ):
+        call_llm(task="compression", messages=[{"role": "user", "content": "a"}], temperature=0.1)
+        call_llm(task="compression", messages=[{"role": "user", "content": "b"}], temperature=0.1)
+    calls = client.chat.completions.create.call_args_list
+    assert [c.kwargs.get("temperature") for c in calls] == [0.1, None, None]
 
 
 class TestIsUnsupportedTemperatureError:
@@ -52,7 +116,7 @@ class TestIsUnsupportedTemperatureError:
         "unrecognized request argument supplied: temperature",
     ])
     def test_matches_real_provider_messages(self, message):
-        assert _is_unsupported_temperature_error(RuntimeError(message)) is True
+        assert _is_unsupported_parameter_error(RuntimeError(message), "temperature") is True
 
     @pytest.mark.parametrize("message", [
         # Unrelated 400s must NOT trigger a silent-retry
@@ -64,7 +128,7 @@ class TestIsUnsupportedTemperatureError:
         "temperature must be between 0 and 2",
     ])
     def test_does_not_match_unrelated_errors(self, message):
-        assert _is_unsupported_temperature_error(RuntimeError(message)) is False
+        assert _is_unsupported_parameter_error(RuntimeError(message), "temperature") is False
 
 
 def _dummy_response():
@@ -93,11 +157,11 @@ class TestCallLlmUnsupportedTemperatureRetry:
 
         with (
             patch("agent.auxiliary_client._resolve_task_provider_model",
-                  return_value=("openai-codex", "gpt-5.5", None, None, None)),
+                  return_value=("openai-codex", "relay-model-x", None, None, None)),
             patch("agent.auxiliary_client._get_cached_client",
-                  return_value=(client, "gpt-5.5")),
+                  return_value=(client, "relay-model-x")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
         ):
             result = call_llm(
                 task="compression",
@@ -112,8 +176,13 @@ class TestCallLlmUnsupportedTemperatureRetry:
         retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
         assert first_kwargs["temperature"] == 0.3
         assert "temperature" not in retry_kwargs
-        # other kwargs preserved
-        assert retry_kwargs["max_tokens"] == 500
+        # max_tokens is intentionally omitted on OpenAI-compatible endpoints
+        # (#34530) — auxiliary calls let the model max out its own output — so
+        # it must be absent in BOTH the first and retry kwargs. Use a kwarg that
+        # actually survives (model) to prove the retry preserves the rest.
+        assert "max_tokens" not in first_kwargs
+        assert "max_tokens" not in retry_kwargs
+        assert retry_kwargs["model"] == first_kwargs["model"]
 
     def test_non_temperature_400_does_not_retry_as_temperature(self):
         """Unrelated 400s (e.g. bad tool role) must not silently drop temp."""
@@ -126,11 +195,11 @@ class TestCallLlmUnsupportedTemperatureRetry:
 
         with (
             patch("agent.auxiliary_client._resolve_task_provider_model",
-                  return_value=("openai-codex", "gpt-5.5", None, None, None)),
+                  return_value=("openai-codex", "relay-model-x", None, None, None)),
             patch("agent.auxiliary_client._get_cached_client",
-                  return_value=(client, "gpt-5.5")),
+                  return_value=(client, "relay-model-x")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
             patch("agent.auxiliary_client._try_payment_fallback",
                   return_value=None),
         ):
@@ -156,11 +225,11 @@ class TestCallLlmUnsupportedTemperatureRetry:
 
         with (
             patch("agent.auxiliary_client._resolve_task_provider_model",
-                  return_value=("openai-codex", "gpt-5.5", None, None, None)),
+                  return_value=("openai-codex", "relay-model-x", None, None, None)),
             patch("agent.auxiliary_client._get_cached_client",
-                  return_value=(client, "gpt-5.5")),
+                  return_value=(client, "relay-model-x")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
             patch("agent.auxiliary_client._try_payment_fallback",
                   return_value=None),
         ):
@@ -188,11 +257,11 @@ class TestAsyncCallLlmUnsupportedTemperatureRetry:
 
         with (
             patch("agent.auxiliary_client._resolve_task_provider_model",
-                  return_value=("openai-codex", "gpt-5.5", None, None, None)),
+                  return_value=("openai-codex", "relay-model-x", None, None, None)),
             patch("agent.auxiliary_client._get_cached_client",
-                  return_value=(client, "gpt-5.5")),
+                  return_value=(client, "relay-model-x")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
         ):
             result = await async_call_llm(
                 task="session_search",
@@ -207,7 +276,11 @@ class TestAsyncCallLlmUnsupportedTemperatureRetry:
         retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
         assert first_kwargs["temperature"] == 0.3
         assert "temperature" not in retry_kwargs
-        assert retry_kwargs["max_tokens"] == 500
+        # max_tokens is intentionally omitted on OpenAI-compatible endpoints
+        # (#34530); assert it's absent and that model survives the retry.
+        assert "max_tokens" not in first_kwargs
+        assert "max_tokens" not in retry_kwargs
+        assert retry_kwargs["model"] == first_kwargs["model"]
 
     @pytest.mark.asyncio
     async def test_async_non_temperature_400_does_not_retry(self):
@@ -219,11 +292,11 @@ class TestAsyncCallLlmUnsupportedTemperatureRetry:
 
         with (
             patch("agent.auxiliary_client._resolve_task_provider_model",
-                  return_value=("openai-codex", "gpt-5.5", None, None, None)),
+                  return_value=("openai-codex", "relay-model-x", None, None, None)),
             patch("agent.auxiliary_client._get_cached_client",
-                  return_value=(client, "gpt-5.5")),
+                  return_value=(client, "relay-model-x")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
             patch("agent.auxiliary_client._try_payment_fallback",
                   return_value=None),
         ):

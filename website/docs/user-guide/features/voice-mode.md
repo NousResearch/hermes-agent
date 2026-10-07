@@ -8,18 +8,24 @@ description: "Real-time voice conversations with Hermes Agent — CLI, Telegram,
 
 Hermes Agent supports full voice interaction across CLI and messaging platforms. Talk to the agent using your microphone, hear spoken replies, and have live voice conversations in Discord voice channels.
 
-If you want a practical setup walkthrough with recommended configurations and real usage patterns, see [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes).
+If you want a practical setup walkthrough with recommended configurations and real usage patterns, see [Use Voice Mode with Hermes](../../guides/use-voice-mode-with-hermes.md).
+
+For hands-free session start — saying "hey hermes" (or any phrase) to open a fresh voice session on the CLI, TUI, or desktop app — see [Wake Word](./wake-word.md).
 
 ## Prerequisites
 
 Before using voice features, make sure you have:
 
-1. **Hermes Agent installed** — `pip install hermes-agent` (see [Installation](/docs/getting-started/installation))
+1. **Hermes Agent installed** — via the install script (see [Installation](../../getting-started/installation.md))
 2. **An LLM provider configured** — run `hermes model` or set your preferred provider credentials in `~/.hermes/.env`
 3. **A working base setup** — run `hermes` to verify the agent responds to text before enabling voice
 
 :::tip
 The `~/.hermes/` directory and default `config.yaml` are created automatically the first time you run `hermes`. You only need to create `~/.hermes/.env` manually for API keys.
+:::
+
+:::tip Nous Portal covers both
+A paid [Nous Portal](./tool-gateway.md) subscription supplies the LLM (step 2) **and** OpenAI TTS via the Tool Gateway — no separate OpenAI key needed. On a fresh install, `hermes setup --portal` wires both up at once.
 :::
 
 ## Overview
@@ -34,30 +40,30 @@ The `~/.hermes/` directory and default `config.yaml` are created automatically t
 
 ### Python Packages
 
-```bash
-# CLI voice mode (microphone + audio playback)
-pip install "hermes-agent[voice]"
+Use `hermes tools` to configure voice providers. Missing built-in feature
+requirements go through PM, subject to `security.allow_lazy_installs` and the
+target's dependency support. Restart Hermes if the selected dependency
+environment changes.
 
-# Discord + Telegram messaging (includes discord.py[voice] for VC support)
-pip install "hermes-agent[messaging]"
-
-# Premium TTS (ElevenLabs)
-pip install "hermes-agent[tts-premium]"
-
-# Local TTS (NeuTTS, optional)
-python -m pip install -U neutts[all]
-
-# Everything at once
-pip install "hermes-agent[all]"
-```
+A bundled app includes its supported engine dependencies. Docker includes a
+curated subset and disables on-demand installs. Do not use pip to modify a
+signed payload or the system Python. For a manual development environment,
+select the required extras in the
+[development setup](../../developer-guide/contributing.md#development-setup).
 
 | Extra | Packages | Required For |
 |-------|----------|-------------|
-| `voice` | `sounddevice`, `numpy` | CLI voice mode |
+| `voice` | `sounddevice`, `numpy`, and Faster-Whisper where supported | CLI audio and optional local STT |
 | `messaging` | `discord.py[voice]`, `python-telegram-bot`, `aiohttp` | Discord & Telegram bots |
 | `tts-premium` | `elevenlabs` | ElevenLabs TTS provider |
 
-Optional local TTS provider: install `neutts` separately with `python -m pip install -U neutts[all]`. On first use it downloads the model automatically.
+Local Faster-Whisper is excluded on native Windows ARM64 and Intel macOS.
+Use a cloud or command-based STT provider on those targets. `audio-io` contains
+the microphone/playback dependencies without local STT. The `all` extra does
+not mean every voice or wake engine.
+
+NeuTTS is a separate optional runtime and downloads models on first use.
+Do not install its dependencies into a signed app or system Python.
 
 :::info
 `discord.py[voice]` installs **PyNaCl** (for voice encryption) and **opus bindings** automatically. This is required for Discord voice channel support.
@@ -88,7 +94,7 @@ Add to `~/.hermes/.env`:
 
 ```bash
 # Speech-to-Text — local provider needs NO key at all
-# pip install faster-whisper          # Free, runs locally, recommended
+# PM prepares local Faster-Whisper on supported targets; no STT API key is needed.
 GROQ_API_KEY=your-key                 # Groq Whisper — fast, free tier (cloud)
 VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper — paid (cloud)
 
@@ -100,6 +106,15 @@ ELEVENLABS_API_KEY=***           # ElevenLabs — premium quality
 :::tip
 If `faster-whisper` is installed, voice mode works with **zero API keys** for STT. The model (~150 MB for `base`) downloads automatically on first use.
 :::
+
+The first download normally comes from `huggingface.co`. If that host is unavailable on your network, export an accessible mirror in the shell or service that starts Hermes:
+
+```bash
+HF_ENDPOINT=https://your-hugging-face-mirror.example
+HF_HUB_DISABLE_XET=1
+```
+
+Disabling Xet avoids authentication failures from Xet's separate CAS hosts when a mirror is in use. After the model is cached, Hermes loads that snapshot without an online revision check.
 
 ---
 
@@ -153,13 +168,109 @@ If no speech is detected at all for 15 seconds, recording stops automatically.
 
 Both `silence_threshold` and `silence_duration` are configurable in `config.yaml`. You can also disable the record start/stop beeps with `voice.beep_enabled: false`.
 
+### Ending a voice chat by voice
+
+Say **"stop"** — and nothing else — to end the voice conversation hands-free. The match is deliberately strict: the whole utterance (case-insensitive, surrounding punctuation ignored) must equal a configured phrase, so "stop doing that and try X instead" still reaches the agent normally. Customize the phrase list with `voice.stop_phrases` in `config.yaml` (e.g. `["stop", "goodbye hermes"]`), or set it to `[]` to disable. Phrases can be in any language (e.g. `["отбой", "стоп"]` with `stt.language: ru`). The desktop app honours the same list; while `voice.stop_phrases` is left at its default it also accepts a few English extras ("goodbye", "never mind", "cancel", …), and a customised list replaces them. A voice chat also ends on its own after three consecutive silent cycles (no speech detected).
+
+**Typing** a bare stop phrase while a voice chat is active works the same way on every surface (CLI, TUI, desktop): the message ends the voice chat instead of being sent to the agent. Outside a voice chat, typed "stop" is an ordinary message.
+
+### Live transcription (streaming STT)
+
+Set `stt.streaming: true` to transcribe while you speak instead of after you stop. Partial text appears as you talk (in the classic CLI and TUI input placeholder, and in the Desktop dictation pill), and the transcript is ready when you stop speaking instead of after a full upload.
+
+```yaml
+stt:
+  provider: openai        # or xai, elevenlabs
+  streaming: true
+  openai:
+    streaming_model: gpt-live-transcribe   # the default; the one OpenAI model that streams text mid-utterance
+```
+
+| Provider | Live endpoint | Notes |
+|---|---|---|
+| `openai` | Realtime transcription session | Needs your own `OPENAI_API_KEY`; the Nous-managed audio gateway serves file transcription only |
+| `xai` | `wss://api.x.ai/v1/stt` | Needs `XAI_API_KEY` (the Grok OAuth login is not used for live STT) |
+| `elevenlabs` | Scribe v2 realtime | `ELEVENLABS_API_KEY` |
+| plugin | `TranscriptionProvider.streaming_capable` | Plugins opt in with `open_stream_session()` |
+
+Live transcription covers CLI and TUI voice mode and Desktop dictation. Local whisper, Groq, Mistral and DeepInfra keep using the file path. If a live session can't open, or fails mid-recording, Hermes transcribes the recording as usual, so turning this on never loses a take.
+
 ### Streaming TTS
 
-When TTS is enabled, the agent speaks its reply **sentence-by-sentence** as it generates text — you don't wait for the full response:
+When TTS is enabled, the agent speaks its reply **sentence-by-sentence** as it generates text — you don't wait for the full response. This works with **every TTS provider**:
 
 1. Buffers text deltas into complete sentences (min 20 chars)
-2. Strips markdown formatting and `<think>` blocks
-3. Generates and plays audio per sentence in real-time
+2. Strips markdown formatting, emoji, and `<think>` blocks
+3. Plays audio per sentence in real-time — providers with a chunked PCM API (ElevenLabs, OpenAI) stream raw audio for the lowest time-to-first-word; every other provider (including the default Edge) synthesizes and plays each sentence as it completes
+
+The same pipeline runs in the classic CLI, the TUI, and the desktop app. In a desktop voice conversation the reply text is fed **live** into a per-reply speech WebSocket as the model generates it, so speech overlaps generation — one socket and one audio clock per reply, no per-sentence connection gaps.
+
+### Desktop remote: client-direct voice (lowest-hop path)
+
+When Hermes Desktop is connected to a **remote gateway**, audio does not need to be relayed through the gateway at all. At voice-session start the desktop fetches the active profile's resolved STT/TTS settings (provider, model, language/voice, and credential) from the gateway over the authenticated REST channel (`GET /api/audio/voice-config`) and then calls the providers **directly**:
+
+- **Dictation / voice input:** the mic recording goes straight from your desktop to the profile's STT provider; only the resulting *text* is sent to the gateway as the prompt.
+- **Spoken replies:** the reply text is already streaming to the desktop over the chat socket, so the desktop synthesizes it locally with the profile's TTS provider and plays it — the gateway link never carries audio.
+
+There is nothing to configure on the client: the profile you're talking to is the single source of truth for providers and keys, exactly as if the gateway had done the work itself. Keys are held in the desktop's memory for the session only — never written to disk on the client.
+
+Providers that can only run on the gateway host (local whisper, `edge` TTS, command providers, plugins) automatically fall back to the relay path (`/api/audio/transcribe` and the speech WebSocket), as does any older backend without the endpoint. To force the relay for every provider, set:
+
+```yaml
+voice:
+  client_direct: false
+```
+
+Client-direct wire support: OpenAI (incl. Nous-managed audio), Groq, Mistral, and DeepInfra via the OpenAI-compatible shapes, xAI Grok STT, and ElevenLabs STT + TTS. xAI configured through OAuth stays on the relay (the OAuth bearer refreshes server-side).
+
+### Desktop: GPT-Live voice chat mode (full duplex, delegates to Hermes)
+
+The chained loop above is one of two voice chat modes in the desktop app. The other replaces the whole STT → turn → TTS chain with **one full-duplex voice model**, OpenAI's `gpt-live-1`: it listens while it speaks, handles interruptions, backchannels and background noise itself, and has **no tools of its own**. Whenever you ask for real work it *delegates* to Hermes, which answers as usual — with whatever model and provider the session has selected, the full toolset, memory and approvals — and the voice paraphrases the answer aloud.
+
+```yaml
+voice:
+  voice_chat_mode: gpt-live     # chained (default) | gpt-live
+  gpt_live:
+    voice: marin                # marin, cedar, quartz, ripple, vesper, willow, stone, gleam, meridian, …
+    instructions: ""            # optional extra persona sentences (tone, pace, language)
+```
+
+Requirements: an OpenAI API key (`OPENAI_API_KEY`, `VOICE_TOOLS_OPENAI_KEY`, or `voice.gpt_live.api_key`). The voice layer is billed by OpenAI at **$0.05 per minute of session time** (idle time counts); the Hermes turn is billed on its own provider as always. The mode is also in Settings → Voice → *Voice Chat Mode*.
+
+How it works: pressing the voice button opens a WebRTC session from the desktop to GPT-Live; the desktop only ever receives a session id and an SDP answer — the key stays on the gateway host, which performs the session creation (`POST /api/audio/voice-live/session`). Each `session.delegation.created` becomes a normal turn on the open chat (the bubble shows what you said; the recent spoken exchange rides the model input as a per-turn note, never the system prompt, so the reply is speakable prose). Tool activity is fed to the voice as quiet context ("Hermes is working: terminal") so it can tell you what is happening if you ask; the final answer is streamed back sentence by sentence. Saying the stop phrase ends the conversation. If `gpt-live` is selected but no key resolves, the button falls back to the chained mode with a notice.
+
+Not supported in this mode: the Nous-managed audio proxy (direct key only), the CLI/TUI (`/voice` keeps the chained loop), and the `tts` tool (it keeps using `tts.provider`).
+
+### Voice chat model
+
+Spoken turns can run on a different (usually faster) model than the one you type to. Set the `voice_chat` auxiliary slot, in Settings → Models → Auxiliary models on Desktop, in `hermes model` → Auxiliary models, or in config.yaml:
+
+```yaml
+auxiliary:
+  voice_chat:
+    provider: openrouter          # "auto" = the session's model (default)
+    model: google/gemini-3-flash-preview   # empty with a provider = that provider's fast model
+    reasoning_effort: none        # default: reasoning off on voice turns (see below)
+```
+
+Reasoning is off on voice turns by default, also when the slot is left on `auto` and the session's model answers. A model that cannot switch reasoning off (gpt-6-astra, mandatory-thinking Claude, routes whose catalog marks it mandatory) gets its lowest accepted level instead, and a route that rejects the disable at runtime is remembered for the next voice turn. Set any level, or `""` to use the session's effort.
+
+It applies to every chained voice turn: CLI and TUI voice mode, the Desktop voice conversation, and voice notes on messaging platforms. The voice turn has the full toolset; only the model answering it changes. The next typed message goes back to the session's model, and so do memory and skill reviews after the turn. Usage is recorded under the `voice_chat` task, so the session keeps the model you picked as its own.
+
+The voice model never forces a compaction: when the conversation is already larger than its context window, that turn runs on the session's model and a one-time notice says so. GPT-Live voice chat ignores this slot, because there the voice layer already is the fast model and delegates real work to the session's model.
+
+### Barge-in
+
+You can interrupt the agent at ANY point in its turn — the microphone stays live from the moment you finish speaking until the reply has fully played (full duplex):
+
+- **Interject while it's thinking** — in continuous voice mode, speaking during LLM generation (before any audio plays) interrupts the in-flight turn and your interjection becomes the next message, the same as typing over a running turn.
+- **Talk over it** — speaking while the agent's reply plays cuts playback the moment you start talking and submits what you said. The detector calibrates its noise floor against the *quiet room* at turn start (never against the playback itself), so speaker bleed can't deafen it and normal speech reliably trips it.
+- **Type or press the record key** — sending a new message or hitting the push-to-talk key stops playback instantly on every surface.
+- **Say "stop"** — the stop phrase works in both phases: mid-generation it interrupts the turn AND ends the voice chat; mid-playback it cuts the speech and ends the chat.
+
+Tuning (config.yaml): `voice.barge_in: false` disables it; `voice.barge_in_threshold_multiplier` (default `3.0`) scales the speech trigger over the quiet-room floor — lower is more sensitive; the desktop app also scales its playback-phase trigger by it, so a quiet Bluetooth headset that can't interrupt a reply can use e.g. `1.5`; `voice.barge_in_grace_seconds` (default `0.5`) suppresses trips right after playback starts. Set `HERMES_VOICE_DEBUG=1` to stream per-block VAD diagnostics (calibrated floor, RMS, trip decisions) to stderr for live tuning.
+
+The agent **knows** it was interrupted: the next message carries a short note telling the model its spoken reply was cut off, so it can react naturally ("rude!") or pick up where it left off instead of being oblivious.
 
 ### Hallucination Filter
 
@@ -259,13 +370,13 @@ Go to the [Discord Developer Portal](https://discord.com/developers/applications
 
 | Level | Integer | What's Included |
 |-------|---------|----------------|
-| Text only | `274878286912` | View Channels, Send Messages, Read History, Embeds, Attachments, Threads, Reactions |
-| Text + Voice | `274881432640` | All above + Connect, Speak |
+| Text only | `309237763136` | View Channels, Send Messages, Read History, Embeds, Attachments, Threads, Reactions, Create Public Threads |
+| Text + Voice | `309240908864` | All above + Connect, Speak |
 
 **Re-invite the bot** with the updated permissions URL:
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=274881432640
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=309240908864
 ```
 
 Replace `YOUR_APP_ID` with your Application ID from the Developer Portal.
@@ -311,7 +422,7 @@ The bot auto-loads the codec from:
 DISCORD_BOT_TOKEN=your-bot-token
 DISCORD_ALLOWED_USERS=your-user-id
 
-# STT — local provider needs no key (pip install faster-whisper)
+# PM prepares local Faster-Whisper on supported targets; no STT API key is needed.
 # GROQ_API_KEY=your-key            # Alternative: cloud-based, fast, free tier
 
 # TTS — optional. Edge TTS and NeuTTS need no key.
@@ -359,6 +470,7 @@ When the bot is in a voice channel:
 - Transcripts appear in the text channel: `[Voice] @user: what you said`
 - Agent responses are sent as text in the channel AND spoken in the VC
 - The text channel is the one where `/voice join` was issued
+- Running `/voice join` from another text channel moves the binding there; speech captured before the move, whether still being transcribed or not yet finished, is dropped, not posted to the new channel
 
 ### Echo Prevention
 
@@ -366,7 +478,7 @@ The bot automatically pauses its audio listener while playing TTS replies, preve
 
 ### Access Control
 
-Only users listed in `DISCORD_ALLOWED_USERS` can interact via voice. Other users' audio is silently ignored.
+Only users allowed by `DISCORD_ALLOWED_USERS` or `DISCORD_ALLOWED_ROLES` can interact via voice; a role is checked for the speaker each time they talk. Other users' audio is silently ignored.
 
 ```bash
 # ~/.hermes/.env
@@ -388,26 +500,40 @@ voice:
   beep_enabled: true               # Play record start/stop beeps
   silence_threshold: 200           # RMS level (0-32767) below which counts as silence
   silence_duration: 3.0            # Seconds of silence before auto-stop
+  stop_phrases: ["stop"]           # Saying exactly one of these ends the voice chat; [] disables
 
 # Speech-to-Text
 stt:
-  provider: "local"                  # "local" (free) | "groq" | "openai"
+  enabled: true                     # set to false to skip auto-transcription —
+                                    # the gateway still caches the audio file and
+                                    # passes its path to the agent as part of the
+                                    # inbound message, useful for custom pipelines
+                                    # (diarization, alignment, archival, etc.)
+  provider: "local"                  # "local" (free) | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra"
   local:
-    model: "base"                    # tiny, base, small, medium, large-v3
+    model: "base"                    # tiny, base, small, medium, large-v3, turbo
+    language: ""                     # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+  groq:
+    language: ""                     # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
   # model: "whisper-1"              # Legacy: used when provider is not set
 
 # Text-to-Speech
 tts:
-  provider: "edge"                 # "edge" (free) | "elevenlabs" | "openai" | "neutts" | "minimax"
+  provider: "edge"                 # "edge" (free) | "elevenlabs" | "openai" | "neutts" | "minimax" | "mistral" | "gemini" | "xai" | "kittentts" | "piper"
   edge:
     voice: "en-US-AriaNeural"      # 322 voices, 74 languages
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"    # Adam
-    model_id: "eleven_multilingual_v2"
+    model_id: "eleven_multilingual_v2"   # or eleven_v3, eleven_flash_v2_5, ... (Desktop Settings → Voice accepts any model id)
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"                 # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # optional: override for self-hosted or OpenAI-compatible endpoints
+    # The `text_to_speech` tool accepts an optional per-call `instructions`
+    # argument (tone, emotion, pacing, accent, whispering) that is forwarded
+    # to `gpt-4o-mini-tts` and to OpenAI-compatible voice-design servers
+    # (e.g. Qwen3-TTS-VoiceDesign via oMLX). See OpenAI's voice-design guide:
+    # https://platform.openai.com/docs/guides/text-to-speech
   neutts:
     ref_audio: ''
     ref_text: ''
@@ -419,7 +545,7 @@ tts:
 
 ```bash
 # Speech-to-Text providers (local needs no key)
-# pip install faster-whisper        # Free local STT — no API key needed
+# PM prepares local Faster-Whisper on supported targets; no STT API key is needed.
 GROQ_API_KEY=...                    # Groq Whisper (fast, free tier)
 VOICE_TOOLS_OPENAI_KEY=...         # OpenAI Whisper (paid)
 
@@ -449,8 +575,15 @@ DISCORD_ALLOWED_USERS=...
 | **Groq** | `whisper-large-v3` | Fast (~1s) | Better | Free tier | Yes |
 | **OpenAI** | `whisper-1` | Fast (~1s) | Good | Paid | Yes |
 | **OpenAI** | `gpt-4o-transcribe` | Medium (~2s) | Best | Paid | Yes |
+| **OpenAI** | `gpt-transcribe` | Fast | Best | Paid ($0.0045/min) | Yes |
+| **Mistral** | `voxtral-mini-latest` | Fast | Good | Paid | Yes |
+| **xAI** | `grok-voice-transcribe-2.0` | Fast | Best | Paid ($0.10/hr batch) | Yes |
 
 Provider priority (automatic fallback): **local** > **groq** > **openai**
+
+### Long recordings and upload limits
+
+Cloud providers cap a single request: OpenAI and Groq accept 25 MB, Mistral 500 MB (60 minutes), xAI 500 MB and ElevenLabs just under 5 GB. Some OpenAI models also have a practical length limit per request: about 7.5 minutes for `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` (their 2,000-token output ceiling) and 10 minutes for `whisper-1` (so each request finishes inside the default 60 s timeout). When a voice note, audio attachment or voice-mode recording is over the active provider's limit, Hermes first re-encodes it to compact 16 kHz mono AAC, which fits most recordings into one request. If it is still too large, Hermes splits it at pauses, transcribes the pieces in order and joins the text. Local providers have no upload limit and are never split. ffmpeg is required for both steps.
 
 ### TTS Provider Comparison
 
@@ -462,6 +595,12 @@ Provider priority (automatic fallback): **local** > **groq** > **openai**
 | **NeuTTS** | Good | Free | Depends on CPU/GPU | No |
 
 NeuTTS uses the `tts.neutts` config block above.
+
+For `openai`, the `text_to_speech` tool accepts an optional `instructions`
+argument that unlocks `gpt-4o-mini-tts`'s voice-design capability (tone,
+emotion, pacing, accent, whispering). The same field also routes to
+OpenAI-compatible voice-design servers mounted via `tts.openai.base_url`
+(e.g. Qwen3-TTS-VoiceDesign via oMLX).
 
 ---
 
@@ -475,6 +614,8 @@ PortAudio is not installed:
 brew install portaudio    # macOS
 sudo apt install portaudio19-dev  # Ubuntu
 ```
+
+If you are running Hermes inside Docker on a Linux desktop, the container also needs access to your host audio socket. See the [Docker audio bridge](../docker.md#optional-linux-desktop-audio-bridge) notes for a PulseAudio/PipeWire-compatible setup.
 
 ### Bot doesn't respond in Discord server channels
 

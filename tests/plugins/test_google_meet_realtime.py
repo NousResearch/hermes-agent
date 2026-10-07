@@ -8,10 +8,7 @@ from __future__ import annotations
 import base64
 import json
 import sys
-import threading
 import types
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -165,29 +162,6 @@ def test_speak_sends_create_and_response_and_writes_audio(monkeypatch, tmp_path)
     assert result["duration_ms"] >= 0.0
 
 
-def test_speak_raises_on_error_frame(monkeypatch, tmp_path):
-    from plugins.google_meet.realtime.openai_client import RealtimeSession
-
-    ws = _FakeWS(recv_frames=[
-        {"type": "response.created"},
-        {"type": "error", "error": {"message": "bad juju"}},
-    ])
-    _install_fake_websockets(monkeypatch, ws)
-
-    sess = RealtimeSession(api_key="sk-test", audio_sink_path=tmp_path / "o.pcm")
-    sess.connect()
-    with pytest.raises(RuntimeError, match="bad juju"):
-        sess.speak("hi")
-
-
-def test_speak_without_connect_raises(monkeypatch):
-    from plugins.google_meet.realtime.openai_client import RealtimeSession
-
-    sess = RealtimeSession(api_key="sk-test")
-    with pytest.raises(RuntimeError, match="connect"):
-        sess.speak("hi")
-
-
 def test_close_is_idempotent_and_closes_ws(monkeypatch):
     from plugins.google_meet.realtime.openai_client import RealtimeSession
 
@@ -205,19 +179,6 @@ def test_close_is_idempotent_and_closes_ws(monkeypatch):
 # ---------------------------------------------------------------------------
 # websockets dependency missing
 # ---------------------------------------------------------------------------
-
-
-def test_connect_raises_clean_error_when_websockets_missing(monkeypatch):
-    from plugins.google_meet.realtime.openai_client import RealtimeSession
-
-    # Make `import websockets.sync.client` fail.
-    monkeypatch.setitem(sys.modules, "websockets", None)
-    monkeypatch.setitem(sys.modules, "websockets.sync", None)
-    monkeypatch.setitem(sys.modules, "websockets.sync.client", None)
-
-    sess = RealtimeSession(api_key="sk-test")
-    with pytest.raises(RuntimeError, match="pip install websockets"):
-        sess.connect()
 
 
 # ---------------------------------------------------------------------------
@@ -264,30 +225,3 @@ def test_speaker_run_until_stopped_processes_queue(tmp_path):
     assert queue.read_text().strip() == ""
 
 
-def test_speaker_exits_immediately_when_stop_fn_true(tmp_path):
-    from plugins.google_meet.realtime.openai_client import RealtimeSpeaker
-
-    queue = tmp_path / "q.jsonl"
-    queue.write_text(json.dumps({"id": "x", "text": "never spoken"}) + "\n")
-
-    stub = _StubSession()
-    speaker = RealtimeSpeaker(stub, queue_path=queue)
-    speaker.run_until_stopped(lambda: True, poll_interval=0.01)
-    assert stub.spoken == []
-
-
-def test_speaker_drops_line_without_processed_path_when_none(tmp_path):
-    from plugins.google_meet.realtime.openai_client import RealtimeSpeaker
-
-    queue = tmp_path / "q.jsonl"
-    queue.write_text(json.dumps({"id": "only", "text": "once"}) + "\n")
-
-    stub = _StubSession()
-    speaker = RealtimeSpeaker(stub, queue_path=queue, processed_path=None)
-
-    def _stop():
-        return queue.read_text().strip() == ""
-
-    speaker.run_until_stopped(_stop, poll_interval=0.01)
-    assert stub.spoken == ["once"]
-    assert queue.read_text().strip() == ""

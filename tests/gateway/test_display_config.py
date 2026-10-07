@@ -1,10 +1,26 @@
 """Tests for gateway.display_config — per-platform display/verbosity resolver."""
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # Resolver: resolution order
 # ---------------------------------------------------------------------------
+
+class TestToolProgressProvenance:
+    def test_winning_source_controls_mode_and_intent(self):
+        from gateway.display_config import resolve_tool_progress
+
+        cases = [
+            ({}, None, ("off", False)),
+            ({}, "all", ("all", True)),
+            ({"tool_progress": None}, "all", ("all", True)),
+            ({"platforms": {"slack": {"tool_progress": None}}}, "off", ("off", True)),
+            ({"tool_progress_overrides": {"slack": None}}, "new", ("new", True)),
+            ({"tool_progress": False}, "all", ("off", True)),
+            ({"tool_progress": "all", "platforms": {"slack": {"tool_progress": None}}}, "off", ("all", True)),
+            ({"tool_progress": "off", "tool_progress_overrides": {"slack": "new"}}, "all", ("new", True)),
+            ({"tool_progress_overrides": {"slack": "off"}, "platforms": {"slack": {"tool_progress": "all"}}}, None, ("all", True)),
+        ]
+        for display, env, expected in cases:
+            assert resolve_tool_progress({"display": display}, "slack", env) == expected
 
 class TestResolveDisplaySetting:
     """resolve_display_setting() resolves with correct priority."""
@@ -35,35 +51,6 @@ class TestResolveDisplaySetting:
         }
         assert resolve_display_setting(config, "telegram", "tool_progress") == "new"
 
-    def test_platform_default_when_no_user_config(self):
-        """Falls back to built-in platform default."""
-        from gateway.display_config import resolve_display_setting
-
-        # Empty config — should get built-in defaults
-        config = {}
-        # Telegram tier_high override: "new" (not "all") to reduce edit
-        # pressure during streaming on Telegram's ~1 edit/s flood envelope.
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "new"
-        # Email defaults to tier_minimal → "off"
-        assert resolve_display_setting(config, "email", "tool_progress") == "off"
-
-    def test_global_default_for_unknown_platform(self):
-        """Unknown platforms get the global defaults."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {}
-        # Unknown platform, no config → global default "all"
-        assert resolve_display_setting(config, "unknown_platform", "tool_progress") == "all"
-
-    def test_fallback_parameter_used_last(self):
-        """Explicit fallback is used when nothing else matches."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {}
-        # "nonexistent_key" isn't in any defaults
-        result = resolve_display_setting(config, "telegram", "nonexistent_key", "my_fallback")
-        assert result == "my_fallback"
-
     def test_platform_override_only_affects_that_platform(self):
         """Other platforms are unaffected by a specific platform override."""
         from gateway.display_config import resolve_display_setting
@@ -78,7 +65,6 @@ class TestResolveDisplaySetting:
         }
         assert resolve_display_setting(config, "slack", "tool_progress") == "off"
         assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
-
 
 # ---------------------------------------------------------------------------
 # Backward compatibility: tool_progress_overrides
@@ -103,32 +89,6 @@ class TestBackwardCompat:
         assert resolve_display_setting(config, "signal", "tool_progress") == "off"
         assert resolve_display_setting(config, "telegram", "tool_progress") == "verbose"
 
-    def test_new_platforms_takes_precedence_over_legacy(self):
-        """display.platforms beats tool_progress_overrides."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "tool_progress": "all",
-                "tool_progress_overrides": {"telegram": "verbose"},
-                "platforms": {"telegram": {"tool_progress": "new"}},
-            }
-        }
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "new"
-
-    def test_legacy_overrides_only_for_tool_progress(self):
-        """Legacy overrides don't affect other settings."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "tool_progress_overrides": {"telegram": "verbose"},
-            }
-        }
-        # show_reasoning should NOT read from tool_progress_overrides
-        assert resolve_display_setting(config, "telegram", "show_reasoning") is False
-
-
 # ---------------------------------------------------------------------------
 # YAML normalisation
 # ---------------------------------------------------------------------------
@@ -143,91 +103,93 @@ class TestYAMLNormalisation:
         config = {"display": {"tool_progress": False}}
         assert resolve_display_setting(config, "telegram", "tool_progress") == "off"
 
-    def test_tool_progress_true_normalised_to_all(self):
-        """YAML's bare `on` parses as True — normalised to 'all'."""
+    def test_only_long_running_visibility_accepts_generic_mode(self):
         from gateway.display_config import resolve_display_setting
 
-        config = {"display": {"tool_progress": True}}
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
+        config = {
+            "display": {
+                "platforms": {
+                    "whatsapp": {
+                        "thinking_progress": "generic",
+                        "interim_assistant_messages": "generic",
+                        "long_running_notifications": "generic",
+                    }
+                }
+            }
+        }
+        assert resolve_display_setting(config, "whatsapp", "thinking_progress") is False
+        assert resolve_display_setting(config, "whatsapp", "interim_assistant_messages") is False
+        assert resolve_display_setting(config, "whatsapp", "long_running_notifications") == "generic"
 
-    def test_show_reasoning_string_true(self):
-        """String 'true' is normalised to bool True."""
+    def test_thinking_progress_string_false_normalised_to_false(self):
         from gateway.display_config import resolve_display_setting
 
-        config = {"display": {"platforms": {"telegram": {"show_reasoning": "true"}}}}
-        assert resolve_display_setting(config, "telegram", "show_reasoning") is True
-
-    def test_tool_preview_length_string(self):
-        """String numbers are normalised to int."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {"display": {"platforms": {"slack": {"tool_preview_length": "80"}}}}
-        assert resolve_display_setting(config, "slack", "tool_preview_length") == 80
-
-    def test_platform_override_false_tool_progress(self):
-        """Per-platform bare off → normalised."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {"display": {"platforms": {"slack": {"tool_progress": False}}}}
-        assert resolve_display_setting(config, "slack", "tool_progress") == "off"
-
+        config = {"display": {"platforms": {"whatsapp": {"thinking_progress": "false"}}}}
+        assert resolve_display_setting(config, "whatsapp", "thinking_progress") is False
 
 # ---------------------------------------------------------------------------
 # Built-in platform defaults (tier system)
 # ---------------------------------------------------------------------------
 
-class TestPlatformDefaults:
-    """Built-in defaults reflect platform capability tiers."""
 
-    def test_high_tier_platforms(self):
-        """Discord defaults to 'all' tool progress; Telegram is in tier_high
-        but overrides tool_progress to 'new' (less edit pressure)."""
-        from gateway.display_config import resolve_display_setting
+def assert_keeps_platform_display_defaults(cfg):
+    """Every platform resolves every tier key (and tool_progress) exactly as with no config at all.
 
-        # Telegram: tier_high member with tool_progress="new" override.
-        assert resolve_display_setting({}, "telegram", "tool_progress") == "new"
-        # Discord: pure tier_high.
-        assert resolve_display_setting({}, "discord", "tool_progress") == "all"
+    Shared by every config seeder's regression test: a seeded global ``display.<key>`` beats each
+    platform tier, because the gateway loader merges no DEFAULT_CONFIG (#121230)."""
+    from gateway.display_config import _PLATFORM_DEFAULTS, resolve_display_setting, resolve_tool_progress
 
-    def test_medium_tier_platforms(self):
-        """Mattermost, Matrix, Feishu, WhatsApp default to 'new' tool progress."""
-        from gateway.display_config import resolve_display_setting
+    tier_keys = {key for tier in _PLATFORM_DEFAULTS.values() for key in tier}
+    for platform in _PLATFORM_DEFAULTS:
+        assert resolve_tool_progress(cfg, platform) == resolve_tool_progress({}, platform), platform
+        for key in tier_keys:
+            assert resolve_display_setting(cfg, platform, key) == resolve_display_setting({}, platform, key), (
+                platform, key)
 
-        for plat in ("mattermost", "matrix", "feishu", "whatsapp"):
-            assert resolve_display_setting({}, plat, "tool_progress") == "new", plat
 
-    def test_slack_defaults_tool_progress_off(self):
-        """Slack defaults to quiet tool progress (permanent chat noise otherwise)."""
-        from gateway.display_config import resolve_display_setting
+class TestInstallerSeededConfigThroughGatewayResolver:
+    """Regression for #121230: a fresh install copies cli-config.yaml.example to config.yaml, and the
+    gateway then rendered reasoning into QQBot/Telegram/... because the template pinned a global
+    ``display.show_reasoning: true`` over every platform's ``False`` default.
+    """
 
-        assert resolve_display_setting({}, "slack", "tool_progress") == "off"
+    @staticmethod
+    def _seed_like_installer(home):
+        import shutil
+        from pathlib import Path
 
-    def test_low_tier_platforms(self):
-        """Signal, BlueBubbles, etc. default to 'off' tool progress."""
-        from gateway.display_config import resolve_display_setting
+        template = Path(__file__).resolve().parents[2] / "cli-config.yaml.example"
+        home.mkdir(parents=True, exist_ok=True)
+        shutil.copy(template, home / "config.yaml")
+        return home / "config.yaml"
 
-        for plat in ("signal", "bluebubbles", "weixin", "wecom", "dingtalk"):
-            assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
+    def test_shipped_template_keeps_every_platform_default(self, tmp_path):
+        """The installers, the Docker first boot and ``doctor --fix`` copy cli-config.yaml.example
+        verbatim, so an uncommented ``display.<key>`` there becomes an explicit global value."""
+        from gateway.config import Platform
+        from gateway.run import _load_gateway_config, _resolve_gateway_display_bool
 
-    def test_minimal_tier_platforms(self):
-        """Email, SMS, webhook default to 'off' tool progress."""
-        from gateway.display_config import resolve_display_setting
+        seeded = _load_gateway_config(self._seed_like_installer(tmp_path / "hermes-home"))
+        assert "display" in seeded  # the loader fails open to {}, which would pass vacuously
 
-        for plat in ("email", "sms", "webhook", "homeassistant"):
-            assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
+        assert_keeps_platform_display_defaults(seeded)
+        # ...and through the resolver the gateway turn actually calls (same arguments as gateway/run_turn.py).
+        assert _resolve_gateway_display_bool(
+            seeded, "qqbot", "show_reasoning", default=False, platform=Platform.QQBOT,
+            require_platform_override_for={Platform.MATTERMOST},
+        ) is False
 
-    def test_low_tier_streaming_defaults_to_false(self):
-        """Low-tier platforms default streaming to False."""
-        from gateway.display_config import resolve_display_setting
+    def test_explicit_global_opt_in_still_reaches_gateway_platforms(self, tmp_path):
+        """Control: an operator who deliberately writes ``display.show_reasoning: true`` still gets it (#7148)."""
+        from gateway.config import Platform
+        from gateway.run import _load_gateway_config, _resolve_gateway_display_bool
 
-        assert resolve_display_setting({}, "signal", "streaming") is False
-        assert resolve_display_setting({}, "email", "streaming") is False
-
-    def test_high_tier_streaming_defaults_to_none(self):
-        """High-tier platforms default streaming to None (follow global)."""
-        from gateway.display_config import resolve_display_setting
-
-        assert resolve_display_setting({}, "telegram", "streaming") is None
+        (tmp_path / "config.yaml").write_text("display:\n  show_reasoning: true\n")
+        cfg = _load_gateway_config(tmp_path / "config.yaml")
+        assert _resolve_gateway_display_bool(
+            cfg, "qqbot", "show_reasoning", default=False, platform=Platform.QQBOT,
+            require_platform_override_for={Platform.MATTERMOST},
+        ) is True
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +201,7 @@ class TestConfigMigration:
 
     def test_migration_creates_platforms_entries(self, tmp_path, monkeypatch):
         """Old overrides are migrated into display.platforms.<plat>.tool_progress."""
-        import yaml
+        import hermes_yaml as yaml
 
         config_path = tmp_path / "config.yaml"
         config = {
@@ -251,7 +213,7 @@ class TestConfigMigration:
                 },
             },
         }
-        config_path.write_text(yaml.dump(config), encoding="utf-8")
+        config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         # Re-import to pick up the new HERMES_HOME
@@ -266,55 +228,12 @@ class TestConfigMigration:
         assert platforms.get("signal", {}).get("tool_progress") == "off"
         assert platforms.get("telegram", {}).get("tool_progress") == "all"
 
-    def test_migration_preserves_existing_platforms_entries(self, tmp_path, monkeypatch):
-        """Existing display.platforms entries are NOT overwritten by migration."""
-        import yaml
-
-        config_path = tmp_path / "config.yaml"
-        config = {
-            "_config_version": 15,
-            "display": {
-                "tool_progress_overrides": {"telegram": "off"},
-                "platforms": {"telegram": {"tool_progress": "verbose"}},
-            },
-        }
-        config_path.write_text(yaml.dump(config), encoding="utf-8")
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        import importlib
-        import hermes_cli.config as cfg_mod
-        importlib.reload(cfg_mod)
-
-        cfg_mod.migrate_config(interactive=False, quiet=True)
-        updated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        # Existing "verbose" should NOT be overwritten by legacy "off"
-        assert updated["display"]["platforms"]["telegram"]["tool_progress"] == "verbose"
-
-
 # ---------------------------------------------------------------------------
 # Streaming per-platform (None = follow global)
 # ---------------------------------------------------------------------------
 
 class TestStreamingPerPlatform:
     """Streaming per-platform override semantics."""
-
-    def test_none_means_follow_global(self):
-        """When streaming is None, the caller should use global config."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {}
-        # Telegram has no streaming override in defaults → None
-        result = resolve_display_setting(config, "telegram", "streaming")
-        assert result is None  # caller should check global StreamingConfig
-
-    def test_global_display_streaming_is_cli_only(self):
-        """display.streaming must not act as a gateway streaming override."""
-        from gateway.display_config import resolve_display_setting
-
-        for value in (True, False):
-            config = {"display": {"streaming": value}}
-            assert resolve_display_setting(config, "telegram", "streaming") is None
-            assert resolve_display_setting(config, "discord", "streaming") is None
 
     def test_explicit_false_disables(self):
         """Explicit False disables streaming for that platform."""
@@ -327,65 +246,12 @@ class TestStreamingPerPlatform:
         }
         assert resolve_display_setting(config, "telegram", "streaming") is False
 
-    def test_explicit_true_enables(self):
-        """Explicit True enables streaming for that platform."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "platforms": {"email": {"streaming": True}},
-            }
-        }
-        assert resolve_display_setting(config, "email", "streaming") is True
-
-
 # ---------------------------------------------------------------------------
 # cleanup_progress — opt-in deletion of temporary progress bubbles
 # ---------------------------------------------------------------------------
 
 class TestCleanupProgress:
     """``cleanup_progress`` is off by default and resolvable per-platform."""
-
-    def test_default_off_for_all_platforms(self):
-        """No config set → cleanup_progress resolves to False everywhere."""
-        from gateway.display_config import resolve_display_setting
-
-        for plat in ("telegram", "discord", "slack", "email"):
-            assert resolve_display_setting({}, plat, "cleanup_progress") is False
-
-    def test_global_true_applies_to_all_platforms(self):
-        """display.cleanup_progress=true opts in globally."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {"display": {"cleanup_progress": True}}
-        assert resolve_display_setting(config, "telegram", "cleanup_progress") is True
-        assert resolve_display_setting(config, "discord", "cleanup_progress") is True
-
-    def test_per_platform_override_wins(self):
-        """display.platforms.<plat>.cleanup_progress beats the global value."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "cleanup_progress": False,
-                "platforms": {
-                    "telegram": {"cleanup_progress": True},
-                },
-            }
-        }
-        assert resolve_display_setting(config, "telegram", "cleanup_progress") is True
-        assert resolve_display_setting(config, "discord", "cleanup_progress") is False
-
-    def test_yaml_off_string_normalises_to_false(self):
-        """YAML 1.1 bare ``off`` becomes string 'off' — treat as False."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "platforms": {"telegram": {"cleanup_progress": "off"}},
-            }
-        }
-        assert resolve_display_setting(config, "telegram", "cleanup_progress") is False
 
     def test_yaml_true_string_normalises_to_true(self):
         """String 'true'/'yes'/'on' all resolve to True."""

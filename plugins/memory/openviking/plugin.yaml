@@ -1,9 +1,0 @@
-name: openviking
-version: 2.0.0
-description: "OpenViking context database — session-managed memory with automatic extraction, tiered retrieval, and filesystem-style knowledge browsing."
-pip_dependencies:
-  - httpx
-requires_env:
-  - OPENVIKING_ENDPOINT
-hooks:
-  - on_session_end

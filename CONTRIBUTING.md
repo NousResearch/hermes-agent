@@ -18,6 +18,24 @@ We value contributions in this order:
 
 ---
 
+## Before You Start: Search First
+
+A quick search before you build saves your time and keeps the PR queue clean — duplicates are common here, so it's worth a minute up front.
+
+- **Search both open *and* merged PRs and issues** for your topic or error symptom — the duplicate-check in the PR template fires at review time, after you've already done the work:
+  ```bash
+  gh search issues --repo NousResearch/hermes-agent "<your terms>"
+  gh search prs --repo NousResearch/hermes-agent --state all "<your terms>"
+  ```
+  Or use the web UI: [issues](https://github.com/NousResearch/hermes-agent/issues?q=) · [PRs (all states)](https://github.com/NousResearch/hermes-agent/pulls?q=is%3Apr).
+- **The issue tracker can lag the code.** Many requested features are already implemented in-tree, so also search the source (`search_files`, or your editor's grep) for the capability before proposing it.
+- **If an open PR already addresses it**, consider reviewing or improving that one instead of opening a competing duplicate.
+- **For larger work**, comment on the issue to signal you're working on it, so others don't start the same thing.
+
+Related: #38284 covers the agent-side analog — Hermes itself checking existing issues and PRs before deep self-troubleshooting. This section is the human-contributor complement.
+
+---
+
 ## Should it be a Skill or a Tool?
 
 This is the most common question for new contributors. The answer is almost always **skill**.
@@ -43,9 +61,52 @@ Bundled skills (in `skills/`) ship with every Hermes install. They should be **b
 - Document handling, web research, common dev workflows, system administration
 - Used regularly by a wide range of people
 
-If your skill is official and useful but not universally needed (e.g., a paid service integration, a heavyweight dependency), put it in **`optional-skills/`** — it ships with the repo but isn't activated by default. Users can discover it via `hermes skills browse` (labeled "official") and install it with `hermes skills install` (no third-party warning, builtin trust).
+If your skill is official and useful but not universally needed (e.g., a paid service integration, a heavyweight dependency), put it in **`optional-skills/`** — it ships with the repo but isn't activated by default. Users can discover it via `hermes skills browse` (labeled "official") and install it with `hermes skills install` (no third-party warning, built-in trust).
 
 If your skill is specialized, community-contributed, or niche, it's better suited for a **Skills Hub** — upload it to a skills registry and share it in the [Nous Research Discord](https://discord.gg/NousResearch). Users can install it with `hermes skills install`.
+
+---
+
+## Memory Providers: Ship as a Standalone Plugin
+
+**We are no longer accepting new memory providers into this repo.** The set of built-in providers under `plugins/memory/` (byterover, holographic, retaindb) is closed, and the former in-tree providers hindsight, honcho, supermemory, mem0 and openviking now ship from the plugin catalog. If you want to add a new memory backend, publish it as a **standalone plugin repo** that users install into `~/.hermes/plugins/` (or via a pip entry point).
+
+Standalone memory plugins:
+
+- Implement the same `MemoryProvider` ABC (`agent/memory_provider.py`) — `sync_turn`, `prefetch`, `shutdown`, and optionally `post_setup(hermes_home, config)` for setup-wizard integration
+- Use the same discovery system — `discover_memory_providers()` picks them up from user/project plugin directories and pip entry points
+- Integrate with `hermes memory setup` via `post_setup()` — no need to touch core code
+- Can register their own CLI subcommands via `register_cli(subparser)` in a `cli.py` file
+- Get all the same lifecycle hooks and config plumbing as in-tree providers
+
+PRs that add a new directory under `plugins/memory/` will be closed with a pointer to publish the provider as its own repo. Existing in-tree providers stay; bug fixes to them are welcome.
+
+This isn't a quality bar — it's a coupling-and-maintenance decision. Memory providers are the most common plugin type and they shouldn't all live in this tree.
+
+---
+
+## Third-Party Product Integrations: Ship as a Standalone Plugin
+
+The same rule extends to **any plugin that integrates someone else's product or project** — observability/metrics backends, vendor SaaS connectors, analytics dashboards, paid-service tie-ins, and similar third-party integrations. **These do not land in this repo.**
+
+The reason is maintenance load, not quality. Every external product absorbed into the core tree becomes ours to keep working against a fast-moving codebase, for a backend we don't own and can't control. Hermes ships a lot and the core moves quickly; coupling third-party products into it creates an open-ended burden on the maintainers.
+
+Publish these as a **standalone plugin repo** instead:
+
+- Implement the relevant ABC and use the existing plugin discovery path (`~/.hermes/plugins/`, project `.hermes/plugins/`, or a pip entry point) — see [Build a Hermes Plugin](https://hermes-agent.nousresearch.com/docs/guides/build-a-hermes-plugin)
+- Register lifecycle hooks (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`), tools (`ctx.register_tool`), and CLI subcommands (`ctx.register_cli_command`) through the surface we already expose — no core changes needed
+- If your plugin needs a capability the framework doesn't expose, that's a feature request to **widen the generic plugin surface** (a new hook or `ctx` method) — never special-case your plugin in core
+- Promote it in the [Nous Research Discord](https://discord.gg/NousResearch) `#plugins-skills-and-skins` channel so users can find and install it
+
+A well-built third-party-product plugin can clear automated review and still be closed for this reason — it's a placement decision, not a verdict on the code. PRs that add such a directory under `plugins/` will be closed with a pointer to publish it as its own repo.
+
+---
+
+## Submitting a Plugin to the Catalog
+
+A standalone plugin reaches users through the [plugin catalog](https://hermes-agent.nousresearch.com/docs/plugins): a PR to this repo adding one `plugin-catalog/<name>.yaml` file that pins your repo at an exact commit. Read **[Submitting to the plugin catalog](https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/catalog-submission)** before opening one. It covers what to check first (`hermes plugins validate --install-deps`), how review works, and every admission rule. The canonical rules live in [`plugin-catalog/README.md`](plugin-catalog/README.md); if you change them, change the mirrored block in the docs page in the same PR (a test keeps the two identical).
+
+The rules that most often send a submission back: the plugin must extend Hermes only through public hooks, `ctx.register_*` APIs and the Desktop SDK (no patching core code or Desktop markup at runtime), must not update itself, must declare the capabilities it registers, and must disclose risky behaviour.
 
 ---
 
@@ -55,64 +116,125 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 
 | Requirement | Notes |
 |-------------|-------|
-| **Git** | With `--recurse-submodules` support, and the `git-lfs` extension installed |
-| **Python 3.11+** | uv will install it if missing |
-| **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
-| **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
+| **Git** | With the `git-lfs` extension installed |
+| **Python 3.14** | The project requires `>=3.14,<3.15`; PM provides the pinned interpreter |
+| **Node.js** | Use the PM pin, or a version accepted by root `package.json`: `^22.22.0`, `^24.11.0`, or `>=26.0.0` |
 
-### Clone and install
+### PM developer environment
 
-```bash
-git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
+Use the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow) for preparation, activation, everyday commands,
+dependency changes, and test environments. Select your development
+home before setup so experimental code does not migrate production data.
 
-# Create venv with Python 3.11
-uv venv venv --python 3.11
-export VIRTUAL_ENV="$(pwd)/venv"
+Activate from the repository root in each new shell. Activation runs setup's
+runtime-only path, so it provisions a fresh checkout and syncs stale dependencies.
 
-# Install with all extras (messaging, cron, CLI menus, dev tools)
-uv pip install -e ".[all,dev]"
-
-# Optional: RL training submodule
-# git submodule update --init tinker-atropos && uv pip install -e "./tinker-atropos"
-
-# Optional: browser tools
-npm install
-```
-
-### Configure for development
+Bash:
 
 ```bash
-mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills}
-cp cli-config.yaml.example ~/.hermes/config.yaml
-touch ~/.hermes/.env
-
-# Add at minimum an LLM provider key:
-echo "OPENROUTER_API_KEY=***" >> ~/.hermes/.env
+source ./activate
+hermes --version
 ```
 
-### Run
+fish:
+
+```fish
+source ./activate.fish
+hermes --version
+```
+
+PowerShell:
+
+```powershell
+. .\activate.ps1
+hermes --version
+```
+
+Run `hermes` for this checkout. Activation defines it as a function for this
+worktree, so it hides a global `hermes` command or MSIX alias and refuses
+outside the worktree. PM activation
+syncs tools and Python dependencies before adding them to the shell. It does not
+install JS workspaces or rewrite launchers and shell configuration. `deactivate`
+restores the prior shell environment and removes the function.
+
+To run one command in the environment without activating a shell, use
+`scripts/run-in-hermes-env CMD...`.
+
+### Manual development and test environment
+
+Use the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow) to prepare Python 3.14 (`>=3.14,<3.15`) first.
+Run these commands from that checkout with its prepared Python. Keep the same
+development `HERMES_HOME`. PM must be able to start before it can build another
+environment. On Windows, initialize the native C++ build environment for your
+architecture before building source dependencies.
+
+Build an independent interpreter for tests and editor tools:
 
 ```bash
-# Symlink for global access
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
-
-# Verify
-hermes doctor
-hermes chat -q "Hello"
+python -m pm.build_env --source . --out .venv --group dev --group test
 ```
+
+PM builds from the committed lock and checks dependency consistency before
+returning the new interpreter. The `test` group includes native launcher test
+dependencies and does not enter the application runtime. If tests require
+another declared feature, add its `--extra`.
+
+The output must not exist, even as an empty directory or symlink. To regenerate
+it after a dependency change, stop its processes and intentionally remove only
+that disposable environment first. PM does not delete an existing destination.
+Do not run raw pip or uv commands to change a PM-built environment.
+
+To keep the test environment outside the checkout, replace `.venv` with a fresh absolute
+path. Set `HERMES_PYTHON` to that environment's interpreter:
+
+- POSIX: `export HERMES_PYTHON="/absolute/path/to/hermes-dev/bin/python"`
+- PowerShell: `$env:HERMES_PYTHON = 'C:\absolute\path\to\hermes-dev\Scripts\python.exe'`
+
+The canonical runner discovers repository `.venv` automatically. It clears
+`PYTHONPATH`, so pytest must be installed in the interpreter's own environment.
+This test environment does not replace PM's application selection or tool
+store. Do not point a bundled app at it or install into an MSIX payload.
+
+For an isolated development instance, select a disposable `HERMES_HOME` before
+starting the source command. Use `hermes setup` to configure it rather
+than copying production credentials into the checkout.
+
+### JavaScript workspaces and website
+
+From the repository root, run `npm ci` for the desktop, TUI, dashboard, and
+shared JS workspaces. The website is separate:
+
+```bash
+npm ci --prefix website
+npm run build:fast --prefix website
+```
+
+Use a Node/npm version accepted by the corresponding `package.json` engines.
+Native desktop dependencies can also require the platform build toolchain.
+
+Logos and icons are generated from `assets/nous-girl-*.svg` and
+`assets/backgrounds/`. `node scripts/generate-icons.mjs` renders them with the
+Hermes runtime Python (`HERMES_PYTHON`, else `python` on PATH): Pillow and
+resvg-py are core dependencies. Generated outputs are committed and CI fails if
+they are stale; rerun the generator and commit after changing any source SVG.
 
 ### Run tests
 
-```bash
-# Preferred — matches CI (hermetic env, 4 xdist workers); see AGENTS.md
-scripts/run_tests.sh
+Use the canonical runner on every host:
 
-# Alternative (activate the venv first). The wrapper is still recommended
-# for parity with GitHub Actions before you open a PR:
-pytest tests/ -v
+```bash
+scripts/run_tests.sh
+scripts/run_tests.sh tests/agent/ -v
 ```
+
+On Windows, run the script through Bash. When no local `.venv` or `venv`
+contains pytest, the runner accepts the explicit `HERMES_PYTHON` above. It
+clears credentials, isolates `HERMES_HOME`, and runs each test file in a separate
+subprocess through `scripts/run_tests_parallel.py`. It does not use xdist.
+
+Run the relevant JS workspace checks for JS changes. Native install/update
+E2E runs on disposable CI hosts, never against the developer's live app.
+See [Package management](website/docs/reference/package-management.md) for PM commands and runtime ownership.
 
 ---
 
@@ -120,14 +242,17 @@ pytest tests/ -v
 
 ```
 hermes-agent/
-├── run_agent.py              # AIAgent class — core conversation loop, tool dispatch, session persistence
-├── cli.py                    # HermesCLI class — interactive TUI, prompt_toolkit integration
+├── run_agent.py              # AIAgent facade (~1.5k LOC) — the turn loop lives in agent/conversation_loop.py + agent/turn_*.py
+├── cli.py                    # HermesCLI class — interactive CLI orchestrator (~4.6k LOC + hermes_cli/cli_*_mixin.py)
 ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
 ├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
-├── hermes_state.py           # SQLite session database with FTS5 full-text search, session titles
+├── hermes_state.py           # SessionDB facade (~1.4k LOC); implementation in hermes_state_*.py (21 siblings) — FTS5 search, session titles
 ├── batch_runner.py           # Parallel batch processing for trajectory generation
 │
 ├── agent/                    # Agent internals (extracted modules)
+│   ├── conversation_loop.py      # run_conversation() — the agent turn loop (phases in turn_*.py)
+│   ├── tool_executor.py          # Tool dispatch (inline agent-level tools, delegate, registry)
+│   ├── session_persistence.py    # Session/trajectory saving
 │   ├── prompt_builder.py         # System prompt assembly (identity, skills, context files, memory)
 │   ├── context_compressor.py     # Auto-summarization when approaching context limits
 │   ├── auxiliary_client.py       # Resolves auxiliary OpenAI clients (summarization, vision)
@@ -137,16 +262,19 @@ hermes-agent/
 │
 ├── hermes_cli/               # CLI command implementations
 │   ├── main.py                   # Entry point, argument parsing, command dispatch
+│   ├── cli_*_mixin.py            # HermesCLI mixins (slash commands, display, session, ...)
 │   ├── config.py                 # Config management, migration, env var definitions
 │   ├── setup.py                  # Interactive setup wizard
-│   ├── auth.py                   # Provider resolution, OAuth, Nous Portal
+│   ├── auth.py                   # Provider resolution, OAuth, Nous Portal (facade + auth_*.py siblings)
 │   ├── models.py                 # OpenRouter model selection lists
 │   ├── banner.py                 # Welcome banner, ASCII art
 │   ├── commands.py               # Central slash command registry (CommandDef), autocomplete, gateway helpers
 │   ├── callbacks.py              # Interactive callbacks (clarify, sudo, approval)
 │   ├── doctor.py                 # Diagnostics
 │   ├── skills_hub.py             # Skills Hub CLI + /skills slash command
-│   └── skin_engine.py            # Skin/theme engine — data-driven CLI visual customization
+│   ├── skin_engine.py            # Skin/theme engine — data-driven CLI visual customization
+│   ├── web_server.py             # Dashboard server (facade + web_server_*.py siblings)
+│   └── web_routers/              # Dashboard FastAPI routers (one file per surface)
 │
 ├── tools/                    # Tool implementations (self-registering)
 │   ├── registry.py               # Central tool registry (schemas, handlers, dispatch)
@@ -156,8 +284,10 @@ hermes-agent/
 │   ├── web_tools.py              # web_search, web_extract (Parallel/Firecrawl + Gemini summarization)
 │   ├── vision_tools.py           # Image analysis via multimodal models
 │   ├── delegate_tool.py          # Subagent spawning and parallel task execution
-│   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access
-│   ├── session_search_tool.py    # Search past conversations with FTS5 + summarization
+│   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access (env allowlists in code_execution_env.py)
+│   ├── mcp_tool.py               # MCP client (facade + mcp_tool_*.py siblings: config, discovery, transport, ...)
+│   ├── browser_tool.py           # Browser automation (facade + browser_tool_*.py siblings)
+│   ├── session_search_tool.py    # Search past conversations with FTS5 + anchored windows
 │   ├── cronjob_tools.py          # Scheduled task management
 │   ├── skill_tools.py            # Skill search, load, manage
 │   └── environments/             # Terminal execution backends
@@ -165,9 +295,10 @@ hermes-agent/
 │       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
 │
 ├── gateway/                  # Messaging gateway
-│   ├── run.py                    # GatewayRunner — platform lifecycle, message routing, cron
+│   ├── run.py                    # GatewayRunner facade (~5.5k LOC); phases in run_*.py (startup, inbound, turn, busy, ...)
+│   ├── slash_commands_*.py       # Gateway slash command handler mixins
 │   ├── config.py                 # Platform configuration resolution
-│   ├── session.py                # Session store, context prompts, reset policies
+│   ├── session.py                # Session store, context prompts, explicit resets (+ session_*.py siblings)
 │   └── platforms/                # Platform adapters
 │       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
 │
@@ -178,7 +309,6 @@ hermes-agent/
 │
 ├── skills/                   # Bundled skills (copied to ~/.hermes/skills/ on install)
 ├── optional-skills/          # Official optional skills (discoverable via hub, not activated by default)
-├── environments/             # RL training environments (Atropos integration)
 ├── tests/                    # Test suite
 ├── website/                  # Documentation site (hermes-agent.nousresearch.com)
 │
@@ -196,7 +326,7 @@ hermes-agent/
 | `~/.hermes/skills/` | All active skills (bundled + hub-installed + agent-created) |
 | `~/.hermes/memories/` | Persistent memory (MEMORY.md, USER.md) |
 | `~/.hermes/state.db` | SQLite session database |
-| `~/.hermes/sessions/` | JSON session logs |
+| `~/.hermes/sessions/` | Gateway routing index (`sessions.json`), request-dump breadcrumbs, gateway `*.jsonl` transcripts, and explicit `/save` exports. Automatic per-session JSON snapshots are no longer written; state.db is canonical. |
 | `~/.hermes/cron/` | Scheduled job data |
 | `~/.hermes/whatsapp/session/` | WhatsApp bridge credentials |
 
@@ -225,7 +355,7 @@ User message → AIAgent._run_agent_loop()
 
 - **Self-registering tools**: Each tool file calls `registry.register()` at import time. `model_tools.py` triggers discovery by importing all tool modules.
 - **Toolset grouping**: Tools are grouped into toolsets (`web`, `terminal`, `file`, `browser`, etc.) that can be enabled/disabled per platform.
-- **Session persistence**: All conversations are stored in SQLite (`hermes_state.py`) with full-text search and unique session titles. JSON logs go to `~/.hermes/sessions/`.
+- **Session persistence**: All conversations are stored in SQLite (`hermes_state.py`) with full-text search and unique session titles. Automatic per-session JSON snapshots have been removed. Existing files are left untouched; use `/save json` or `hermes sessions export` for an explicit export.
 - **Ephemeral injection**: System prompts and prefill messages are injected at API call time, never persisted to the database or logs.
 - **Provider abstraction**: The agent works with any OpenAI-compatible API. Provider resolution happens at init time (Nous Portal OAuth, OpenRouter API key, or custom endpoint).
 - **Provider routing**: When using OpenRouter, `provider_routing` in config.yaml controls provider selection (sort by throughput/latency/price, allow/ignore specific providers, data retention policies). These are injected as `extra_body.provider` in API requests.
@@ -237,7 +367,13 @@ User message → AIAgent._run_agent_loop()
 - **PEP 8** with practical exceptions (we don't enforce strict line length)
 - **Comments**: Only when explaining non-obvious intent, trade-offs, or API quirks. Don't narrate what the code does — `# increment counter` adds nothing
 - **Error handling**: Catch specific exceptions. Log with `logger.warning()`/`logger.error()` — use `exc_info=True` for unexpected errors so stack traces appear in logs
+- **Error messages**: every user-facing error message names the actual cause and the remediation step — never the proximate symptom. A missing API key is "no OpenRouter API key configured — set `OPENROUTER_API_KEY`", never "payment/credit error"; a failed request logs the exception class and message (secret-redacted) rather than an empty reason; a timed-out long job reports the timeout and where the job went, not a fallback-routing noise string. If you know the cause, say it; if you don't, say what you do know plus what to check — never a placeholder that points somewhere else.
 - **Cross-platform**: Never assume Unix. See [Cross-Platform Compatibility](#cross-platform-compatibility)
+- **Code health ratchet**: `python scripts/check` runs every blocking lint check CI runs, with the same pinned tools. To run it automatically, `python scripts/check --install-hook pre-push` judges the tip of each branch you push, as CI judges the PR as a whole, not each intermediate commit (`--install-hook` alone runs it on every commit instead, judging what you staged; `--uninstall-hook` removes either; `--no-verify` skips once). The hook covers every worktree of your clone, judges each pushed tip with that tip's own checker, prefers the repo's `.venv`/`venv` Python (3.11+), and needs ruff 0.15.10 or `uv` on `PATH`; re-run `--install-hook` after pulling to refresh the hook script. Its code-health part gives every function and file its own cap: new functions stay at cyclomatic complexity ≤ 20, ≤ 300 lines and nesting ≤ 6, files at ≤ 2,000 lines, and code already over a target may only get smaller (a file already past 2,000 lines may not grow: offset the growth by moving an existing function into a `<stem>_<topic>` sibling, or put new tests in a new test file). Pattern rules (blind `except Exception`, missing timeouts, profile-scope hazards such as a hardcoded `~/.hermes` or a new `HERMES_*` env var) track each existing violation where it sits, so existing debt never blocks you, but a new instance does, even one that replaces an identical violation you removed. Moving code keeps its history: a function or module-level statement moved to another file keeps the cap and the existing violations it had, and so does a moved function you lightly edit, unless a function of that name already exists in the destination (the edited one is then judged against that function's cap). A function you both rename and edit is new code, and so is a copy that leaves the original in place. A file the checker cannot parse or measure fails. TypeScript complexity follows ESLint's `complexity` rule except where `scripts/code_health/ts_units.mjs` says otherwise. Each finding prints its fix; a genuine exception takes a `# health: allow <RULE> -- <why>` comment on the line (or on a comment-only line directly above it), which reviewers read; ruff's `# noqa` does not waive a ratchet finding, and a broad catch that logs must keep the traceback (`logger.exception` or `exc_info=True`). Heuristic rules print as warnings until a frozen replay of merged PRs shows they are precise enough to block. Rules and targets: `scripts/code_health/config.py`. Maintainers switch the whole ratchet with `ENFORCEMENT` there (`blocking`, `advisory` or `off`): it is always read from main (CI: the merge commit's first parent; local runs: `origin/main`), never from the branch under test, so a one-line commit to main reaches every open PR on its next CI run (a re-run reuses the old merge commit) and every local hook after a fetch, and a PR cannot relax its own check; one rule can be demoted with `blocking=False`.
+
+### Fail loud at integration boundaries
+
+**Fail loud at integration boundaries.** When a configuration value, credential, or user-supplied input is unusable — a placeholder token, an empty required field, an out-of-range number like `TERMINAL_TIMEOUT=0` — reject it where it is read and name the problem: a clear error at startup or at the write path, never a silent no-op that turns the confusion into a debugging session later. Each boundary validates its own values in place; there is intentionally no shared `fail_loud` helper, because one call-site shape does not fit all — the rule is about the behavior the user sees, not the function you call. A silent default is acceptable only where the default is a deliberate product choice documented in the config reference; everything else should tell the user what broke, where, and what to set.
 
 ---
 
@@ -360,6 +496,12 @@ Brief intro.
 ## When to Use
 Trigger conditions — when should the agent load this skill?
 
+## Prerequisites
+Env vars, install steps, MCP setup, API key sourcing.
+
+## How to Run
+Canonical invocation through the `terminal` tool.
+
 ## Quick Reference
 Table of common commands or API calls.
 
@@ -461,6 +603,58 @@ Gateway and messaging sessions never collect secrets in-band; they instruct the 
 
 See `skills/gifs/gif-search/` and `skills/email/himalaya/` for examples.
 
+### Skill authoring standards (HARDLINE)
+
+Every new or modernized skill — bundled, optional, or contributed — must meet these standards before merge. Reviewers reject PRs that violate them.
+
+1. **`description` ≤ 60 characters, one sentence, ends with a period.** Long descriptions bloat the skill listing UI and dilute the model's attention when many skills are loaded. State the capability, not the implementation. No marketing words ("powerful", "comprehensive", "seamless", "advanced"). Don't repeat the skill name. Verify with:
+   ```python
+   import re, pathlib
+   m = re.search(r'^description: (.*)$',
+                 pathlib.Path('skills/<cat>/<name>/SKILL.md').read_text(),
+                 re.MULTILINE)
+   assert len(m.group(1)) <= 60, len(m.group(1))
+   ```
+
+   Good: `Search arXiv papers by keyword, author, category, or ID.`
+   Bad: `A powerful and comprehensive skill that allows the agent to search arXiv for relevant academic papers using various criteria including keywords, authors, and categories.`
+
+2. **Tools referenced in SKILL.md prose must be native Hermes tools or MCP servers the skill explicitly expects.** When the skill needs a capability, point at the proper tool by name in backticks: `` `terminal` ``, `` `web_extract` ``, `` `web_search` ``, `` `read_file` ``, `` `write_file` ``, `` `patch` ``, `` `search_files` ``, `` `vision_analyze` ``, `` `browser_navigate` ``, `` `delegate_task` ``, `` `image_generate` ``, `` `text_to_speech` ``, `` `cronjob` ``, `` `memory` ``, `` `skill_view` ``, `` `todo` ``, `` `execute_code` ``.
+
+   Do NOT name shell utilities the agent already has wrapped:
+
+   | Don't say | Say |
+   |---|---|
+   | `grep`, `rg` | `search_files` |
+   | `cat`, `head`, `tail` | `read_file` |
+   | `sed`, `awk` | `patch` |
+   | `find`, `ls` | `search_files` (with `target='files'`) |
+   | `curl` for content extraction | `web_extract` |
+   | `echo > file`, `cat <<EOF` | `write_file` |
+
+   If the skill depends on an MCP server, name the MCP server and document its setup in `## Prerequisites`. Third-party CLIs (e.g. `ffmpeg`, `gh`, a specific SDK) are fine to invoke from inside script files, but the prose should frame the interaction as "invoke through the `terminal` tool", not as a manual shell session.
+
+3. **`platforms:` gating audited against actual script imports.** Skills that use POSIX-only primitives (`fcntl`, `termios`, `os.setsid`, `os.kill(pid, 0)` for liveness, `/proc`, hardcoded `/tmp` paths, `signal.SIGKILL`, bash heredocs, `osascript`, `apt`, `systemctl`) must declare their supported platforms via the `platforms:` frontmatter. Default posture is to fix it cross-platform first — `tempfile.gettempdir()`, `pathlib.Path`, `psutil.pid_exists()`, Python-level filtering instead of `grep`. Gate to a narrower set only when the dependency is genuinely platform-bound (e.g. `osascript` is macOS-only, `/proc` is Linux-only). <!-- no-tmp: ok — names the POSIX-only anti-pattern reviewers look for -->
+
+4. **`author` credits the human contributor first.** For external contributions, the contributor's real name + GitHub handle goes first (`Jane Doe (jane-doe)`); "Hermes Agent" is the secondary collaborator. If the contributor's commit shows "Hermes Agent" as author because they used Hermes to draft the skill, replace it with their actual name — credit the human, not the tool.
+
+5. **SKILL.md body uses the modern section order.** `# <Skill> Skill` title, 2-3 sentence intro stating what it does and what it doesn't do, then:
+   - `## When to Use` — trigger conditions
+   - `## Prerequisites` — env vars, install steps, MCP setup, API key sourcing
+   - `## How to Run` — canonical invocation through the `terminal` tool
+   - `## Quick Reference` — flat command/API reference
+   - `## Procedure` — numbered steps with copy-paste commands
+   - `## Pitfalls` — known limits, rate limits, things that look broken but aren't
+   - `## Verification` — single command that proves the skill works
+
+   Target ~200 lines for a complex skill, ~100 lines for a simple one. Cut redundant intro fluff, marketing prose, and re-explanations of env vars already documented in `## Prerequisites`.
+
+6. **Scripts go in `scripts/`, references in `references/`, templates in `templates/`.** Don't expect the model to inline-write parsers, XML walkers, or non-trivial logic every call — ship a helper script. Reference scripts from SKILL.md by path relative to the skill directory.
+
+7. **Tests live at `tests/skills/test_<skill>_skill.py`** and use only stdlib + pytest + `unittest.mock`. No live network calls. Run via `scripts/run_tests.sh tests/skills/test_<skill>_skill.py -q`. Must pass under the hermetic CI env (no API keys leaking through). Use `monkeypatch` and `tmp_path` for any env-var or filesystem dependencies.
+
+8. **`.env.example` additions are isolated to a clearly delimited block.** Don't touch the surrounding file — contributor-supplied `.env.example` versions are usually stale, and edits outside the skill's own block will be dropped during salvage. Comment all values with `#` (it's documentation, not live config).
+
 ### Skill guidelines
 
 - **No external dependencies unless absolutely necessary.** Prefer stdlib Python, curl, and existing Hermes tools (`web_extract`, `terminal`, `read_file`).
@@ -551,7 +745,7 @@ that touches the OS, assume *any* platform can hit your code path.
    ```
 
    If you specifically need the hermes wrapper (it has a stdlib fallback
-   for scaffold-phase imports before pip install finishes), use
+   for scaffold-phase imports before PM finishes dependency preparation), use
    `gateway.status._pid_exists(pid)`. It calls `psutil.pid_exists` first
    and falls back to a hand-rolled `OpenProcess + WaitForSingleObject`
    dance on Windows only when psutil is somehow missing.
@@ -570,22 +764,9 @@ that touches the OS, assume *any* platform can hit your code path.
    For process enumeration: PowerShell's `Get-CimInstance Win32_Process` is
    the modern replacement for `wmic process`. See
    `hermes_cli/gateway.py::_scan_gateway_pids` for the pattern.
-
-3. **`termios` and `fcntl` are Unix-only.** Always catch both `ImportError`
-   and `NotImplementedError`:
-   ```python
-   try:
-       from simple_term_menu import TerminalMenu
-       menu = TerminalMenu(options)
-       idx = menu.show()
-   except (ImportError, NotImplementedError):
-       # Fallback: numbered menu for Windows
-       for i, opt in enumerate(options):
-           print(f"  {i+1}. {opt}")
-       idx = int(input("Choice: ")) - 1
    ```
 
-4. **File encoding.** Windows may save `.env` files in `cp1252`. Always
+3. **File encoding.** Windows may save `.env` files in `cp1252`. Always
    handle encoding errors:
    ```python
    try:
@@ -597,7 +778,7 @@ that touches the OS, assume *any* platform can hit your code path.
    similar editors — use `encoding="utf-8-sig"` when reading files that
    could have been touched by a Windows GUI editor.
 
-5. **Process management.** `os.setsid()`, `os.killpg()`, `os.fork()`,
+4. **Process management.** `os.setsid()`, `os.killpg()`, `os.fork()`,
    `os.getuid()`, and POSIX signal handling differ on Windows. Guard with
    `platform.system()`, `sys.platform`, or `hasattr(os, "setsid")`:
    ```python
@@ -621,29 +802,29 @@ that touches the OS, assume *any* platform can hit your code path.
        pass
    ```
 
-6. **Signals that don't exist on Windows: `SIGALRM`, `SIGCHLD`, `SIGHUP`,
+5. **Signals that don't exist on Windows: `SIGALRM`, `SIGCHLD`, `SIGHUP`,
    `SIGUSR1`, `SIGUSR2`, `SIGPIPE`, `SIGQUIT`, `SIGKILL`.** Python's
    `signal` module raises `AttributeError` at import time if you reference
    them on Windows. Use `getattr(signal, "SIGKILL", signal.SIGTERM)` or
    gate the whole block behind a platform check. `loop.add_signal_handler`
    raises `NotImplementedError` on Windows — always catch it.
 
-7. **Path separators.** Use `pathlib.Path` instead of string concatenation
+6. **Path separators.** Use `pathlib.Path` instead of string concatenation
    with `/`. Forward slashes work almost everywhere on Windows, but
    `subprocess.run(["cmd.exe", "/c", ...])` and other shell contexts can
    require backslashes — convert with `str(path)` at the subprocess boundary,
    not inside Python logic.
 
-8. **Symlinks need elevated privileges on Windows** (unless Developer Mode is
+7. **Symlinks need elevated privileges on Windows** (unless Developer Mode is
    on). Tests that create symlinks need `@pytest.mark.skipif(sys.platform ==
    "win32", reason="Symlinks require elevated privileges on Windows")`.
 
-9. **POSIX file modes (0o600, 0o644, etc.) are NOT enforced on NTFS** by
+8. **POSIX file modes (0o600, 0o644, etc.) are NOT enforced on NTFS** by
    default. Tests that assert on `stat().st_mode & 0o777` must skip on
    Windows — the concept doesn't translate. Use ACLs (`icacls`, `pywin32`)
    for Windows secret-file protection if needed.
 
-10. **Detached background daemons on Windows need `pythonw.exe`, NOT
+9. **Detached background daemons on Windows need `pythonw.exe`, NOT
     `python.exe`.** `python.exe` always allocates or attaches to a console,
     which makes it vulnerable to `CTRL_C_EVENT` broadcasts from any sibling
     process. `pythonw.exe` is the no-console variant. Combine with
@@ -652,38 +833,38 @@ that touches the OS, assume *any* platform can hit your code path.
     See `hermes_cli/gateway_windows.py::_spawn_detached` for the reference
     implementation.
 
-11. **`subprocess.Popen` with `.cmd` or `.bat` shims needs `shutil.which`
+10. **`subprocess.Popen` with `.cmd` or `.bat` shims needs `shutil.which`
     to resolve.** Passing `"agent-browser"` to `Popen` on Windows finds
     the extensionless POSIX shebang shim in `node_modules/.bin/`, which
     `CreateProcessW` can't execute — you'll get `WinError 193 "not a valid
     Win32 application"`. Use `shutil.which("agent-browser", path=local_bin)`
     which honors PATHEXT and picks the `.CMD` variant on Windows.
 
-12. **Don't use shell shebangs as a way to run Python.** `#!/usr/bin/env
+11. **Don't use shell shebangs as a way to run Python.** `#!/usr/bin/env
     python` only works when the file is executed through a Unix shell.
     `subprocess.run(["./myscript.py"])` on Windows fails even if the file
     has a shebang line. Always invoke Python explicitly:
     `[sys.executable, "myscript.py"]`.
 
-13. **Shell commands in installers.** If you change `scripts/install.sh`,
+12. **Shell commands in installers.** If you change `scripts/install.sh`,
     make the equivalent change in `scripts/install.ps1`. The two scripts
     are the canonical example of "works on Linux does not mean works on
     Windows" and have drifted multiple times — keep them in lockstep.
 
-14. **Known paths that are OneDrive-redirected on Windows:** Desktop,
+13. **Known paths that are OneDrive-redirected on Windows:** Desktop,
     Documents, Pictures, Videos. The "real" path when OneDrive Backup is
     enabled is `%USERPROFILE%\OneDrive\Desktop` (etc.), NOT
     `%USERPROFILE%\Desktop` (which exists as an empty husk). Resolve the
     real location via `ctypes` + `SHGetKnownFolderPath` or by reading the
     `Shell Folders` registry key — never assume `~/Desktop`.
 
-15. **CRLF vs LF in generated scripts.** Windows `cmd.exe` and `schtasks`
+14. **CRLF vs LF in generated scripts.** Windows `cmd.exe` and `schtasks`
     parse line-by-line; mixed or LF-only line endings can break multi-line
     `.cmd` / `.bat` files. Use `open(path, "w", encoding="utf-8",
     newline="\r\n")` — or `open(path, "wb")` + explicit bytes — when
     generating scripts Windows will execute.
 
-16. **Two different quoting schemes in one command line.** `subprocess.run
+15. **Two different quoting schemes in one command line.** `subprocess.run
     (["schtasks", "/TR", some_cmd])` → schtasks itself parses `/TR`, AND
     the `some_cmd` string is re-parsed by `cmd.exe` when the task fires.
     Different parsers, different escape rules. Use two separate quoting
@@ -693,18 +874,19 @@ that touches the OS, assume *any* platform can hit your code path.
 
 ### Testing cross-platform
 
-Tests that use POSIX-only syscalls need a skip marker. Common ones:
-- Symlinks → `@pytest.mark.skipif(sys.platform == "win32", ...)`
-- `0o600` file modes → `@pytest.mark.skipif(sys.platform.startswith("win"), ...)`
-- `signal.SIGALRM` → Unix-only (see `tests/conftest.py::_enforce_test_timeout`)
-- `os.setsid` / `os.fork` → Unix-only
-- Live Winsock / Windows-specific regression tests →
-  `@pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific regression")`
+Tests of host-specific behavior must run on that host. Apply one `platforms`
+marker to each test, rather than changing `sys.platform`:
 
-If you monkeypatch `sys.platform` for cross-platform tests, also patch
-`platform.system()` / `platform.release()` / `platform.mac_ver()` — each
-re-reads the real OS independently, so half-patched tests still route
-through the wrong branch on a Windows runner.
+```python
+@pytest.mark.platforms("windows", arch="arm64")
+def test_native_windows_arm64_behavior():
+    ...
+```
+
+For several supported hosts, use one marker with multiple arguments, such as
+`@pytest.mark.platforms("linux", "macos")`. Do not stack host markers.
+Tests of pure functions that accept a platform as data need no host marker.
+See [AGENTS.md](AGENTS.md#dont-fake-the-host-os) for the complete contract.
 
 ---
 
@@ -734,6 +916,47 @@ Hermes has terminal access. Security matters.
 
 If your PR affects security, note it explicitly in the description.
 
+### Dependency pinning policy (supply chain hardening)
+
+After the [litellm supply chain compromise](https://github.com/BerriAI/litellm/issues/24512) in March 2026 and the [Mini Shai-Hulud worm campaign](https://socket.dev/blog/tanstack-npm-packages-compromised-mini-shai-hulud-supply-chain-attack) in May 2026, all dependencies must follow these rules:
+
+| Source type | Required treatment | Rationale |
+|---|---|---|
+| **PyPI package** | `>=floor,<next_major` | PyPI versions are immutable once published, but new versions can be pushed into your range. A `<next_major` ceiling stops a 1.x install from upgrading to a malicious 2.0.0. |
+| **Git URL** (atroposlib, tinker, yc-bench, Baileys) | Full commit SHA | Branches and tags are mutable refs; SHA is content-addressed. |
+| **GitHub Actions** | Full commit SHA + version comment | Action tags are mutable refs (e.g. tj-actions/changed-files March 2025). Pin as `uses: owner/action@<sha>  # vX.Y.Z` |
+| **CI-only pip installs** | `==exact` | Hermetic CI builds; churn is acceptable. |
+
+**Every new PyPI dependency in a PR must have a `<next_major` upper bound.** PRs adding unbounded `>=X.Y.Z` specs will be rejected by reviewers. The `supply-chain-audit.yml` CI workflow also flags dependency manifest changes for manual review.
+
+**How to determine the ceiling:**
+- If the package is at version `1.x.y`, use `<2`.
+- If the package is at version `0.x.y` (pre-1.0), use `<0.(current_minor + 2)` — e.g. if current is `0.29.x`, use `<0.32`. This gives ~2 minor versions of headroom while keeping the window small enough that a hostile takeover version is unlikely to land inside it.
+- Exception: packages with very stable APIs (e.g. `aiohttp-socks`) can use `<1` at reviewer discretion.
+
+**Examples:**
+```toml
+# ✅ Correct — post-1.0
+"openai>=2.21.0,<3"
+"pydantic>=2.12.5,<3"
+
+# ✅ Correct — pre-1.0 (tight minor window)
+"asyncpg>=0.29,<0.32"
+"aiosqlite>=0.20,<0.23"
+"hindsight-client>=0.4.22,<0.5"
+
+# ❌ Rejected — no upper bound
+"some-package>=1.2.3"
+
+# ❌ Rejected — too tight (blocks legitimate patches)
+"some-package==1.2.3"
+
+# ❌ Rejected — too loose for pre-1.0 (allows 80 minor versions)
+"some-package>=0.20,<1"
+```
+
+**Reference PRs:** #2796 (litellm removal), #2810 (upper bounds pass), #9801 (SHA pinning + supply-chain-audit CI).
+
 ---
 
 ## Pull Request Process
@@ -750,10 +973,11 @@ refactor/description   # Code restructuring
 
 ### Before submitting
 
-1. **Run tests**: `scripts/run_tests.sh` (recommended; same as CI) or `pytest tests/ -v` with the project venv activated
-2. **Test manually**: Run `hermes` and exercise the code path you changed
-3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
-4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
+1. **Run tests**: use `scripts/run_tests.sh` for the same environment and per-file isolation as CI.
+2. **Run the lint checks**: `python scripts/check` (the blocking lint lane, locally).
+3. **Test manually**: Run `hermes` and exercise the code path you changed
+4. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
+5. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
 
 ### PR description
 
@@ -795,7 +1019,7 @@ test(tools): add unit tests for file_operations
 ## Reporting Issues
 
 - Use [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
-- Include: OS, Python version, Hermes version (`hermes version`), full error traceback
+- Include: OS, Python version, Hermes version (`hermes --version`), full error traceback
 - Include steps to reproduce
 - Check existing issues before creating duplicates
 - For security vulnerabilities, please report privately

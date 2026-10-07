@@ -10,6 +10,8 @@ export const en: Translations = {
     delete: "Delete",
     refresh: "Refresh",
     retry: "Retry",
+    loadFailed: "Could not load {what}. Check that the dashboard server is running and click Retry.",
+    loadFailedDetails: "Details: {detail}",
     search: "Search...",
     loading: "Loading...",
     create: "Create",
@@ -43,6 +45,9 @@ export const en: Translations = {
     expand: "Expand",
     general: "General",
     messaging: "Messaging",
+    gateway: "Gateway",
+    gatewayHint:
+      "Messaging platforms, the API server and webhooks are configured on the Channels page. These are gateway-wide settings (proxy/relay mode and the global allowlist).",
     pluginLoadFailed:
       "Could not load this plugin’s script. Check the Network tab (dashboard-plugins/…) and the server’s plugin path.",
     pluginNotRegistered:
@@ -60,7 +65,9 @@ export const en: Translations = {
     activeSessionsLabel: "Active Sessions:",
     gatewayStatusLabel: "Gateway Status:",
     gatewayStrip: {
+      degraded: "Degraded",
       failed: "Start failed",
+      heartbeatStale: "Heartbeat stale",
       off: "Off",
       running: "Running",
       starting: "Starting",
@@ -75,7 +82,7 @@ export const en: Translations = {
       keys: "Keys",
       logs: "Logs",
       models: "Models",
-      profiles: "profiles : multi agents",
+      profiles: "Profiles",
       plugins: "Plugins",
       sessions: "Sessions",
       skills: "Skills",
@@ -90,16 +97,44 @@ export const en: Translations = {
     statusOverview: "Status overview",
     system: "System",
     webUi: "Web UI",
+    managingProfile: "Managing profile",
+    currentProfileOption: "this dashboard ({name})",
+    managingProfileBanner:
+      "Managing profile \u201c{name}\u201d \u2014 config, keys, skills, MCPs, model, and new chats apply to that profile.",
+    memoryOomRestartBanner:
+      "Your agent restarted unexpectedly, most likely because it ran out of memory. Long sessions and many concurrent tasks increase memory use.",
+    memoryCriticalBanner:
+      "Your agent is almost out of memory and may restart. Consider closing idle sessions or upgrading its memory.",
+    memoryElevatedBanner: "Your agent is running low on memory.",
+    diskCriticalBanner:
+      "Your agent's disk is almost full. New messages, memories, and settings may fail to save.",
+    diskElevatedBanner:
+      "Your agent's disk is filling up. Consider clearing old sessions or expanding its storage.",
+    multiplexStandaloneBanner:
+      "Your gateway serves only one profile. Not served: {profiles}. Why: {reason}. Fix: hermes gateway migrate --multiplex",
+    dismiss: "Dismiss",
+    sharedMetricsTitle: "Help improve Hermes?",
+    sharedMetricsBody:
+      "Shared metrics are bounded counters, never prompts, files, paths or error text. Collection stays on this machine; sending to Nous is a separate choice.",
+    sharedMetricsReaskBody:
+      "Asking once more: an earlier version could save \"No thanks\" before you saw this question.",
+    sharedMetricsShare: "Send to Nous",
+    sharedMetricsLocal: "Local only",
+    sharedMetricsOff: "No thanks",
+    sharedMetricsDetails: "Details",
+    sharedMetricsSaveFailed: "Couldn't save your choice",
   },
 
   status: {
     actionFailed: "Action failed",
     actionFinished: "Finished",
+    actionFinishedOwed: "Updated, but still owed (re-run `hermes update` to finish)",
     actions: "Actions",
     agent: "Agent",
     activeSessions: "Active Sessions",
     connected: "Connected",
     connectedPlatforms: "Connected Platforms",
+    disabled: "Disabled",
     disconnected: "Disconnected",
     error: "Error",
     failed: "Failed",
@@ -113,6 +148,9 @@ export const en: Translations = {
     platformError: "error",
     recentSessions: "Recent Sessions",
     restartGateway: "Restart Gateway",
+    restartGatewayConfirmMessage:
+      "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward.",
+    restartGatewayConfirmTitle: "Restart gateway?",
     restartingGateway: "Restarting gateway…",
     running: "Running",
     runningRemote: "Running (remote)",
@@ -121,14 +159,26 @@ export const en: Translations = {
     startedInBackground: "Started in background — check logs for progress",
     stopped: "Stopped",
     updateHermes: "Update Hermes",
+    updateHermesConfirmMessage:
+      "This runs hermes update and restarts the gateway when it finishes. Active sessions keep their prompt cache until then.",
+    updateHermesConfirmNow: "Update now",
+    updateHermesConfirmTitle: "Update Hermes?",
     updatingHermes: "Updating Hermes…",
     waitingForOutput: "Waiting for output…",
   },
 
   sessions: {
     title: "Sessions",
+    history: "History",
+    overview: "Overview",
+    filterChats: "Chats",
+    filterAutomation: "Automation",
+    filterAll: "All",
+    sourceFilter: "Session source",
+    anySource: "Any source",
     searchPlaceholder: "Search message content...",
     noSessions: "No sessions yet",
+    noSessionsInFilter: "No sessions in this filter",
     noMatch: "No sessions match your search",
     startConversation: "Start a conversation to see it here",
     noMessages: "No messages",
@@ -139,7 +189,30 @@ export const en: Translations = {
       "This permanently removes the conversation and all of its messages. This cannot be undone.",
     sessionDeleted: "Session deleted",
     failedToDelete: "Failed to delete session",
+    deleteEmpty: "Delete empty",
+    deleteEmptyConfirmTitle: "Delete empty sessions?",
+    deleteEmptyConfirmMessage:
+      "This permanently removes {count} sessions that have no messages. Active and archived sessions are skipped. This cannot be undone.",
+    emptySessionsDeleted: "{count} empty sessions deleted",
+    failedToDeleteEmpty: "Failed to delete empty sessions",
+    selectSession: "Select session",
+    selectAllOnPage: "Select all on this page",
+    clearSelection: "Clear selection",
+    selectedCount: "{count} selected",
+    deleteSelected: "Delete {count}",
+    deleteSelectedConfirmTitle: "Delete {count} sessions?",
+    deleteSelectedConfirmMessage:
+      "This permanently removes {count} selected sessions and all their messages. This cannot be undone.",
+    selectedSessionsDeleted: "{count} sessions deleted",
+    selectedSessionsSkippedActive:
+      "{deleted} deleted; {count} kept because a turn is running",
+    failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
+    newChat: "New chat",
+    workspace: "workspace",
+    workspaceDefault: "Default",
+    workspaceRescan: "Rescan repositories",
+    workspaceCustom: "Other path…",
     previousPage: "Previous page",
     nextPage: "Next page",
     roles: {
@@ -199,6 +272,11 @@ export const en: Translations = {
   },
 
   cron: {
+    loadWhat: "cron jobs",
+    // Script-only mode on, Script field empty. `no_agent` is the config key, not a term the
+    // user has seen; name the field they must fill instead.
+    scriptRequired:
+      "Script-only jobs need a script path. Fill in the Script field or switch the job back to prompt mode.",
     confirmDeleteMessage:
       "This removes the job from the schedule. This cannot be undone.",
     confirmDeleteTitle: "Delete scheduled job?",
@@ -209,11 +287,50 @@ export const en: Translations = {
     promptPlaceholder: "What should the agent do on each run?",
     schedule: "Schedule (cron expression)",
     schedulePlaceholder: "0 9 * * *",
+    scheduleMode: "Schedule",
+    scheduleModes: {
+      interval: "Every interval",
+      daily: "Daily",
+      weekly: "Weekly",
+      monthly: "Monthly",
+      once: "Once",
+      custom: "Custom (cron expression)",
+      intervalEvery: "Every",
+      intervalUnit: "Unit",
+      unitMinutes: "minutes",
+      unitHours: "hours",
+      unitDays: "days",
+      timeOfDay: "Time of day",
+      weekdays: "Days of week",
+      weekdaysShort: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+      dayOfMonth: "Day of month",
+      onceAt: "Run at",
+      customLabel: "Cron expression",
+      customPlaceholder: "0 9 * * *",
+      customHint:
+        "Five-field cron expression (minute, hour, day, month, weekday).",
+      preview: "Sends as",
+      previewEmpty: "(incomplete)",
+    },
+    scheduleDescribe: {
+      none: "—",
+      everyMinutes: "Every {n} min",
+      everyHours: "Every {n} h",
+      everyDays: "Every {n} d",
+      dailyAt: "Daily at {time}",
+      weeklyAt: "Weekly on {days} at {time}",
+      monthlyAt: "Monthly on the {day} at {time}",
+      onceAt: "Once at {time}",
+    },
     deliverTo: "Deliver to",
     scheduledJobs: "Scheduled Jobs",
     noJobs: "No cron jobs configured. Create one above.",
     last: "Last",
     next: "Next",
+    /** Replaces `next` when the stored next_run_at is already past the scheduler grace. */
+    overdueSince: "Overdue since",
+    /** Banner when the ticker heartbeat is stale; {when} is a relative time such as "7h ago". */
+    schedulerLastTicked: "Scheduler last ticked {when} — jobs that came due since then have not fired",
     pause: "Pause",
     resume: "Resume",
     triggerNow: "Trigger now",
@@ -223,6 +340,9 @@ export const en: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      needsHomeChannel: "set a home channel first",
+      noneConfigured:
+        "No messaging platforms configured. Set one up under Channels to deliver reports.",
     },
   },
 
@@ -234,7 +354,8 @@ export const en: Translations = {
     nameRule:
       "Lowercase letters, digits, _ and - only; must start with a letter or digit; up to 64 characters.",
     invalidName: "Invalid profile name",
-    cloneFromDefault: "Clone config from default profile",
+    cloneFrom: "Clone config from",
+    cloneFromNone: "None (blank)",
     allProfiles: "Profiles",
     noProfiles: "No profiles found.",
     defaultBadge: "default",
@@ -256,6 +377,38 @@ export const en: Translations = {
     created: "Created",
     deleted: "Deleted",
     renamed: "Renamed",
+    activeProfile: "Active profile",
+    activeBadge: "active",
+    setActive: "Set as active",
+    activeSet: "Active profile set",
+    gatewayRunning: "Gateway running",
+    gatewayStopped: "Gateway stopped",
+    gatewayRunningWarning:
+      "This profile's gateway is running — it will be stopped.",
+    aliasBadge: "alias",
+    description: "Description",
+    descriptionPlaceholder:
+      "What is this profile good at? Used to route kanban tasks by role.",
+    noDescription: "No description",
+    editDescription: "Edit description",
+    descriptionSaved: "Description saved",
+    reviewBadge: "review",
+    autoGenerate: "Auto-generate",
+    generating: "Generating…",
+    describeFailed: "Could not generate description",
+    distribution: "Distribution",
+    advancedOptions: "Advanced options",
+    cloneAll: "Clone everything (memories, sessions, skills, state)",
+    noSkillsOption: "Don't seed bundled skills",
+    descriptionOptional: "Description (optional)",
+    modelOptional: "Model (optional)",
+    modelInherit: "Inherit from clone / default",
+    modelLoading: "Loading models…",
+    modelNone: "No model providers are set up yet. Add an API key under Keys or sign in to a provider under Models.",
+    editModel: "Change model",
+    modelSaved: "Model updated",
+    modelSelect: "Select a model",
+    actions: "Actions",
   },
 
   pluginsPage: {
@@ -264,14 +417,16 @@ export const en: Translations = {
     disableRuntime: "Disable",
     enableAfterInstall: "Enable after install",
     enableRuntime: "Enable",
+    toggleTakesEffectAfterRestart:
+      "Saved — restart the gateway to apply the change.",
     forceReinstall: "Force reinstall (delete existing folder first)",
     headline:
       "Discover, install, enable, and update Hermes plugins (`hermes plugins` parity).",
     identifierLabel: "Git URL or owner/repo",
     inactive: "inactive",
-    installBtn: "Install from Git",
+    installBtn: "Install",
     installHeading: "Install from GitHub / Git URL",
-    installHint: "Use owner/repo shorthand or a full https:// or git@ clone URL.",
+    installHint: "Use owner/repo shorthand or a full https:// or git@ clone URL. For a plugin in a subdirectory, append the path: owner/repo/path/to/plugin (or <url>#path/to/plugin).",
     memoryProviderLabel: "Memory provider",
     missingEnvWarn: "Set these in Keys before the plugin can run:",
     noDashboardTab: "No dashboard tab",
@@ -294,19 +449,39 @@ export const en: Translations = {
     authRequired: "Auth required",
     authRequiredHint: "Run this command to authenticate:",
     updateGit: "Git pull",
+    updateConsentBody: (name: string, sha: string) =>
+      `The new catalog pin of ${name} (${sha}) adds surfaces the installed version does not have. Apply it only if you trust them:`,
     versionBadge: "Version",
     showInSidebar: "Show in sidebar",
     hideFromSidebar: "Hide from sidebar",
+    catalogHeading: "Plugin catalog",
+    catalogHint:
+      "Curated, Nous-reviewed plugins pinned to exact commits. Install from here for supply-chain-safe versions.",
+    catalogSearchPlaceholder: "Search catalog...",
+    catalogEmpty: "No catalog entries match.",
+    catalogEmptyDocsLink: "Learn about Hermes plugins",
+    catalogInstallBtn: "Install",
+    catalogInstalledBadge: "Installed ✓",
+    catalogUpdateBtn: "Update available",
+    catalogRemovedBadge: "Removed",
+    catalogConfirmTitle: "Install this plugin?",
+    catalogConfirmInstallNote:
+      "Plugins install disabled; enable it after install to activate.",
+    catalogRequiresEnv: "Requires env",
+    removedFromCatalog: "Removed from catalog",
   },
 
   skills: {
     title: "Skills",
     searchPlaceholder: "Search skills and toolsets...",
+    loadWhat: "skills",
+    browseHub: "Browse skills hub",
+    createSkill: "Create skill",
     enabledOf: "{enabled}/{total} enabled",
     all: "All",
     categories: "Categories",
     filters: "Filters",
-    noSkills: "No skills found. Skills are loaded from ~/.hermes/skills/",
+    noSkills: "No skills installed yet. Browse the skills hub or create one here; from a terminal you can also run `hermes skills search <topic>`.",
     noSkillsMatch: "No skills match your search or filter.",
     skillCount: "{count} skill{s}",
     resultCount: "{count} result{s}",
@@ -317,6 +492,10 @@ export const en: Translations = {
     setupNeeded: "Setup needed",
     disabledForCli: "Disabled for CLI",
     more: "+{count} more",
+    profileSelector: "Profile",
+    currentProfile: "current ({name})",
+    managingProfile:
+      "Managing profile \u201c{name}\u201d — toggles apply to that profile, not this dashboard\u2019s.",
   },
 
   config: {
@@ -367,6 +546,8 @@ export const en: Translations = {
     description: "Manage API keys and secrets stored in",
     hideAdvanced: "Hide Advanced",
     showAdvanced: "Show Advanced",
+    showLess: "Show less",
+    showMore: "Show more",
     llmProviders: "LLM Providers",
     providersConfigured: "{configured} of {total} providers configured",
     getKey: "Get key",
@@ -377,25 +558,38 @@ export const en: Translations = {
     replaceCurrentValue: "Replace current value ({preview})",
     showValue: "Show real value",
     hideValue: "Hide value",
+    customTitle: "Custom Keys",
+    customHint: "Arbitrary environment variables stored in your .env that Hermes doesn't recognise. Use these to inject env vars for skills, MCP servers, or your own tooling.",
+    customConfigured: "{count} custom key{s} set",
+    addCustomKey: "Add a custom key",
+    customKeyName: "Variable name",
+    customKeyNamePlaceholder: "e.g. MY_SERVICE_API_KEY",
+    add: "Add",
+    invalidKeyName: "Use letters, numbers and underscores only (must start with a letter or underscore).",
   },
 
   oauth: {
     title: "Provider Logins (OAuth)",
     providerLogins: "Provider Logins (OAuth)",
-    description: "{connected} of {total} OAuth providers connected. Login flows currently run via the CLI; click Copy command and paste into a terminal to set up.",
+    description:
+      "{connected} of {total} OAuth providers connected. Use Login for dashboard-supported flows; CLI commands remain available for external or fallback setup.",
     connected: "Connected",
     expired: "Expired",
-    notConnected: "Not connected. Run {command} in a terminal.",
+    notConnected: "Not connected. Use Login when available, or run {command} in a terminal.",
     runInTerminal: "in a terminal.",
     noProviders: "No OAuth-capable providers detected.",
     login: "Login",
     disconnect: "Disconnect",
     managedExternally: "Managed externally",
     copied: "Copied ✓",
-    cli: "CLI",
+    copyCode: "Copy code",
+    copyFailed: "Could not copy automatically. Select the code and copy it manually.",
+    cli: "Copy",
     copyCliCommand: "Copy CLI command (for external / fallback)",
     connect: "Connect",
     sessionExpires: "Session expires in {time}",
+    sessionExpiredNoError:
+      "Sign-in expired without reaching the provider. This usually means the sign-in page stalled in the opened tab (server-side issue) — finish signing in there, then click Retry. If it keeps failing, use an API key or the CLI fallback instead.",
     initiatingLogin: "Initiating login flow…",
     exchangingCode: "Exchanging code for tokens…",
     connectedClosing: "Connected! Closing…",
@@ -419,12 +613,18 @@ export const en: Translations = {
   },
 
   language: {
-    switchTo: "Switch to Chinese",
+    switchTo: "Switch language",
   },
 
   theme: {
     title: "Theme",
     switchTheme: "Switch theme",
+    fontTitle: "Font",
+    fontDefault: "Theme default",
+    fontDefaultHint: "Use the active theme's font",
+    fontSans: "Sans",
+    fontSerif: "Serif",
+    fontMono: "Mono",
   },
 
   achievements: {
@@ -574,6 +774,9 @@ export const en: Translations = {
     createTask: "Create task in this column",
     noTasks: "— no tasks —",
     unassigned: "unassigned",
+    needsAssignee: "Needs assignee",
+    needsAssigneeHint:
+      "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile.",
     untitled: "(untitled)",
     loadingDetail: "Loading…",
     addComment: "Add a comment… (Enter to submit)",
@@ -655,6 +858,7 @@ export const en: Translations = {
     columnLabels: {
       triage: "Triage",
       todo: "Todo",
+      scheduled: "Scheduled",
       ready: "Ready",
       running: "In Progress",
       blocked: "Blocked",
@@ -664,7 +868,8 @@ export const en: Translations = {
     columnHelp: {
       triage: "Raw ideas — a specifier will flesh out the spec",
       todo: "Waiting on dependencies or unassigned",
-      ready: "Assigned and waiting for a dispatcher tick",
+      scheduled: "Waiting on a known time delay or scheduled follow-up",
+      ready: "Dependencies satisfied; assign a profile to dispatch",
       running: "Claimed by a worker — in-flight",
       blocked: "Worker asked for human input",
       done: "Completed",
@@ -676,6 +881,14 @@ export const en: Translations = {
       "Archive this task? It disappears from the default board view.",
     confirmBlocked:
       "Mark this task as blocked? The worker's claim is released.",
+    confirmScheduled:
+      "Move this task to Scheduled? Use this for known time delays rather than human blockers.",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     completionSummary:
       "Completion summary for {label}. This is stored as the task result.",
     completionSummaryRequired:
@@ -693,5 +906,29 @@ export const en: Translations = {
       "workspace path (optional, derived from assignee if blank)",
     logTruncated: "(showing last 100 KB — full log at ",
     logAt: ")",
+    newTaskTitle: "New task — {column}",
+    taskTitleLabel: "Title",
+    assigneeLabel: "Assignee",
+    assigneeLabelHint: "(blank = dispatcher picks)",
+    skillsLabel: "Skills",
+    skillsLabelHint: "(optional, comma-separated)",
+    parentLabel: "Parent task",
+    parentLabelHint: "(child stays blocked until the parent is done)",
+    create: "Create",
+    boardSettings: "Settings",
+    boardSettingsTitle:
+      "Board settings — name, description, and the default project directory new tasks inherit",
+    boardSettingsTitleFor: "Board settings — {name}",
+    projectDirectoryOverrideHint:
+      "New tasks inherit this as their workspace default; each task can still override it in the create dialog.",
+    saving: "Saving…",
+    commentHint:
+      "Comments reach the worker on its next run or kanban_show() — no need to block the task first.",
+    commentHintTitle:
+      "Comments are the channel for talking to a task's worker. They land on the thread immediately — no need to block the task first. A running worker picks the thread up on its next kanban_show() or respawn; blocking is only for when you want the worker to STOP and wait for your input.",
+    trash: {
+      confirmTitle: "Delete task?",
+      confirmManyTitle: "Delete {n} tasks?",
+    },
   },
 };

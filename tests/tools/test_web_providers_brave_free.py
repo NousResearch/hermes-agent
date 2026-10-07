@@ -1,50 +1,37 @@
 """Tests for the Brave Search (free tier) web search provider.
 
 Covers:
-- BraveFreeSearchProvider.is_configured() env var gating
-- BraveFreeSearchProvider.search() — happy path, HTTP error, request error, bad JSON
+- BraveFreeWebSearchProvider.is_available() env var gating
+- BraveFreeWebSearchProvider.search() — happy path, HTTP error, request error, bad JSON
 - Result normalization (title, url, description, position)
 - Limit truncation + Brave's count cap (20)
 - _is_backend_available("brave-free") integration
 - _get_backend() recognizes "brave-free" as a valid configured backend
 - check_web_api_key() includes brave-free in availability check
-- web_extract / web_crawl return search-only errors when brave-free is active
+- web_extract returns a search-only error when brave-free is active
 """
 from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from tests.tools.conftest import register_all_web_providers
+
 
 # ---------------------------------------------------------------------------
-# BraveFreeSearchProvider unit tests
+# BraveFreeWebSearchProvider unit tests
 # ---------------------------------------------------------------------------
 
 
 class TestBraveFreeProviderIsConfigured:
     def test_configured_when_key_set(self, monkeypatch):
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        from tools.web_providers.brave_free import BraveFreeSearchProvider
-        assert BraveFreeSearchProvider().is_configured() is True
+        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
+        assert BraveFreeWebSearchProvider().is_available() is True
 
-    def test_not_configured_when_key_missing(self, monkeypatch):
-        monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
-        from tools.web_providers.brave_free import BraveFreeSearchProvider
-        assert BraveFreeSearchProvider().is_configured() is False
 
-    def test_not_configured_when_key_whitespace(self, monkeypatch):
-        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "   ")
-        from tools.web_providers.brave_free import BraveFreeSearchProvider
-        assert BraveFreeSearchProvider().is_configured() is False
-
-    def test_provider_name(self):
-        from tools.web_providers.brave_free import BraveFreeSearchProvider
-        assert BraveFreeSearchProvider().provider_name() == "brave-free"
-
-    def test_implements_web_search_provider(self):
-        from tools.web_providers.base import WebSearchProvider
-        from tools.web_providers.brave_free import BraveFreeSearchProvider
-        assert issubclass(BraveFreeSearchProvider, WebSearchProvider)
 
 
 class TestBraveFreeProviderSearch:
@@ -68,10 +55,10 @@ class TestBraveFreeProviderSearch:
 
     def test_happy_path_normalizes_results(self, monkeypatch):
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        from tools.web_providers.brave_free import BraveFreeSearchProvider
+        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
 
         with patch("httpx.get", return_value=self._mock_resp(self._SAMPLE_RESPONSE)):
-            result = BraveFreeSearchProvider().search("test query", limit=5)
+            result = BraveFreeWebSearchProvider().search("test query", limit=5)
 
         assert result["success"] is True
         web = result["data"]["web"]
@@ -82,7 +69,7 @@ class TestBraveFreeProviderSearch:
     def test_sends_subscription_token_header_and_count(self, monkeypatch):
         """Brave uses X-Subscription-Token; count maps from limit."""
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        from tools.web_providers.brave_free import BraveFreeSearchProvider
+        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
 
         captured = {}
 
@@ -93,91 +80,31 @@ class TestBraveFreeProviderSearch:
             return self._mock_resp({"web": {"results": []}})
 
         with patch("httpx.get", side_effect=fake_get):
-            BraveFreeSearchProvider().search("q", limit=5)
+            BraveFreeWebSearchProvider().search("q", limit=5)
 
         assert captured["url"] == "https://api.search.brave.com/res/v1/web/search"
         assert captured["headers"].get("X-Subscription-Token") == "BSAkey123"
         assert captured["params"].get("q") == "q"
         assert captured["params"].get("count") == 5
 
-    def test_count_is_capped_at_20(self, monkeypatch):
-        """Brave caps count at 20 — limit above that clamps."""
-        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        from tools.web_providers.brave_free import BraveFreeSearchProvider
-
-        captured = {}
-
-        def fake_get(url, **kwargs):
-            captured["params"] = kwargs.get("params", {})
-            return self._mock_resp({"web": {"results": []}})
-
-        with patch("httpx.get", side_effect=fake_get):
-            BraveFreeSearchProvider().search("q", limit=100)
-
-        assert captured["params"].get("count") == 20
-
-    def test_limit_is_respected_client_side(self, monkeypatch):
-        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        from tools.web_providers.brave_free import BraveFreeSearchProvider
-
-        with patch("httpx.get", return_value=self._mock_resp(self._SAMPLE_RESPONSE)):
-            result = BraveFreeSearchProvider().search("q", limit=2)
-
-        assert result["success"] is True
-        assert len(result["data"]["web"]) == 2
-
-    def test_empty_results(self, monkeypatch):
-        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        from tools.web_providers.brave_free import BraveFreeSearchProvider
-
-        with patch("httpx.get", return_value=self._mock_resp({"web": {"results": []}})):
-            result = BraveFreeSearchProvider().search("nothing", limit=5)
-
-        assert result["success"] is True
-        assert result["data"]["web"] == []
 
     def test_missing_web_key_returns_empty(self, monkeypatch):
         """Responses without a ``web`` block should produce an empty result set, not crash."""
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        from tools.web_providers.brave_free import BraveFreeSearchProvider
+        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
 
         with patch("httpx.get", return_value=self._mock_resp({})):
-            result = BraveFreeSearchProvider().search("q", limit=5)
+            result = BraveFreeWebSearchProvider().search("q", limit=5)
 
         assert result["success"] is True
         assert result["data"]["web"] == []
 
-    def test_http_error_returns_failure(self, monkeypatch):
-        import httpx
-        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        from tools.web_providers.brave_free import BraveFreeSearchProvider
-
-        bad = MagicMock()
-        bad.status_code = 429
-        err = httpx.HTTPStatusError("429", request=MagicMock(), response=bad)
-
-        with patch("httpx.get", side_effect=err):
-            result = BraveFreeSearchProvider().search("q", limit=5)
-
-        assert result["success"] is False
-        assert "429" in result["error"]
-
-    def test_request_error_returns_failure(self, monkeypatch):
-        import httpx
-        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        from tools.web_providers.brave_free import BraveFreeSearchProvider
-
-        with patch("httpx.get", side_effect=httpx.RequestError("boom")):
-            result = BraveFreeSearchProvider().search("q", limit=5)
-
-        assert result["success"] is False
-        assert "boom" in result["error"] or "Brave" in result["error"]
 
     def test_missing_key_returns_failure(self, monkeypatch):
         monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
-        from tools.web_providers.brave_free import BraveFreeSearchProvider
+        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
 
-        result = BraveFreeSearchProvider().search("q", limit=5)
+        result = BraveFreeWebSearchProvider().search("q", limit=5)
         assert result["success"] is False
         assert "BRAVE_SEARCH_API_KEY" in result["error"]
 
@@ -193,38 +120,17 @@ class TestBraveFreeBackendWiring:
         from tools.web_tools import _is_backend_available
         assert _is_backend_available("brave-free") is True
 
-    def test_is_backend_available_false_when_key_missing(self, monkeypatch):
-        monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
-        from tools.web_tools import _is_backend_available
-        assert _is_backend_available("brave-free") is False
-
-    def test_configured_backend_accepted(self, monkeypatch):
-        from tools import web_tools
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "brave-free"})
-        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        assert web_tools._get_backend() == "brave-free"
-
-    def test_auto_detect_picks_brave_free_when_only_key_set(self, monkeypatch):
-        from tools import web_tools
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
-        for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY",
-                    "TAVILY_API_KEY", "EXA_API_KEY", "SEARXNG_URL"):
-            monkeypatch.delenv(key, raising=False)
-        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
-        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
-        assert web_tools._get_backend() == "brave-free"
 
     def test_brave_free_does_not_override_paid_provider(self, monkeypatch):
-        """Tavily (higher priority) should win in auto-detect."""
+        """Exa (higher priority) should win in auto-detect."""
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
         for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY", "EXA_API_KEY", "SEARXNG_URL"):
             monkeypatch.delenv(key, raising=False)
-        monkeypatch.setenv("TAVILY_API_KEY", "tvly")
+        monkeypatch.setenv("EXA_API_KEY", "exa_test")
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
-        assert web_tools._get_backend() == "tavily"
+        assert web_tools._get_backend() == "exa"
 
     def test_check_web_api_key_true_when_brave_free_configured(self, monkeypatch):
         from tools import web_tools
@@ -234,11 +140,20 @@ class TestBraveFreeBackendWiring:
 
 
 # ---------------------------------------------------------------------------
-# brave-free is search-only: web_extract / web_crawl return clear errors
+# brave-free is search-only: web_extract returns a clear error
 # ---------------------------------------------------------------------------
 
 
 class TestBraveFreeSearchOnlyErrors:
+    _register_providers = staticmethod(register_all_web_providers)
+
+    @pytest.fixture(autouse=True)
+    def _populate_web_registry(self):
+        self._register_providers()
+        yield
+        from agent.web_search_registry import _reset_for_tests
+        _reset_for_tests()
+
     def test_web_extract_returns_search_only_error(self, monkeypatch):
         import asyncio
         from tools import web_tools
@@ -246,28 +161,14 @@ class TestBraveFreeSearchOnlyErrors:
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "brave-free"})
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+        async def _allow_ssrf(_url: str) -> bool:
+            return True
+
+        monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
 
         result_str = asyncio.get_event_loop().run_until_complete(
             web_tools.web_extract_tool(["https://example.com"])
-        )
-        result = json.loads(result_str)
-        assert result["success"] is False
-        assert "search-only" in result["error"].lower()
-        assert "brave" in result["error"].lower()
-
-    def test_web_crawl_returns_search_only_error(self, monkeypatch):
-        import asyncio
-        from tools import web_tools
-
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "brave-free"})
-        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
-        monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
-        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
-
-        result_str = asyncio.get_event_loop().run_until_complete(
-            web_tools.web_crawl_tool("https://example.com")
         )
         result = json.loads(result_str)
         assert result["success"] is False

@@ -1,22 +1,13 @@
-"""_tui_need_npm_install: auto npm when node_modules is behind the lockfile."""
-
+"""TUI launch consumes the shared dependency preparation and compiler."""
+import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
-
-
-@pytest.fixture
-def main_mod():
-    import hermes_cli.main as m
-
-    return m
-
-
-def _touch_ink(root: Path) -> None:
-    ink = root / "node_modules" / "@hermes" / "ink" / "package.json"
-    ink.parent.mkdir(parents=True, exist_ok=True)
-    ink.write_text("{}")
+from hermes_cli import main_tui_launch
+from tests.hermes_cli.test_source_build import source_checkout, source_products, _events  # noqa: F401
 
 
 def _touch_tui_entry(root: Path) -> None:
@@ -25,114 +16,153 @@ def _touch_tui_entry(root: Path) -> None:
     entry.write_text("console.log('tui')")
 
 
-def _touch_ink_bundle(root: Path) -> None:
-    bundle = root / "packages" / "hermes-ink" / "dist" / "ink-bundle.js"
-    bundle.parent.mkdir(parents=True, exist_ok=True)
-    bundle.write_text("export {}")
+def test_need_rebuild_when_tui_bundle_missing(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "entry.tsx").write_text("console.log('src')")
+
+    assert main_tui_launch._tui_need_rebuild(tmp_path) is True
 
 
-def test_need_install_when_ink_missing(tmp_path: Path, main_mod) -> None:
-    (tmp_path / "package-lock.json").write_text("{}")
-    assert main_mod._tui_need_npm_install(tmp_path) is True
-
-
-def test_no_install_when_lock_newer_but_hidden_lock_matches(tmp_path: Path, main_mod) -> None:
-    _touch_ink(tmp_path)
-    (tmp_path / "package-lock.json").write_text('{"packages":{"node_modules/foo":{"version":"1.0.0"}}}')
-    (tmp_path / "node_modules" / ".package-lock.json").write_text(
-        '{"packages":{"node_modules/foo":{"version":"1.0.0","ideallyInert":true}}}'
-    )
-    os.utime(tmp_path / "package-lock.json", (200, 200))
-    os.utime(tmp_path / "node_modules" / ".package-lock.json", (100, 100))
-    assert main_mod._tui_need_npm_install(tmp_path) is False
-
-
-def test_need_install_when_required_package_missing_from_hidden_lock(tmp_path: Path, main_mod) -> None:
-    _touch_ink(tmp_path)
-    (tmp_path / "package-lock.json").write_text(
-        '{"packages":{"node_modules/foo":{"version":"1.0.0"},"node_modules/bar":{"version":"1.0.0"}}}'
-    )
-    (tmp_path / "node_modules" / ".package-lock.json").write_text(
-        '{"packages":{"node_modules/foo":{"version":"1.0.0"}}}'
-    )
-    assert main_mod._tui_need_npm_install(tmp_path) is True
-
-
-def test_no_install_when_only_optional_peer_package_missing_from_hidden_lock(tmp_path: Path, main_mod) -> None:
-    _touch_ink(tmp_path)
-    (tmp_path / "package-lock.json").write_text(
-        '{"packages":{"node_modules/foo":{"version":"1.0.0"},"node_modules/optional":{"version":"1.0.0","optional":true,"peer":true}}}'
-    )
-    (tmp_path / "node_modules" / ".package-lock.json").write_text(
-        '{"packages":{"node_modules/foo":{"version":"1.0.0"}}}'
-    )
-    assert main_mod._tui_need_npm_install(tmp_path) is False
-
-
-def test_no_install_when_only_peer_annotation_differs(tmp_path: Path, main_mod) -> None:
-    """npm 9 drops the ``peer`` flag from the hidden lock on dev-deps that are
-    *also* declared as peers.  That's a cosmetic difference — the package is
-    installed at the requested version — so it must not trigger a reinstall.
-    Regression for the TUI-in-Docker failure where 16 such mismatches caused
-    `Installing TUI dependencies…` → EACCES on every launch.
-    """
-    _touch_ink(tmp_path)
-    (tmp_path / "package-lock.json").write_text(
-        '{"packages":{'
-        '"node_modules/foo":{"version":"1.0.0","dev":true,"peer":true,"resolved":"https://x/foo.tgz"}'
-        '}}'
-    )
-    (tmp_path / "node_modules" / ".package-lock.json").write_text(
-        '{"packages":{'
-        '"node_modules/foo":{"version":"1.0.0","dev":true,"resolved":"https://x/foo.tgz"}'
-        '}}'
-    )
-    assert main_mod._tui_need_npm_install(tmp_path) is False
-
-
-def test_install_when_version_differs_even_with_peer_drop(tmp_path: Path, main_mod) -> None:
-    """The peer-drop tolerance must not mask a real version skew."""
-    _touch_ink(tmp_path)
-    (tmp_path / "package-lock.json").write_text(
-        '{"packages":{"node_modules/foo":{"version":"2.0.0","dev":true,"peer":true}}}'
-    )
-    (tmp_path / "node_modules" / ".package-lock.json").write_text(
-        '{"packages":{"node_modules/foo":{"version":"1.0.0","dev":true}}}'
-    )
-    assert main_mod._tui_need_npm_install(tmp_path) is True
-
-
-def test_no_install_when_lock_older_than_marker(tmp_path: Path, main_mod) -> None:
-    _touch_ink(tmp_path)
-    (tmp_path / "package-lock.json").write_text("{}")
-    (tmp_path / "node_modules" / ".package-lock.json").write_text("{}")
-    os.utime(tmp_path / "package-lock.json", (100, 100))
-    os.utime(tmp_path / "node_modules" / ".package-lock.json", (200, 200))
-    assert main_mod._tui_need_npm_install(tmp_path) is False
-
-
-def test_need_install_when_marker_missing(tmp_path: Path, main_mod) -> None:
-    _touch_ink(tmp_path)
-    (tmp_path / "package-lock.json").write_text("{}")
-    assert main_mod._tui_need_npm_install(tmp_path) is True
-
-
-def test_no_install_without_lockfile_when_ink_present(tmp_path: Path, main_mod) -> None:
-    _touch_ink(tmp_path)
-    assert main_mod._tui_need_npm_install(tmp_path) is False
-
-
-def test_build_needed_when_local_ink_bundle_missing(tmp_path: Path, main_mod) -> None:
+def test_unreceipted_bundle_is_stale_even_when_newer(tmp_path: Path) -> None:
     _touch_tui_entry(tmp_path)
-    _touch_ink(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "entry.tsx").write_text("console.log('src')")
+    os.utime(src / "entry.tsx", (100, 100))
+    os.utime(tmp_path / "dist" / "entry.js", (200, 200))
 
-    assert main_mod._tui_need_npm_install(tmp_path) is False
-    assert main_mod._tui_build_needed(tmp_path) is True
+    assert main_tui_launch._tui_need_rebuild(tmp_path) is True
 
 
-def test_build_not_needed_when_entry_and_ink_bundle_present(tmp_path: Path, main_mod) -> None:
-    _touch_tui_entry(tmp_path)
-    _touch_ink(tmp_path)
-    _touch_ink_bundle(tmp_path)
 
-    assert main_mod._tui_build_needed(tmp_path) is False
+@pytest.fixture
+def tui_source(source_products, monkeypatch):
+    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+    monkeypatch.delenv("HERMES_TUI_FORCE_BUILD", raising=False)
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setenv("HERMES_NODE", shutil.which("node"))
+    monkeypatch.setattr(main_tui_launch, "_find_bundled_tui", lambda: None)
+    return source_products
+
+
+@pytest.mark.platforms("posix")
+def test_source_launch_prepares_base_union_but_compiles_only_tui(tui_source):
+    root, acquired = tui_source
+    argv, cwd = main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert cwd == root / "ui-tui"
+    assert argv[-1] == str(cwd / "dist/entry.js")
+    assert (cwd / "dist/entry.js").read_text() == "tui"
+    assert [event["step"] for event in _events(root)] == ["deps", "tui"]
+    assert acquired == ["npm"]
+    assert (root / "node_modules/ui-tui").exists()
+    assert (root / "node_modules/web").exists()
+    assert not (root / "node_modules/apps-desktop").exists()
+
+
+@pytest.mark.platforms("posix")
+def test_source_compile_failure_stops_launch_without_reinstall(tui_source):
+    root, acquired = tui_source
+    (root / "fail-tui").touch()
+    with pytest.raises(subprocess.CalledProcessError):
+        main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert [event["step"] for event in _events(root)] == ["deps", "tui"]
+    assert acquired == ["npm"]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("termux", [False, True])
+def test_fresh_bundle_does_not_prepare_or_compile(tui_source, monkeypatch, termux):
+    root, acquired = tui_source
+    _touch_tui_entry(root / "ui-tui")
+    from tests.hermes_cli.test_source_build import stamp_product
+    stamp_product(root, "tui", root / "ui-tui/dist")
+    if termux:
+        monkeypatch.setenv("TERMUX_VERSION", "test")
+    argv, cwd = main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert argv[-1] == str(cwd / "dist/entry.js")
+    assert _events(root) == []
+    assert acquired == []
+
+
+@pytest.mark.platforms("posix")
+def test_prebuilt_bundle_launch_does_not_touch_missing_source(tmp_path, monkeypatch):
+    bundled = tmp_path / "bundle/entry.js"
+    bundled.parent.mkdir()
+    bundled.write_text("console.log('prebuilt')")
+    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+    monkeypatch.setenv("HERMES_NODE", shutil.which("node"))
+    monkeypatch.setattr(main_tui_launch, "_find_bundled_tui", lambda: bundled)
+    argv, cwd = main_tui_launch._make_tui_argv(tmp_path / "missing-source", tui_dev=False)
+    result = subprocess.run(argv, cwd=cwd, check=True, capture_output=True, text=True)
+    assert result.stdout.strip() == "prebuilt"
+    assert not (tmp_path / "missing-source").exists()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("local_tsx", [False, True])
+def test_dev_launch_builds_ink_before_running_source(tui_source, local_tsx):
+    root, acquired = tui_source
+    ink = root / "ui-tui/packages/hermes-ink"
+    ink.mkdir(parents=True)
+    (ink / "package.json").write_text(json.dumps({
+        "name": "fixture-ink", "version": "1.0.0", "scripts": {"build": "node build.mjs"},
+    }))
+    (ink / "build.mjs").write_text("import { writeFileSync } from 'node:fs'; writeFileSync('built', 'ink');")
+    manifest = json.loads((root / "package.json").read_text())
+    manifest["workspaces"].append("ui-tui/packages/hermes-ink")
+    (root / "package.json").write_text(json.dumps(manifest))
+    subprocess.run([shutil.which("npm"), "install", "--package-lock-only", "--ignore-scripts", "--offline"], cwd=root, check=True)
+    tsx = root / "ui-tui/node_modules/.bin/tsx"
+    if local_tsx:
+        hook = root / "log.mjs"
+        hook.write_text(hook.read_text() + "\nimport { mkdirSync, writeFileSync } from 'node:fs'; "
+                        "mkdirSync('ui-tui/node_modules/.bin', {recursive: true}); "
+                        "writeFileSync('ui-tui/node_modules/.bin/tsx', 'fixture tsx');\n")
+    argv, cwd = main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=True)
+    assert (ink / "built").read_text() == "ink"
+    assert argv == ([str(tsx), "src/entry.tsx"] if local_tsx else [shutil.which("npm"), "start"])
+    assert cwd == root / "ui-tui"
+    assert acquired == ["npm"]
+    assert [event["step"] for event in _events(root)] == ["deps"]
+
+
+@pytest.mark.platforms("posix")
+def test_runtime_node_comes_from_pm_without_legacy_repair(tmp_path, monkeypatch):
+    import pm
+    from pm.package import Runner
+
+    node = shutil.which("node")
+    managed = tmp_path / "bin/node"
+    managed.parent.mkdir()
+    managed.symlink_to(node)
+    monkeypatch.delenv("HERMES_NODE", raising=False)
+    acquired = []
+
+    def acquire(name):
+        acquired.append(name)
+        return Runner(name, {"PATH": str(managed.parent)})
+
+    monkeypatch.setattr(pm, "ensure", acquire)
+    assert main_tui_launch._tui_node_bin("node") == str(managed)
+    assert acquired == ["node"]
+
+
+@pytest.mark.platforms("linux")
+def test_tui_rebuild_preserves_the_prepared_desktop_and_web_union(tui_source):
+    from hermes_cli.source_build import build_update_products
+
+    root, acquired = tui_source
+    build_update_products(root, desktop=True)
+    before = _events(root)
+    main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert _events(root) == before, "fresh launch must not prepare or rebuild"
+    src = root / "ui-tui/src/entry.tsx"
+    src.parent.mkdir()
+    src.write_text("changed tui source")
+    os.utime(root / "ui-tui/dist/entry.js", (1, 1))
+    main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert _events(root) == [*before, {"step": "tui"}]
+    assert acquired == ["npm", "npm"]
+    assert (root / "node_modules/web").exists()
+    assert (root / "node_modules/apps-desktop").exists()

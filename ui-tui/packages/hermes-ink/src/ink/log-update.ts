@@ -1,7 +1,8 @@
-import { type AnsiCode, ansiCodesToString, diffAnsiCodes } from '@alcalzone/ansi-tokenize'
+import { type AnsiCode, ansiCodesToString } from '@alcalzone/ansi-tokenize'
 
 import { logForDebugging } from '../utils/debug.js'
 
+import { transitionAnsiCodes } from './ansi-transition.js'
 import type { Diff, FlickerReason, Frame } from './frame.js'
 import type { Point } from './layout/geometry.js'
 import {
@@ -25,6 +26,7 @@ import {
   setScrollRegion
 } from './termio/csi.js'
 import { LINK_END, link as oscLink } from './termio/osc.js'
+import { hasMultipleCodepoints } from './termio/parser.js'
 
 type State = {
   previousOutput: string
@@ -88,7 +90,7 @@ export class LogUpdate {
           }
 
           const cellStyles = this.options.stylePool.get(cell.styleId)
-          const styleDiff = diffAnsiCodes(currentStyles, cellStyles)
+          const styleDiff = transitionAnsiCodes(currentStyles, cellStyles)
 
           if (styleDiff.length > 0) {
             line += ansiCodesToString(styleDiff)
@@ -106,7 +108,7 @@ export class LogUpdate {
       }
 
       // Reset styles at end of line so trimEnd doesn't leave dangling codes
-      const resetCodes = diffAnsiCodes(currentStyles, [])
+      const resetCodes = transitionAnsiCodes(currentStyles, [])
 
       if (resetCodes.length > 0) {
         line += ansiCodesToString(resetCodes)
@@ -141,14 +143,12 @@ export class LogUpdate {
     const startTime = performance.now()
     const stylePool = this.options.stylePool
 
-    // Since we assume the cursor is at the bottom on the screen, we only need
-    // to clear when the viewport gets shorter (i.e. the cursor position drifts)
-    // or when it gets thinner (and text wraps). We _could_ figure out how to
-    // not reset here but that would involve predicting the current layout
-    // _after_ the viewport change which means calcuating text wrapping.
-    // Resizing is a rare enough event that it's not practically a big issue.
+    // Terminal hosts can reflow/preserve old cells on any resize, including
+    // height-only growth. A partial diff can then leave stale transcript rows
+    // or cut off bordered content even when our virtual scrollTop is correct.
+    // Resizing is rare enough that a full repaint is the safer tradeoff.
     if (
-      next.viewport.height < prev.viewport.height ||
+      next.viewport.height !== prev.viewport.height ||
       (prev.viewport.width !== 0 && next.viewport.width !== prev.viewport.width)
     ) {
       return fullResetSequence_CAUSES_FLICKER(next, 'resize', stylePool)
@@ -175,7 +175,10 @@ export class LogUpdate {
     if (altScreen && next.scrollHint && decstbmSafe) {
       const { top, bottom, delta } = next.scrollHint
 
-      if (top >= 0 && bottom < prev.screen.height && bottom < next.screen.height) {
+      // Keep DECSTBM away from the terminal's last visible row. In alt-screen
+      // layouts we reserve that lane for status/cursor parking, and scrolling
+      // it can leave transient ghosting/bleed artifacts until a later repaint.
+      if (top >= 0 && bottom < prev.screen.height - 1 && bottom < next.screen.height - 1) {
         shiftRows(prev.screen, top, bottom, delta)
         scrollPatch = [
           {
@@ -354,6 +357,26 @@ export class LogUpdate {
       moveCursorTo(screen, x, y)
 
       if (added) {
+        // Some terminals retain the previous combining-mark state when a
+        // multi-codepoint, single-column grapheme is overwritten in place.
+        // Clear the physical cell first, then return to it before drawing the
+        // replacement. Keep the common single-codepoint path byte-for-byte
+        // unchanged.
+        if (
+          removed &&
+          removed.width === CellWidth.Narrow &&
+          added.width === CellWidth.Narrow &&
+          removed.char !== added.char &&
+          (hasMultipleCodepoints(removed.char) || hasMultipleCodepoints(added.char)) &&
+          // An unwritten prev cell arrives as removed={' ', Narrow}; nothing to clear.
+          !isEmptyCellAt(prev.screen, x, y)
+        ) {
+          // No style/hyperlink reset: the glyph overwrites this space at once,
+          // so resetting would only break SGR/OSC8 coalescing across the run.
+          screen.diff.push({ type: 'stdout', content: ' ' })
+          screen.diff.push({ type: 'cursorTo', col: screen.cursor.x + 1 })
+        }
+
         const targetHyperlink = added.hyperlink
         currentHyperlink = transitionHyperlink(screen.diff, currentHyperlink, targetHyperlink)
         const styleStr = stylePool.transition(currentStyleId, added.styleId)

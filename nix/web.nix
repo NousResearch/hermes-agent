@@ -1,31 +1,26 @@
-# nix/web.nix — Hermes Web Dashboard (Vite/React) frontend build
-{ pkgs, hermesNpmLib, ... }:
-let
-  src = ../web;
-  npmDeps = pkgs.fetchNpmDeps {
-    inherit src;
-    hash = "sha256-HWB1piIPglTXbzQHXFYHLgVZIbDb60esupXSQGa1+lI=";
-  };
-
-  npm = hermesNpmLib.mkNpmPassthru { folder = "web"; attr = "web"; pname = "hermes-web"; };
-
-  packageJson = builtins.fromJSON (builtins.readFile (src + "/package.json"));
-  version = packageJson.version;
-in
-pkgs.buildNpmPackage (npm // {
-  pname = "hermes-web";
-  inherit src npmDeps version;
+# Dashboard compilation consumes prepared icons; no npm lifecycle preparation.
+{ hermesNpmLib, generatedIcons, ... }:
+hermesNpmLib.buildNpmPackage {
+  dirs = [
+    "web"
+    "apps/shared"
+    "scripts/build/web.mjs"
+    "scripts/build/freshness.mjs"
+    "scripts/build/frontend-common.mjs"
+  ];
 
   doCheck = false;
 
   buildPhase = ''
-    npx tsc -b
-    npx vite build --outDir dist
+    runHook preBuild
+    node scripts/build/web.mjs --source "$PWD" --icons ${generatedIcons} --out "$TMPDIR/web-product"
+    runHook postBuild
   '';
 
   installPhase = ''
     runHook preInstall
-    cp -r dist $out
+    mkdir -p $out
+    cp -r "$TMPDIR/web-product/." $out/
     runHook postInstall
   '';
-})
+}

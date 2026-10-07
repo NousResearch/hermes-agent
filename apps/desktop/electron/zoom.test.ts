@@ -44,7 +44,7 @@ test('level 0 is exactly 100 percent (Chromium actual-size baseline)', () => {
   assert.equal(percentToZoomLevel(100), 0)
 })
 
-test('fresh installs and Actual Size (Ctrl/Cmd+0) land on 100 percent', () => {
+test('the shipped default zoom level is 100 percent', () => {
   assert.equal(zoomLevelToPercent(DEFAULT_ZOOM_LEVEL), 100)
 })
 

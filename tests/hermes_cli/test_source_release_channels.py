@@ -434,7 +434,16 @@ def test_retirement_existing_target_refill_clears_stale_lock(tmp_path, monkeypat
     import os
     import time as _time
 
+    import hermes_cli.gitlock as gitlock
     from hermes_cli import source_releases
+
+    # Pin the declared "no live git" precondition: clear_stale_git_locks uses a
+    # machine-global pgrep/tasklist guard and skips the whole sweep when any git
+    # process is running, so under the canonical parallel per-file runner an
+    # unrelated test's git subprocess would otherwise make this fixture
+    # nondeterministically keep the lock and fail the proof. The guard's own
+    # behavior is pinned separately in test_gitlock.py.
+    monkeypatch.setattr(gitlock, "_git_proc_running", lambda: False)
 
     origin = tmp_path / "origin.git"
     origin.mkdir()
@@ -824,6 +833,69 @@ def test_missing_pointers_fall_back_only_to_published_releases(releases, channel
     )
     assert not any("/tags?" in path for path in releases.requests)
     assert f"/repos/NousResearch/hermes-agent/releases/tags/{releases.tags[channel]}" not in releases.requests
+
+
+def test_retirement_strict_apply_does_not_unshallow_a_proven_safe_history(tmp_path):
+    """The shared post-fetch classifier judges the fetched objects first: when
+    the pinned fetch already proved ``HEAD`` an ancestor of the target, the
+    verdict returns without ``--unshallow`` — a shallow boundary can survive
+    the fetch while the relation is already decided, and unshallowing it would
+    drag the whole blob history behind the boundary (the reason the updater
+    owns ``fetch_full_commit_graph`` and its ``blob:none`` conversion)."""
+    from hermes_cli import source_releases
+
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    git(origin, "init", "--bare", "-b", "main")
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git(seed, "clone", str(origin), str(seed))
+    git(seed, "config", "user.name", "Release Fixture")
+    git(seed, "config", "user.email", "fixture@example.invalid")
+    # Substantial history BEFORE the install point, so a refill has real mass.
+    for label in ("history-1", "history-2", "installed", "target"):
+        (seed / "content.txt").write_text(label, encoding="utf-8")
+        git(seed, "add", "content.txt")
+        git(seed, "commit", "-m", label)
+    target = git(seed, "rev-parse", "HEAD")
+    installed = git(seed, "rev-parse", "HEAD~1")
+    git(seed, "push", "origin", "HEAD:refs/heads/main")
+    git(seed, "push", "origin", installed + ":refs/heads/old")
+
+    fresh = tmp_path / "fresh"
+    git(tmp_path, "clone", "--depth=1", "--branch", "old", origin.as_uri(), str(fresh))
+    git(fresh, "checkout", "--detach")
+    # The pinned-target fetch has run (the shape _git_retirement_proof's
+    # missing-target branch hands the classifier): a full fetch of the target
+    # links it to the already-present installed parent, HEAD -> target is
+    # provable, and the checkout is still shallow (the install point keeps its
+    # boundary for the history BEFORE it).
+    git(fresh, "fetch", "--no-tags", "origin", target)
+    assert subprocess.run(["git", "cat-file", "-e", target + "^{commit}"], cwd=fresh,
+                          capture_output=True).returncode == 0
+    assert subprocess.run(["git", "rev-parse", "--is-shallow-repository"], cwd=fresh,
+                          capture_output=True, text=True).stdout.strip() == "true"
+
+    request = {"commit": target, "sourceVersion": "1.0.0", "sequence": 1,
+               "repository": "NousResearch/hermes-agent"}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+    assert source_releases._classify_strict_ancestry(request, ["git"], fresh,
+                                                     _FixtureGit(fresh)) is True
+    assert git(fresh, "rev-parse", "HEAD") == installed
+    # The boundary is still there: nothing refilled the history.
+    assert subprocess.run(["git", "rev-parse", "--is-shallow-repository"], cwd=fresh,
+                          capture_output=True, text=True).stdout.strip() == "true"
+
+
+class _FixtureGit:
+    """The ``run_git`` seam the classifier takes, backed by real git."""
+
+    def __init__(self, cwd):
+        self.cwd = str(cwd)
+
+    def __call__(self, *args):
+        return subprocess.run(["git", *args], cwd=self.cwd, capture_output=True,
+                              text=True, stdin=subprocess.DEVNULL)
 
 
 def test_retirement_no_git_strict_apply_refuses_same_version_unknown_stamp(tmp_path):

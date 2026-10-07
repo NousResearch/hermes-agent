@@ -363,6 +363,42 @@ def test_retirement_refuses_to_downgrade_newer_source(
     assert saved(source) == original and not completed
 
 
+def test_retirement_zip_same_version_unknown_stamp_refuses_the_apply(
+        source, monkeypatch, retired_channel_archive):
+    """The strict no-Git apply path cannot treat unverified ordering as
+    authorization: an install carrying build evidence (a version file) at the
+    SAME source version as the pinned retirement build, stamped with an
+    unrelated commit, is exactly the same-version different-build rollback the
+    retirement pins — the pinned archive is never downloaded or applied, and
+    the refusal names the explicit-destination remedy."""
+    import urllib.request
+
+    # Same source version as the qualified build, stamped with an unrelated
+    # descendant commit: the version floor cannot order it, and no Git exists
+    # to prove ancestry. The evidence is COMMITTED so the tree stays clean and
+    # the refusal must come from the retirement proof, not the dirty guard.
+    (source.root / "pyproject.toml").write_text('[project]\nversion = "1.2.1"\n', encoding="utf-8")
+    (source.root / "install-stamp.json").write_text(
+        json.dumps({"commit": source.commits[2]}), encoding="utf-8")
+    git(source.root, "add", "-A")
+    git(source.root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "commit", "-m", "same-version install on a newer local build")
+    head_with_evidence = git(source.root, "rev-parse", "HEAD")
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (True, ["git"], False))
+    downloaded = []
+    def download(url, filename):
+        downloaded.append(url)
+    monkeypatch.setattr(urllib.request, "urlretrieve", download)
+    completed = []
+    monkeypatch.setattr(update_cmd, "_complete_source_update", lambda request: completed.append(request))
+    original = deepcopy(saved(source))
+    with pytest.raises(SystemExit):
+        update_cmd._cmd_update_impl(source.parser.parse_args(["update"]), False)
+    assert not downloaded and not completed
+    assert git(source.root, "rev-parse", "HEAD") == head_with_evidence
+    assert saved(source) == original
+
+
 @pytest.mark.parametrize("dirty", [False, True])
 def test_tagless_zip_apply_uses_pinned_source_archive(source, monkeypatch, dirty):
     import urllib.request

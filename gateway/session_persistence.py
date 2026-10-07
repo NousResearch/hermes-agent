@@ -277,9 +277,10 @@ class SessionPersistenceMixin:
 
     def chat_labels(self, platform, scope_id, chat_id) -> Optional[tuple]:
         """The ``(chat_name, chat_topic)`` last recorded for a chat, or None when none was. Raises
-        when the store cannot be read, including when there is no database handle right now:
-        "unreadable now" is not "never labelled"."""
-        getter = self._routing_db_method("get_meta")
+        when the store cannot be read, including when there is no open database handle right now
+        (the relay reader waits on this read, so it never opens one): "unreadable now" is not
+        "never labelled"."""
+        getter = self._routing_db_method("get_meta", open_db=False)
         if getter is None:
             raise LookupError("session database unavailable")
         raw = getter(self._chat_labels_meta_key(platform, scope_id, chat_id))

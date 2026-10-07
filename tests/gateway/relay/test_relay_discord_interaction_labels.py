@@ -334,3 +334,74 @@ async def test_a_label_write_never_opens_the_database_the_relay_reader_waits_on(
     assert store._routing_db is not None
     await adapter._on_inbound(_message(chat, "u2"))
     assert store.chat_labels(Platform.DISCORD, "g1", "ch1") == ("Hermes Server / #ops", "Incident triage")
+
+
+def _restarted(store):
+    """A fresh adapter on *store*: its in-memory labels are empty, as after a gateway restart."""
+    adapter, _stub = _adapter(platform="discord")
+    adapter.set_session_store(store)
+    adapter.handle_message = AsyncMock()
+    return adapter
+
+
+def _hold_db_lock(db, seconds=10.0):
+    """Hold SessionDB's in-process lock on another thread (as maintenance can) until released."""
+    taken, release = threading.Event(), threading.Event()
+
+    def hold():
+        with db._lock:
+            taken.set()
+            release.wait(seconds)
+
+    holder = threading.Thread(target=hold, daemon=True)
+    holder.start()
+    taken.wait(5)
+    return release, holder
+
+
+@pytest.mark.asyncio
+async def test_an_interaction_never_opens_the_database_for_its_labels(tmp_path):
+    """After a restart the first interaction reads the recorded labels while the relay reader waits.
+    With no open handle that read is skipped, not an open (which waits up to 20 s on a sibling's
+    lock), and nothing is cached: the next interaction after the store reopens gets the labels."""
+    store, adapter = _labelled_store(tmp_path)
+    await adapter._on_inbound(_message({"chat_id": "ch1", "chat_type": "group"}))
+    restarted = _restarted(store)
+    store._db_handle_cache.handles.clear()
+    opens, real_open = [], store._open_session_db_for_active_scope
+
+    def counted_open(*args, **kwargs):
+        opens.append(1)
+        return real_open(*args, **kwargs)
+
+    store._open_session_db_for_active_scope = counted_open
+    assert (await _slash(restarted)).source.chat_name is None
+    assert opens == []
+    store._open_session_db_for_active_scope = real_open
+    assert store._routing_db is not None
+    event = await _slash(restarted)
+    assert (event.source.chat_name, event.source.chat_topic) == ("Hermes Server / #ops", "Incident triage")
+
+
+@pytest.mark.asyncio
+async def test_a_held_database_lock_costs_the_relay_reader_at_most_the_label_budget(tmp_path):
+    """SessionDB's in-process lock has no timeout, and the 0.5 s write budget starts only once it
+    is taken. A label read or write waiting on it must give up within the label budget and leave
+    nothing cached or recorded, so the next message retries."""
+    store, adapter = _labelled_store(tmp_path)
+    chat = {"chat_id": "ch1", "chat_type": "group"}
+    await adapter._on_inbound(_message(chat))
+    restarted = _restarted(store)
+    release, holder = _hold_db_lock(store._routing_db)
+    try:
+        started = time.monotonic()
+        assert (await _slash(restarted)).source.chat_name is None
+        await restarted._on_inbound(_message(chat, "u2", chat_name="Renamed"))
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        await asyncio.to_thread(holder.join, 5)
+    assert elapsed < 5
+    restarted.handle_message.assert_awaited()
+    await restarted._on_inbound(_message(chat, "u3", chat_name="Renamed"))
+    assert store.chat_labels(Platform.DISCORD, "g1", "ch1") == ("Renamed", "Incident triage")

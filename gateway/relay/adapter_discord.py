@@ -26,6 +26,9 @@ class DiscordInteractionMixin:
     lane's label record it reads."""
 
     _DISCORD_LABELS_MAX = 2048
+    # The relay reader awaits each label read/write before the next frame. Their database budget
+    # (0.5 s) does not cover waiting for SessionDB's in-process lock, which maintenance can hold.
+    _DISCORD_LABELS_IO_BUDGET_S = 1.0
 
     async def _remember_discord_labels(self, source) -> None:
         """Keep the text lane's Discord chat labels for the interaction lane: the pinned
@@ -50,8 +53,10 @@ class DiscordInteractionMixin:
             if self._discord_labels_writer is None:
                 self._discord_labels_writer = ThreadPoolExecutor(
                     max_workers=1, thread_name_prefix="relay-discord-labels")
-            recorded = await asyncio.get_running_loop().run_in_executor(
-                self._discord_labels_writer, store.record_chat_labels, source)
+            # Bounded: past the budget the write keeps its place on the writer thread (order holds,
+            # disconnect() still drains it) but counts as not recorded, so the next message retries.
+            recorded = await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(
+                self._discord_labels_writer, store.record_chat_labels, source), self._DISCORD_LABELS_IO_BUDGET_S)
         except Exception:
             logger.debug("relay: Discord chat labels not recorded", exc_info=True)
             recorded = False
@@ -87,9 +92,11 @@ class DiscordInteractionMixin:
             return self._discord_chat_labels[key]
         store = getattr(self, "_session_store", None)
         try:
-            # Off the loop: the read takes the database's writer lock, which a write may be holding.
-            recorded = (await asyncio.to_thread(store.chat_labels, Platform.DISCORD, scope, chat_id)
-                        if store is not None else None)
+            # Off the loop and bounded: the read takes the database's writer lock, which a write may
+            # be holding. Past the budget it is treated as unreadable (below), so nothing is cached.
+            recorded = (await asyncio.wait_for(
+                asyncio.to_thread(store.chat_labels, Platform.DISCORD, scope, chat_id),
+                self._DISCORD_LABELS_IO_BUDGET_S) if store is not None else None)
         except Exception:
             # Labels only keep the prompt cache warm; a store fault must not drop the interaction.
             # Not cached either: the next interaction asks the store again.

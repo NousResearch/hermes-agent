@@ -20,6 +20,11 @@ DEFAULT_WINDOW_SECONDS = 60
 # Documented fast-mode rate-limit headers; a limit of 0 means the organization has no fast
 # capacity for the model (https://platform.claude.com/docs/en/build-with-claude/fast-mode).
 _FAST_LIMIT_HEADERS = ("anthropic-fast-input-tokens-limit", "anthropic-fast-output-tokens-limit")
+# Subscription (OAuth) accounts without extra usage get no limit headers at all — the 429
+# body instead says fast mode needs credits the organization cannot spend (e.g.
+# "Usage credits are required for fast mode."). Requiring both markers keeps a real,
+# transient fast-mode rate limit ("... rate limit of N fast mode input tokens ...") out.
+_FAST_CREDITS_MARKERS = ("fast mode", "credits")
 #: Tiers sent on every request of the session (OpenAI ``service_tier`` values; ``priority`` also
 #: selects Anthropic/xAI fast mode). Ultrafast is OpenAI-only and gated per model.
 STATIC_TIERS = frozenset({"priority", "ultrafast"})
@@ -90,16 +95,20 @@ def effective_request_overrides(agent: Any) -> dict[str, Any]:
 
 
 def fast_mode_unprovisioned(api_error: Any, api_kwargs: Any) -> bool:
-    """True for a 429 on a ``speed: "fast"`` request whose fast-mode limit header is 0. The
-    organization has no fast capacity for the model, so waiting or rotating keys cannot help."""
+    """True for a 429 on a ``speed: "fast"`` request that can never succeed at fast speed:
+    the fast-mode limit header is 0, or the error body says fast mode requires usage credits
+    the organization does not have. Waiting or rotating keys cannot help either way."""
     if getattr(api_error, "status_code", None) != 429 or not isinstance(api_kwargs, dict):
         return False
     if (api_kwargs.get("extra_body") or {}).get("speed") != "fast":
         return False
     headers = getattr(getattr(api_error, "response", None), "headers", None)
-    if headers is None:
-        return False
-    return any(str(headers.get(name, "")).strip() == "0" for name in _FAST_LIMIT_HEADERS)
+    if headers is not None and any(str(headers.get(name, "")).strip() == "0" for name in _FAST_LIMIT_HEADERS):
+        return True
+    text = " ".join(
+        str(p) for p in (getattr(api_error, "body", None), api_error)
+    ).lower()
+    return all(marker in text for marker in _FAST_CREDITS_MARKERS)
 
 
 def mark_fast_mode_unavailable(agent: Any) -> bool:

@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -839,6 +840,17 @@ def test_relaunch_replays_the_worker_before_its_ack(tmp_path, cause):
         assert "runpy.run_module('cron.scheduler', run_name='__main__'" in seen["command"][-1]
     else:
         assert str(payload) in seen["command"]
+
+
+def test_booted_worker_drops_the_marker_before_any_job_child(monkeypatch):
+    """Without a relaunch, ``finish_worker_boot`` must consume the marker: job children spawned
+    later inherit this environment and would otherwise re-run the worker dependency boot."""
+    import cron.worker_bootstrap as worker_bootstrap
+
+    monkeypatch.setitem(sys.modules, "hermes_bootstrap", SimpleNamespace())
+    monkeypatch.setenv(worker_bootstrap.WORKER_MARKER, "1")
+    worker_bootstrap.finish_worker_boot()
+    assert worker_bootstrap.WORKER_MARKER not in os.environ
 
 
 _REAL_BOOT_PROBE = """

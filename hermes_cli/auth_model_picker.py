@@ -25,11 +25,16 @@ def _confirm_selection_guards(
     """Prompt before saving a model that trips any selection guard (cost, data-policy, ...).
 
     Shows one [y/N] confirm listing every warning that fired. Returns True to proceed.
+
+    Interactive-only surface: a profile that already recorded
+    ``security.allow_data_training_tiers_interactive`` is not asked again for the data-policy
+    warning (cost warnings still prompt).
     """
     try:
         from hermes_cli.model_selection_guards import combined_message, selection_warnings
         warnings = selection_warnings(
-            model_id, provider=provider, base_url=base_url, api_key=api_key, include_kinds=include_kinds,
+            model_id, provider=provider, base_url=base_url, api_key=api_key,
+            include_kinds=include_kinds, interactive=True,
         )
     except Exception:
         warnings = []

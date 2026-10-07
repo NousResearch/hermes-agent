@@ -45,6 +45,8 @@ import {
 interface ExpensiveModelConfirmResponse {
   confirm_message?: string;
   confirm_required?: boolean;
+  /** Guard title from the backend, so a data-policy confirm is not labelled an "expensive model". */
+  confirm_title?: string;
   warning?: string;
 }
 
@@ -57,6 +59,7 @@ interface PendingExpensiveConfirm {
   model: string;
   persistGlobal: boolean;
   provider: string;
+  title?: string;
 }
 
 interface Props {
@@ -290,6 +293,7 @@ export function ModelPickerDialog(props: Props) {
             provider: providerSlug,
             model,
             persistGlobal: shouldPersistGlobal,
+            title: result.confirm_title,
             message:
               result.confirm_message ||
               result.warning ||
@@ -478,7 +482,7 @@ export function ModelPickerDialog(props: Props) {
       </div>
       <ConfirmDialog
         open={!!pendingConfirm}
-        title="Expensive Model Warning"
+        title={pendingConfirm?.title || "Expensive Model Warning"}
         description={pendingConfirm?.message}
         destructive
         confirmLabel="Switch anyway"

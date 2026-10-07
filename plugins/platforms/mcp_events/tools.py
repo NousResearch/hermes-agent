@@ -124,7 +124,7 @@ def mcp_events_unsubscribe(subscription_id: str) -> str:
     sub = store.resolve(subscription_id)
     if sub is None:
         return f"No subscription {subscription_id!r}."
-    ok = protocol.unsubscribe(sub["emitter_url"], sub["id"])
+    ok = protocol.unsubscribe(sub["emitter_url"], sub)
     store.remove(sub["id"])
     security.audit("unsubscribe", sub["emitter_url"], sub["id"], "cancelled by agent")
     return (f"Unsubscribed {sub['id']!r} ({sub.get('event')!r} on {sub['emitter_url']})."

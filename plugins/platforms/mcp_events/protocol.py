@@ -154,11 +154,13 @@ def subscribe(mcp_url: str, event: str, callback_url: str, secret: str,
     }
 
 
-def unsubscribe(mcp_url: str, subscription_id: str, timeout: float = 15.0) -> bool:
-    """``events/unsubscribe``; True when the emitter acknowledged."""
+def unsubscribe(mcp_url: str, record: dict, timeout: float = 15.0) -> bool:
+    """``events/unsubscribe`` by the subscription key (name, arguments, delivery URL);
+    the derived id is not accepted as input. True when the emitter acknowledged."""
+    params = {"name": record["event"], "arguments": record.get("filter") or {},
+              "delivery": {"url": record["callback_url"]}}
     try:
-        _post_json(mcp_url, _rpc_request("events/unsubscribe", {"subscriptionId": subscription_id}),
-                   timeout=timeout)
+        _post_json(mcp_url, _rpc_request("events/unsubscribe", params), timeout=timeout)
         return True
     except Exception as e:
         logger.debug("MCP Events: unsubscribe failed: %s", e)

@@ -501,3 +501,16 @@ class TestSubscribeShape:
         assert "event" not in params and "callbackUrl" not in params
         assert record["id"] == "sub_abc"
         assert record["expires_at"] == pytest.approx(1793983245.993)
+
+
+class TestUnsubscribeShape:
+    def test_unsubscribe_sends_the_subscription_key_not_the_id(self, monkeypatch):
+        sent = _capture_requests(monkeypatch, {})
+        record = {"id": "sub_abc", "event": "email.received", "filter": {"from": "a@b.c"},
+                  "callback_url": "https://hooks.example.com/mcp/events/webhook/loc1"}
+        assert protocol.unsubscribe("https://emitter.example.com/mcp", record) is True
+        params = sent[0]["body"]["params"]
+        assert params["name"] == "email.received"
+        assert params["arguments"] == {"from": "a@b.c"}
+        assert params["delivery"] == {"url": "https://hooks.example.com/mcp/events/webhook/loc1"}
+        assert "subscriptionId" not in params

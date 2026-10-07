@@ -285,6 +285,7 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
     telegram-disabled skills excluded). Tiers keep relative order unless named in
     ``platforms.telegram.extra.command_menu.priority`` — applied *before* the cap, so a
     prioritized dynamic command can displace an unprioritized core command."""
+    max_commands = max(0, min(_TELEGRAM_BOT_API_MAX_COMMANDS, max_commands))
     core_commands = list(telegram_bot_commands(include_plugins=False))
     entries, hidden_count = _collect_gateway_skill_entries(
         platform="telegram", max_slots=None, reserved_names={n for n, _ in core_commands},
@@ -295,6 +296,20 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
     candidates = _prioritize_telegram_menu_candidates(candidates)
     overflow_count = max(0, len(candidates) - max_commands)
     menu = [(name, _normalize_telegram_desc(desc)) for name, desc, _source, _raw_name in candidates[:max_commands]]
+    # A live 100-command Cyrillic menu can fail with BOT_COMMANDS_TOO_MUCH even
+    # when each entry meets the documented character limits. Use a conservative
+    # aggregate UTF-8 text budget, not a claimed exact Telegram server limit.
+    # Smaller menus stay byte-for-byte unchanged; names, ordering and counts stay intact.
+    text_budget = 7000
+    name_bytes = sum(len(name.encode("utf-8")) for name, _ in menu)
+    descriptions = [desc.encode("utf-8") for _, desc in menu]
+    if name_bytes + sum(map(len, descriptions)) > text_budget:
+        per_description = (text_budget - name_bytes) // len(menu)
+        menu = [
+            (name, desc if len(encoded) <= per_description else
+             encoded[:per_description - 3].decode("utf-8", errors="ignore") + "...")
+            for (name, desc), encoded in zip(menu, descriptions)
+        ]
     return menu, hidden_count + overflow_count
 
 

@@ -444,3 +444,46 @@ class TestClientTools:
         tools_mod, _ = self._tools(tmp_path, monkeypatch)
         out = tools_mod.mcp_events_subscribe("https://em.example/mcp", "deploy", filter_json="{bad")
         assert "not valid JSON" in out
+
+
+
+# --------------------------------------------------------------------------
+# Wire format against the MCP Events design sketch and the 2026-07-28 base
+# protocol: the requests a spec-following emitter receives
+# --------------------------------------------------------------------------
+
+class _FakeResponse:
+    def __init__(self, payload: dict):
+        self._raw = json.dumps(payload).encode("utf-8")
+
+    def read(self, *_a):
+        return self._raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+
+def _capture_requests(monkeypatch, result: dict) -> list:
+    sent: list = []
+
+    def fake_urlopen(req, timeout=None):
+        sent.append({"headers": dict(req.header_items()), "body": json.loads(req.data.decode("utf-8"))})
+        return _FakeResponse({"jsonrpc": "2.0", "id": sent[-1]["body"]["id"], "result": result})
+
+    monkeypatch.setattr(protocol.urllib.request, "urlopen", fake_urlopen)
+    return sent
+
+
+class TestRequestMeta:
+    def test_meta_is_in_params_with_the_required_keys(self, monkeypatch):
+        sent = _capture_requests(monkeypatch, {"events": []})
+        protocol.list_events("https://emitter.example.com/mcp")
+        body = sent[0]["body"]
+        assert "_meta" not in body  # a top-level _meta makes the message invalid JSON-RPC
+        meta = body["params"]["_meta"]
+        assert meta["io.modelcontextprotocol/protocolVersion"] == protocol.PROTOCOL_VERSION
+        assert "io.modelcontextprotocol/clientCapabilities" in meta
+        assert "io.modelcontextprotocol/clientInfo" in meta

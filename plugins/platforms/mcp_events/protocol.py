@@ -46,16 +46,25 @@ def _mcp_headers(method: str) -> dict[str, str]:
         "Content-Type": "application/json",
         "Accept": "application/json",
         "Mcp-Method": method,
+        "MCP-Protocol-Version": PROTOCOL_VERSION,
     }
 
 
 def _rpc_request(method: str, params: dict) -> dict:
+    # 2026-07-28: per-request metadata goes in params._meta; protocolVersion and
+    # clientCapabilities are required, clientInfo SHOULD be sent.
     return {
         "jsonrpc": "2.0",
         "id": uuid.uuid4().hex,
         "method": method,
-        "params": params,
-        "_meta": {"io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION},
+        "params": {
+            **params,
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "io.modelcontextprotocol/clientInfo": {"name": "hermes-agent", "version": "mcp-events-plugin"},
+            },
+        },
     }
 
 

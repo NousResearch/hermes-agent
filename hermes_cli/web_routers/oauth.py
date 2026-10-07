@@ -41,6 +41,7 @@ _nous_plain_poller = late("_nous_plain_poller", "hermes_cli.web_server_oauth")
 _nous_promotion_poller = late("_nous_promotion_poller", "hermes_cli.web_server_oauth")
 _minimax_poller = late("_minimax_poller", "hermes_cli.web_server_oauth")
 _xai_device_poller = late("_xai_device_poller", "hermes_cli.web_server_oauth")
+_meta_device_poller = late("_meta_device_poller", "hermes_cli.web_server_oauth")
 
 _CODEX_ISSUER = "https://auth.openai.com"
 _JSON_HEADERS = {"Content-Type": "application/json"}
@@ -590,9 +591,27 @@ async def _start_xai_device_code(profile: Optional[str]) -> Dict[str, Any]:
     )
 
 
+async def _start_meta_device_code(profile: Optional[str]) -> Dict[str, Any]:
+    """Request Meta's device code before the background worker mints the inference key."""
+    from hermes_cli.auth_meta import start_device_authorization
+
+    device_data = await _httpx_call(start_device_authorization, timeout=20.0)
+    expires_in = int(device_data["expires_in"])
+    interval = int(device_data["interval"])
+    return _device_session_started(
+        "meta-oauth", profile, _meta_device_poller,
+        dict(
+            device_code=str(device_data["device_code"]), interval=interval,
+            expires_at=time.time() + expires_in,
+        ),
+        str(device_data["user_code"]), str(device_data["verification_uri"]), expires_in, interval,
+    )
+
+
 _DEVICE_CODE_STARTERS = {
     "nous": _start_nous_device_code, "openai-codex": _start_codex_device_code,
     "minimax-oauth": _start_minimax_device_code, "xai-oauth": _start_xai_device_code,
+    "meta-oauth": _start_meta_device_code,
 }
 
 

@@ -961,6 +961,7 @@ def persist_pool_entries(
 _TOKENS_SINGLETON_PROVIDERS: Dict[str, Tuple[str, str, str, str]] = {
     "openai-codex": ("Codex", "Codex", "refresh_codex_oauth_pure", "_is_terminal_codex_oauth_refresh_error"),
     "xai-oauth": ("xAI OAuth", "xAI", "refresh_xai_oauth_pure", "_is_terminal_xai_oauth_refresh_error"),
+    "meta-oauth": ("Meta OAuth", "Meta", "refresh_meta_oauth_pure", "_is_terminal_meta_oauth_refresh_error"),
 }
 
 # Built-in providers whose pooled OAuth entries ``_refresh_entry_impl`` can actually refresh. Plugin
@@ -984,6 +985,7 @@ _REFRESH_SWEEP_SPACING_SECONDS = 0.5
 _REFRESH_TIMEOUT_ENV_VARS = {
     "openai-codex": "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS",
     "xai-oauth": "HERMES_XAI_REFRESH_TIMEOUT_SECONDS",
+    "meta-oauth": "HERMES_META_REFRESH_TIMEOUT_SECONDS",
 }
 
 # Singleton-seeded source whose exhausted/DEAD pool row may be revived by a
@@ -993,6 +995,7 @@ _RESYNC_SOURCE = {
     "nous": "device_code",
     "openai-codex": "device_code",
     "xai-oauth": "device_code",
+    "meta-oauth": "device_code",
 }
 
 
@@ -1524,6 +1527,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             tokens["refresh_token"] = entry.refresh_token
         if entry.last_refresh:
             state["last_refresh"] = entry.last_refresh
+        if self.provider == "meta-oauth" and entry.expires_at_ms:
+            tokens["expires_at_ms"] = entry.expires_at_ms
         return True
 
     # ---- refresh -----------------------------------------------------------
@@ -1714,6 +1719,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             entry,
             access_token=refreshed["access_token"],
             refresh_token=refreshed["refresh_token"],
+            expires_at_ms=refreshed.get("expires_at_ms", entry.expires_at_ms),
             last_refresh=refreshed.get("last_refresh"),
         )
 
@@ -1992,6 +1998,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         if self.provider == "xai-oauth":
             return auth_mod._xai_access_token_is_expiring(
                 entry.access_token, auth_mod._xai_proactive_refresh_skew_seconds(entry.access_token),
+            )
+        if self.provider == "meta-oauth":
+            from hermes_cli.auth_meta import _meta_oauth_key_is_expiring
+            return _meta_oauth_key_is_expiring(
+                {"expires_at_ms": entry.expires_at_ms}, skew_seconds=6 * 60 * 60,
             )
         # Nous refresh can require network access and happens when runtime
         # credentials are actually resolved, not on enumeration/selection.
@@ -2812,6 +2823,9 @@ def _seed_tokens_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
     if seed.provider == "openai-codex":
         base_url = auth_mod.DEFAULT_CODEX_BASE_URL
         custom_label = str(state.get("label") or "").strip()
+    elif seed.provider == "meta-oauth":
+        base_url = auth_mod.DEFAULT_META_OAUTH_BASE_URL
+        custom_label = ""
     else:
         base_url = auth_mod.DEFAULT_XAI_OAUTH_BASE_URL
         custom_label = ""
@@ -2819,6 +2833,7 @@ def _seed_tokens_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
         "auth_type": AUTH_TYPE_OAUTH,
         "access_token": tokens.get("access_token", ""),
         "refresh_token": tokens.get("refresh_token"),
+        "expires_at_ms": tokens.get("expires_at_ms"),
         "base_url": base_url,
         "last_refresh": state.get("last_refresh"),
         "label": custom_label or label_from_token(tokens.get("access_token", ""), "device_code"),

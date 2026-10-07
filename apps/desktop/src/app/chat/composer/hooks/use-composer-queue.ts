@@ -29,6 +29,7 @@ import { notify } from '@/store/notifications'
 import { $sessionsLoading } from '@/store/session'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
+import { pathifyRefs } from '../path-refs'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
@@ -258,7 +259,10 @@ export function useComposerQueue({
   }
 
   const queueCurrentDraft = useCallback(() => {
-    const text = draftRef.current
+    // Promote an uncommitted Tab-descended @path before it enters the queue,
+    // matching direct submit/steer semantics. Every queue entry path funnels
+    // through here (mode, keyboard override, fallback, and queue button).
+    const text = pathifyRefs(draftRef.current)
 
     if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
       return false

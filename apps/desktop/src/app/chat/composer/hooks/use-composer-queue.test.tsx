@@ -92,6 +92,16 @@ describe('useComposerQueue park integration', () => {
     setSessionsLoading(true)
   })
 
+  it('pathifies an uncommitted @path before creating a queue entry', () => {
+    const { hook } = renderQueueHook({ busy: true, draft: 'look at @apps/desktop/' })
+
+    act(() => {
+      expect(hook.result.current.queueCurrentDraft()).toBe(true)
+    })
+
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['look at @folder:`apps/desktop`'])
+  })
+
   it('reschedules rejected foreground drains to a bounded stop and keeps manual recovery', async () => {
     vi.useFakeTimers()
 

@@ -1,9 +1,12 @@
 """Route-agnostic non-interactive (bearer-token) auth seam for the dashboard.
 
 Any machine-credential provider plugs in here. A route opts in by registering its exact path via
-:func:`register_token_route`; only registered paths are token-authable, so the auth surface of
-existing routes never widens. :func:`token_auth_middleware` runs OUTERMOST (installed last) and
-owns the decision for a token route: a recognised token attaches ``request.state.token_principal``
+:func:`register_token_route`, or a whole router subtree via :func:`register_token_route_prefix`
+(for parameterised paths exact matching cannot cover); only registered paths are token-authable,
+so the auth surface of existing routes never widens. A registration may demand a scope the
+verified principal must carry (403 otherwise), so one service credential cannot open another
+surface's routes. :func:`token_auth_middleware` runs OUTERMOST (installed last) and owns the
+decision for a token route: a recognised token attaches ``request.state.token_principal``
 + ``token_authenticated`` (the cookie gates honour that flag and never bounce to /login);
 otherwise 401, or 503 when a provider's backing store was unreachable. Fails closed.
 """
@@ -24,26 +27,65 @@ from hermes_cli.dashboard_auth.request_utils import (
 
 _log = logging.getLogger(__name__)
 
-_token_routes: set[str] = set()  # exact paths that accept bearer-token auth
+# Exact paths and path prefixes, each mapped to (optional required scope, optional owning provider).
+_token_routes: dict[str, Tuple[Optional[str], Optional[str]]] = {}
+_token_route_prefixes: dict[str, Tuple[Optional[str], Optional[str]]] = {}
 _lock = threading.Lock()
 
+# Sentinel distinguishing "no registered route matched" from a matched route
+# with no scope requirement (None).
+_NO_MATCH = object()
 
-def register_token_route(path: str) -> None:
-    """Mark ``path`` (exact match) as token-authable. Idempotent; does NOT make the route public."""
+
+def register_token_route(path: str, *, scope: Optional[str] = None) -> None:
+    """Mark ``path`` (exact match) as token-authable. Idempotent; does NOT make the route public.
+    With ``scope`` set, a verified principal must also carry it in ``TokenPrincipal.scopes`` or
+    the request gets 403 — one stacked service credential cannot open every token route."""
     with _lock:
-        _token_routes.add(path)
+        _token_routes[path] = (scope, None)
+
+
+def register_token_route_prefix(
+    prefix: str, *, scope: Optional[str] = None, provider: Optional[str] = None) -> None:
+    """Mark every path under ``prefix`` as token-authable — for routers with parameterised
+    paths (``/tasks/{id}``) that exact matching cannot cover. Otherwise the same semantics as
+    :func:`register_token_route`, including the optional required ``scope``.
+
+    ``provider``: the registration only counts while a token provider of that name is
+    registered. For a surface that falls back to session auth without its credential: the
+    provider is unregistered when its plugin is disabled, and a prefix left behind would
+    answer 401 to every request until restart."""
+    with _lock:
+        _token_route_prefixes[prefix.rstrip("/") + "/"] = (scope, provider)
+
+
+def _match_token_route(path: str):
+    """Required scope for ``path`` (``None`` = any verified principal), or ``_NO_MATCH``.
+    Exact registrations win; among prefixes the longest match wins, so the scope boundary never
+    depends on plugin load order (a broad prefix cannot shadow a narrower scoped one)."""
+    with _lock:
+        if path in _token_routes:
+            return _token_routes[path][0]
+        matches = [p for p in _token_route_prefixes if path.startswith(p)]
+        owned = {name for _scope, name in map(_token_route_prefixes.get, matches) if name}
+    if owned:
+        live = {p.name for p in list_token_providers()}
+        matches = [p for p in matches if _token_route_prefixes[p][1] in live | {None}]
+    if matches:
+        return _token_route_prefixes[max(matches, key=len)][0]
+    return _NO_MATCH
 
 
 def is_token_route(path: str) -> bool:
-    """True if ``path`` was registered as token-authable (exact match)."""
-    with _lock:
-        return path in _token_routes
+    """True if ``path`` is token-authable (exact or prefix registration)."""
+    return _match_token_route(path) is not _NO_MATCH
 
 
 def clear_token_routes() -> None:
     """Test-only: drop all registered token routes."""
     with _lock:
         _token_routes.clear()
+        _token_route_prefixes.clear()
 
 
 def authenticate_token(request: Request) -> Tuple[Optional[TokenPrincipal], Optional[str]]:
@@ -77,10 +119,27 @@ async def token_auth_middleware(
     """Pass-through for unregistered paths; for a token route, valid token -> attach principal +
     flag, unreachable -> 503, else 401."""
     path = request.url.path
-    if not is_token_route(path):
+    required_scope = _match_token_route(path)
+    if required_scope is _NO_MATCH:
         return await call_next(request)
     principal, unreachable = authenticate_token(request)
     if principal is not None:
+        if required_scope and required_scope not in (principal.scopes or ()):
+            # Authenticated, but the credential lacks this route's capability
+            # — e.g. the drain secret presented to the kanban API. 403 (not
+            # 401) so a mis-scoped integration reads "wrong credential for
+            # this surface" rather than "bad token".
+            audit_log(
+                AuditEvent.TOKEN_AUTH_FAILURE,
+                provider=principal.provider,
+                reason="missing_scope",
+                path=path,
+                ip=_client_ip(request),
+            )
+            return JSONResponse(
+                {"error": "forbidden", "detail": "Forbidden"},
+                status_code=403,
+            )
         request.state.token_principal = principal
         request.state.token_authenticated = True
         return await call_next(request)

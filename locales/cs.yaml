@@ -849,6 +849,9 @@ gateway:
     db_fts_corrupt: "⚠️ Databáze relací nahlásila chybu poškození omezenou na vyhledávací index (FTS5); tabulky zpráv nejsou poškozeny. Zprávy se možná neukládají, dokud nebude opravena: spusťte `hermes {profile_arg}doctor --fix` a poté restartujte bránu. Nespouštějte nástroje pro obnovu ani neobnovujte ze zálohy, dokud `hermes {profile_arg}doctor` nepotvrdí poškození."
     db_then_restart: "{action} Poté `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Databáze relací není dostupná — zprávy se možná neukládají a /resume bude prázdné. Příčina: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ Úložiště cronu {store} nelze zapisovat ({error}) od {since}. Naplánované úlohy se přeskakují, dokud nebude zápis znovu možný. Oprava: {fix}."
+    recovered: "✅ Úložiště cronu {store} je znovu zapisovatelné; přeskočená spuštění: {skipped}, dohánění proběhne jednou na úlohu."
   whoami:
     scope_dm: "DM"
     scope_group: "skupina/kanál"
@@ -1450,8 +1453,6 @@ platform:
   irc:
     quit_message: "Hermes Agent se vypíná"
     standalone_quit: "doručeno"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Schválit jednou"
     confirm_always_approve: "Vždy schvalovat"
@@ -2357,6 +2358,7 @@ cli:
     removed: "Odebrána položka fronty {index}: {preview}"
     item_not_found: "Položka fronty {index} nenalezena. Aktuální velikost: {size}"
     usage_edit: "Použití: /queue edit <number> <new prompt>"
+    usage_remove: "Použití: /queue rm <number>"
     updated: "Aktualizována položka fronty {index}: {preview}"
     usage_move: "Použití: /queue move <from> <to>"
     move_out_of_range: "Přesun ve frontě mimo rozsah. Aktuální velikost: {size}"
@@ -2396,6 +2398,7 @@ cli:
     compressed_into: "Relace {session_id} byla zhuštěna do {descendant}; obnovuji potomka s vaším přepisem."
     cannot_resume: "Relaci nelze obnovit: {error}"
     cannot_resume_prefix: "Relaci nelze obnovit:"
+    kanban_owned: "⛔ Relace {session_id} je přepis pracovníka Kanbanu. Obnovení tady by vytvořilo zapisovatele, který nemůže nástěnka Kanbanu sledovat ani řídit — zkuste to znovu nebo odblokujte kartu na nástěnce, aby další běh převzal dispečer."
     resumed_session: "↻ Relace obnovena"
     counts_one: "({count} zpráva uživatele, {total} celkem zpráv)"
     counts_other: "({count} zpráv uživatele, {total} celkem zpráv)"
@@ -2429,7 +2432,6 @@ cli:
     run_model_to_retry: "Spusťte 'hermes model' a zkuste to znovu."
     provider_configured: "✓ Poskytovatel nakonfigurován — můžete začít chatovat."
     provider_setup_incomplete: "Nastavení poskytovatele nebylo dokončeno. Spusťte 'hermes model' a zkuste to znovu."
-    tirith_unavailable: "⚠ Bezpečnostní skener tirith je povolen, ale není k dispozici — skenování příkazů bude používat pouze porovnávání vzorů"
     unknown_toolsets: "Upozornění: Neznámé sady nástrojů: {names}"
     stdin_unusable: "\nChyba: stdin nelze použít ({error}).\nMůže k tomu dojít u některých instalací Pythonu (např. cPython spravovaný přes uv na macOS),\nkde kqueue nedokáže zaregistrovat fd 0.\nZkuste přeinstalovat Python přes pyenv nebo Homebrew a poté znovu spusťte: hermes setup"
     warning: "Upozornění: {warning}"
@@ -2722,6 +2724,7 @@ cli:
       restored: "Stav obnoven z: {snapshot_id}"
       restart_recommended: "Doporučuje se restart procesů gateway/dashboard, aby se projevily změny v state.db."
       not_found: "Snímek nenalezen: {snapshot_id}"
+      restore_incomplete: "Snímek {snapshot_id} nebyl obnoven celý; některé soubory byly odmítnuty (viz protokoly)"
       usage_prune: "Použití: /snapshot prune [keep-count]"
       pruned: "Odstraněno {deleted} starých snímků (zachováno {keep})."
     export:
@@ -3646,7 +3649,7 @@ tips:
   t167: "Schvalování nebezpečných příkazů má 4 úrovně: jednou, relace, vždy (trvalý seznam povolených), zamítnout."
   t168: "Chytrý režim schvalování používá LLM k automatickému schválení bezpečných příkazů a označení nebezpečných."
   t169: "Ochrana SSRF blokuje privátní sítě, loopback, link-local a cloudové metadata adresy."
-  t170: "Předběžné skenování Tirith odhaluje homografové podvrhování URL a vzory pipe-to-interpreter."
+  t170: "ID relací mají předponu s časovým razítkem (20250305_091523_abcd), takže řazení v ls a jq funguje přirozeně."
   t171: "Podprocesy MCP dostávají filtrované prostředí — projdou jen bezpečné systémové proměnné."
   t172: "Kontextové soubory (.hermes.md, AGENTS.md) se před načtením bezpečnostně kontrolují na prompt injection."
   t173: "command_allowlist v config.yaml trvale schvaluje konkrétní vzory shellových příkazů."
@@ -3676,7 +3679,7 @@ tips:
   t197: "Ukládání trajektorií (--save-trajectories) zachytí kompletní stopy použití nástrojů pro trénování modelu."
   t198: "Tři typy pluginů: obecné (nástroje/hooky), poskytovatelé paměti a kontextové enginy."
   t199: "hermes plugins install owner/repo nainstaluje pluginy přímo z GitHubu."
-  t200: "Externí poskytovatelé paměti: OpenViking, Mem0 součástí; Honcho, Hindsight a další přes hermes plugins install."
+  t200: "Externí poskytovatelé paměti: Honcho, Hindsight, Mem0, OpenViking a další přes `hermes plugins install`."
   t201: "Hooky pluginů zahrnují pre/post_tool_call, pre/post_llm_call a transform_terminal_output pro kanonizaci výstupu."
   t202: "Prompt caching (Anthropic) snižuje náklady opětovným použitím uložených prefixů systémového promptu."
   t203: "Agent automaticky generuje názvy relací ve vlákně na pozadí — nulový dopad na latenci."
@@ -3851,12 +3854,9 @@ tips:
   t372: "image_gen.model v config.yaml vybírá model FAL: flux-2/klein, gpt-image-2, nano-banana-pro a další."
   t373: "image_gen.provider směruje generování obrázků přes plugin (OpenAI Images, Codex, FAL) místo výchozího nastavení."
   t374: "AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY nasměrují analýzu vidění na jakýkoli koncový bod kompatibilní s OpenAI."
-  t375: "security.tirith_fail_open: false způsobí, že Hermes zablokuje příkazy, když sám skener tirith selže."
-  t376: "Proměnná prostředí TIRITH_FAIL_OPEN přepíše konfiguraci tirith_fail_open — rychlé přepnutí bez úpravy config.yaml."
+  t375: "API_SERVER_MODEL_NAME přizpůsobí název modelu na /v1/models — nezbytné pro nastavení Open WebUI s více profily."
+  t376: "Pluginy dashboardu se poskytují z /dashboard-plugins/<name>/ — soubory vložte do ~/.hermes/dashboard-plugins/."
   t377: "Chaty s --source tool jsou ve výchozím stavu vyloučeny ze seznamu hermes sessions — pro jejich zobrazení nastavte --source explicitně."
-  t378: "ID relací mají předponu s časovým razítkem (20250305_091523_abcd), takže řazení v ls a jq funguje přirozeně."
-  t379: "API_SERVER_MODEL_NAME přizpůsobí název modelu na /v1/models — nezbytné pro nastavení Open WebUI s více profily."
-  t380: "Pluginy dashboardu se poskytují z /dashboard-plugins/<name>/ — soubory vložte do ~/.hermes/dashboard-plugins/."
   placeholder:
     p01: "Zeptejte se na cokoli nebo napište / pro příkazy…"
     p02: "Shrňte, co je v této složce"

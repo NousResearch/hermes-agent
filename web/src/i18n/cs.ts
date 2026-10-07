@@ -119,6 +119,7 @@ export const cs = defineLocale({
     sharedMetricsDetails: 'Podrobnosti',
     sharedMetricsSaveFailed: 'Vaši volbu se nepodařilo uložit',
     multiplexStandaloneBanner: "Vaše brána obsluhuje jen jeden profil. Neobsluhované: {profiles}. Důvod: {reason}. Oprava: hermes gateway migrate --multiplex",
+    sharedMetricsReaskBody: "Ptáme se znovu: starší verze mohla uložit „Ne, díky“ dřív, než jste tuto otázku uviděli.",
   },
 
   status: {
@@ -160,6 +161,7 @@ export const cs = defineLocale({
     updateHermesConfirmTitle: "Aktualizovat Hermes?",
     updatingHermes: "Aktualizace Hermes…",
     waitingForOutput: "Čekání na výstup…",
+    actionFinishedOwed: "Aktualizováno, ale ještě zbývá dokončit (spusťte znovu `hermes update`)",
   },
 
   sessions: {

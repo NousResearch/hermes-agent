@@ -51,70 +51,11 @@ export const csOverrides = {
       local: 'Pouze lokálně',
       off: 'Ne, děkuji'
     },
-    stripDetails: 'Podrobnosti'
+    stripDetails: 'Podrobnosti',
+    stripReaskBody: 'Ptáme se znovu: starší verze mohla uložit „Ne, díky“ dřív, než jste tuto otázku uviděli.'
   },
   intro: {
     custom: () => []
-  },
-  catalog: {
-    add: 'Přidat',
-    added: 'Přidáno',
-    discover: 'Objevovat',
-    featured: 'Doporučené',
-    explorePlugins: 'Procházet pluginy',
-    exploreSkills: 'Procházet dovednosti',
-    mostStarred: 'Nejvíce hvězd',
-    newest: 'Nejnovější',
-    recentlyUpdated: 'Nedávno aktualizované',
-    alphabetical: 'Název',
-    sortBy: 'Řadit podle',
-    seeAll: 'Zobrazit vše',
-    related: 'Podobné položky',
-    tags: 'Štítky',
-    screenshots: 'Snímky obrazovky',
-    listView: 'Zobrazení seznamu',
-    cardView: 'Zobrazení karet',
-    installTitle: name => `Nainstalovat „${name}“?`,
-    installDescription: 'Tato dovednost bude dostupná v nových relacích. Instalujte jen zdroje, kterým důvěřujete.',
-    installTo: 'Kam nainstalovat',
-    thisComputer: 'Tento počítač',
-    installing: 'Instaluje se…',
-    installComplete: name => `„${name}“ nainstalováno`,
-    destinationChanged: 'Cíl se změnil. Zavřete toto okno a otevřete odkaz pro instalaci znovu.',
-    installed: 'Nainstalováno',
-    searchSkills: 'Hledat dovednosti',
-    searchPlugins: 'Hledat pluginy',
-    allSources: 'Všechny zdroje',
-    allCategories: 'Všechny kategorie',
-    about: 'O položce',
-    author: 'Autor',
-    source: 'Zdroj',
-    category: 'Kategorie',
-    version: 'Verze',
-    platforms: 'Platformy',
-    requires: 'Vyžaduje',
-    tools: 'Nástroje',
-    hooks: 'Hooky',
-    middleware: 'Middleware',
-    commands: 'Příkazy',
-    license: 'Licence',
-    addedDate: 'Přidáno',
-    updatedDate: 'Aktualizováno',
-    repository: 'Repozitář',
-    documentation: 'Dokumentace',
-    noResults: 'Nic nenalezeno',
-    tryAnother: 'Zkuste jiný výraz ve vyhledávání nebo zrušte filtry.',
-    clearFilters: 'Zrušit filtry',
-    filters: 'Filtry',
-    loadFailed: 'Katalog se nepodařilo načíst',
-    retry: 'Zkusit znovu',
-    more: 'Zobrazit více',
-    pinned: 'Ověřený commit',
-    snapshotHint: 'Pochází z katalogu Hermes. Prohlížení nikdy nekontaktuje zdrojové repozitáře.',
-    installHint: 'Před instalací si prohlédněte zdroj. Změny se projeví v nových relacích.',
-    results: count =>
-      `${count.toLocaleString()} ${count === 1 ? 'výsledek' : count >= 2 && count <= 4 ? 'výsledky' : 'výsledků'}`,
-    back: 'Zpět na výsledky'
   },
   connectors: {
     title: 'Připojte své aplikace',
@@ -580,6 +521,31 @@ export const csOverrides = {
       signInToRemoteGateway: 'Přihlásit se ke vzdálené bráně',
       signInWithProvider: provider => `Přihlásit se pomocí ${provider}`,
       identityProvider: 'váš poskytovatel identity'
+    },
+    updateHold: {
+      title: 'Hermes stále drží dřívější aktualizace',
+      titleUnverified: 'Hermes neumí potvrdit, že poslední aktualizace doběhla',
+      description:
+        'Hermes odkládá spuštění, aby nenačetl soubory, které může aktualizace ještě měnit. Spustí se sám, jakmile blokování pomine.',
+      heldByProcess: pid =>
+        `Aktualizace (proces ${pid}) skončila, ale proces, který spustila, stále drží instalaci Hermesu.`,
+      heldUnknown: 'Aktualizace skončila, ale proces, který spustila, stále drží instalaci Hermesu.',
+      unverified: 'Pomocník aktualizace teď nemohl zjistit, kdo vlastní instalaci Hermesu. Hermes to zkouší dál.',
+      since: time => `Čeká se od ${time}`,
+      lastChecked: time => `Naposledy ověřeno ${time}`,
+      recoveryHint:
+        'Obvykle to během pár minut samo zmizí. Pokud ne: ukončete Hermes, ukončete zbylé procesy git nebo hermes (případně restartujte počítač) a Hermes znovu otevřete.',
+      checkAgain: 'Zkontrolovat znovu',
+      quit: 'Ukončit Hermes',
+      openLogs: 'Otevřít protokoly',
+      startAnyway: 'Přesto spustit…',
+      confirmTitle: 'Spustit Hermes, i když ho aktualizace stále drží?',
+      confirmBody:
+        'Zbylý proces aktualizace může stále měnit soubory Hermesu. Spuštění teď může načíst napůl aktualizovanou instalaci, která nemusí fungovat, dokud aktualizaci nespustíte znovu. Hermes tuto volbu zapíše do protokolu a značku aktualizace ponechá.',
+      confirmKeepWaiting: 'Dál čekat',
+      confirmStart: 'Přesto spustit',
+      startAnywayRefused:
+        'To, co drží instalaci, se změnilo dřív, než se Hermes stihl spustit. Prohlédněte to a zkuste to znovu.'
     }
   },
   notifications: {
@@ -960,28 +926,20 @@ export const csOverrides = {
       about: 'O aplikaci',
       billing: 'Fakturace',
       notifications: 'Oznámení',
-      vault: 'Hesla a přihlášení'
+      vault: 'Hesla a přihlášení',
+      plugins: 'Pluginy'
     },
     plugins: {
       title: 'Pluginy pro Desktop',
-      blurb:
-        'Rozšiřuje tuto aplikaci, nikoli agenta — instalace platí pro celou aplikaci bez ohledu na profil, bránu nebo připojený počítač. Pluginy mohou být přibalené nebo vložené do složky desktop-plugins; přepínače se projeví ihned.',
-      count: n => `Nainstalováno: ${n}`,
       openFolder: 'Otevřít složku desktopových pluginů',
       rescan: 'Znovu prohledat',
       reveal: 'Zobrazit ve správci souborů',
-      enable: 'Povolit',
-      disable: 'Zakázat',
       failed: 'selhalo',
-      empty: 'Zatím nejsou nainstalovány žádné pluginy pro Desktop.',
       kinds: {
         bundled: 'dodané s aplikací',
         disk: 'na disku',
         runtime: 'za běhu'
       },
-      agentHalfMissing: 'část pro agenta zde chybí',
-      agentHalfMissingTip:
-        'Toto je desktopová část přibaleného pluginu, ale jeho část pro agenta není v právě připojeném backendu či profilu nainstalovaná. Nainstalujte ji v Schopnosti → Pluginy.',
       installModal: {
         installFromGit: 'Instalovat z Gitu',
         reviewRepository: 'Zkontrolovat repozitář',
@@ -1563,7 +1521,10 @@ export const csOverrides = {
           consequence:
             'VŠE — grafické rozhraní chatu, agenta Hermes i veškerou konfiguraci, chaty, tajné údaje a protokoly'
         }
-      }
+      },
+      managedBody: 'Tuto instalaci spravuje váš systém, takže se Hermes nemůže sám odstranit.',
+      dataKept: path => `Vaše konfigurace, chaty a tajemství jsou v ${path}. Odstraněním aplikace se nesmažou.`,
+      openAppsSettings: 'Otevřít nastavení aplikací'
     },
     poolLimits: {
       warmBotBackendsAria: 'Připravené backendy botů',
@@ -1660,7 +1621,10 @@ export const csOverrides = {
       voiceShortcutHintTitle: 'Zkratka pro záznam hlasu',
       voiceShortcutHintDesc:
         'Zkratku pro hlasový záznam nastavíte v Nastavení → Klávesové zkratky („Spustit / zastavit hlasovou konverzaci“). Hodnota konfigurace voice.record_key platí jen pro CLI a TUI.',
-      showOptions: 'Zobrazit možnosti'
+      showOptions: 'Zobrazit možnosti',
+      keepAwakeOff: 'Vypnuto',
+      keepAwakeWhileWorking: 'Během práce',
+      keepAwakeAlways: 'Vždy'
     },
     hudModifier: {
       title: 'Klepnutím vyvolat HUD',
@@ -1960,7 +1924,9 @@ export const csOverrides = {
         'Nepodporovaná vzdálená platforma. Režim SSH v Hermes Desktop podporuje vzdálené systémy Linux, macOS a Windows.',
       sshErrTimeout: 'Časový limit připojení SSH vypršel. Hostitel může být nedostupný nebo uspaný.',
       sshErrUpdateRequired: 'Před připojením aktualizujte Hermes na vzdáleném hostiteli.',
-      sshErrUnknown: 'Připojení SSH se nezdařilo.'
+      sshErrUnknown: 'Připojení SSH se nezdařilo.',
+      sshErrInteractiveAuth:
+        'Tailscale SSH vyžaduje interaktivní ověření v prohlížeči. V Terminálu spusťte `ssh <host> true`, ověření dokončete a zkuste to znovu — Hermes spouští SSH neinteraktivně.'
     },
     keys: {
       loading: 'Načítání API klíčů a přihlašovacích údajů…',
@@ -2116,8 +2082,16 @@ export const csOverrides = {
         curator: {
           label: 'Kurátor',
           hint: 'Přezkum využití dovedností'
+        },
+        voice_chat: {
+          label: 'Hlasový chat',
+          hint: 'Odpovědi namluvené v hlasovém režimu'
         }
-      }
+      },
+      speed: 'Rychlost',
+      speedStandard: 'Standardní',
+      inheritsFrom: task => `dědí z ${task}`,
+      followTask: task => `Převzít z ${task}`
     },
     localModels: {
       connectionChanged: 'Připojení místních modelů se změnilo',
@@ -2147,7 +2121,8 @@ export const csOverrides = {
         'speed-gated-quality':
           'Kvalitnější model se do tohoto počítače vejde, ale kvůli propustnosti paměti by odpovídal příliš pomalu — toto je nejlepší model, který zůstává rychlý.',
         'fastest-resident':
-          'Žádný model na tomto hardwaru nedosáhne plné rychlosti; tento se jí nejvíce blíží a přitom běží celý v paměti grafické karty.'
+          'Žádný model na tomto hardwaru nedosáhne plné rychlosti; tento se jí nejvíce blíží a přitom běží celý v paměti grafické karty.',
+        'product-default': 'Výchozí model pro tento stroj, zvolený jeho výrobcem.'
       },
       noRecommendationTitle: 'Pro tento počítač není dostupné automatické doporučení',
       noRecommendationDetail:
@@ -2701,6 +2676,15 @@ export const csOverrides = {
           enable: 'Použijte můj profil.'
         }
       }
+    },
+    pluginPages: {
+      blurb:
+        'Volby, které přidávají nainstalované pluginy. Každý plugin má vlastní stránku a některé pod ní přidávají další.',
+      empty: 'Zatím žádný plugin nemá nastavení.',
+      manage: 'Spravovat pluginy',
+      agentSettings: 'Nastavení agenta',
+      pageCount: n => (n === 1 ? '1 stránka' : n >= 2 && n <= 4 ? `${n} stránky` : `${n} stránek`),
+      missing: 'Tento plugin nemá stránku nastavení. Může být vypnutý nebo odinstalovaný.'
     }
   },
   skills: {
@@ -2803,7 +2787,8 @@ export const csOverrides = {
         no_interactive_session: 'žádná interaktivní relace',
         version_too_old: 'příliš stará verze',
         missing_app: 'aplikace chybí',
-        unknown: 'neznámý stav'
+        unknown: 'neznámý stav',
+        unsupported_gpu: 'GPU není podporováno'
       },
       catalogTitle: 'Katalog pluginů',
       catalogBrowse: 'Procházet',
@@ -2845,10 +2830,10 @@ export const csOverrides = {
         save: 'Uložit nastavení',
         saved: name => `Nastavení ${name} bylo uloženo.`,
         saveFailed: name => `Nastavení ${name} se nepodařilo uložit`,
-        optional: '(volitelné)',
         secretSet: '•••••••• (nastaveno)',
         secretStoredAs: env =>
-          `Uloženo do .env profilu jako ${env}, nikdy do config.yaml; ponechte prázdné pro zachování současné hodnoty.`
+          `Uloženo do .env profilu jako ${env}, nikdy do config.yaml; ponechte prázdné pro zachování současné hodnoty.`,
+        required: 'Povinné'
       }
     },
     officialCatalog: 'Dostupné pro instalaci',
@@ -3435,7 +3420,10 @@ export const csOverrides = {
         label: 'Umožnění uživatelů WhatsApp',
         help: 'Doporučeno. Čísla čárkových čísel nebo ID WhatsApp.'
       }
-    }
+    },
+    addListEntry: 'Přidat další',
+    removeListEntry: 'Odebrat',
+    listEntryPlaceholder: 'Zadejte ID'
   },
   webhooks: {
     search: 'Hledat webhooky…',
@@ -3813,7 +3801,8 @@ export const csOverrides = {
       failedLoad: 'Nenahráli jsme plány',
       emptyTitle: 'Nejsou k dispozici žádné plány',
       emptyDesc: 'Na tomto backend nejsou k dispozici žádné plány automatizace.'
-    }
+    },
+    queuedRun: 'Spuštění ve frontě'
   },
   artifacts: {
     search: 'Hledat artefakty…',
@@ -4631,7 +4620,9 @@ export const csOverrides = {
       notAvailable: 'Aktualizace není pro tento backend dostupná.',
       failed: 'Aktualizace backendu selhala.',
       noReturn:
-        'Backend se znovu nepřipojil. Aktualizace možná nebyla dokončena; zkontrolujte backend na hostitelském počítači.'
+        'Backend se znovu nepřipojil. Aktualizace možná nebyla dokončena; zkontrolujte backend na hostitelském počítači.',
+      owed: steps =>
+        `Backend aktualizován, ale zbývá dokončit: ${steps}. Dokončete je opětovným spuštěním \`hermes update\`.`
     },
     appName: 'Hermes',
     version: value => `Verze ${value}`,
@@ -4993,7 +4984,25 @@ export const csOverrides = {
       free: 'zdarma',
       cacheRead: 'čtení z cache',
       priceTitle: (input, output, cache) =>
-        `Vstup ${input}/Mtok · Výstup ${output}/Mtok` + (cache ? ` · Čtení z cache ${cache}/Mtok` : '')
+        `Vstup ${input}/Mtok · Výstup ${output}/Mtok` + (cache ? ` · Čtení z cache ${cache}/Mtok` : ''),
+      limited: 'Omezeno',
+      limitedUntil: time => `Omezeno do ${time}`,
+      limitedTip: (provider, time) =>
+        time
+          ? `${provider} dosáhl limitu použití. Obnoví se v ${time}; model na později si můžete vybrat i teď.`
+          : `${provider} dosáhl limitu použití. Model na později si můžete vybrat i teď, než se limit obnoví.`,
+      modelResets: time => `obnoví se ${time}`,
+      modelLimitedTip: time =>
+        `Tento model dosáhl vlastního limitu a obnoví se v ${time}. Ostatní modely zde fungují dál.`,
+      usageLeft: (percent, time) => (time ? `${percent} % zbývá · obnoví se ${time}` : `${percent} % zbývá`),
+      poolAccounts: count => `${count} ${count === 1 ? 'účet' : count >= 2 && count <= 4 ? 'účty' : 'účtů'}`,
+      poolLimited: (limited, total) => `omezené účty: ${limited}/${total}`,
+      poolAccount: number => `Účet ${number}`,
+      poolUnknown: 'Použití není k dispozici',
+      poolUnavailable: 'Přihlaste se znovu',
+      usageTip: provider => `${provider} se blíží limitu použití.`,
+      usageWindow: (label, percent, time) =>
+        time ? `${label}: zbývá ${percent} %, obnoví se ${time}` : `${label}: zbývá ${percent} %`
     },
     modelOptions: {
       noOptions: 'Žádné možnosti pro tento model',
@@ -5010,7 +5019,9 @@ export const csOverrides = {
       ultra: 'Ultra',
       sendsOnRoute: level => `na této trase odesílá úroveň ${level}`,
       updateFailed: 'Aktualizace volby modelu selhala',
-      fastFailed: 'Rychlá aktualizace režimu selhala'
+      fastFailed: 'Rychlá aktualizace režimu selhala',
+      ultrafast: 'Ultrarychlé',
+      useStandardSpeed: 'Použít standardní rychlost'
     },
     gatewayMenu: {
       gateway: 'Gateway',
@@ -5140,7 +5151,10 @@ export const csOverrides = {
       openModelPicker: 'Otevřít výběr modelu',
       modelPinned: 'připnuto vámi; nové chaty použijí tento model místo výchozího modelu v Nastavení',
       modelTitle: (provider, model) => `Model · ${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider} · ${model}`
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      backend: 'Backend',
+      messagingStopped: 'zprávy zastaveny',
+      messagingDegraded: name => `${name} mimo provoz`
     }
   },
   rightSidebar: {
@@ -5704,7 +5718,18 @@ export const csOverrides = {
         failed: 'Kontrola selhala'
       },
       requirementsLabel: 'Vyžaduje',
-      credentialsHeading: 'Přihlašovací údaje'
+      credentialsHeading: 'Přihlašovací údaje',
+      requiresHermes: range => `Hermes ${range}`,
+      envVar: name => `proměnná prostředí ${name}`,
+      phase: {
+        downloading: 'Stahování…',
+        python_packages: 'Instalace balíčků Pythonu…',
+        loading_tools: 'Načítání jejích nástrojů…'
+      },
+      serverNotConnected: (server, reason) => `MCP server ${server} není připojen${reason ? `: ${reason}` : ''}`,
+      notEnabled: 'Nainstalováno, ale není zapnuto',
+      missingEnv: names => `Pro dokončení nastavení vyplňte ${names}`,
+      alreadyInstalled: 'Už je nainstalováno; ponecháno beze změny'
     },
     mcpSetup: {
       installTitle: 'Přidat servery MCP',
@@ -5952,9 +5977,6 @@ export const csOverrides = {
     sessionUnavailable: 'Relace není dostupná',
     createSessionFailed: 'Nelze vytvořit novou relaci',
     promptFailed: 'Odeslání zadání se nezdařilo',
-    staleSessionTitle: 'Chat není aktuální',
-    staleSessionBody:
-      'Toto okno bylo pozadu za jiným zobrazením stejného chatu. Načetly se nejnovější zprávy. Pokud je chcete přesto odeslat, odešlete je znovu.',
     providerCredentialRequired: 'Před odesláním první zprávy přidejte přihlašovací údaje poskytovatele.',
     emptySlashCommand: 'prázdný lomítkový příkaz',
     slashCommandIgnoredTitle: 'Příkaz neodeslán',
@@ -6129,6 +6151,51 @@ export const csOverrides = {
       description: 'Zobrazuje postranní panel pro mobilní rozhraní.',
       toggle: open => `${open ? 'Zobrazit' : 'Skrýt'} postranní panel`
     }
+  },
+  skillDeepLink: {
+    installTitle: name => `Nainstalovat „${name}“?`,
+    installDescription: 'Tato dovednost bude dostupná v nových relacích. Instalujte jen zdroje, kterým důvěřujete.',
+    installTo: 'Kam nainstalovat',
+    thisComputer: 'Tento počítač',
+    installing: 'Instaluje se…',
+    installComplete: name => `„${name}“ nainstalováno`,
+    destinationChanged: 'Cíl se změnil. Zavřete toto okno a otevřete odkaz pro instalaci znovu.',
+    installed: 'Nainstalováno',
+    source: 'Zdroj'
+  },
+  appTour: {
+    sessions: {
+      title: 'Vaše chaty',
+      text: 'Tady bydlí každá konverzace. Můžete je hledat, připínat nebo znovu otevírat.'
+    },
+    composer: {
+      title: 'Pište sem',
+      text: 'Napište, co chcete udělat. Znakem @ přidáte soubor.'
+    },
+    newSession: {
+      title: 'Začít nově',
+      text: 'Nová relace má vlastní kontext. Používejte jednu na jeden úkol.'
+    },
+    model: {
+      title: 'Výběr modelu',
+      text: 'Určuje, který model vám odpovídá.'
+    },
+    modelLocal: 'Tento počítač zvládne jeden i lokálně: Nastavení > Poskytovatelé > Lokální modely.',
+    capabilities: {
+      title: 'Možnosti',
+      text: 'Dovednosti, nástroje a pluginy, které Hermes může použít. Další přidáte tady.'
+    },
+    messaging: {
+      title: 'Zprávy',
+      text: 'Ozvěte se Hermesu z Telegramu, Slacku, Discordu a dalších.'
+    },
+    rightPane: {
+      title: 'Pracovní panel',
+      text: 'Vpravo otevírá soubory, terminál, kontrolu změn a prohlížeč v aplikaci.'
+    }
+  },
+  butterbar: {
+    goTo: (index, total) => `Zobrazit oznámení ${index} z ${total}`
   }
 } satisfies TranslationOverrides
 

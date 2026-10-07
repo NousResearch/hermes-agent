@@ -56,7 +56,7 @@ async def _slash(adapter, **interaction):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", [
     "warm", "restart", "thread", "rename", "peer-rename", "cleared", "late-session", "read-retry",
-    "read-unavailable", "write-unavailable", "cancelled"])
+    "read-unavailable", "write-unavailable", "cancelled", "cancelled-rename"])
 async def test_slash_between_messages_keeps_one_pinned_prompt(tmp_path, monkeypatch, case):
     """Every case but ``warm`` and ``thread`` restarts the gateway after the last message, so the
     slash command is the first event the new process sees in that chat; its chat labels are the
@@ -76,7 +76,9 @@ async def test_slash_between_messages_keeps_one_pinned_prompt(tmp_path, monkeypa
     ``write-unavailable``: the first message's record found no database handle, so nothing was
     written; the next message with the same labels must write them.
     ``cancelled``: the reader is cancelled while the message's labels are being written, before
-    the message was admitted. The connector replays the un-ACKed frame, and the replay is admitted."""
+    the message was admitted. The connector replays the un-ACKed frame, and the replay is admitted.
+    ``cancelled-rename``: the cancelled write is still running when the replay and a rename are
+    recorded; it must not land after them and bring the old labels back."""
     config = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="x")})
     store = SessionStore(tmp_path, config)
     adapter, _stub = _adapter(platform="discord")
@@ -85,10 +87,10 @@ async def test_slash_between_messages_keeps_one_pinned_prompt(tmp_path, monkeypa
     chat = ({"chat_id": "th1", "chat_type": "thread", "thread_id": "th1", "parent_chat_id": "ch1"}
             if case == "thread" else {"chat_id": "ch1", "chat_type": "group"})
     renamed = {"chat_name": "Hermes Server / #triage", "chat_topic": "Renamed"}
-    calls, held, entered = [], threading.Event(), threading.Event()
+    calls, held, entered, settled = [], threading.Event(), threading.Event(), threading.Event()
 
     def watch(store):
-        # Note which thread touches the label record; hold the first write in ``cancelled``.
+        # Note which thread touches the label record; hold the first write in the ``cancelled`` cases.
         db = store._routing_db
         for name in ("set_meta", "get_meta"):
             real = getattr(db, name)
@@ -96,9 +98,13 @@ async def test_slash_between_messages_keeps_one_pinned_prompt(tmp_path, monkeypa
             def spy(key, *args, _real=real, _name=name, **kwargs):
                 if key.startswith("gateway_chat_labels:"):
                     calls.append((_name, threading.get_ident()))
-                    if _name == "set_meta" and case == "cancelled" and not held.is_set():
+                    if _name == "set_meta" and case.startswith("cancelled") and not entered.is_set():
                         entered.set()
                         held.wait(5)
+                        try:
+                            return _real(key, *args, **kwargs)
+                        finally:
+                            settled.set()
                 return _real(key, *args, **kwargs)
 
             setattr(db, name, spy)
@@ -133,16 +139,24 @@ async def test_slash_between_messages_keeps_one_pinned_prompt(tmp_path, monkeypa
         if case == "peer-rename":
             await relay(_message(chat, "u2"))
         message = _message(chat)
-        if case == "cancelled":
+        if case.startswith("cancelled"):
             intake = asyncio.create_task(adapter._on_inbound(message))
             await asyncio.to_thread(entered.wait, 5)
             intake.cancel()
-            held.set()
+            if case == "cancelled":
+                held.set()
+            else:
+                # Released only after the replay and the rename below have had time to record.
+                asyncio.get_running_loop().call_later(0.2, held.set)
             with pytest.raises(asyncio.CancelledError):
                 await intake
         entry = await relay(message)
-        if case == "cancelled":
+        if case.startswith("cancelled"):
             adapter.handle_message.assert_awaited_once_with(message)
+        if case == "cancelled-rename":
+            message = _message(chat, **renamed)
+            await relay(message)
+            await asyncio.to_thread(settled.wait, 5)
         if case == "write-unavailable":
             await relay(_message(chat, "u3"))
         if case == "cleared":

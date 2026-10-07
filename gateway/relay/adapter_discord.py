@@ -42,10 +42,12 @@ class DiscordInteractionMixin:
             return
         # Recorded when observed, so the interaction lane has them after a restart whatever order
         # the chat's sessions were created or reset in. Awaited before dispatch (the reader delivers
-        # events one at a time, so records land in observation order) but off the loop: it is a
-        # disk write.
+        # events one at a time) but off the loop: it is a disk write. One writer thread keeps records
+        # in observation order: a cancelled caller's write keeps running, and on a fresh thread the
+        # replay's newer write could land first and be overwritten with the older labels.
         try:
-            recorded = await asyncio.to_thread(store.record_chat_labels, source)
+            recorded = await asyncio.get_running_loop().run_in_executor(
+                self._discord_labels_writer, store.record_chat_labels, source)
         except Exception:
             logger.debug("relay: Discord chat labels not recorded", exc_info=True)
             recorded = False

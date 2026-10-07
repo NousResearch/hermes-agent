@@ -141,3 +141,18 @@ def test_user_override_without_the_hook_keeps_bundled_routing(monkeypatch):
     monkeypatch.setattr(providers, "get_provider_profile", lambda name: plain)
     url = resolve_provider_base_url(PROVIDER_REGISTRY["kimi-coding"], api_key="sk-kimi-abc", env_url="")
     assert url == KIMI_CODE_BASE_URL
+
+
+def test_runtime_reregistration_without_the_hook_keeps_bundled_routing(monkeypatch):
+    """A plain ``kimi-coding`` registered after discovery (legacy module / direct call) replaces the
+    process-wide entry; the bundled profile's routing still applies."""
+    import providers
+    from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider_base_url
+    from hermes_cli.auth_zai_kimi import KIMI_CODE_BASE_URL
+
+    providers.get_provider_profile("kimi-coding")  # discovery
+    plain = ProviderProfile(name="kimi-coding", api_mode="chat_completions")
+    monkeypatch.setitem(providers._REGISTRY, "kimi-coding", plain)
+    assert providers.get_provider_profile("kimi-coding") is plain
+    url = resolve_provider_base_url(PROVIDER_REGISTRY["kimi-coding"], api_key="sk-kimi-abc", env_url="")
+    assert url == KIMI_CODE_BASE_URL

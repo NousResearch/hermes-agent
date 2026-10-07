@@ -214,8 +214,8 @@ class AcmeProfile(ProviderProfile):
         no network or auth-store I/O, pure derivations (a key prefix) still
         apply. Credential-pool env seeding and the per-turn env refresh consult
         this hook only for the bundled kimi-coding / zai / actual profiles.
-        Re-registering one of those names without overriding this hook keeps
-        the bundled routing. Default: env_url (trailing slash dropped when
+        Re-registering a bundled provider name without overriding this hook
+        keeps the bundled base-URL routing. Default: env_url (trailing slash dropped when
         probing), else default_url."""
         return super().resolve_base_url(api_key=api_key, default_url=default_url, env_url=env_url, probe=probe)
 

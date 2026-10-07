@@ -280,6 +280,7 @@ class TestValidateSignature:
             ("real-secret", None, b'{"a":1}', b'{"a":1}', True, False),  # replayed stale timestamp
             ("whsec_", None, b'{"a":1}', b'{"a":1}', False, False),  # decodes to an empty key
             ("whsec_ICAg", None, b'{"a":1}', b'{"a":1}', False, False),  # decodes to whitespace
+            ("whsec_AA==", None, b'{"a":1}', b'{"a":1}', False, False),  # decodes to a NUL byte, which signs like b""
         ],
     )
     def test_standard_webhooks_headers_validate_like_svix(self, secret, sign_with, body, received, stale, expected):

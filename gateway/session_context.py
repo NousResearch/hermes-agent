@@ -109,6 +109,8 @@ def source_route_metadata(source: Any, metadata: dict | None) -> dict | None:
     """Keep inbound route anchors for durable deliveries after the source is gone."""
     anchors = {key: str(value) for key in ("scope_id", "parent_chat_id")
                if (value := getattr(source, key, None))}
+    if str(getattr(getattr(source, "platform", None), "value", "")) == "telegram":
+        anchors.update(getattr(source, "telegram_control_metadata", None) or {})
     return {**(metadata or {}), **anchors} if anchors else metadata
 
 

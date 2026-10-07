@@ -128,6 +128,8 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     if platform == "telegram" and getattr(source, "chat_type", None) in {"group", "forum", "supergroup"}:
         metadata["telegram_chat_type"] = getattr(source, "chat_type", None)
         metadata["telegram_requester_user_id"] = getattr(source, "user_id", None)
+    if platform == "telegram":
+        metadata.update(getattr(source, "telegram_control_metadata", None) or {})
     if not metadata:
         return None
     if platform == "telegram" and getattr(source, "chat_type", None) == "dm":

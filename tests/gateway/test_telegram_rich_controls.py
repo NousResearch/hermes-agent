@@ -1,5 +1,7 @@
 """Rich control conversion + send/edit contracts: escaping boundaries, callback passthrough,
-MarkdownV2 preservation, permanent-vs-transient fallback, registry lifecycle, query facade.
+ALL Bot API 10.3 button actions (url/web_app/login_url/switch_inline_query*/copy_text/disabled),
+explicit styles + row alignment, MarkdownV2 preservation, permanent-vs-transient fallback,
+registry lifecycle, query facade (positional + keyword edit calls).
 
 No PTB required: keyboards are fed as ``to_dict()``-shaped dicts; the mixin host is a bare
 object (the adapter's ``_is_rich_fallback_error`` / ``_coerce_bool_extra`` / latching are
@@ -15,7 +17,7 @@ from gateway.platforms.base import SendResult
 from plugins.platforms.telegram import telegram_rich_controls as rc
 from plugins.platforms.telegram.telegram_rich_controls import (
     TelegramRichControlsMixin, buttons_html, esc_attr, esc_text, markup_to_tg_button_rows,
-    mdv2_to_html, rich_control_html, rich_control_payload)
+    mdv2_to_html, rich_control_html, rich_control_markup_supported, rich_control_payload)
 
 
 def keyboard(*rows):
@@ -31,7 +33,6 @@ class Host(TelegramRichControlsMixin):
         self.config = SimpleNamespace(extra={"rich_controls": rich_controls})
         self._rich_send_disabled = rich_send_disabled
         self._bot = SimpleNamespace(do_api_request=AsyncMock(return_value={"message_id": 555}))
-        self.sent = []
 
     def _coerce_bool_extra(self, key, default=False):
         value = self.config.extra.get(key)
@@ -41,9 +42,6 @@ class Host(TelegramRichControlsMixin):
         s = str(exc).lower()
         return "bad request" in s or "unsupported" in s or "not implemented" in s or "method not found" in s
 
-
-def ok_message(message_id=555):
-    return {"message_id": message_id}
 
 
 # --- escaping / security boundaries --------------------------------------------------------
@@ -57,11 +55,7 @@ def test_esc_text_escapes_label_entities():
 
 def test_callback_prefixes_pass_through_verbatim():
     rows = markup_to_tg_button_rows(keyboard((("Approve", "ea:once:7"),), (("Cancel", "sc:cancel:42"),)))
-    assert [b["callback_data"] for row in rows for b in row] == ["ea:once:7", "sc:cancel:42"]
-
-
-def test_buttons_html_embeds_callback_data_attr_safely():
-    html = buttons_html([markup_to_tg_button_rows(keyboard((("Do", "cp:0"), ("No", "cp:1"))))[0]])[0]
+    assert [b["action"][1] for row in rows for b in row] == ["ea:once:7", "sc:cancel:42"]
 
 
 def test_malicious_label_cannot_break_out_of_button_tag():
@@ -73,31 +67,232 @@ def test_malicious_label_cannot_break_out_of_button_tag():
     assert html.endswith("</tg-button-row>")
 
 
-def test_non_callback_buttons_dropped_and_empty_rows_removed():
+def test_malicious_url_attribute_cannot_break_out():
+    markup = {"inline_keyboard": [[{"text": "L", "url": 'https://x"><tg-button data="evil">'}]]}
+    html = rich_control_html("t", None, markup)
+    assert html.count("<tg-button ") == 1
+    assert 'url="https://x&quot;&gt;&lt;tg-button' in html
+
+
+def test_malicious_copy_text_and_login_url_attributes_escaped():
     markup = {"inline_keyboard": [[
-        {"text": "Site", "url": "https://x"}, {"text": "Go", "callback_data": "cp:0"},
-        {"text": "Web", "web_app": {"url": "https://y"}}], [{"text": "only-url", "url": "https://z"}]]}
+        {"text": "C", "copy_text": {"text": 'x"><tg-button type="url">'}}]]}
+    html = rich_control_html("t", None, markup)
+    assert html.count("<tg-button ") == 1
+    markup2 = {"inline_keyboard": [[
+        {"text": "L", "login_url": {"url": 'https://e"><tg-button', "forward_text": 'f">x'}}]]}
+    html2 = rich_control_html("t", None, markup2)
+    assert html2.count("<tg-button ") == 1
+
+
+# --- ALL action kinds round-trip -------------------------------------------------------------
+def test_every_action_kind_converts_to_official_grammar():
+    markup = {"inline_keyboard": [
+        [{"text": "Docs", "url": "https://t.me"},
+         {"text": "Me", "url": "tg://user?id=777000"},
+         {"text": "App", "web_app": {"url": "https://telegram.org"}}],
+        [{"text": "Login", "login_url": {"url": "https://t.me", "forward_text": "fwd",
+                                         "request_write_access": True}}],
+        [{"text": "Inline", "switch_inline_query": "inline"},
+         {"text": "Here", "switch_inline_query_current_chat": "inline 2"},
+         {"text": "Chosen", "switch_inline_query_chosen_chat": {
+             "query": "inline 3", "allow_user_chats": True, "allow_bot_chats": True,
+             "allow_group_chats": True, "allow_channel_chats": True}}],
+        [{"text": "Copy", "copy_text": {"text": "...copy"}},
+         {"text": "Dead", "disabled": {}}]]}
+    html = rich_control_html("t", None, markup)
+    assert '<tg-button type="url" url="https://t.me">Docs</tg-button>' in html
+    assert '<tg-button type="url" url="tg://user?id=777000">Me</tg-button>' in html
+    assert '<tg-button type="web_app" url="https://telegram.org">App</tg-button>' in html
+    assert ('<tg-button type="login_url" url="https://t.me" forward-text="fwd" request-write-access>'
+            'Login</tg-button>') in html
+    assert '<tg-button type="switch_inline_query" query="inline">Inline</tg-button>' in html
+    assert '<tg-button type="switch_inline_query_current_chat" query="inline 2">Here</tg-button>' in html
+    assert ('<tg-button type="switch_inline_query_chosen_chat" query="inline 3" '
+            'allow-user-chats allow-bot-chats allow-group-chats allow-channel-chats>Chosen</tg-button>') in html
+    assert '<tg-button type="copy_text" text="...copy">Copy</tg-button>' in html
+    # Official grammar: a disabled button carries ONLY the type (no action attrs).
+    assert '<tg-button type="disabled">Dead</tg-button>' in html
+    assert rich_control_markup_supported(markup)
+
+
+def test_empty_inline_query_preserved_as_empty_query_attr():
+    markup = {"inline_keyboard": [[
+        {"text": "E", "switch_inline_query": ""},
+        {"text": "E2", "switch_inline_query_current_chat": ""}]]}
+    html = rich_control_html("", None, markup)
+    assert '<tg-button type="switch_inline_query" query="">E</tg-button>' in html
+    assert '<tg-button type="switch_inline_query_current_chat" query="">E2</tg-button>' in html
+
+
+def test_chosen_chat_with_no_query_still_emits_empty_query():
+    markup = {"inline_keyboard": [[{"text": "C", "switch_inline_query_chosen_chat": {"allow_group_chats": True}}]]}
+    html = rich_control_html("", None, markup)
+    assert '<tg-button type="switch_inline_query_chosen_chat" query="" allow-group-chats>C</tg-button>' in html
+
+
+def test_disabled_marker_renders_inactive_dropping_carrier_action():
+    # PTB 22.8 has no `disabled` param: callers ride button-level api_kwargs next to a carrier.
+    markup = {"inline_keyboard": [[
+        {"text": "Picked", "callback_data": "ea:once:1", "disabled": {}},
+        {"text": "Cancel", "callback_data": "sc:cancel:2"}]]}
+    html = rich_control_html("t", None, markup)
+    assert '<tg-button type="disabled">Picked</tg-button>' in html
+    assert "ea:once:1" not in html  # carrier action dropped: the button does nothing
+    assert 'type="callback_data" data="sc:cancel:2"' in html  # siblings keep their actions
+
+
+def test_disabled_button_via_direct_field_empty_dict():
+    markup = {"inline_keyboard": [[{"text": "Dead", "disabled": {}}]]}
+    html = rich_control_html("t", None, markup)
+    assert html == 't\n<tg-button-row><tg-button type="disabled">Dead</tg-button></tg-button-row>'
+
+
+def test_disabled_login_url_carrier_also_inactive():
+    markup = {"inline_keyboard": [[
+        {"text": "L", "login_url": {"url": "https://t.me"}, "disabled": {}}]]}
+    html = rich_control_html("", None, markup)
+    assert '<tg-button type="disabled">L</tg-button>' in html
+    assert "https://t.me" not in html
+
+
+# --- non-representable buttons → whole markup rejected (never silently dropped) -------------
+def test_callback_game_button_makes_markup_unsupported():
+    markup = {"inline_keyboard": [[
+        {"text": "Play", "callback_game": {}}, {"text": "Go", "callback_data": "cp:0"}]]}
+    assert rich_control_markup_supported(markup) is False
+    assert markup_to_tg_button_rows(markup) == []
+
+
+def test_pay_button_makes_markup_unsupported():
+    markup = {"inline_keyboard": [[{"text": "Pay", "pay": True}]]}
+    assert rich_control_markup_supported(markup) is False
+
+
+def test_actionless_button_makes_markup_unsupported():
+    markup = {"inline_keyboard": [[{"text": "Nothing"}]]}
+    assert rich_control_markup_supported(markup) is False
+
+
+def test_malformed_callback_data_makes_markup_unsupported_not_dropped():
+    markup = {"inline_keyboard": [[
+        {"text": "empty", "callback_data": ""}, {"text": "Go", "callback_data": "cp:0"}]]}
+    assert rich_control_markup_supported(markup) is False
+    markup2 = {"inline_keyboard": [[
+        {"text": "long", "callback_data": "x" * 65}, {"text": "Go", "callback_data": "cp:0"}]]}
+    assert rich_control_markup_supported(markup2) is False
+
+
+def test_malformed_subobject_buttons_unsupported():
+    for bad in ({"text": "W", "web_app": "https://not-a-dict"},
+                {"text": "L", "login_url": None},
+                {"text": "C", "copy_text": 42},
+                {"text": "U", "url": None},
+                {"text": "S", "switch_inline_query": 3}):
+        assert rich_control_markup_supported({"inline_keyboard": [[bad]]}) is False
+
+
+@pytest.mark.asyncio
+async def test_unsupported_markup_blocks_rich_send_gate():
+    host = Host()
+    markup = {"inline_keyboard": [[{"text": "Play", "callback_game": {}}]]}
+    result = await host._try_send_rich_control({"chat_id": 1, "text": "t", "reply_markup": markup})
+    assert result is None and host._bot.do_api_request.call_count == 0
+
+
+
+
+# --- bounds: split, never silently truncate --------------------------------------------------
+def test_row_button_cap_splits_extras_into_new_rows():
+    row = [("b", f"cp:{i}") for i in range(10)]
+    rows = markup_to_tg_button_rows(keyboard(row,))
+    assert [len(r) for r in rows] == [8, 2]
+    assert [b["action"][1] for b in rows[0]] == [f"cp:{i}" for i in range(8)]
+    assert [b["action"][1] for b in rows[1]] == ["cp:8", "cp:9"]
+
+
+def test_empty_rows_dropped():
+    markup = {"inline_keyboard": [[], [{"text": "Go", "callback_data": "cp:0"}]]}
     rows = markup_to_tg_button_rows(markup)
-    assert rows == [[{"text": "Go", "callback_data": "cp:0"}]]
+    assert len(rows) == 1 and rows[0][0]["action"][1] == "cp:0"
     assert buttons_html([]) == ""
 
 
-def test_callback_data_byte_bounds_enforced():
-    assert markup_to_tg_button_rows(keyboard((("empty", ""),),)) == []
-    assert markup_to_tg_button_rows(keyboard((("long", "x" * 65),),)) == []
-    assert markup_to_tg_button_rows(keyboard((("ok", "x" * 64),),)) == [[{"text": "ok", "callback_data": "x" * 64}]]
+def test_callback_data_byte_bounds():
+    assert rich_control_markup_supported(keyboard((("ok", "x" * 64),),)) is True
+    assert rich_control_markup_supported(keyboard((("long", "x" * 65),),)) is False
+    rows = markup_to_tg_button_rows(keyboard((("long", "x" * 65),),))
+    assert rows == []
 
 
-def test_row_button_cap_enforced():
-    row = [("b", f"cp:{i}") for i in range(10)]
-    rows = markup_to_tg_button_rows(keyboard(row,))
-    assert len(rows[0]) == 8
-
-
+# --- styles: explicit beats inferred; link restricted to callback ----------------------------
 def test_style_inference_whitelisted_only():
-    assert "danger" in buttons_html([markup_to_tg_button_rows(keyboard((("Cancel", "cp:0"),)))[0]])
-    assert "success" in buttons_html([markup_to_tg_button_rows(keyboard((("Approve once", "cp:0"),)))[0]])
+    assert 'style="danger"' in buttons_html([markup_to_tg_button_rows(keyboard((("Cancel", "cp:0"),)))[0]])
+    assert 'style="success"' in buttons_html([markup_to_tg_button_rows(keyboard((("Approve once", "cp:0"),)))[0]])
     assert "style" not in buttons_html([markup_to_tg_button_rows(keyboard((("Model X", "mp:0"),)))[0]])
+
+
+def test_explicit_style_beats_inference():
+    markup = {"inline_keyboard": [[{"text": "Cancel", "callback_data": "cp:0", "style": "primary"}]]}
+    html = rich_control_html("", None, markup)
+    assert 'style="primary"' in html and 'style="danger"' not in html
+
+
+def test_link_style_allowed_only_on_callback_buttons():
+    cb = {"inline_keyboard": [[{"text": "Open", "callback_data": "op:1", "style": "link"}]]}
+    assert 'style="link"' in rich_control_html("", None, cb)
+    url = {"inline_keyboard": [[{"text": "View", "url": "https://t.me", "style": "link"}]]}
+    assert "style" not in rich_control_html("", None, url)
+    disabled = {"inline_keyboard": [[{"text": "D", "callback_data": "x", "disabled": {}, "style": "link"}]]}
+    assert "style" not in rich_control_html("", None, disabled)
+
+
+def test_unknown_explicit_style_falls_back_to_inference():
+    markup = {"inline_keyboard": [[{"text": "Cancel", "callback_data": "cp:0", "style": "neon"}]]}
+    html = rich_control_html("", None, markup)
+    assert 'style="danger"' in html and "neon" not in html
+
+
+# --- row alignment (markup api_kwargs: align / row_alignments) -------------------------------
+def test_markup_level_align_applies_to_all_rows():
+    markup = {"inline_keyboard": [[{"text": "A", "callback_data": "a"}],
+                                  [{"text": "B", "url": "https://t.me"}]], "align": "right"}
+    html = rich_control_html("t", None, markup)
+    assert html.count('<tg-button-row align="right">') == 2
+
+
+def test_row_alignments_apply_per_row():
+    markup = {"inline_keyboard": [[{"text": "A", "callback_data": "a"}],
+                                  [{"text": "B", "callback_data": "b"}]],
+              "row_alignments": ["left", "center"]}
+    html = rich_control_html("t", None, markup)
+    assert '<tg-button-row align="left">' in html
+    assert '<tg-button-row align="center">' in html
+
+
+def test_split_rows_inherit_source_row_alignment():
+    big_row = [{"text": f"b{i}", "callback_data": f"cp:{i}"} for i in range(10)]
+    markup = {"inline_keyboard": [big_row], "row_alignments": ["center"]}
+    html = rich_control_html("", None, markup)
+    assert html.count('<tg-button-row align="center">') == 2
+
+
+def test_invalid_or_missing_alignments_drop_the_attribute():
+    markup = {"inline_keyboard": [[{"text": "A", "callback_data": "a"}],
+                                  [{"text": "B", "callback_data": "b"}],
+                                  [{"text": "C", "callback_data": "c"}]],
+              "align": "center", "row_alignments": ["left", "bogus"]}
+    html = rich_control_html("t", None, markup)
+    assert '<tg-button-row align="left">' in html   # valid per-row entry wins
+    assert '<tg-button-row>' in html                # invalid per-row entry → dropped
+    assert '<tg-button-row align="center">' in html  # missing entry → global align
+
+
+def test_alignment_from_ptb_markup_api_kwargs_to_dict_shape():
+    # InlineKeyboardMarkup(api_kwargs={"align": ...}).to_dict() flattens api_kwargs at top level.
+    markup = {"inline_keyboard": [[{"text": "A", "callback_data": "a"}]], "align": "right"}
+    assert rich_control_markup_supported(markup) is True
+    assert '<tg-button-row align="right">' in rich_control_html("", None, markup)
 
 
 # --- MarkdownV2 → HTML conversion -----------------------------------------------------------
@@ -127,6 +322,14 @@ def test_mdv2_escapes_unpaired_markers():
 
 def test_mdv2_escapes_raw_entities_in_bare_text():
     assert mdv2_to_html("*bold* & <tag>") == "<b>bold</b> &amp; &lt;tag&gt;"
+
+
+def test_mdv2_formatted_content_cannot_inject_html_or_link_attributes():
+    assert mdv2_to_html('*<tg-button data="evil">&*') == '<b>&lt;tg-button data="evil"&gt;&amp;</b>'
+    assert mdv2_to_html('[docs](https://example.com/?x="quoted"&y=1)') == (
+        '<a href="https://example.com/?x=&quot;quoted&quot;&amp;y=1">docs</a>')
+    assert mdv2_to_html(r'[docs](https://example.com/?x=\"quoted\")') == (
+        '<a href="https://example.com/?x=&quot;quoted&quot;">docs</a>')
 
 
 def test_plain_mode_escapes_body():
@@ -340,3 +543,96 @@ async def test_edit_control_rich_permanent_returns_none():
     host = Host()
     host._bot.do_api_request = AsyncMock(side_effect=RuntimeError("Unsupported rich edit"))
     assert await host._edit_control_rich(1, 2, "text", None, None) is None
+
+@pytest.mark.asyncio
+async def test_send_with_url_and_disabled_buttons_embedded():
+    host = Host()
+    markup = {"inline_keyboard": [
+        [{"text": "Docs", "url": "https://t.me"},
+         {"text": "Picked", "callback_data": "ea:once:9", "disabled": {}}]]}
+    result = await host._try_send_rich_control({"chat_id": 5, "text": "Choose", "reply_markup": markup})
+    assert result.success
+    html = host._bot.do_api_request.call_args.kwargs["api_kwargs"]["rich_message"]["html"]
+    assert '<tg-button type="url" url="https://t.me">Docs</tg-button>' in html
+    assert '<tg-button type="disabled">Picked</tg-button>' in html
+
+
+@pytest.mark.asyncio
+async def test_edit_control_rich_preserves_actions_styles_alignment():
+    host = Host()
+    markup = {"inline_keyboard": [
+        [{"text": "Cancel", "callback_data": "sc:cancel:1", "style": "danger"},
+         {"text": "Retry", "callback_data": "sc:retry:1", "style": "primary"}],
+        [{"text": "Share", "switch_inline_query": ""}, {"text": "Copy", "copy_text": {"text": "id"}}]],
+        "row_alignments": ["left", "right"]}
+    await host._edit_control_rich(1, 2, "Page 2", None, markup)
+    payload = host._bot.do_api_request.call_args.kwargs["api_kwargs"]
+    html = payload["rich_message"]["html"]
+    assert '<tg-button-row align="left">' in html and '<tg-button-row align="right">' in html
+    assert '<tg-button type="callback_data" data="sc:cancel:1" style="danger">Cancel</tg-button>' in html
+    assert '<tg-button type="callback_data" data="sc:retry:1" style="primary">Retry</tg-button>' in html
+    assert '<tg-button type="switch_inline_query" query="">Share</tg-button>' in html
+    assert '<tg-button type="copy_text" text="id">Copy</tg-button>' in html
+    # Pagination edit (reply_markup present) is non-terminal.
+
+
+@pytest.mark.asyncio
+async def test_facade_accepts_positional_ptb_style_edit_call():
+    host = Host()
+    host.register_rich_control_message(123, 555)
+    query = SimpleNamespace(message=SimpleNamespace(chat_id=123, message_id=555))
+    facade = host.wrap_rich_control_query(query)
+    await facade.edit_message_text("*Done*", "MarkdownV2", None)
+    payload = host._bot.do_api_request.call_args.kwargs["api_kwargs"]
+    assert payload["message_id"] == 555
+    # Positional (text, parse_mode, reply_markup) routed to the rich edit, body converted.
+    assert "<b>Done</b>" in payload["rich_message"]["html"]
+    assert not host.is_rich_control_message(123, 555)  # terminal edit dropped the entry
+
+
+@pytest.mark.asyncio
+async def test_facade_passes_link_preview_kwargs_into_rich_edit():
+    host = Host()
+    host.register_rich_control_message(123, 555)
+    query = SimpleNamespace(message=SimpleNamespace(chat_id=123, message_id=555))
+    facade = host.wrap_rich_control_query(query)
+    await facade.edit_message_text("t", None, None, disable_web_page_preview=True)
+    payload = host._bot.do_api_request.call_args.kwargs["api_kwargs"]
+    assert payload["link_preview_options"] == {"is_disabled": True}
+
+
+@pytest.mark.asyncio
+async def test_facade_positional_fallback_forwards_all_args_to_legacy_edit():
+    host = Host()
+    host._bot.do_api_request = AsyncMock(side_effect=RuntimeError("Bad Request: rejected"))
+    host.register_rich_control_message(123, 555)
+    raw_edit = AsyncMock()
+    query = SimpleNamespace(message=SimpleNamespace(chat_id=123, message_id=555), edit_message_text=raw_edit)
+    facade = host.wrap_rich_control_query(query)
+    await facade.edit_message_text("legacy", "MarkdownV2", None)
+    raw_edit.assert_awaited_once_with(text="legacy", parse_mode="MarkdownV2", reply_markup=None)
+
+
+@pytest.mark.asyncio
+async def test_facade_extra_kwargs_ride_legacy_fallback_verbatim():
+    host = Host()
+    host._bot.do_api_request = AsyncMock(side_effect=RuntimeError("Bad Request: rejected"))
+    host.register_rich_control_message(123, 555)
+    raw_edit = AsyncMock()
+    query = SimpleNamespace(message=SimpleNamespace(chat_id=123, message_id=555), edit_message_text=raw_edit)
+    facade = host.wrap_rich_control_query(query)
+    await facade.edit_message_text("x", None, None, read_timeout=10)
+    raw_edit.assert_awaited_once_with(text="x", parse_mode=None, reply_markup=None, read_timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_facade_pagination_edit_with_noncallback_markup_keeps_registry():
+    host = Host()
+    host.register_rich_control_message(123, 555)
+    query = SimpleNamespace(message=SimpleNamespace(chat_id=123, message_id=555))
+    facade = host.wrap_rich_control_query(query)
+    markup = {"inline_keyboard": [[{"text": "Next", "url": "https://t.me/next"}]]}
+    await facade.edit_message_text("Page 2", "HTML", markup)
+    assert host.is_rich_control_message(123, 555)
+    html = host._bot.do_api_request.call_args.kwargs["api_kwargs"]["rich_message"]["html"]
+    assert '<tg-button type="url" url="https://t.me/next">Next</tg-button>' in html

@@ -26,6 +26,21 @@ to the plain ephemeral ``sendMessage``/text-edit path; anything else fails
 closed. The runtime return may be a raw dict (``do_api_request`` without
 ``return_type``) or a PTB ``Message`` — ``_ephemeral_fields`` reads both.
 
+Ephemeral overlay (Bot API 10.3 ``EphemeralMessageParameters``): a send
+triggered by a FRESH public callback query (parent-stamped
+``telegram_callback_query_id`` NOT originating from an ephemeral message) may
+set ``replace_callback_query_message: True`` — the new private content replaces
+the public overlay in place. A callback from an ephemeral message never
+replaces (API contract: those must use the ``editEphemeralMessage…`` methods),
+so its replacement flow edits the SAME ephemeral message instead of sending a
+duplicate. Media edits go through ``editEphemeralMessageMedia`` with
+``InputMedia`` (file id/URL) or a newly uploaded local file (PTB 22.8
+``InputFile`` inside the ``media`` parameter of ``do_api_request`` — verified
+against PTB source: ``RequestParameter.from_input`` extracts InputMedia
+``InputFile`` payloads into multipart data; there is no separate ``files``
+parameter on ``do_api_request``), and captions through
+``editEphemeralMessageCaption``; both stay requester-gated and private.
+
 Parent integration (this module edits no adapter/gateway file): mixin first in
 the ``TelegramAdapter`` bases; ``__init__`` sets ``self._private_controls =
 self._coerce_bool_extra("private_controls", False)``; ``_send_control_message``
@@ -38,6 +53,22 @@ never a public fallback; ``send()`` fails closed on
 allowlist); ``_callback_ctx`` captures ``query.id`` / ``query.from_user.id``;
 ``delete_message`` routes ``eph:`` ids to ``delete_ephemeral_control``; picker
 text fallbacks gate on ``gateway.relay.egress.declined_send(result)``.
+
+Callback-context propagation (parent-owned): stamp these metadata keys from the
+TRUSTED update object only — never from message text or other user-controllable
+content:
+``telegram_callback_query_id`` = ``query.id`` (the fresh public trigger),
+``telegram_requester_user_id`` = ``query.from_user.id`` (authentic requester),
+``telegram_callback_from_ephemeral`` = True when ``query.message`` is itself an
+ephemeral message (its ``message_id == 0`` with receiver/ephemeral fields —
+suppresses replace_callback_query_message), and
+``telegram_ephemeral_reply_id`` = the ephemeral id when replying inside an
+ephemeral flow. With those keys, ``_send_private_control`` decides the overlay:
+a fresh public callback id + non-ephemeral origin →
+``replace_callback_query_message: True``; an ephemeral-origin callback → edit
+of the existing ephemeral anchor (call ``edit_ephemeral_control_text``/
+``edit_ephemeral_control_media`` with the anchor's record/handle), never a
+duplicate send.
 """
 
 from __future__ import annotations
@@ -220,8 +251,9 @@ class PrivateQuery:
         """``editEphemeralMessageText`` — never the shared message, never a ``message_id``.
 
         Rich: gated on ``extra.rich_controls``; a rich edit carries ``rich_message``
-        EXCLUSIVELY. A permanent rich rejection (adapter's ``_is_rich_fallback_error``,
-        surfaced via the adapter's ``_last_private_rich_edit_error``) retries the same
+        EXCLUSIVELY. A permanent rich rejection (adapter's ``_is_rich_fallback_error``
+        classifying THIS call's own failure — per-call result, no adapter-wide
+        last-error slot that a concurrent edit could stale-poison) retries the same
         edit as plain text (fixed message id — idempotent, no duplicate risk); a
         transient/ambiguous rich failure returns False — the rich edit may have landed,
         so a plain edit could race it. No text AND no rich payload → refused.
@@ -240,16 +272,40 @@ class PrivateQuery:
                 except Exception:
                     rich = None
         if rich:
-            if await self._adapter.edit_ephemeral_control_text(self.record, None, rich_message=rich):
+            ok, exc = await self._adapter.edit_ephemeral_control_text(
+                self.record, None, rich_message=rich, return_error=True)
+            if ok:
                 return True
-            last = getattr(self._adapter, "_last_private_rich_edit_error", None)
             classifier = getattr(self._adapter, "_is_rich_fallback_error", None)
-            if not (callable(classifier) and last is not None and classifier(last)):
+            if not (callable(classifier) and exc is not None and classifier(exc)):
                 return False  # transient/ambiguous: never race a plain edit
         if text is None:
             return False
         return await self._adapter.edit_ephemeral_control_text(
             self.record, text, parse_mode=parse_mode, reply_markup=reply_markup)
+
+    async def edit_message_media(self, media: Any, reply_markup: Any = None) -> bool:
+        """``editEphemeralMessageMedia`` — receiver-gated, never a public editMessageMedia.
+
+        ``media`` may be a PTB ``InputMedia*`` (file id / HTTPS URL / newly
+        uploaded local file via PTB 22.8 ``InputFile`` — the module's media-edit
+        endpoint handles the multipart extraction) or a JSON-ready dict.
+        """
+        if not self.receiver_matches():
+            await self.answer_receivers_only()
+            return False
+        return await self._adapter.edit_ephemeral_control_media(self.record, media, reply_markup=reply_markup)
+
+    async def edit_message_caption(self, caption: Optional[str], parse_mode: Any = None,
+                                   show_caption_above_media: Any = None,
+                                   reply_markup: Any = None) -> bool:
+        """``editEphemeralMessageCaption`` — receiver-gated, never a public editMessageCaption."""
+        if not self.receiver_matches():
+            await self.answer_receivers_only()
+            return False
+        return await self._adapter.edit_ephemeral_control_caption(
+            self.record, caption, parse_mode=parse_mode,
+            show_caption_above_media=show_caption_above_media, reply_markup=reply_markup)
 
     async def delete(self) -> bool:
         """``deleteEphemeralMessage`` for the wrapped ephemeral control message."""
@@ -356,14 +412,41 @@ class TelegramPrivateControlsMixin:
         send_kwargs = dict(kwargs)
         ephemeral_params: Dict[str, Any] = {"receiver_user_id": receiver}
         callback_query_id = str(meta.get("telegram_callback_query_id") or "").strip()
+        # Ephemeral-origin flag comes ONLY from parent-stamped trusted update state
+        # (``query.message`` being ephemeral), never inferred from user text.
+        callback_from_ephemeral = bool(meta.get("telegram_callback_from_ephemeral"))
         if callback_query_id:
             # Non-admin delivery needs a 15s trigger (callback query or ephemeral
             # reply); admins send any time. We do NOT preflight privilege —
             # Telegram rejects non-privileged sends and we report them.
             ephemeral_params["callback_query_id"] = callback_query_id
+            if not callback_from_ephemeral:
+                # Overlay: show this private content IN PLACE OF the public message
+                # the fresh callback query came from. Must stay False for callbacks
+                # from ephemeral messages (API contract) — those edit instead.
+                ephemeral_params["replace_callback_query_message"] = True
         # A regular reply anchor is meaningless on an ephemeral send; an ``eph:``
         # anchor becomes the ephemeral reply_parameters form.
         anchor = send_kwargs.pop("reply_to_message_id", None)
+        # Replacement flow from an EPHEMERAL callback: never a duplicate send.
+        # The parent stamps ``telegram_ephemeral_reply_id`` (or passes the
+        # ``eph:`` reply anchor) with the same ephemeral message the callback hit;
+        # when we can resolve that anchor to a record, the replacement flow EDITS
+        # it instead. The caller may also force the edit path via the explicit
+        # ``telegram_replaces_ephemeral_id`` stamp when the anchor is known.
+        replaces_ephemeral = None
+        if callback_from_ephemeral:
+            explicit = str(meta.get("telegram_replaces_ephemeral_id") or "").strip()
+            parsed_replaces = parse_private_handle(explicit) or parse_private_handle(
+                str(meta.get("telegram_ephemeral_reply_id") or anchor or ""))
+            if parsed_replaces is not None:
+                if parsed_replaces[0] == receiver:
+                    replaces_ephemeral = parsed_replaces[1]
+                elif explicit:
+                    # An EXPLICIT replacement anchor for another receiver's
+                    # ephemeral message is inconsistent trusted state — fail
+                    # closed rather than silently re-addressing it or sending.
+                    raise PrivateControlError("ephemeral_anchor_receiver_mismatch")
         if "reply_parameters" not in send_kwargs:
             reply_ephemeral = parse_private_handle(str(meta.get("telegram_ephemeral_reply_id") or anchor))
             if reply_ephemeral is not None:
@@ -373,6 +456,34 @@ class TelegramPrivateControlsMixin:
         merged_api_kwargs = {**(send_kwargs.pop("api_kwargs", None) or {}),
                              "ephemeral_message_parameters": ephemeral_params}
         text = send_kwargs.get("text")
+
+        # Ephemeral-origin replacement: prefer editing the same ephemeral message (a fresh send could
+        # duplicate requester-only content; the API forbids replace_callback_query_message there).
+        # The edit is the whole flow — a failed API reply may already have been delivered, never resend.
+        if replaces_ephemeral is not None:
+            edit_record = self._lookup_private_record(
+                send_kwargs.get("chat_id"), receiver, replaces_ephemeral) or _PrivateRecord(
+                send_kwargs.get("chat_id"), receiver, replaces_ephemeral)
+            rich_replacement = None
+            if _rich_embedding_enabled(self) and text is not None:
+                supported = getattr(self, "_rich_control_markup_supported", None)
+                helper = getattr(self, "_rich_control_payload", None)
+                if not (callable(supported) and not supported(send_kwargs.get("reply_markup"))) and callable(helper):
+                    try:
+                        rich_replacement = helper(text, parse_mode=send_kwargs.get("parse_mode"),
+                                                   reply_markup=send_kwargs.get("reply_markup"))
+                    except Exception:
+                        rich_replacement = None
+            edited, error = await self.edit_ephemeral_control_text(
+                edit_record, text, parse_mode=send_kwargs.get("parse_mode"),
+                reply_markup=send_kwargs.get("reply_markup"), rich_message=rich_replacement, return_error=True)
+            classifier = getattr(self, "_is_rich_fallback_error", None)
+            if not edited and rich_replacement and error is not None and callable(classifier) and classifier(error):
+                edited = await self.edit_ephemeral_control_text(
+                    edit_record, text, parse_mode=send_kwargs.get("parse_mode"), reply_markup=send_kwargs.get("reply_markup"))
+            if not edited:
+                raise PrivateControlError("ephemeral_replacement_edit_failed")
+            return _HandleFacade(edit_record)
 
         # Rich embed (``extra.rich_controls``): one ``sendRichMessage`` with
         # buttons as native ``<tg-button-row>`` blocks. Never mandatory — a
@@ -473,26 +584,30 @@ class TelegramPrivateControlsMixin:
 
     async def edit_ephemeral_control_text(self, record_or_handle: Any, text: Optional[str], *,
                                           chat_id: Any = None, parse_mode: Any = None, reply_markup: Any = None,
-                                          rich_message: Optional[Dict[str, Any]] = None) -> bool:
+                                          rich_message: Optional[Dict[str, Any]] = None,
+                                          return_error: bool = False):
         """``editEphemeralMessageText`` for a private control. Returns False on failure
         (quiet-edit call sites treat it as non-fatal); never retries via editMessageText.
 
         Content fields are EXCLUSIVE: ``rich_message`` alone when given (never
         alongside text/parse_mode/reply_markup — the API takes one content form);
-        otherwise plain ``text``/``parse_mode``/``reply_markup``. Rich failures are
-        recorded on ``_last_private_rich_edit_error`` so the facade can tell
-        permanent (safe plain-text retry) from transient (never raced).
+        otherwise plain ``text``/``parse_mode``/``reply_markup``.
+
+        ``return_error=True`` returns ``(ok, exc_or_None)`` PER CALL so the rich
+        caller can classify permanent vs transient without any adapter-wide
+        last-error slot (a stale global would misroute a concurrent edit's
+        failure into this call's retry decision).
         """
         record = self.resolve_private_control(
             record_or_handle, chat_id=chat_id if chat_id is not None else (
                 record_or_handle.get("chat_id") if isinstance(record_or_handle, _PrivateRecord) else None))
         if record is None or record["ephemeral_message_id"] <= 0:
             logger.debug("[%s] private control edit refused: no valid ephemeral target", getattr(self, "name", "telegram"))
-            return False
+            return (False, None) if return_error else False
         if text is None and rich_message is None:
-            return False
+            return (False, None) if return_error else False
         if not self._bot:
-            return False
+            return (False, None) if return_error else False
         payload: Dict[str, Any] = {
             "chat_id": record["chat_id"], "receiver_user_id": record["receiver_user_id"],
             "ephemeral_message_id": record["ephemeral_message_id"]}
@@ -509,12 +624,83 @@ class TelegramPrivateControlsMixin:
             await _bounded_api_call(
                 self._bot.do_api_request("editEphemeralMessageText", api_kwargs=payload),
                 label="telegram-private-control-edit")
-            return True
+            return (True, None) if return_error else True
         except Exception as exc:
-            if rich_message:
-                self._last_private_rich_edit_error = exc
             logger.debug(
                 "[%s] editEphemeralMessageText failed (chat=%s receiver=%s ephemeral=%s): %s",
+                getattr(self, "name", "telegram"), record["chat_id"], record["receiver_user_id"],
+                record["ephemeral_message_id"], _redact_private_error(exc))
+            return (False, exc) if return_error else False
+
+    async def edit_ephemeral_control_media(self, record_or_handle: Any, media: Any, *,
+                                           chat_id: Any = None, reply_markup: Any = None) -> bool:
+        """``editEphemeralMessageMedia`` for a private control (Bot API 10.3).
+
+        ``media`` accepts a PTB ``InputMedia*`` object (file id, HTTPS URL, or a
+        newly uploaded local file via a PTB 22.8 ``InputFile`` as its
+        ``media`` argument — ``do_api_request``'s ``api_kwargs["media"]`` rides
+        ``RequestParameter.from_input`` which extracts the file into multipart
+        data; PTB has no separate ``files`` parameter on ``do_api_request``) or
+        an already JSON-serializable dict. Failures return False — never a
+        public editMessageMedia fallback. Same receiver gate as text edits.
+        """
+        record = self.resolve_private_control(record_or_handle, chat_id=chat_id)
+        if record is None or record["ephemeral_message_id"] <= 0:
+            logger.debug("[%s] private control media edit refused: no valid ephemeral target", getattr(self, "name", "telegram"))
+            return False
+        if media is None:
+            return False
+        if not self._bot:
+            return False
+        payload: Dict[str, Any] = {
+            "chat_id": record["chat_id"], "receiver_user_id": record["receiver_user_id"],
+            "ephemeral_message_id": record["ephemeral_message_id"],
+            "media": _serialize_media(media)}
+        if reply_markup is not None:
+            payload["reply_markup"] = _serialize_markup(reply_markup)
+        try:
+            await _bounded_api_call(
+                self._bot.do_api_request("editEphemeralMessageMedia", api_kwargs=payload),
+                label="telegram-private-control-media-edit")
+            return True
+        except Exception as exc:
+            logger.debug(
+                "[%s] editEphemeralMessageMedia failed (chat=%s receiver=%s ephemeral=%s): %s",
+                getattr(self, "name", "telegram"), record["chat_id"], record["receiver_user_id"],
+                record["ephemeral_message_id"], _redact_private_error(exc))
+            return False
+
+    async def edit_ephemeral_control_caption(self, record_or_handle: Any, caption: Optional[str], *,
+                                             chat_id: Any = None, parse_mode: Any = None,
+                                             show_caption_above_media: Any = None,
+                                             reply_markup: Any = None) -> bool:
+        """``editEphemeralMessageCaption`` for a private control (Bot API 10.3).
+        Failures return False — never a public editMessageCaption fallback."""
+        record = self.resolve_private_control(record_or_handle, chat_id=chat_id)
+        if record is None or record["ephemeral_message_id"] <= 0:
+            logger.debug("[%s] private control caption edit refused: no valid ephemeral target", getattr(self, "name", "telegram"))
+            return False
+        if caption is None:
+            return False
+        if not self._bot:
+            return False
+        payload: Dict[str, Any] = {
+            "chat_id": record["chat_id"], "receiver_user_id": record["receiver_user_id"],
+            "ephemeral_message_id": record["ephemeral_message_id"], "caption": str(caption)}
+        if parse_mode is not None:
+            payload["parse_mode"] = str(getattr(parse_mode, "value", parse_mode))
+        if show_caption_above_media is not None:
+            payload["show_caption_above_media"] = bool(show_caption_above_media)
+        if reply_markup is not None:
+            payload["reply_markup"] = _serialize_markup(reply_markup)
+        try:
+            await _bounded_api_call(
+                self._bot.do_api_request("editEphemeralMessageCaption", api_kwargs=payload),
+                label="telegram-private-control-caption-edit")
+            return True
+        except Exception as exc:
+            logger.debug(
+                "[%s] editEphemeralMessageCaption failed (chat=%s receiver=%s ephemeral=%s): %s",
                 getattr(self, "name", "telegram"), record["chat_id"], record["receiver_user_id"],
                 record["ephemeral_message_id"], _redact_private_error(exc))
             return False
@@ -545,7 +731,15 @@ class TelegramPrivateControlsMixin:
     # ------------------------------------------------------------- inbound wrap
 
     def wrap_private_control_query(self, query: Any) -> Optional[PrivateQuery]:
-        """Facade for a callback query on an ephemeral message; None keeps the public path."""
+        """Facade for a callback query on an ephemeral message; None keeps the public path.
+
+        The wrapped record's metadata is stamped from the TRUSTED update only:
+        ``telegram_callback_from_ephemeral`` = True (the tap's message is itself
+        ephemeral — its ``message_id == 0`` with receiver/ephemeral fields, which
+        is the ephemeral incoming-command case) and ``telegram_callback_query_id``
+        = ``query.id``. The parent copies these into the send metadata for the
+        replacement flow; nothing here is inferred from user text.
+        """
         if query is None:
             return None
         fields = _ephemeral_fields(getattr(query, "message", None))
@@ -555,6 +749,12 @@ class TelegramPrivateControlsMixin:
         record = self._lookup_private_record(chat_id, receiver, ephemeral)
         if record is None:
             record = _PrivateRecord(chat_id, receiver, ephemeral)
+        try:
+            record["metadata"]["telegram_callback_from_ephemeral"] = True
+            record["metadata"]["telegram_callback_query_id"] = str(getattr(query, "id", "") or "")
+            record["metadata"]["telegram_requester_user_id"] = str(receiver)
+        except Exception:
+            pass  # bookkeeping only; the gate does not depend on it
         return PrivateQuery(query, self, record)
 
     def callback_receiver_matches(self, query: Any, record: _PrivateRecord) -> bool:
@@ -610,3 +810,16 @@ def _serialize_markup(reply_markup: Any) -> Any:
         except Exception:
             return reply_markup
     return reply_markup
+
+def _serialize_media(media: Any) -> Any:
+    """Pass ``media`` through for the media-edit endpoint, untouched.
+
+    PTB 22.8 ``RequestParameter.from_input`` serializes ``InputMedia*`` objects
+    and hoists an ``InputFile`` nested in one into multipart data — but NOT one
+    nested inside a plain dict (what a ``to_dict()`` here would produce: the
+    ``InputFile`` instance would sit in an unhoisted dict's ``media`` key). So
+    ``media`` rides as the CALLER passed it: a PTB ``InputMedia*`` object, a
+    JSON-ready dict (``{"type": "photo", "media": "file-id"}``), or a string.
+    No type import, no isinstance, no pre-serialization.
+    """
+    return media

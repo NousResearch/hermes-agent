@@ -429,3 +429,341 @@ async def test_send_edit_and_delete_are_all_deadline_bounded(monkeypatch):
     assert await adapter.edit_ephemeral_control_text(handle, "✓", chat_id=-100) is False
     assert await adapter.delete_ephemeral_control(handle, chat_id=-100) is False
     assert bot.api_calls == 2
+
+
+# -- ephemeral overlay: replace_callback_query_message ------------------------
+
+
+@pytest.mark.asyncio
+async def test_fresh_public_callback_send_sets_replace_callback_query_message():
+    """A FRESH public callback trigger (not from an ephemeral message) → the
+    ephemeral send carries replace_callback_query_message: True (in-place overlay)."""
+    bot = _Bot(send_result=_eph_msg())
+    adapter = _adapter(bot=bot)
+    await adapter._send_private_control({"chat_id": -100, "text": "x"}, _meta())
+    params = bot.send_kwargs["api_kwargs"]["ephemeral_message_parameters"]
+    assert params["replace_callback_query_message"] is True
+    assert params["callback_query_id"] == "cbq-1" and params["receiver_user_id"] == 111
+
+
+@pytest.mark.asyncio
+async def test_callback_from_ephemeral_never_replaces():
+    """An ephemeral-origin callback (parent-stamped trusted flag) NEVER sets
+    replace_callback_query_message — the API contract requires editing instead."""
+    bot = _Bot(send_result=_eph_msg())
+    adapter = _adapter(bot=bot)
+    await adapter._send_private_control(
+        {"chat_id": -100, "text": "x"}, _meta(telegram_callback_from_ephemeral=True))
+    params = bot.send_kwargs["api_kwargs"]["ephemeral_message_parameters"]
+    assert "replace_callback_query_message" not in params
+
+
+@pytest.mark.asyncio
+async def test_no_callback_id_no_replace_flag():
+    """Overlay only rides a callback-query trigger; a plain group send (no
+    callback_query_id stamp) never claims replacement."""
+    bot = _Bot(send_result=_eph_msg())
+    adapter = _adapter(bot=bot)
+    await adapter._send_private_control({"chat_id": -100, "text": "x"}, _meta(telegram_callback_query_id=""))
+    assert "replace_callback_query_message" not in bot.send_kwargs["api_kwargs"]["ephemeral_message_parameters"]
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_origin_replacement_edits_same_message_no_duplicate_send():
+    """The replacement flow from an ephemeral callback EDITS the same ephemeral
+    message (its reply anchor) instead of sending a duplicate; failure raises —
+    a successful API reply may already be delivered, never resend."""
+    bot = _Bot(send_result=_eph_msg())
+    adapter = _adapter(bot=bot)
+    handle = await adapter._send_private_control({"chat_id": -100, "text": "x"}, _meta())
+    assert bot.send_calls == 1 and handle.message_id == f"{EPH_PREFIX}111:7"
+
+    # Replacement with an anchor to the same ephemeral message: ONE edit, no send.
+    bot2 = _Bot(send_result=_eph_msg())
+    adapter2 = _adapter(bot=bot2)
+    handle2 = await adapter2._send_private_control(
+        {"chat_id": -100, "text": "✓ Approved"}, _meta(
+            telegram_callback_from_ephemeral=True, telegram_ephemeral_reply_id=f"{EPH_PREFIX}111:7"))
+    assert bot2.send_calls == 0  # never a duplicate ephemeral send
+    assert bot2.api_calls and bot2.api_calls[0][0] == "editEphemeralMessageText"
+    assert bot2.api_calls[0][1]["ephemeral_message_id"] == 7
+    assert handle2.message_id == f"{EPH_PREFIX}111:7"
+
+    # Edit failure → PrivateControlError (fail closed; no resend, no public path).
+    bot3 = _Bot(send_result=_eph_msg(), api_error=RuntimeError("Bad Request"))
+    adapter3 = _adapter(bot=bot3)
+    with pytest.raises(PrivateControlError):
+        await adapter3._send_private_control(
+            {"chat_id": -100, "text": "✓"}, _meta(
+                telegram_callback_from_ephemeral=True, telegram_ephemeral_reply_id=f"{EPH_PREFIX}111:7"))
+    assert bot3.send_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_origin_replacement_respects_requester_receiver():
+    """The replacement edit targets the RECEIVER's ephemeral message: an anchor
+    from a different receiver is refused (no cross-user edit)."""
+    bot = _Bot()
+    adapter = _adapter(bot=bot)
+    with pytest.raises(PrivateControlError):
+        await adapter._send_private_control(
+            {"chat_id": -100, "text": "✓"}, _meta(
+                telegram_callback_from_ephemeral=True,
+                telegram_replaces_ephemeral_id=f"{EPH_PREFIX}999:5"))
+    assert bot.api_calls == [] and bot.send_calls == 0
+
+
+def test_wrap_stamps_trusted_callback_origin_on_record():
+    """wrap_private_control_query stamps the trusted ephemeral-origin flags the
+    parent copies into send metadata — including the message_id 0 incoming case."""
+    adapter = _adapter()
+    wrapped = adapter.wrap_private_control_query(_query(111, _eph_msg()))
+    meta = wrapped.record["metadata"]
+    assert meta["telegram_callback_from_ephemeral"] is True
+    assert meta["telegram_callback_query_id"] == "cbq-1"
+    assert meta["telegram_requester_user_id"] == "111"
+
+
+# -- media and caption edits ---------------------------------------------------
+
+
+def _media_adapter(bot=None):
+    return _adapter(bot=bot if bot is not None else _Bot())
+
+
+@pytest.mark.asyncio
+async def test_edit_message_media_by_receiver_routes_to_private_endpoint():
+    """editMessageMedia → editEphemeralMessageMedia with the ephemeral address;
+    never a public send or a regular message_id target."""
+    bot = _Bot()
+    adapter = _media_adapter(bot)
+    wrapped = adapter.wrap_private_control_query(_query(111, _eph_msg()))
+    assert await wrapped.edit_message_media({"type": "photo", "media": "attach://x"}) is True
+    method, payload = bot.api_calls[0]
+    assert method == "editEphemeralMessageMedia"
+    assert (payload["chat_id"], payload["receiver_user_id"], payload["ephemeral_message_id"]) == (-100, 111, 7)
+    assert "message_id" not in payload
+    assert bot.send_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_foreign_user_cannot_invoke_media_or_caption_edits():
+    """Receiver gate: a non-receiver tap gets no media/caption edit, no endpoint
+    call, and only the toast — the public path never fires."""
+    bot = _Bot()
+    adapter = _media_adapter(bot)
+    wrapped = adapter.wrap_private_control_query(_query(222, _eph_msg()))
+    assert await wrapped.edit_message_media({"type": "photo", "media": "file1"}) is False
+    assert await wrapped.edit_message_caption("cap") is False
+    assert bot.api_calls == [] and bot.send_calls == 0
+    wrapped._query.answer.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_edit_message_media_accepts_inputmedia_file_id_url_and_upload():
+    """File-id string, HTTPS URL, PTB InputMedia object, and a PTB InputFile
+    upload all ride the same media-edit endpoint (PTB 22.8 handles the multipart
+    extraction; do_api_request has no separate files parameter)."""
+    from telegram import InputFile, InputMediaPhoto
+
+    cases = [
+        {"type": "photo", "media": "AgACAgIAAx0"},  # existing file id
+        {"type": "photo", "media": "https://example.com/a.png"},  # URL
+        InputMediaPhoto("AgACAgIAAx0", caption="cap"),  # PTB InputMedia object
+        InputMediaPhoto(InputFile(b"pngbytes", filename="a.png", attach=True)),  # new upload
+    ]
+    for media in cases:
+        bot = _Bot()
+        adapter = _media_adapter(bot)
+        wrapped = adapter.wrap_private_control_query(_query(111, _eph_msg()))
+        assert await wrapped.edit_message_media(media) is True
+        method, payload = bot.api_calls[0]
+        assert method == "editEphemeralMessageMedia"
+        # PTB InputMedia objects must reach do_api_request UNTOUCHED: to_dict()
+        # would leave the InputFile nested in a plain dict that PTB never hoists
+        # into multipart data (verified against PTB 22.8 source).
+        assert payload["media"] is media
+
+
+
+
+@pytest.mark.asyncio
+async def test_edit_message_media_failure_never_public():
+    bot = _Bot(api_error=RuntimeError("Bad Request: media invalid"))
+    adapter = _media_adapter(bot)
+    wrapped = adapter.wrap_private_control_query(_query(111, _eph_msg()))
+    assert await wrapped.edit_message_media({"type": "photo", "media": "x"}) is False
+    assert bot.send_calls == 0 and len(bot.api_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_edit_message_caption_by_receiver_routes_and_gates():
+    bot = _Bot()
+    adapter = _media_adapter(bot)
+    wrapped = adapter.wrap_private_control_query(_query(111, _eph_msg()))
+    assert await wrapped.edit_message_caption("✓ done", parse_mode="MarkdownV2") is True
+    method, payload = bot.api_calls[0]
+    assert method == "editEphemeralMessageCaption"
+    assert payload["caption"] == "✓ done" and payload["parse_mode"] == "MarkdownV2"
+    assert (payload["receiver_user_id"], payload["ephemeral_message_id"]) == (111, 7)
+    assert "message_id" not in payload
+
+
+@pytest.mark.asyncio
+async def test_adapter_media_and_caption_methods_usable_directly():
+    """The public adapter methods are inheritable mixin methods with usable
+    parameters — not isolated helpers: handle/record both work, chat-scoped."""
+    bot = _Bot(send_result=_eph_msg())
+    adapter = _adapter(bot=bot)
+    await adapter._send_private_control({"chat_id": -100, "text": "x"}, _meta())
+    handle = f"{EPH_PREFIX}111:7"
+    assert await adapter.edit_ephemeral_control_media(
+        handle, {"type": "photo", "media": "f1"}, chat_id=-100) is True
+    assert await adapter.edit_ephemeral_control_caption(
+        handle, "cap", chat_id=-100, show_caption_above_media=True) is True
+    assert bot.api_calls[0][0] == "editEphemeralMessageMedia"
+    assert bot.api_calls[1][0] == "editEphemeralMessageCaption"
+    assert bot.api_calls[1][1]["show_caption_above_media"] is True
+    # No target → refused quietly, no endpoint call.
+    assert await adapter.edit_ephemeral_control_media("55", {"type": "photo", "media": "f"}, chat_id=-100) is False
+    assert await adapter.edit_ephemeral_control_caption("55", "cap", chat_id=-100) is False
+
+
+@pytest.mark.asyncio
+async def test_media_edit_deadline_bounded(monkeypatch):
+    """A wedged media edit surfaces as False within the deadline, never hangs."""
+    import plugins.platforms.telegram.telegram_private_controls as _mod
+    monkeypatch.setattr(_mod, "_TEXT_SEND_DEADLINE", 0.05)
+    adapter = _adapter(bot=_HangingBot())
+    adapter._private_records()[(-100, 111, 7)] = _PrivateRecord(-100, 111, 7)
+    assert await adapter.edit_ephemeral_control_media(
+        f"{EPH_PREFIX}111:7", {"type": "photo", "media": "f"}, chat_id=-100) is False
+    assert await adapter.edit_ephemeral_control_caption(
+        f"{EPH_PREFIX}111:7", "cap", chat_id=-100) is False
+
+
+# -- per-call rich failure (no adapter-wide stale slot) ------------------------
+
+
+@pytest.mark.asyncio
+async def test_rich_edit_failure_classified_per_call_never_stale_global():
+    """Two CONCURRENT rich edits: the transient one must not inherit the
+    permanent classification of the other — the failure rides the call result,
+    not an adapter-wide _last_private_rich_edit_error slot."""
+    transient_bot = _Bot()
+    transient_bot.api_errors.append(TimeoutError("peer closed"))
+    transient_adapter = _rich_adapter(transient_bot, classifier=lambda exc: "rich not supported" in str(exc))
+    transient = transient_adapter.wrap_private_control_query(_query(111, _eph_msg()))
+    assert await transient.edit_message_text("✓") is False
+    assert len(transient_bot.api_calls) == 1  # no racing plain edit
+
+    permanent_bot = _Bot()
+    permanent_bot.api_errors.append(RuntimeError("Bad Request: rich not supported"))
+    permanent_adapter = _rich_adapter(permanent_bot, classifier=lambda exc: "rich not supported" in str(exc))
+    permanent = permanent_adapter.wrap_private_control_query(_query(111, _eph_msg()))
+    assert await permanent.edit_message_text("✓") is True
+    assert permanent_bot.api_calls[1][1]["text"] == "✓"  # the plain retry, same target
+    # No stale global slot was ever written.
+    assert not hasattr(permanent_adapter, "_last_private_rich_edit_error")
+
+
+@pytest.mark.asyncio
+async def test_full_requester_lifecycle_overlay_to_private_media_delete():
+    """One requester-only lifecycle end to end: public callback overlay send →
+    private rich text edit → uploaded media edit → delete. A foreign user at any
+    edit step gets nothing but the toast; every call stays bounded and private."""
+    from telegram import InputFile, InputMediaPhoto
+
+    bot = _Bot(api_result={"message_id": 0, "chat_id": -100,
+                           "api_kwargs": {"receiver_user": {"id": 111}, "ephemeral_message_id": 7}})
+    adapter = _rich_adapter(bot)
+    # 1. Fresh public callback → overlay send with replace_callback_query_message.
+    result = await adapter.send_private_control_prompt(
+        {"chat_id": -100, "text": "Approve?", "parse_mode": "MarkdownV2",
+         "reply_markup": {"inline_keyboard": [[{"text": "Approve", "callback_data": "ea:yes:1"}]]}}, _meta())
+    assert result.success is True
+    method, payload = bot.api_calls[0]
+    assert method == "sendRichMessage"
+    params = payload["ephemeral_message_parameters"]
+    assert params["replace_callback_query_message"] is True
+
+    # 2. Requester taps their own ephemeral control → private rich text edit.
+    wrapped = adapter.wrap_private_control_query(_query(111, _eph_msg()))
+    assert await wrapped.edit_message_text(
+        "✓ Approved", reply_markup={"inline_keyboard": [[{"text": "Done", "callback_data": "ea:done:1"}]]}) is True
+    assert bot.api_calls[1][0] == "editEphemeralMessageText"
+    assert "<tg-button" in bot.api_calls[1][1]["rich_message"]["html"]
+
+    # 3. Same requester swaps in newly uploaded media.
+    assert await wrapped.edit_message_media(
+        InputMediaPhoto(InputFile(b"png", filename="done.png", attach=True))) is True
+    assert bot.api_calls[2][0] == "editEphemeralMessageMedia"
+
+    # 4. Foreign user tries every edit on the same control: toast, nothing else.
+    foreign = adapter.wrap_private_control_query(_query(222, _eph_msg()))
+    n_calls = len(bot.api_calls)
+    assert await foreign.edit_message_media({"type": "photo", "media": "f"}) is False
+    assert await foreign.edit_message_caption("nope") is False
+    assert await foreign.edit_message_text("nope") is False
+    assert len(bot.api_calls) == n_calls
+
+    # 5. Requester deletes; the record's lifecycle ends.
+    assert await wrapped.delete() is True
+    assert bot.api_calls[-1][0] == "deleteEphemeralMessage"
+    for method, _ in bot.api_calls:
+        assert method.startswith(("sendRichMessage", "editEphemeralMessage", "deleteEphemeralMessage")) or method == "editEphemeralMessageText"
+
+
+@pytest.mark.asyncio
+async def test_private_control_marker_never_enters_public_text_send():
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = TelegramAdapter(PlatformConfig(extra={"private_controls": True}))
+    adapter._bot = _Bot(send_result=SimpleNamespace(message_id=55))
+    result = await adapter.send("-100", "private status", metadata={"telegram_private_control": True})
+    assert declined_send(result)
+    assert adapter._bot.send_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_slash_confirmation_private_followup_never_posts_publicly(monkeypatch):
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from tools import slash_confirm
+
+    adapter = TelegramAdapter(PlatformConfig(extra={"private_controls": True}))
+    bot = _Bot(send_result=_eph_msg())
+    adapter._bot = bot
+    adapter._slash_confirm_state = {"confirm": "session"}
+    adapter._is_callback_user_authorized = lambda *args, **kwargs: True
+    monkeypatch.setattr(slash_confirm, "resolve", AsyncMock(return_value="private command result"))
+    query = _query(111, _eph_msg())
+    query.message.chat.type = "supergroup"
+    query.message.message_thread_id = None
+    query = adapter.wrap_private_control_query(query)
+    await adapter._handle_slash_confirm_callback(query, "sc:once:confirm", adapter._callback_ctx(query))
+    assert bot.send_calls == 0
+    assert bot.api_calls[-1][0] == "editEphemeralMessageText"
+    assert bot.api_calls[-1][1]["text"] == adapter.format_message("private command result")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("permanent", [True, False])
+async def test_ephemeral_replacement_rich_failure_keeps_same_private_target(permanent):
+    bot = _Bot()
+    bot.api_errors.append(RuntimeError("rich not supported") if permanent else TimeoutError("lost ack"))
+    adapter = _rich_adapter(bot, classifier=lambda exc: "rich not supported" in str(exc))
+    result = await adapter.send_private_control_prompt(
+        {"chat_id": -100, "text": "replacement"},
+        _meta(telegram_callback_from_ephemeral=True, telegram_ephemeral_reply_id="eph:111:7"))
+    assert result.success is permanent
+    assert bot.send_calls == 0
+    assert len(bot.api_calls) == (2 if permanent else 1)
+    assert all(method == "editEphemeralMessageText" and payload["ephemeral_message_id"] == 7
+               for method, payload in bot.api_calls)
+    if permanent:
+        assert bot.api_calls[-1][1]["text"] == "replacement"
+        assert "rich_message" not in bot.api_calls[-1][1]
+    else:
+        assert declined_send(result)

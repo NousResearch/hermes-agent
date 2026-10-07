@@ -3149,6 +3149,8 @@ class GatewayTurnMixin:
             metadata = dict(metadata or {})
             metadata["telegram_chat_type"] = source.chat_type
             metadata["telegram_requester_user_id"] = source.user_id
+        if source.platform == Platform.TELEGRAM:
+            metadata = {**(metadata or {}), **(getattr(source, "telegram_control_metadata", None) or {})}
         return metadata
 
     def _run_agent_progress_threading(

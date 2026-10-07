@@ -35,7 +35,7 @@ test.afterAll(async () => {
 })
 
 test.describe('batch clarify card', () => {
-  test('renders exactly one card and completes via per-question locks', async () => {
+  test('renders exactly one card and completes via one request response', async () => {
     const page = fixture!.page
     const composer = page.locator('[contenteditable="true"]').first()
     await composer.waitFor({ state: 'visible', timeout: 10_000 })

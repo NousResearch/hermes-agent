@@ -1872,6 +1872,152 @@ class TestFailedZipMemberRecovery:
         assert len(list(backup_dir.glob("pre-update-*.incomplete.zip"))) == 1
 
 
+def _prune_between_scan_and_archive(monkeypatch, victim: Path) -> None:
+    """Make the backup walk list *victim*, then delete it before the archive reads it —
+    the race a 1-minute cron job's retention sweep guarantees (#127731)."""
+    import hermes_cli.backup as bk
+    real_iter = bk._iter_backup_files
+
+    def _iter_then_prune(root, out_path, skipped_dirs=None):
+        files = list(real_iter(root, out_path, skipped_dirs))
+        victim.unlink()
+        return files
+
+    monkeypatch.setattr(bk, "_iter_backup_files", _iter_then_prune)
+
+
+class TestVanishedMemberTolerance:
+    def test_automatic_backup_publishes_when_a_member_vanishes_mid_archive(self, tmp_path, monkeypatch):
+        """#127731: a file deleted between the scan and the archive walk is a skip, not a
+        failure, so the automatic backup still publishes instead of being classified
+        incomplete (which silently disabled the pre-update rollback zip every run)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        receipt = hermes_home / "cron" / "output" / "job-1" / "2026-09-29_06-29-46.md"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text("**Status:** silent (empty output)\n")
+        archive = tmp_path / "automatic.zip"
+
+        _prune_between_scan_and_archive(monkeypatch, receipt)
+
+        from hermes_cli.backup import _write_full_zip_backup
+
+        assert _write_full_zip_backup(archive, hermes_home) == archive
+        assert not (tmp_path / "automatic.incomplete.zip").exists()
+        with zipfile.ZipFile(archive) as zf:
+            assert zf.read("config.yaml") == b"model: test\n"
+            assert zf.namelist() == ["config.yaml"]
+
+    def test_pre_update_backup_publishes_despite_cron_receipt_churn(self, tmp_path, monkeypatch):
+        """End to end: create_pre_update_backup returns a published rollback zip even when
+        the cron output retention sweep races the archive."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        receipt = hermes_home / "cron" / "output" / "job-1" / "2026-09-29_06-29-46.md"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text("**Status:** silent (empty output)\n")
+
+        _prune_between_scan_and_archive(monkeypatch, receipt)
+
+        from hermes_cli.backup import create_pre_update_backup
+
+        out = create_pre_update_backup(hermes_home=hermes_home)
+        assert out is not None and out.exists()
+        assert not list((hermes_home / "backups").glob("*.incomplete.zip"))
+        with zipfile.ZipFile(out) as zf:
+            assert zf.read("config.yaml") == b"model: test\n"
+
+    def test_manual_backup_reports_vanished_file_and_still_succeeds(self, tmp_path, monkeypatch, capsys):
+        """The manual CLI path stays consistent with the automatic one: the vanished file is
+        reported as skipped and the run is complete (exit 0), unlike a genuine read failure."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        receipt = hermes_home / "cron" / "output" / "job-1" / "2026-09-29_06-29-46.md"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text("**Status:** silent (empty output)\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _prune_between_scan_and_archive(monkeypatch, receipt)
+
+        from hermes_cli.backup import run_backup
+
+        out_zip = tmp_path / "out.zip"
+        assert run_backup(Namespace(output=str(out_zip))) is True
+        out = capsys.readouterr().out
+        assert "deleted while the backup ran" in out
+        assert "could not be added" not in out
+        with zipfile.ZipFile(out_zip) as zf:
+            assert zf.read("config.yaml") == b"model: test\n"
+
+    def test_automatic_backup_discards_when_every_member_vanishes(self, tmp_path, monkeypatch):
+        """All-vanished is not "complete": ``errors`` stays empty while nothing was archived,
+        so the old guards published an empty zip — and name/time retention would then evict
+        the last good backup in its favour."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config = hermes_home / "config.yaml"
+        config.write_text("model: test\n")
+        archive = tmp_path / "automatic.zip"
+
+        _prune_between_scan_and_archive(monkeypatch, config)
+
+        from hermes_cli.backup import _write_full_zip_backup
+
+        assert _write_full_zip_backup(archive, hermes_home) is None
+        assert not archive.exists()
+        assert not (tmp_path / "automatic.incomplete.zip").exists()
+
+    def test_pre_update_backup_keeps_good_backups_when_every_member_vanishes(
+            self, tmp_path, monkeypatch):
+        """End to end: a vanishing-whole-tree run must not publish an empty pre-update zip,
+        so the existing good rollback archives survive retention (keep=1)."""
+        hermes_home = tmp_path / ".hermes"
+        backups_dir = hermes_home / "backups"
+        backups_dir.mkdir(parents=True)
+        old_good = []
+        for stamp in ("2026-10-01-000000", "2026-10-02-000000"):
+            p = backups_dir / f"pre-update-{stamp}.zip"
+            with zipfile.ZipFile(p, "w") as zf:
+                zf.writestr("config.yaml", "model: old\n")
+            old_good.append(p)
+        config = hermes_home / "config.yaml"
+        config.write_text("model: test\n")
+
+        _prune_between_scan_and_archive(monkeypatch, config)
+
+        from hermes_cli.backup import create_pre_update_backup
+
+        assert create_pre_update_backup(hermes_home=hermes_home, keep=1) is None
+        assert old_good and all(p.exists() for p in old_good)
+        assert not list(backups_dir.glob("*.incomplete.zip"))
+        assert len(list(backups_dir.glob("pre-update-*.zip"))) == 2
+
+    def test_manual_backup_all_vanished_reports_incomplete(self, tmp_path, monkeypatch, capsys):
+        """The manual path must not claim ``Backup complete`` / exit 0 for an archive with
+        zero members, and must not advertise restoring from it."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config = hermes_home / "config.yaml"
+        config.write_text("model: test\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _prune_between_scan_and_archive(monkeypatch, config)
+
+        from hermes_cli.backup import run_backup
+
+        out_zip = tmp_path / "out.zip"
+        assert run_backup(Namespace(output=str(out_zip))) is False
+        out = capsys.readouterr().out
+        assert "Backup incomplete" in out
+        assert "Every scanned file was deleted mid-run" in out
+        assert "Restore with" not in out
+
+
 class TestPreUpdateBackup:
     """Tests for create_pre_update_backup — the auto-backup ``hermes update``
     runs before touching anything."""

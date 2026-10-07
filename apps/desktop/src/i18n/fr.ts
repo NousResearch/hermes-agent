@@ -4108,6 +4108,15 @@ export const frOverrides = {
     themeTryPre: 'Essayez ',
     themeTryPost: '.',
     attachLabel: 'Attacher',
+    replyComments: {
+      comment: 'Commenter',
+      notePlaceholder: 'Ajouter un commentaire…',
+      attach: 'Joindre',
+      save: 'Enregistrer',
+      editComment: 'Modifier le commentaire',
+      removeComment: 'Retirer le commentaire',
+      limitReached: (max: number) => `Limite de commentaires atteinte (${max})`
+    },
     files: 'Fichiers…',
     folder: 'Dossier…',
     images: 'Images…',

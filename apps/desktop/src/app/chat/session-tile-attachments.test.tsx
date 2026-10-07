@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ComposerScope } from '@/app/chat/composer/scope'
+import { createReplyCommentScope } from '@/app/chat/composer/reply-comment-scope'
 import { useSessionTileActions } from '@/app/chat/session-tile-actions'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import {
@@ -103,6 +104,7 @@ function createScope(): ComposerScope {
     $awaitingInput: atom(false),
     $messages: atom([]),
     attachments: createComposerAttachmentScope(),
+    replyComments: createReplyCommentScope(),
     target: `tile:${STORED_ID}`
   }
 }

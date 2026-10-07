@@ -75,6 +75,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import type { SessionDragPayload } from './composer/inline-refs'
 import { type ComposerScope, ComposerScopeProvider } from './composer/scope'
+import { createReplyCommentScope } from './composer/reply-comment-scope'
 import { useComposerActions } from './hooks/use-composer-actions'
 import { paneMirror } from './pane-mirror'
 import { SessionDraftTitle } from './session-draft-title'
@@ -285,8 +286,9 @@ function TileChat({
   const cwd = useStore(view.$cwd)
   const gatewayOpen = useStore($gatewayState) === 'open'
 
-  // One attachment set + focus key per tile, stable for the tile's lifetime.
+  // One attachment set + reply-comment set + focus key per tile, stable for the tile's lifetime.
   const attachments = useRef(createComposerAttachmentScope()).current
+  const replyComments = useRef(createReplyCommentScope()).current
 
   const scope = useMemo<ComposerScope>(
     () => ({
@@ -295,6 +297,7 @@ function TileChat({
       attachments,
       connectionId: ownerRoute?.connectionId || undefined,
       profile: ownerRoute?.targetProfile || ownerRoute?.profile || undefined,
+      replyComments,
       target: `tile:${storedSessionId}`
     }),
     [
@@ -302,6 +305,7 @@ function TileChat({
       ownerRoute?.connectionId,
       ownerRoute?.profile,
       ownerRoute?.targetProfile,
+      replyComments,
       runtimeId,
       storedSessionId,
       view.$messages

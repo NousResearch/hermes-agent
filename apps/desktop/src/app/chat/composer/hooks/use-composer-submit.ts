@@ -20,6 +20,7 @@ import { notify } from '@/store/notifications'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
+import { mergeReplyCommentsIntoDraft } from '../reply-comments'
 import { onComposerSubmitRequest } from '../focus'
 import { pathifyRefs } from '../path-refs'
 import { composerPlainText } from '../rich-editor'
@@ -248,7 +249,13 @@ export function useComposerSubmit({
     // A path that never got its committing space (`@apps/desktop/` left by a Tab
     // descend, then Enter) is still the reference the user picked — promote it
     // on the way out so it attaches instead of submitting as inert text.
-    const text = pathifyRefs(draftRef.current)
+    // Pinned reply comments freeze into the outgoing text ahead of the draft
+    // (peek here for branching; each consuming branch drains the scope, so a
+    // comment block is sent exactly once). A merged payload starts with `>`,
+    // which the position-0-anchored slash RE never matches — comments + `/cmd`
+    // degrade to an ordinary message instead of executing.
+    const pendingReplyComments = scope.replyComments.list()
+    const text = mergeReplyCommentsIntoDraft(pathifyRefs(draftRef.current), pendingReplyComments)
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
 
     // A clarify card parked on this session owns the turn: the agent is blocked
@@ -342,6 +349,10 @@ export function useComposerSubmit({
       // Keep blob: previews alive for the optimistic bubble; revoke when that
       // consumer is discarded/replaced (not here — clear would race the clone).
       scope.attachments.clear({ retainPreviewUrls: true })
+      // Drain pinned reply comments: their frozen blocks already ride `text`
+      // (peeked above), so this only drops the chips. A rejected send restores
+      // the frozen text into the draft — nothing is lost, just no longer chips.
+      scope.replyComments.take()
       dispatchSubmit(text, submittedAttachments)
     }
 
@@ -352,13 +363,19 @@ export function useComposerSubmit({
   // active model request with its displayed context or waits for the current
   // tool boundary. If the turn already ended, queue the words instead.
   const steerDraft = () => {
-    const text = draftRef.current.trim()
+    // Pinned reply comments ride the redirect too. Peek for the guard, drain
+    // only once the redirect is taken — a refused guard must leave the chips
+    // pinned. A refused redirect restores them as frozen text via keep().
+    const base = draftRef.current.trim()
+    const probe = mergeReplyCommentsIntoDraft(base, scope.replyComments.list())
 
     // Guard on live editor state, not the render-lagged `canSteer`: a redirect
     // fired on a fast Enter must not be dropped because state hasn't synced.
-    if (!onSteer || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
+    if (!onSteer || !probe || attachments.length > 0 || SLASH_COMMAND_RE.test(probe)) {
       return
     }
+
+    const text = mergeReplyCommentsIntoDraft(base, scope.replyComments.take())
 
     // Freeze `@terminal:` chips the same way idle submit / queue enqueue do.
     // Steer used to forward the bare token only (#77078).

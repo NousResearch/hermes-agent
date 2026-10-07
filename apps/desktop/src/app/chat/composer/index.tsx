@@ -43,6 +43,7 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
+import { ReplyCommentChips } from './reply-comment-chips'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -190,6 +191,7 @@ export function ChatBar({
   // focus-bus key, and awaiting-input edge. Main scope = the legacy globals.
   const scope = useComposerScope()
   const attachments = useStore(scope.attachments.$attachments)
+  const replyComments = useStore(scope.replyComments.$comments)
   const compacting = useStore(useMemo(() => sessionCompacting(sessionId ?? null), [sessionId]))
   const surfaceId = useComposerSurfaceId()
   const scrollSessionId = sessionId ?? surfaceId
@@ -414,7 +416,7 @@ export function ChatBar({
     poppedOut
   })
 
-  const hasComposerPayload = hasText || attachments.length > 0
+  const hasComposerPayload = hasText || attachments.length > 0 || replyComments.length > 0
   const canSubmit = busy || hasComposerPayload
 
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
@@ -1555,6 +1557,7 @@ export function ChatBar({
                     </div>
                   )}
                   {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
+                  <ReplyCommentChips />
                   <div
                     className={cn(
                       'grid w-full',

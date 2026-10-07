@@ -4092,6 +4092,15 @@ export const esOverrides = {
     themeTryPre: 'Prueba ',
     themeTryPost: '.',
     attachLabel: 'Adjuntar',
+    replyComments: {
+      comment: 'Comentar',
+      notePlaceholder: 'Añade un comentario…',
+      attach: 'Adjuntar',
+      save: 'Guardar',
+      editComment: 'Editar comentario',
+      removeComment: 'Quitar comentario',
+      limitReached: (max: number) => `Límite de comentarios alcanzado (${max})`
+    },
     files: 'Archivos…',
     folder: 'Carpeta…',
     images: 'Imágenes…',

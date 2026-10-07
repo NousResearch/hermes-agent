@@ -48,6 +48,7 @@ import {
   releaseActiveComposer
 } from '../focus'
 import { type InlineRefInput, insertInlineRefsIntoEditor } from '../inline-refs'
+import { mergeReplyCommentsIntoDraft } from '../reply-comments'
 import {
   caretOffsetInEditor,
   composerPlainText,
@@ -93,7 +94,7 @@ export function useComposerDraft({
   visibleRef.current = paneVisible
   const floating = useStoreSelector($composerPopout, state => state.poppedOut)
   // Which composer this is on the focus bus + which attachment set it owns.
-  const { attachments: attachmentScope, target } = useComposerScope()
+  const { attachments: attachmentScope, replyComments: replyCommentScope, target } = useComposerScope()
 
   // Coarse edges only — these flip rarely (empty↔non-empty, the `?` help sigil,
   // steerable-vs-slash), so typing within a line costs no render.
@@ -566,7 +567,10 @@ export function useComposerDraft({
       if (editing?.sessionKey === activeQueueSessionKey) {
         stashAt(activeQueueSessionKey, editing.draft, editing.attachments)
       } else if (!isBrowsingHistory(sessionId)) {
-        stashAt(activeQueueSessionKey, latestText)
+        // Freeze pinned reply comments into the outgoing stash: the incoming
+        // session starts with a clean chip set, and nothing the user wrote is
+        // lost — it rides as ordinary Markdown text, editable on return.
+        stashAt(activeQueueSessionKey, mergeReplyCommentsIntoDraft(latestText, replyCommentScope.take()))
       }
 
       // Withdraw the outgoing session's draft suggestions (and any pending

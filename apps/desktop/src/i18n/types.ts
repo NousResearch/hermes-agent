@@ -3145,6 +3145,15 @@ export interface Translations extends NoticeTranslations {
     themeTryPre: string
     themeTryPost: string
     attachLabel: string
+    replyComments: {
+      comment: string
+      notePlaceholder: string
+      attach: string
+      save: string
+      editComment: string
+      removeComment: string
+      limitReached: (max: number) => string
+    }
     files: string
     folder: string
     images: string

@@ -254,3 +254,51 @@ class TestEmbeddedDaemonOverlayFlag:
         command = popen.call_args.args[0]
         assert command[:2] == ["/usr/bin/cua-driver", "serve"]
         assert "--no-overlay" in command
+
+
+class TestStandardModeOverlayWarning:
+    """#134243: the cursor overlay is rendered only by an embedded daemon's UI
+    runloop; standard permission mode spawns a bare ``cua-driver mcp`` child,
+    so an explicit ``no_overlay: false`` cannot produce a cursor. It must warn
+    instead of being silently accepted."""
+
+    def test_explicit_false_is_a_request(self):
+        """``no_overlay: false`` is the only shape that counts as asking for
+        the overlay."""
+        with patch("hermes_cli.config.load_config",
+                   return_value={"computer_use": {"no_overlay": False}}):
+            assert cua_backend._cua_explicit_overlay_requested() is True
+
+    def test_unset_and_true_are_not_requests(self):
+        """Auto-detect (unset) and an explicit opt-out must not trigger the
+        warning — only an explicit ask can be denied."""
+        for cfg in ({}, {"computer_use": {}}, {"computer_use": {"no_overlay": True}}):
+            with patch("hermes_cli.config.load_config", return_value=cfg):
+                assert cua_backend._cua_explicit_overlay_requested() is False
+
+    def test_standard_mode_warns_on_requested_overlay(self, caplog):
+        """standard + explicit ``no_overlay: false`` warns: no daemon, no cursor."""
+        with patch("hermes_cli.config.load_config",
+                   return_value={"computer_use": {"no_overlay": False}}), \
+             caplog.at_level("WARNING", logger="tools.computer_use.cua_backend"):
+            cua_backend._warn_if_overlay_unavailable("standard")
+        assert any("no cursor can appear" in r.message for r in caplog.records)
+
+    def test_daemon_backed_modes_stay_silent(self, caplog):
+        """bounded/unrestricted spawn the daemon that renders the overlay, so
+        the same explicit request is honored there — no warning."""
+        with patch("hermes_cli.config.load_config",
+                   return_value={"computer_use": {"no_overlay": False}}), \
+             caplog.at_level("WARNING", logger="tools.computer_use.cua_backend"):
+            cua_backend._warn_if_overlay_unavailable("bounded")
+            cua_backend._warn_if_overlay_unavailable("unrestricted")
+        assert not caplog.records
+
+    def test_standard_mode_silent_when_nobody_asked(self, caplog):
+        """Auto-detected overlay-on (unset key, e.g. Windows/Wayland) must not
+        warn: standard mode never rendered a cursor there either, but nobody
+        requested one, so a warning would be noise."""
+        with patch("hermes_cli.config.load_config", return_value={}), \
+             caplog.at_level("WARNING", logger="tools.computer_use.cua_backend"):
+            cua_backend._warn_if_overlay_unavailable("standard")
+        assert not caplog.records

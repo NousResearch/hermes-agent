@@ -252,12 +252,27 @@ class IdempotencySet:
         return False
 
 
+def redact_url(url: str) -> str:
+    """Emitter URL safe for logs: any userinfo credentials (``https://user:pass@host/x``)
+    are stripped. Everything else passes through unchanged."""
+    try:
+        parts = urllib.parse.urlsplit(url or "")
+        if parts.username is None and parts.password is None:
+            return url or ""
+        netloc = parts.hostname or ""
+        if parts.port:
+            netloc = f"{netloc}:{parts.port}"
+        return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    except Exception:
+        return "<unparseable emitter URL>"
+
+
 def audit(direction: str, emitter: str, ref: str, summary: str) -> None:
     """Append an audit record (direction: inbound | subscribe | unsubscribe | drop).
-    Never raises."""
+    Never raises. Emitter URLs are credential-redacted — a URL can carry a token."""
     try:
         from hermes_constants import get_hermes_home
-        rec = {"ts": time.time(), "direction": direction, "emitter": emitter, "ref": ref,
+        rec = {"ts": time.time(), "direction": direction, "emitter": redact_url(emitter), "ref": ref,
                "summary": (summary or "")[:500]}
         get_hermes_home().mkdir(parents=True, exist_ok=True)
         with (get_hermes_home() / "mcp_events_audit.jsonl").open("a", encoding="utf-8") as fh:

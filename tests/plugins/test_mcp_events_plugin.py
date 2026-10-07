@@ -574,3 +574,92 @@ class TestTrustedLoopbackEmitter:
         assert tools_mod._guard_emitter("http://127.0.0.1:8080/mcp/x") is None
         monkeypatch.setattr(security.MCPEventsSecurityContext, "capture", classmethod(lambda cls: _sec()))
         assert tools_mod._guard_emitter("http://127.0.0.1:8080/mcp/x") is not None
+
+
+# --------------------------------------------------------------------------
+# Non-event control envelopes (sketch: Non-event webhook bodies)
+# --------------------------------------------------------------------------
+
+class TestControlEnvelopes:
+    def test_signed_verification_challenge_is_answered_before_the_subscription_exists(self, live_receiver):
+        stub, base = live_receiver
+        # The challenge POST arrives during events/subscribe, before the
+        # subscription record is stored — an unknown path must still answer.
+        status, resp = _signed_post(base, "/mcp/events/webhook/loc-new", stub._sec.webhook_secret,
+                                    {"type": "verification", "challenge": "n0nce-1234"},
+                                    webhook_id="msg_verification_abc")
+        assert status == 200 and resp == {"challenge": "n0nce-1234"}
+        assert stub.dispatched == []
+
+    def test_forged_challenge_is_rejected(self, live_receiver):
+        stub, base = live_receiver
+        status, _ = _signed_post(base, "/mcp/events/webhook/loc-new", _secret(),
+                                 {"type": "verification", "challenge": "n0nce"},
+                                 webhook_id="msg_verification_abc")
+        assert status == 401
+        assert stub.dispatched == []
+
+    def test_verification_envelope_without_a_challenge_is_rejected(self, live_receiver):
+        stub, base = live_receiver
+        status, _ = _signed_post(base, "/mcp/events/webhook/loc-new", stub._sec.webhook_secret,
+                                 {"type": "verification"}, webhook_id="msg_verification_abc")
+        assert status == 400
+
+    def test_terminated_envelope_is_acked_without_waking_the_agent(self, live_receiver):
+        stub, base = live_receiver
+        _subscribe_stub(stub)
+        status, resp = _signed_post(base, "/mcp/events/webhook/loc-1", stub._sec.webhook_secret,
+                                    {"type": "terminated", "error": {"code": -32012, "message": "Forbidden"}},
+                                    webhook_id="msg_terminated_abc")
+        assert status == 200 and resp.get("ok") is True
+        assert stub.dispatched == []
+
+
+# --------------------------------------------------------------------------
+# Audit log hygiene
+# --------------------------------------------------------------------------
+
+class TestAuditRedaction:
+    def test_credentials_are_stripped_from_emitter_urls(self):
+        assert security.redact_url("https://key:whsec_secret@em.example/mcp") == "https://em.example/mcp"
+        assert security.redact_url("https://token@em.example/mcp") == "https://em.example/mcp"
+
+    def test_plain_urls_pass_through(self):
+        assert security.redact_url("https://em.example:8443/mcp?x=1") == "https://em.example:8443/mcp?x=1"
+        assert security.redact_url("") == ""
+
+
+# --------------------------------------------------------------------------
+# Gateway authorization: HMAC-verified deliveries are authenticated at intake
+# --------------------------------------------------------------------------
+
+class TestPlatformAuthorization:
+    def test_deliveries_are_authenticated_upstream_not_by_the_gateway_allowlist(self, monkeypatch):
+        pytest.importorskip("gateway.config")
+        from gateway.config import PlatformConfig
+        from plugins.platforms.mcp_events.adapter import MCPEventsAdapter
+
+        monkeypatch.setattr(security.MCPEventsSecurityContext, "capture", classmethod(lambda cls: _sec()))
+        adapter = MCPEventsAdapter(PlatformConfig())
+        # Without this, the gateway's default-deny user allowlist drops every
+        # delivery as "Unauthorized user" (user_id is an emitter URL).
+        assert adapter.authorization_is_upstream is True
+
+    def test_registration_declares_a_user_allow_all_gate_not_an_emitter_one(self):
+        from plugins.platforms import mcp_events
+
+        registered = {}
+        tools_seen = []
+
+        class Ctx:
+            def register_tool(self, *a, **k):
+                tools_seen.append(a)
+
+            def register_platform(self, *a, **kw):
+                registered.update(kw)
+
+        mcp_events.register(Ctx())
+        # The gateway derives the allow-all var from *_ALLOWED_USERS; a mismatched
+        # name (the emitter knob was registered here) silently never matches.
+        assert registered["allowed_users_env"] == "MCP_EVENTS_ALLOWED_USERS"
+        assert registered["allow_all_env"] == "MCP_EVENTS_ALLOW_ALL_USERS"

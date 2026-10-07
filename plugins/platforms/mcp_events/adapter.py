@@ -105,6 +105,28 @@ class MCPEventsRequestHandler(BaseHTTPRequestHandler):
                 for s in adapter.store.list()]
         self._json(200, {"subscriptions": subs})
 
+    def _control_envelope(self, payload: dict, sub_id: str):
+        """Signed non-event bodies (sketch: Non-event webhook bodies). The
+        ``verification`` challenge is answered before the subscription exists —
+        that handshake is what lets ``events/subscribe`` succeed at all;
+        ``gap``/``terminated`` are acked and audit-logged so the server's retry
+        loop doesn't hammer a 4xx."""
+        etype = str(payload.get("type") or "unknown")
+        if etype == "verification":
+            challenge = payload.get("challenge")
+            if not (isinstance(challenge, str) and challenge):
+                return self._drop_for(400, "verification envelope without a challenge", sub_id)
+            security.audit("inbound", "?", sub_id or "-", "webhook verification challenge answered")
+            return self._json(200, {"challenge": challenge})
+        security.audit("inbound", "?", sub_id or "-", f"{etype!r} control envelope acked")
+        return self._json(200, {"ok": True})
+
+    def _drop_for(self, http_code: int, reason: str, sub_id: str):
+        """A drop with no subscription context to audit against."""
+        security.audit("drop", "?", sub_id or "-", reason)
+        self._json(http_code, {"ok": False})
+        return None
+
     def _ingest(self, path: str):
         """Verify a signed event delivery and dispatch it into the live session.
 
@@ -131,11 +153,23 @@ class MCPEventsRequestHandler(BaseHTTPRequestHandler):
         # The callback URL embeds our local id (the emitter's id is only known
         # after subscribe returns); resolve() accepts either.
         sub = adapter.store.resolve(sub_id) if sub_id else None
-        if sub is None:
-            return drop(404, "unknown subscription", ref=sub_id)
         if not protocol.verify_delivery(sec.webhook_secret, webhook_id, timestamp, signature, body,
                                          skew_seconds=sec.timestamp_skew):
-            return drop(401, "signature/timestamp verification failed", emitter=sub["emitter_url"], ref=sub_id)
+            return drop(401, "signature/timestamp verification failed",
+                        emitter=(sub or {}).get("emitter_url", "?"), ref=sub_id)
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except Exception:
+            return drop(400, "delivery body is not JSON",
+                        emitter=(sub or {}).get("emitter_url", "?"), ref=sub_id)
+        # A top-level `type` marks a signed control envelope (sketch: Non-event
+        # webhook bodies), not an event. The `verification` challenge arrives
+        # BEFORE the subscription is stored — answering it is what lets
+        # events/subscribe succeed at all — so it is handled here, not below.
+        if isinstance(payload, dict) and payload.get("type"):
+            return self._control_envelope(payload, sub_id)
+        if sub is None:
+            return drop(404, "unknown subscription", ref=sub_id)
         if adapter._seen.seen(webhook_id):
             # Retried delivery — already dispatched; ack without waking the agent twice.
             return self._json(200, {"ok": True, "duplicate": True})
@@ -145,10 +179,6 @@ class MCPEventsRequestHandler(BaseHTTPRequestHandler):
         if not adapter._storm.check(f"sub:{sub_id}"):
             adapter.metrics["storm_drops"] += 1
             return drop(429, "subscription storm guard tripped", emitter=sub["emitter_url"], ref=sub_id)
-        try:
-            payload = json.loads(body.decode("utf-8"))
-        except Exception:
-            return drop(400, "delivery body is not JSON", emitter=sub["emitter_url"], ref=sub_id)
 
         event_name = str(payload.get("name") or sub.get("event") or "unknown")
         text = security.wrap_event(sub["emitter_url"], event_name, sub_id,
@@ -168,6 +198,15 @@ class MCPEventsAdapter(BasePlatformAdapter):
     # Nobody is on the other end of a webhook: auto-resume finishes interrupted
     # work instead of asking a question no one will answer (#57056 pattern).
     interactive_resume = False
+
+    @property
+    def authorization_is_upstream(self) -> bool:
+        """Deliveries are authenticated at intake in ``_ingest`` (Standard Webhooks
+        HMAC); the gateway's user allowlist would otherwise reject every delivery —
+        the "user" here is an emitter URL, not a human. Not a fail-open: a wrong
+        signature is 401'd before anything is dispatched. Mirrors the A2A adapter's
+        same-named property."""
+        return True
 
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("mcp_events"))

@@ -101,7 +101,7 @@ def register(ctx) -> None:
             check_fn=check_requirements, validate_config=validate_config, is_connected=is_connected,
             required_env=[], install_hint="No extra packages needed (stdlib only)", setup_fn=interactive_setup,
             emoji="\U0001f4e1",  # satellite antenna
-            allowed_users_env="MCP_EVENTS_ALLOWED_USERS", allow_all_env="MCP_EVENTS_ALLOW_ALL_EMITTERS",
+            allowed_users_env="MCP_EVENTS_ALLOWED_USERS", allow_all_env="MCP_EVENTS_ALLOW_ALL_USERS",
             cron_deliver_env_var="MCP_EVENTS_HOME_CHANNEL", allow_update_command=False, platform_hint=_PLATFORM_HINT,
         )
     except Exception:

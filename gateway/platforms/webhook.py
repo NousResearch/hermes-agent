@@ -174,6 +174,8 @@ def _validate_svix_signature(body: bytes, secret: str, msg_id: str, timestamp: s
         except (binascii.Error, ValueError):
             logger.debug("[webhook] Invalid whsec_ Svix signing secret")
             return False
+        if not key.strip():  # "whsec_" alone decodes to b"": a public HMAC key, same as a blank secret
+            return False
     else:
         # Some providers document Svix-style headers but hand out raw shared secrets.
         logger.debug("[webhook] Validating Svix-style signature with raw secret")

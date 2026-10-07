@@ -489,6 +489,25 @@ class TestSearchFilesIncludesDirectories:
         assert set(combined.files) == {str(empty_dir), str(regular_file)}
 
 
+class TestSearchLeadingDashPatterns:
+    @staticmethod
+    def _ops(tmp_path, tool):
+        if shutil.which(tool) is None:
+            pytest.skip(f"{tool} is not installed")
+        (tmp_path / "notes.txt").write_text("--needle-token\n", encoding="utf-8")
+        return ShellFileOperations(make_real_subprocess_env(str(tmp_path), include_stderr=True))
+
+    @pytest.mark.parametrize("tool,method", [("rg", "_search_with_rg"), ("grep", "_search_with_grep")])
+    def test_leading_dash_content_pattern_is_data(self, tmp_path, tool, method):
+        ops = self._ops(tmp_path, tool)
+        result = getattr(ops, method)(
+            "--needle-token", path=str(tmp_path), file_glob=None,
+            limit=10, offset=0, output_mode="content", context=0,
+        )
+        assert result.error is None
+        assert [(m.line_number, m.content) for m in result.matches] == [(1, "--needle-token")]
+
+
 class TestSearchFilesFallbackHiddenPaths:
     def _make_env(self):
         return LocalEnvironment("/")

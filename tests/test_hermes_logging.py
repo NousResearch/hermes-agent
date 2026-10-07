@@ -681,10 +681,15 @@ class TestWindowsConcurrentLogLockTimeout:
             handler.close()
 
     @pytest.mark.platforms("windows")
-    def test_fresh_import_retains_lock_failure_and_writes_without_rollover(
+    def test_fresh_import_retains_lock_failure_and_still_rolls_over(
         self, tmp_path, monkeypatch, fresh_logging,
     ):
-        """A post-import platform fake misses both handler selection and fallback resets."""
+        """A post-import platform fake misses both handler selection and fallback resets.
+
+        The fallback keeps the size cap (#127975): a single-writer log still
+        archives through the stdlib rename; only a rename that sibling append
+        handles break degrades to truncating in place.
+        """
         import portalocker
         from logging.handlers import RotatingFileHandler as StdlibRotatingFileHandler
 
@@ -705,13 +710,161 @@ class TestWindowsConcurrentLogLockTimeout:
             formatter=logging.Formatter("%(message)s"),
         )
         try:
-            assert handler.maxBytes == 0
-            assert handler.backupCount == 0
-            for message in ("first message", "second message"):
+            assert handler.maxBytes == 1
+            assert handler.backupCount == 1
+            for message in ("before rollover", "after rollover"):
                 handler.handle(logging.LogRecord("test", logging.INFO, "", 0, message, (), None))
             handler.flush()
-            assert log_path.read_text(encoding="utf-8-sig").splitlines() == ["first message", "second message"]
+            assert log_path.read_text(encoding="utf-8-sig").splitlines() == ["after rollover"]
+            assert (tmp_path / "agent.log.1").read_text(encoding="utf-8-sig").splitlines() == ["before rollover"]
+        finally:
+            handler.close()
+
+
+@pytest.mark.platforms("posix")
+class TestWindowsFallbackBoundedRollover:
+    """#127975: with the portalocker fallback active, a log must stay bounded.
+
+    The fallback class on Windows is stdlib RotatingFileHandler — the same
+    class POSIX resolves — so the fallback rollover (rename first, truncate
+    in place when the rename fails) is exercised off Windows too. On a
+    Windows host with working portalocker the class is CLH instead, and the
+    fresh-import fallback test above covers that side.
+    """
+
+    @pytest.fixture
+    def fallback(self, monkeypatch):
+        monkeypatch.setattr(hermes_logging, "_WINDOWS_CLH_FALLBACK", True)
+
+    @staticmethod
+    def _record(message):
+        return logging.LogRecord("test", logging.INFO, "", 0, message, (), None)
+
+    def test_fallback_keeps_the_size_cap_and_a_rename_attempt(self, fallback, tmp_path):
+        handler = hermes_logging._new_file_handler(
+            tmp_path / "agent.log", level=logging.INFO, max_bytes=1024,
+            backup_count=3, formatter=logging.Formatter("%(message)s"),
+        )
+        try:
+            assert handler.maxBytes == 1024
+            assert handler.backupCount == 3
+        finally:
+            handler.close()
+
+    def test_fallback_floors_backup_count_at_one(self, fallback, tmp_path):
+        handler = hermes_logging._new_file_handler(
+            tmp_path / "agent.log", level=logging.INFO, max_bytes=1024,
+            backup_count=0, formatter=logging.Formatter("%(message)s"),
+        )
+        try:
+            assert handler.maxBytes == 1024
+            assert handler.backupCount == 1
+        finally:
+            handler.close()
+
+    def test_rollover_rename_failure_truncates_in_place(self, fallback, tmp_path, monkeypatch):
+        log_path = tmp_path / "agent.log"
+        log_path.write_text("x" * 300, encoding="utf-8")
+        handler = hermes_logging._new_file_handler(
+            log_path, level=logging.INFO, max_bytes=200,
+            backup_count=1, formatter=logging.Formatter("%(message)s"),
+        )
+
+        def fail_rename(source, dest):
+            raise PermissionError(32, "The process cannot access the file")
+
+        monkeypatch.setattr(handler, "rotate", fail_rename)
+        try:
+            # The pinned rename used to leave the oversized bytes in place and
+            # drop every record; the bounded fallback truncates instead.
+            handler.handle(self._record("after the truncating rollover"))
+            handler.flush()
+            assert log_path.read_text(encoding="utf-8-sig").splitlines() == [
+                "after the truncating rollover",
+            ]
             assert not list(tmp_path.glob("agent.log.*"))
+            # Below the cap again, logging continues without touching the file.
+            handler.handle(self._record("still logging"))
+            handler.flush()
+            assert log_path.read_text(encoding="utf-8-sig").splitlines() == [
+                "after the truncating rollover", "still logging",
+            ]
+        finally:
+            handler.close()
+
+    def test_rollover_rename_success_still_archives(self, fallback, tmp_path):
+        log_path = tmp_path / "agent.log"
+        handler = hermes_logging._new_file_handler(
+            log_path, level=logging.INFO, max_bytes=1,
+            backup_count=1, formatter=logging.Formatter("%(message)s"),
+        )
+        try:
+            for message in ("before rollover", "after rollover"):
+                handler.handle(self._record(message))
+            handler.flush()
+            assert log_path.read_text(encoding="utf-8-sig").splitlines() == ["after rollover"]
+            assert (tmp_path / "agent.log.1").read_text(encoding="utf-8-sig").splitlines() == [
+                "before rollover",
+            ]
+        finally:
+            handler.close()
+
+    def test_truncating_rollover_reopens_the_stream_for_append(
+        self, fallback, tmp_path, monkeypatch,
+    ):
+        # A "w"-opened stream carries no O_APPEND, so records a sibling appends
+        # between our writes would be overwritten from this process's offset
+        # (#44873); only stdlib shouldRollover's seek(0, 2) keeps a "w" stream
+        # from biting on the emit path today. The reopened stream must itself
+        # append.
+        log_path = tmp_path / "agent.log"
+        log_path.write_text("x" * 300, encoding="utf-8")
+        handler = hermes_logging._new_file_handler(
+            log_path, level=logging.INFO, max_bytes=200,
+            backup_count=1, formatter=logging.Formatter("%(message)s"),
+        )
+
+        def fail_rename(source, dest):
+            raise PermissionError(32, "The process cannot access the file")
+
+        monkeypatch.setattr(handler, "rotate", fail_rename)
+        try:
+            handler.handle(self._record("OURS-1"))
+            handler.flush()
+            # A sibling Hermes process appends through its own handle.
+            with open(log_path, "a", encoding="utf-8") as sibling:
+                sibling.write("SIBLING\n")
+            assert handler.stream.mode == "a"
+            # Write straight through the handler's stream: emit()'s
+            # shouldRollover seek would mask a "w" stream, and O_APPEND is the
+            # contract that keeps the sibling's records intact regardless.
+            handler.stream.write("OURS-2\n")
+            handler.flush()
+            assert log_path.read_text(encoding="utf-8-sig").splitlines() == [
+                "OURS-1", "SIBLING", "OURS-2",
+            ]
+        finally:
+            handler.close()
+
+    def test_truncate_in_place_swallows_reopen_failure(
+        self, fallback, tmp_path, monkeypatch,
+    ):
+        log_path = tmp_path / "agent.log"
+        log_path.write_text("x" * 300, encoding="utf-8")
+        handler = hermes_logging._new_file_handler(
+            log_path, level=logging.INFO, max_bytes=200,
+            backup_count=1, formatter=logging.Formatter("%(message)s"),
+        )
+
+        def fail_open(self):
+            raise OSError("reopen failed")
+
+        monkeypatch.setattr(type(handler), "_open", fail_open)
+        try:
+            # Best-effort like _reopen_stream: the failure must not escape
+            # doRollover, and the stream stays None for the next emit.
+            handler._truncate_base_file_in_place()
+            assert handler.stream is None
         finally:
             handler.close()
 

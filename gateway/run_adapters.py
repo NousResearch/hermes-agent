@@ -1831,10 +1831,9 @@ class GatewayAdapterLifecycleMixin:
 
     def _primary_pre_gateway_dispatch_handler(self):
         """Return the correctly scoped pre-dispatch handler for busy primary ingress."""
-        return (
-            self._make_default_profile_pre_gateway_dispatch_handler()
-            if self._multiplex_on() else self._hm_admit_busy_ingress
-        )
+        if self._multiplex_on():
+            return self._make_default_profile_pre_gateway_dispatch_handler()
+        return self._hm_admit_busy_ingress
 
     def _multiplex_on(self) -> bool:
         return bool(getattr(self.config, "multiplex_profiles", False))

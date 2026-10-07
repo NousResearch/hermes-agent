@@ -11,7 +11,6 @@ import logging
 from typing import TYPE_CHECKING
 import asyncio
 import concurrent.futures  # noqa: F401 -- kept public after the plugin-injection move
-import dataclasses
 import json
 import os
 import re
@@ -26,6 +25,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
 from gateway.run_inbound_media import rehome_inbound_media
+from gateway.run_inbound_predispatch import GatewayPreDispatchMixin
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
@@ -67,64 +67,8 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text[len(prefix):] if message_text.startswith(prefix) else message_text
 
 
-class GatewayInboundMixin(GatewayPluginInjectionMixin):
+class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayPreDispatchMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
-
-    async def _hm_pre_gateway_dispatch_hook(
-        self, event: "MessageEvent", source: SessionSource
-    ) -> Optional["MessageEvent"]:
-        """Run the ``pre_gateway_dispatch`` plugin hook; None = drop, else the (maybe rewritten) event.
-        Results: ``{"action": "skip"}`` → drop; ``{"action": "rewrite", "text"}`` → replace ``event.text``;
-        ``allow``/None → normal dispatch. Runs BEFORE auth so plugins can handle unauthorized senders."""
-        try:
-            from hermes_cli.lifecycle import ainvoke_hook as _ainvoke_hook
-            _hook_results = await _ainvoke_hook(
-                "pre_gateway_dispatch", event=event, gateway=self,
-                # getattr: bare-runner tests build GatewayRunner via object.__new__ without __init__.
-                session_store=getattr(self, "session_store", None),
-            )
-        except Exception as _hook_exc:
-            logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
-            _hook_results = []
-
-        for _result in _hook_results:
-            if not isinstance(_result, dict):
-                continue
-            _action = _result.get("action")
-            if _action == "skip":
-                logger.info(
-                    "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
-                    _result.get("reason"), source.platform.value if source.platform else "unknown",
-                    source.chat_id or "unknown",
-                )
-                return None
-            if _action == "rewrite":
-                _new_text = _result.get("text")
-                if isinstance(_new_text, str):
-                    event = dataclasses.replace(event, text=_new_text)
-                break
-            if _action == "allow":
-                break
-        return event
-
-    async def _hm_pre_gateway_dispatch_once(
-        self, event: "MessageEvent", source: SessionSource
-    ) -> Optional["MessageEvent"]:
-        """Apply the pre-dispatch hook once to one process-local inbound event."""
-        if getattr(event, "_pre_gateway_dispatch_applied", False):
-            return event
-        event = await self._hm_pre_gateway_dispatch_hook(event, source)
-        if event is not None:
-            event._pre_gateway_dispatch_applied = True
-        return event
-
-    async def _hm_admit_busy_ingress(
-        self, event: "MessageEvent"
-    ) -> Optional["MessageEvent"]:
-        """Run the normal pre-dispatch contract before an active-session diversion."""
-        if getattr(event, "internal", False):
-            return event
-        return await self._hm_pre_gateway_dispatch_once(event, event.source)
 
     async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
         """DM an unauthorized sender a pairing code (rate-limited; groups never reach here)."""

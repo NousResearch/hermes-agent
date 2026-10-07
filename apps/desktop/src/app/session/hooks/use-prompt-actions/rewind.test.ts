@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { describe, expect, it } from 'vitest'
 
 import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/chat-messages'
@@ -9,6 +10,7 @@ import {
   applyRewindOptimistic,
   finalizeStoppedMessages,
   finalizeUserInterruptedMessages,
+  planConfirmedEdit,
   planConfirmedReload,
   planEdit,
   planReload,
@@ -16,6 +18,7 @@ import {
   rebindSurvivorRowIds,
   resolveDurableRowId,
   runRewindSubmit,
+  submitWithDeepTruncateConfirm,
   survivorRowIdsFrom,
   truncateSubmitParams
 } from './rewind'
@@ -773,5 +776,67 @@ describe('planConfirmedReload (#133716)', () => {
 
     expect(await submitPlan(await planConfirmedReload(failedLater, 'a1', askAndDecline))).toBeUndefined()
     expect(asked).toBe(2)
+  })
+})
+
+describe('edit and server-refusal confirms (#133716 review)', () => {
+  const transcript = [
+    row('u1', 'user', 'old prompt', { rowId: 11 }),
+    row('a1', 'assistant', 'old reply'),
+    row('u2', 'user', 'latest prompt', { rowId: 13 }),
+    row('a2', 'assistant', 'latest reply')
+  ]
+
+  const editOf = (sourceId: string) =>
+    ({ role: 'user', sourceId, parentId: null, content: [{ type: 'text', text: 'edited' }] }) as never
+
+  it('asks before an edit that archives later user turns; a tail edit sends no deep confirm', async () => {
+    let asked = 0
+
+    const decline = async () => {
+      asked += 1
+
+      return false
+    }
+
+    expect(await planConfirmedEdit(transcript, editOf('u1'), decline)).toBeNull()
+    expect(asked).toBe(1)
+    expect(await planConfirmedEdit(transcript, editOf('u1'), async () => true)).toMatchObject({
+      confirmDeepTruncate: true,
+      truncateRowId: 11
+    })
+
+    expect(await planConfirmedEdit(transcript, editOf('u2'), decline)).toMatchObject({ confirmDeepTruncate: false })
+    expect(asked).toBe(1)
+  })
+
+  it('a 4033 the client did not predict asks once and retries confirmed; other errors pass through', async () => {
+    const refusal = new JsonRpcGatewayError('truncation would archive later user turns', { code: 4033 })
+    const sent: boolean[] = []
+
+    const submit = async (confirmed: boolean) => {
+      sent.push(confirmed)
+
+      if (!confirmed) {
+        throw refusal
+      }
+
+      return 'ok'
+    }
+
+    expect(await submitWithDeepTruncateConfirm(submit, false, async () => true)).toBe('ok')
+    expect(sent).toEqual([false, true])
+
+    await expect(submitWithDeepTruncateConfirm(submit, false, async () => false)).rejects.toBe(refusal)
+    expect(sent).toEqual([false, true, false])
+
+    const busy = new Error('session busy')
+    await expect(
+      submitWithDeepTruncateConfirm(
+        async () => Promise.reject(busy),
+        false,
+        async () => true
+      )
+    ).rejects.toBe(busy)
   })
 })

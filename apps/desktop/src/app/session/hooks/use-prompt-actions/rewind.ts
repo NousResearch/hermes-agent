@@ -25,6 +25,7 @@ import type { ConfirmRequest } from '@/store/confirm'
 
 import {
   appendText,
+  isDeepTruncateRefusal,
   isFailedUserTurn,
   isSessionBusyError,
   isVisibleUserMessage,
@@ -580,6 +581,28 @@ export async function planConfirmedReload(
   return (await confirmDeep()) ? { ...plan, confirmDeepTruncate: true } : null
 }
 
+/**
+ * The server counts later user turns with its own predicate (steer rows, compaction carriers) and
+ * refuses an unconfirmed deep cut with 4033. Client and server can disagree, so a refusal asks the
+ * same destructive confirm once and retries confirmed. A decline rethrows the 4033, which callers
+ * roll back silently (`isDeepTruncateRefusal`).
+ */
+export async function submitWithDeepTruncateConfirm<T>(
+  submit: (confirmDeepTruncate: boolean) => Promise<T>,
+  confirmed: boolean,
+  confirmDeep: () => Promise<boolean>
+): Promise<T> {
+  try {
+    return await submit(confirmed)
+  } catch (err) {
+    if (confirmed || !isDeepTruncateRefusal(err) || !(await confirmDeep())) {
+      throw err
+    }
+
+    return submit(true)
+  }
+}
+
 /** Optimistic reload state: keep the user turn, hide the branch's assistants. */
 export function applyReloadOptimistic(state: ClientSessionState, plan: ReloadPlan): ClientSessionState {
   const nextUserIndex = state.messages.findIndex((m, i) => i > plan.userIndex && m.role === 'user')
@@ -714,6 +737,29 @@ export function planEdit(messages: ChatMessage[], edited: AppendMessage): EditPl
     truncateMessageId: isFailedTurn ? undefined : source.id,
     truncateRowId: isFailedTurn ? undefined : source.rowId
   }
+}
+
+/**
+ * Edit is a rewind too: an edit of an older turn archives every later turn, which used to bypass the
+ * server gate with an unconditional confirm flag (#133716 review). Ask first, exactly as regenerate
+ * does; a tail edit (nothing after the source) and a failed turn need no confirm. Null when declined.
+ */
+export async function planConfirmedEdit(
+  messages: ChatMessage[],
+  edited: AppendMessage,
+  confirmDeep: () => Promise<boolean>
+): Promise<null | (EditPlan & { confirmDeepTruncate: boolean })> {
+  const plan = planEdit(messages, edited)
+
+  if (!plan) {
+    return null
+  }
+
+  if (plan.truncateOrdinal === undefined || !messages.some((m, i) => i > plan.sourceIndex && isVisibleUserMessage(m))) {
+    return { ...plan, confirmDeepTruncate: false }
+  }
+
+  return (await confirmDeep()) ? { ...plan, confirmDeepTruncate: true } : null
 }
 
 /** Optimistic rewind-to state for restore/edit: drop everything after the

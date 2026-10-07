@@ -3501,6 +3501,12 @@ def _launch_external_cron_worker(job: dict) -> bool:
     except Exception:
         require_restart_safe_scope = False
     multiplex_active = is_multiplex_active()
+    # The PYTHONPATH pin cannot carry .pth-only entries (pywin32, __editable__): wrap the
+    # `-m` spawn with the same site.addsitedir semantics pm.activate_dependencies gives the
+    # gateway. No-op unless a dependency generation is committed (see cron/scheduler_worker_env.py).
+    from cron.scheduler_worker_env import external_worker_argv
+
+    command = external_worker_argv(command)
     dispatch = restart_safe_gateway_child_argv(
         command,
         unit_suffix=f"cron-{job_id}-exec-{execution_id}",

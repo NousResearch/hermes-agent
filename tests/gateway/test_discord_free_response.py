@@ -485,6 +485,32 @@ def test_discord_free_response_auto_thread_yaml_bridge(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_discord_mention_gating_explicit_env_beats_yaml(adapter, monkeypatch):
+    """#13685: an explicit ``DISCORD_*`` value beats the ``config.yaml`` key for both mention gates
+    (env → YAML → default, like every other Discord channel gate); YAML applies when env is unset."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "123")
+    # The keys a fresh install writes under ``discord:``, seeded through the real YAML bridge.
+    adapter.config.extra.update(
+        discord_platform._apply_yaml_config({}, {"require_mention": True, "free_response_channels": "456"}) or {}
+    )
+
+    assert adapter._discord_require_mention() is False
+    assert adapter._discord_free_response_channels() == {"123"}
+
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    await adapter._handle_message(make_message(channel=FakeTextChannel(channel_id=123), content="env channel"))
+    adapter.handle_message.assert_awaited_once()
+
+    # Blank or absent env falls through to the YAML value.
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "  ")
+    assert adapter._discord_free_response_channels() == {"456"}
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS")
+    assert adapter._discord_free_response_channels() == {"456"}
+
+
+@pytest.mark.asyncio
 async def test_fetch_channel_context_stops_at_self_message_and_reverses_to_chronological_order(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
     adapter.config.extra["history_backfill_limit"] = 10

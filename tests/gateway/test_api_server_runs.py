@@ -209,6 +209,86 @@ def auth_adapter():
 
 class TestStartRun:
     @pytest.mark.asyncio
+    async def test_start_can_allowlist_agent_tools(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                response = await cli.post(
+                    "/v1/runs",
+                    json={"input": "search only", "allowed_tools": ["web_search"]},
+                )
+                assert response.status == 202
+                data = await response.json()
+                await self._wait_completed(cli, data["run_id"])
+
+        assert mock_create.call_args.kwargs["allowed_tools"] == ("web_search",)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "allowed_tools",
+        ["web_search", [], ["web_search", "web_search"], ["not_a_real_tool"], [1]],
+    )
+    async def test_start_rejects_invalid_allowed_tools(self, adapter, allowed_tools):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/v1/runs",
+                json={"input": "search only", "allowed_tools": allowed_tools},
+            )
+        assert response.status == 400
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_allowed_tools_with_disable_tools(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/v1/runs",
+                json={
+                    "input": "search only",
+                    "disable_tools": True,
+                    "allowed_tools": ["web_search"],
+                },
+            )
+        assert response.status == 400
+
+    @pytest.mark.asyncio
+    async def test_start_can_disable_all_agent_tools(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                response = await cli.post(
+                    "/v1/runs", json={"input": "select only", "disable_tools": True}
+                )
+                assert response.status == 202
+                data = await response.json()
+                await self._wait_completed(cli, data["run_id"])
+
+        assert mock_create.call_args.kwargs["disable_tools"] is True
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_non_boolean_disable_tools(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/v1/runs", json={"input": "select only", "disable_tools": "yes"}
+            )
+        assert response.status == 400
+
+    @pytest.mark.asyncio
     async def test_room_auth_is_validated_before_body_parse_or_work_reservation(
         self, auth_adapter
     ):

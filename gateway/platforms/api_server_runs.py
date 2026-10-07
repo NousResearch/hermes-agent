@@ -635,6 +635,36 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
             if isinstance(body, dict) else (None, None)))
+    disable_tools = body.get("disable_tools", False) if isinstance(body, dict) else False
+    if type(disable_tools) is not bool:
+        return _json_error(_openai_error, "'disable_tools' must be a boolean", status=400)
+    raw_allowed_tools = body.get("allowed_tools") if isinstance(body, dict) else None
+    allowed_tools = None
+    if raw_allowed_tools is not None:
+        from model_tools import get_all_tool_names
+
+        if (
+            not isinstance(raw_allowed_tools, list)
+            or not raw_allowed_tools
+            or any(not isinstance(name, str) or not name for name in raw_allowed_tools)
+            or len(set(raw_allowed_tools)) != len(raw_allowed_tools)
+            or any(name not in get_all_tool_names() for name in raw_allowed_tools)
+        ):
+            return _json_error(
+                _openai_error,
+                "'allowed_tools' must be a non-empty list of unique available tool names",
+                status=400,
+            )
+        allowed_tools = tuple(raw_allowed_tools)
+    if disable_tools and allowed_tools is not None:
+        return _json_error(
+            _openai_error,
+            "'allowed_tools' cannot be used with 'disable_tools'",
+            status=400,
+        )
+    if disable_tools and room_dispatch is not None:
+        return _json_error(
+            _openai_error, "'disable_tools' cannot be used with hosted room dispatch", status=400)
     idempotency_key = request.headers.get("Idempotency-Key", "").strip()
     if len(idempotency_key) > 255 or any(ord(ch) < 33 or ord(ch) > 126 for ch in idempotency_key):
         return _json_error(
@@ -734,6 +764,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         agent_kwargs=dict(
             ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
             route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
+            disable_tools=disable_tools, allowed_tools=allowed_tools,
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),

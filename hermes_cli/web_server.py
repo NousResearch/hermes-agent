@@ -103,10 +103,12 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: "int | N
     ticker dies with its backend and that profile's jobs silently stop firing until the user next opens it
     ("tasks on the sleeping profile could be idle" — community report, Aug 2026).
     """
-    from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
+    from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler, resolve_tick_interval
     from hermes_constants import get_hermes_home, profile_name_for_home
 
     provider = resolve_cron_scheduler()
+    # Resolved here too: the ownership re-probe below sleeps on it before any provider starts.
+    interval = resolve_tick_interval() if interval is None else interval
     own_home = Path(get_hermes_home())
     own_name = profile_name_for_home(own_home) or "default"
     # Ownership is re-checked every tick, not once at startup, so Desktop takes over when the

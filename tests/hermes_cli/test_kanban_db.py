@@ -691,6 +691,8 @@ def test_delete_archived_task_removes_related_rows(kanban_home):
         kb.add_comment(conn, tid, "user", "cleanup me")
         kb.claim_task(conn, tid)
         kb.complete_task(conn, tid, result="done")
+        assert kb.delete_archived_task(conn, tid) is False
+        assert kb.get_task(conn, tid) is not None
         assert kb.archive_task(conn, tid)
         conn.execute(
             "INSERT INTO kanban_notify_subs(task_id, platform, chat_id, thread_id, user_id, created_at, last_event_id) "
@@ -708,16 +710,58 @@ def test_delete_archived_task_removes_related_rows(kanban_home):
         assert conn.execute("SELECT COUNT(*) FROM kanban_notify_subs WHERE task_id = ?", (tid,)).fetchone()[0] == 0
 
 
-def test_delete_task_removes_task_and_cascades(kanban_home):
+def test_delete_task_terminates_verified_worker_and_refuses_unverified_survivor(
+    kanban_home, monkeypatch,
+):
     with kbc.connect() as conn:
         t = kb.create_task(conn, title="to-delete", assignee="alice")
         kb.add_comment(conn, t, "user", "comment")
         kb.add_comment(conn, t, "user", "another")
-        assert kb.delete_task(conn, t)
+        host = kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        monkeypatch.setattr(kbd, "_process_fingerprint", lambda pid: f"test-boot|{pid}")
+        kbd._set_worker_pid(conn, t, 54321)
+
+        live = {54321}
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: pid in live)
+        signalled = []
+
+        def signal_worker(pid, sig):
+            signalled.append((pid, sig))
+            # The winning delete transaction still owns the task and every
+            # relation while it terminates the process.
+            assert kb.get_task(conn, t) is not None
+            assert len(kb.list_comments(conn, t)) == 2
+            live.discard(pid)
+
+        assert kb.delete_task(conn, t, signal_fn=signal_worker)
+        assert signalled and signalled[0][0] == 54321
         assert kb.get_task(conn, t) is None
         assert len(kb.list_comments(conn, t)) == 0
         assert len(kb.list_events(conn, t)) == 0
         assert len(kb.list_runs(conn, t)) == 0
+
+        guarded = kb.create_task(conn, title="identity unknown", assignee="alice")
+        kb.add_comment(conn, guarded, "user", "must survive refusal")
+        kb.claim_task(conn, guarded, claimer=f"{host}:worker")
+        kbd._set_worker_pid(conn, guarded, 65432)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET worker_started_at = ? WHERE id = ?",
+                (kbd.UNVERIFIED_WORKER_FINGERPRINT, guarded),
+            )
+            conn.execute(
+                "UPDATE task_runs SET worker_started_at = ? WHERE task_id = ?",
+                (kbd.UNVERIFIED_WORKER_FINGERPRINT, guarded),
+            )
+        live.add(65432)
+        before = list(signalled)
+
+        with pytest.raises(kb.WorkerStillRunningError, match="could not be stopped"):
+            kb.delete_task(conn, guarded, signal_fn=signal_worker)
+        assert signalled == before
+        assert kb.get_task(conn, guarded) is not None
+        assert [c.body for c in kb.list_comments(conn, guarded)] == ["must survive refusal"]
 
 
 
@@ -2046,11 +2090,15 @@ def test_archive_running_task_terminates_worker(kanban_home, monkeypatch):
         monkeypatch.setattr(kbd, "_process_fingerprint", lambda _pid: "boot:1|777")
         kbd._set_worker_pid(conn, t, 54321)
 
-        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+        live = {54321}
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: pid in live)
         signalled = []
-        assert kb.archive_task(
-            conn, t, signal_fn=lambda pid, sig: signalled.append((pid, sig)),
-        ) is True
+
+        def signal_worker(pid, sig):
+            signalled.append((pid, sig))
+            live.discard(pid)
+
+        assert kb.archive_task(conn, t, signal_fn=signal_worker) is True
 
         assert signalled and signalled[0][0] == 54321
 
@@ -2084,3 +2132,113 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+def _claim_verified_worker(conn, monkeypatch, title, pid):
+    """A running task whose host-local worker has a full boot|start fingerprint."""
+    t = kb.create_task(conn, title=title, assignee="a")
+    host = kb._claimer_id().split(":", 1)[0]
+    kb.claim_task(conn, t, claimer=f"{host}:worker")
+    monkeypatch.setattr(kbd, "_process_fingerprint", lambda p: f"boot:1|{p}")
+    kbd._set_worker_pid(conn, t, pid)
+    return t
+
+
+def _other_writer_can_begin_immediately() -> bool:
+    """A second connection with no busy wait: True iff nobody holds the write lock."""
+    other = sqlite3.connect(str(kb.kanban_db_path()), timeout=0, isolation_level=None)
+    try:
+        other.execute("BEGIN IMMEDIATE")
+        other.execute("ROLLBACK")
+        return True
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        other.close()
+
+
+@pytest.mark.parametrize("operation", ["archive", "delete", "delete_archived"])
+def test_slow_worker_exit_does_not_hold_the_board_write_lock(
+    kanban_home, monkeypatch, operation,
+):
+    """A worker that ignores the first SIGTERM keeps ``_poll_worker_exit`` busy
+    for up to ~5 s. That wait must happen with no ``BEGIN IMMEDIATE`` held, or
+    every other writer on the board (dispatcher tick, notifier pollers) stalls
+    and then fails in SQLite's busy handler. The destructive write still
+    commits only once the worker is gone, and the rows stay intact until then."""
+    with kbc.connect() as conn:
+        t = _claim_verified_worker(conn, monkeypatch, "slow exit", 54321)
+        live = {54321}
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: pid in live)
+        if operation == "delete_archived":
+            # Archived while its run row still records the live worker.
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = 'archived', claim_lock = NULL, "
+                    "worker_pid = NULL, worker_started_at = NULL WHERE id = ?", (t,),
+                )
+
+        lock_free_during_poll: list[bool] = []
+        polls = []
+
+        def slow_sleep(_seconds):
+            # Each 0.5 s poll tick: the worker is still alive, rows still exist,
+            # and an unrelated writer must be able to take the lock right now.
+            polls.append(_seconds)
+            assert kb.get_task(conn, t) is not None
+            lock_free_during_poll.append(_other_writer_can_begin_immediately())
+            if len(polls) == 3:
+                live.discard(54321)  # exits on its own after ~1.5 s
+
+        monkeypatch.setattr(kbd.time, "sleep", slow_sleep)
+        signalled = []
+        signal_fn = lambda pid, sig: signalled.append((pid, sig))  # noqa: E731
+
+        if operation == "archive":
+            assert kb.archive_task(conn, t, signal_fn=signal_fn) is True
+            assert kb.get_task(conn, t).status == "archived"
+        elif operation == "delete":
+            assert kb.delete_task(conn, t, signal_fn=signal_fn) is True
+            assert kb.get_task(conn, t) is None
+        else:
+            assert kb.delete_archived_task(conn, t, signal_fn=signal_fn) is True
+            assert kb.get_task(conn, t) is None
+
+        assert [pid for pid, _sig in signalled] == [54321]
+        assert len(polls) == 3
+        assert lock_free_during_poll == [True, True, True]
+
+
+def test_drain_refuses_when_a_worker_is_alive_at_the_locked_recheck(kanban_home, monkeypatch):
+    """The unlocked drain is not trusted on its own: the locked re-check probes
+    each recorded identity once more. A worker still (or newly) alive there is
+    re-drained a bounded number of times and then refused with nothing
+    mutated."""
+    with kbc.connect() as conn:
+        t = _claim_verified_worker(conn, monkeypatch, "respawning", 54321)
+        kb.add_comment(conn, t, "user", "must survive refusal")
+        live = {54321}
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: pid in live)
+        signalled = []
+
+        def signal_fn(pid, sig):
+            # The drain sees it die, but something revives the identity before
+            # the locked re-check (stands in for a claim->spawn race).
+            signalled.append(pid)
+            live.discard(pid)
+
+        real_identity_rows = kb._worker_identity_rows
+
+        def identity_rows(conn_, *, task_id=None):
+            rows = real_identity_rows(conn_, task_id=task_id)
+            if conn_.in_transaction:
+                live.add(54321)
+            return rows
+
+        monkeypatch.setattr(kb, "_worker_identity_rows", identity_rows)
+        with pytest.raises(kb.WorkerStillRunningError):
+            kb.delete_task(conn, t, signal_fn=signal_fn)
+        assert len(signalled) == kb._WORKER_DRAIN_ATTEMPTS
+        assert [c.body for c in kb.list_comments(conn, t)] == ["must survive refusal"]
+        assert kb.archive_task(conn, t, signal_fn=signal_fn) is False
+        assert kb.get_task(conn, t).status == "running"

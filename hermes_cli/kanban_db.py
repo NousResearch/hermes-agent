@@ -510,6 +510,51 @@ def board_dir(board: Optional[str] = None) -> Path:
     return boards_root() / _slug_or_default(board)
 
 
+def _board_removal_marker(slug: str) -> Path:
+    """Durable fence preventing stale workers/ticks from recreating a removed board."""
+    return boards_root() / ".removed" / f"{_require_slug(slug)}.tombstone"
+
+
+def _board_removal_marker_for_db_path(
+    path: "str | Path", *, board: Optional[str] = None,
+) -> Optional[Path]:
+    """Removal marker for a named board DB path, including worker-pinned paths."""
+    candidate = _normalize_board_slug(board)
+    if candidate is None:
+        with contextlib.suppress(ValueError):
+            candidate = _normalize_board_slug(os.environ.get("HERMES_KANBAN_BOARD"))
+    resolved = Path(path).expanduser().resolve()
+    if candidate and candidate != DEFAULT_BOARD:
+        expected = (board_dir(candidate) / "kanban.db").expanduser().resolve()
+        if resolved == expected:
+            return _board_removal_marker(candidate)
+    try:
+        relative = resolved.relative_to(boards_root().expanduser().resolve())
+    except (OSError, ValueError):
+        return None
+    if len(relative.parts) != 2 or relative.parts[1] != "kanban.db":
+        return None
+    with contextlib.suppress(ValueError):
+        slug = _require_slug(relative.parts[0])
+        if slug != DEFAULT_BOARD:
+            return _board_removal_marker(slug)
+    return None
+
+
+def _assert_board_not_removed(path: "str | Path", *, board: Optional[str] = None) -> None:
+    marker = _board_removal_marker_for_db_path(path, board=board)
+    if marker is not None and marker.exists():
+        raise ValueError(
+            f"board {marker.stem!r} was removed; recreate it explicitly before reconnecting"
+        )
+
+
+def _clear_board_removal_marker(slug: str) -> None:
+    marker = _board_removal_marker(slug)
+    with contextlib.suppress(FileNotFoundError):
+        marker.unlink()
+
+
 def board_exists(board: Optional[str] = None) -> bool:
     """Board has ``board.json`` or ``kanban.db`` on disk; ``default`` always exists."""
     slug = _slug_or_default(board)
@@ -692,7 +737,11 @@ def create_board(
     project_id: Optional[str] = None,
 ) -> dict:
     """Create board dir + DB + metadata (``mkdir -p`` semantics: existing board returns its metadata)."""
+    _assert_not_delegated_child_mutation()
     normed = _require_slug(slug)
+    # Only this explicit creation API clears the durable removal fence. A stale
+    # dispatcher/worker calling connect() cannot resurrect the old directory.
+    _clear_board_removal_marker(normed)
     meta = write_board_metadata(
         normed, name=name, description=description, icon=icon, color=color,
         default_workdir=default_workdir, project_id=project_id,
@@ -726,7 +775,7 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
     return entries
 
 
-def remove_board(slug: str, *, archive: bool = True) -> dict:
+def remove_board(slug: str, *, archive: bool = True, signal_fn=None) -> dict:
     """Archive (to ``boards/_archived/<slug>-<ts>/``) or delete a board;
     ``default`` cannot be removed. Returns ``{"slug", "action", "new_path"}``."""
     _assert_not_delegated_child_mutation()
@@ -736,29 +785,61 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     d = board_dir(normed)
     if not d.exists():
         raise ValueError(f"board {normed!r} does not exist")
+    db_path = d / "kanban.db"
+    marker = _board_removal_marker(normed)
+    marker_created = False
+    handed_off = False
 
-    # If the user removed the currently-active board, revert to default.
-    if get_current_board() == normed:
-        clear_current_board()
+    from hermes_cli import kanban_db_connect as kbc
 
-    # A concurrent connect() after the rename recreates an empty DB file; drop
-    # the init cache first so the schema pass re-runs on it.
-    _INITIALIZED_PATHS.discard(str((d / "kanban.db").resolve()))
+    try:
+        # The dispatch lock closes the claim->spawn gap. The durable marker,
+        # created while the old DB is still open, fences stale ticks and
+        # worker-pinned connect() calls across the close->rename hand-off.
+        with kbc._dispatch_tick_lock(db_path) as held:
+            if not held:
+                raise ValueError(f"board {normed!r} is busy dispatching; retry removal")
+            with kbc.connect_closing(db_path=db_path) as conn:
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    marker.touch(exist_ok=False)
+                except FileExistsError as exc:
+                    raise ValueError(f"board {normed!r} is already being removed") from exc
+                marker_created = True
+                # The marker and the dispatch lock already stop new spawns; the
+                # drain still runs without the write lock so a worker slow to
+                # exit on SIGTERM never stalls the board's other writers.
+                if _mutate_after_worker_drain(conn, lambda _c: True, signal_fn=signal_fn) is not True:
+                    raise ValueError(
+                        f"board {normed!r} has a live worker without a terminable verified identity"
+                    )
 
-    if archive:
-        archive_root = boards_root() / "_archived"
-        archive_root.mkdir(parents=True, exist_ok=True)
-        ts = int(time.time())
-        target = archive_root / f"{normed}-{ts}"
-        suffix = 1
-        while target.exists():  # rapid double-archive
-            target = archive_root / f"{normed}-{ts}-{suffix}"
-            suffix += 1
-        d.rename(target)
-        return {"slug": normed, "action": "archived", "new_path": str(target)}
-    import shutil
-    shutil.rmtree(d)
-    return {"slug": normed, "action": "deleted", "new_path": ""}
+            # No worker survives the DB close. The marker prevents any stale
+            # holder from recreating the old path before the filesystem hand-off.
+            if get_current_board() == normed:
+                clear_current_board()
+            _INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+            if archive:
+                archive_root = boards_root() / "_archived"
+                archive_root.mkdir(parents=True, exist_ok=True)
+                ts = int(time.time())
+                target = archive_root / f"{normed}-{ts}"
+                suffix = 1
+                while target.exists():  # rapid double-archive
+                    target = archive_root / f"{normed}-{ts}-{suffix}"
+                    suffix += 1
+                d.rename(target)
+                handed_off = True
+                return {"slug": normed, "action": "archived", "new_path": str(target)}
+            import shutil
+            shutil.rmtree(d)
+            handed_off = True
+            return {"slug": normed, "action": "deleted", "new_path": ""}
+    finally:
+        if marker_created and not handed_off:
+            with contextlib.suppress(FileNotFoundError):
+                marker.unlink()
 
 
 # --- Data classes ---
@@ -3957,25 +4038,17 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     """Archive a task; a *running* task's host-local worker is terminated.
 
     Clearing ``worker_pid`` in the DB alone left the OS process running past its
-    own archive — it kept executing (and pushing work) against a task nothing
-    tracked anymore (#76196). Snapshot pid+claim inside the archive txn so the
-    kill is contingent on THIS caller winning the archive transition (a losing
-    concurrent archiver must never signal the pid); the kill itself runs after
-    commit — ``_poll_worker_exit`` can wait ~5 s and must not hold the write
-    lock. Post-release kill is safe here because ``archived`` is terminal: no
-    dispatcher can spawn a duplicate worker off the released claim. The
-    termination outcome lands as its own ``archive_worker_termination`` event so
-    the ``archived`` event stays atomic with the status flip.
+    own archive (#76196). Workers are terminated before the write lock is taken
+    (``_poll_worker_exit`` can wait ~5 s and must not hold it); the status flip
+    then commits only in a transaction that re-verifies no recorded worker is
+    alive, so an unverified survivor leaves the task untouched. Termination
+    evidence and the status flip commit together.
     """
-    with write_txn(conn):
-        row = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        if not row:
-            return False
-        was_running = row["status"] == "running"
-        prev_pid, prev_lock, prev_started = row["worker_pid"], row["claim_lock"], row["worker_started_at"]
+    if _task_status(conn, task_id) is None:
+        return False
+    terminations: list[dict[str, Any]] = []
+
+    def _archive(conn: sqlite3.Connection) -> bool:
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
@@ -3989,10 +4062,14 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
             summary="task archived with run still active",
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
-    if was_running:
-        termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started)
-        with write_txn(conn):
+        for termination in terminations:
             _append_event(conn, task_id, "archive_worker_termination", termination, run_id=run_id)
+        return True
+
+    if _mutate_after_worker_drain(
+        conn, _archive, task_id=task_id, signal_fn=signal_fn, outcomes=terminations,
+    ) is not True:
+        return False
     # ``archived`` parents no longer block children; promote them now.
     recompute_ready(conn)
     # Reap the workspace on archive too (never-completed tasks kept it forever).
@@ -4007,24 +4084,145 @@ def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:
         conn.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
 
 
-def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
+class WorkerStillRunningError(ValueError):
+    """A hard delete was refused because the task's worker is still alive and could
+    not be stopped from here: its claim belongs to another host, its process
+    identity is unverified, or it survived termination. Deleting the rows anyway
+    would leave a privileged process running that no board tracks. A
+    ``ValueError`` so tool and API handlers treat it as a recoverable refusal."""
+
+    def __init__(self, task_id: str):
+        super().__init__(
+            f"cannot delete {task_id}: its worker is still running and could not be stopped "
+            "from this host (claimed on another host, unverified process identity, or it "
+            "survived termination); stop that worker, then retry"
+        )
+
+
+def _worker_identity_rows(
+    conn: sqlite3.Connection, *, task_id: Optional[str] = None,
+) -> Optional[list[dict[str, Any]]]:
+    """Every recorded worker identity for one task or the whole board, or
+    ``None`` when the set cannot be trusted (fail closed).
+
+    A host-foreign running claim cannot be disproved with this host's PID
+    table, and a local running claim with no registered PID may be in the
+    claim->spawn hand-off; either one makes the snapshot unusable."""
+    task_filter = " AND id = ?" if task_id is not None else ""
+    run_filter = " AND task_id = ?" if task_id is not None else ""
+    params: tuple[Any, ...] = (task_id,) if task_id is not None else ()
+    running_claims = conn.execute(
+        "SELECT claim_lock, worker_pid FROM tasks"
+        " WHERE status = 'running' AND claim_lock IS NOT NULL" + task_filter,
+        params,
+    ).fetchall()
+    host_prefix = _host_prefix()
+    if any(
+        row["worker_pid"] is None
+        or not str(row["claim_lock"] or "").startswith(host_prefix)
+        for row in running_claims
+    ):
+        return None
+    columns = "SELECT worker_pid, worker_started_at, claim_lock FROM "
+    rows = [dict(r) for r in conn.execute(
+        columns + "tasks WHERE worker_pid IS NOT NULL" + task_filter, params,
+    )]
+    rows.extend(dict(r) for r in conn.execute(
+        columns + "task_runs WHERE worker_pid IS NOT NULL" + run_filter, params,
+    ))
+    return rows
+
+
+# A dispatcher can claim+spawn between the unlocked drain and the locked
+# re-check; drain again a bounded number of times before refusing.
+_WORKER_DRAIN_ATTEMPTS = 3
+_NOT_DRAINED = object()
+
+
+def _mutate_after_worker_drain(
+    conn: sqlite3.Connection,
+    mutate,
+    *,
+    task_id: Optional[str] = None,
+    signal_fn=None,
+    outcomes: Optional[list[dict[str, Any]]] = None,
+):
+    """Terminate verified workers with NO write lock held, then run
+    ``mutate(conn)`` inside one ``BEGIN IMMEDIATE`` that re-reads the
+    identities and proves none of them is alive.
+
+    ``_terminate_reclaimed_worker`` can spend ~5 s in ``_poll_worker_exit``
+    plus a SIGKILL; doing that inside the write transaction would stall every
+    other writer on the board (dispatcher tick, notifier pollers, another
+    archive) until SQLite's busy handler gives up and fails them. The locked
+    re-check is a single non-blocking ``_worker_alive`` probe per identity,
+    so the destructive write still commits only when no recorded worker
+    survives, and the rows stay intact until then. Signal authority comes
+    from the verified host-local fingerprint, not from winning the
+    transition, so a concurrent caller signalling the same identity is
+    harmless; only the locked mutation decides the winner.
+
+    Returns ``mutate``'s result, or ``_NOT_DRAINED`` when a live worker
+    could not be stopped (nothing was mutated)."""
+    for _attempt in range(_WORKER_DRAIN_ATTEMPTS):
+        rows = _worker_identity_rows(conn, task_id=task_id)
+        if rows is None or not _terminate_worker_identities(
+            rows, signal_fn=signal_fn, outcomes=outcomes,
+        ):
+            return _NOT_DRAINED
+        with write_txn(conn):
+            locked = _worker_identity_rows(conn, task_id=task_id)
+            if locked is None:
+                return _NOT_DRAINED
+            if not any(
+                _worker_alive(int(row["worker_pid"]), row["worker_started_at"])
+                for row in locked
+            ):
+                return mutate(conn)
+        # A worker that was not in the snapshot appeared before the lock.
+    return _NOT_DRAINED
+
+
+def _delete_task_rows(conn: sqlite3.Connection, task_id: str) -> bool:
+    cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    if cur.rowcount != 1:
+        return False
+    _delete_task_relations(conn, task_id)
+    return True
+
+
+def delete_archived_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> bool:
     """Hard-delete an ARCHIVED task (+ related rows); anything else must be
-    archived first so data loss takes two deliberate actions."""
-    with write_txn(conn):
+    archived first so data loss takes two deliberate actions. Raises
+    :class:`WorkerStillRunningError` (nothing deleted) when a live worker
+    cannot be stopped."""
+    if _task_status(conn, task_id) != "archived":
+        return False
+
+    def _delete(conn: sqlite3.Connection) -> bool:
         if _task_status(conn, task_id) != "archived":
             return False
-        _delete_task_relations(conn, task_id)
-        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-        return cur.rowcount == 1
+        return _delete_task_rows(conn, task_id)
+
+    result = _mutate_after_worker_drain(conn, _delete, task_id=task_id, signal_fn=signal_fn)
+    if result is _NOT_DRAINED:
+        raise WorkerStillRunningError(task_id)
+    return result
 
 
-def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Hard-delete a task and its related rows in one txn; False when not found."""
-    with write_txn(conn):
-        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-        if cur.rowcount != 1:
-            return False
-        _delete_task_relations(conn, task_id)
+def delete_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> bool:
+    """Hard-delete a task and relations after draining its verified workers.
+    False when the task does not exist; :class:`WorkerStillRunningError`
+    (nothing deleted) when a live worker cannot be stopped."""
+    if _task_status(conn, task_id) is None:
+        return False
+    result = _mutate_after_worker_drain(
+        conn, lambda c: _delete_task_rows(c, task_id), task_id=task_id, signal_fn=signal_fn,
+    )
+    if result is _NOT_DRAINED:
+        raise WorkerStillRunningError(task_id)
+    if not result:
+        return False
     recompute_ready(conn)
     return True
 
@@ -4579,6 +4777,7 @@ from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     _pid_alive,
     _record_task_failure,
     _terminate_reclaimed_worker,
+    _terminate_worker_identities,
     _worker_alive,
     _worker_survived_termination,
     _worker_terminal_timeout_env,

@@ -501,6 +501,53 @@ def _terminate_reclaimed_worker(
     return info
 
 
+def _terminate_worker_identities(
+    rows: Iterable[Any], *, signal_fn=None, outcomes: Optional[list[dict[str, Any]]] = None,
+) -> bool:
+    """Terminate every still-live, verified host-local worker in ``rows``.
+
+    Rows provide ``worker_pid``, ``worker_started_at`` and ``claim_lock``. A
+    dead worker or a fingerprint mismatch means the recorded worker is already
+    gone; a live PID without the full boot+witness fingerprint is not signal
+    authority and fails closed. Duplicate task/run evidence is signalled once.
+    """
+    seen: set[tuple[int, Any, Any]] = set()
+    for row in rows:
+        raw_pid = _kb._row_get(row, "worker_pid")
+        if not raw_pid:
+            continue
+        pid = int(raw_pid)
+        started_at = _kb._row_get(row, "worker_started_at")
+        claim_lock = _kb._row_get(row, "claim_lock")
+        identity = (pid, started_at, claim_lock)
+        if identity in seen:
+            continue
+        seen.add(identity)
+
+        if not _worker_alive(pid, started_at):
+            continue
+        verified = (
+            isinstance(started_at, str)
+            and started_at != UNVERIFIED_WORKER_FINGERPRINT
+            and "|" in started_at
+        )
+        if (
+            pid == os.getpid()
+            or not str(claim_lock or "").startswith(_kb._host_prefix())
+            or not verified
+        ):
+            return False
+
+        termination = _terminate_reclaimed_worker(
+            pid, claim_lock, signal_fn=signal_fn, started_at=started_at,
+        )
+        if outcomes is not None:
+            outcomes.append(termination)
+        if not termination.get("terminated"):
+            return False
+    return True
+
+
 def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
     """End host-local workers that outlived their run (issue #111791) — a worker
     that called ``kanban_complete`` and then hung keeps its ``state.db`` sidecar

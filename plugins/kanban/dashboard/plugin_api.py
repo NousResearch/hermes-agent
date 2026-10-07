@@ -713,7 +713,11 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
 @router.delete("/tasks/{task_id}")
 def delete_task(task_id: str, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
-        if not kanban_db.delete_task(conn, task_id):
+        # A live worker that cannot be stopped is a conflict with the task's
+        # current state, not a missing task: say so instead of a 404.
+        with _map_errors(409, kanban_db.WorkerStillRunningError):
+            deleted = kanban_db.delete_task(conn, task_id)
+        if not deleted:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
         return {"deleted": True, "task_id": task_id}
 

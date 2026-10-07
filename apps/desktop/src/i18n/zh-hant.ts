@@ -41,7 +41,8 @@ export const zhHant = defineLocale({
     collectedModels: '模型路由和 token 總量',
     collectedNames: '內建工具、指令和目錄項名稱',
     collectedMilestones: '分組的設定計數',
-    collectedReliability: '更新和安裝的結果與耗時（失敗時包括來自固定清單的原因和所在階段；全新安裝記錄在本機，僅在你同意後計入）、當機、啟動與回覆速度、訊息平台狀態',
+    collectedReliability:
+      '更新和安裝的結果與耗時（失敗時包括來自固定清單的原因和所在階段；全新安裝記錄在本機，僅在你同意後計入）、當機、啟動與回覆速度、訊息平台狀態',
     collectedUsage:
       'Hermes 的使用方式：代理的準確度與效率（編輯是否成功、迴圈、錯誤後的恢復、每個任務的 token 與工具呼叫數、快取中斷），各介面與 Desktop 模式的活躍時間，哪些應用程式區域、操作與設定被使用、很快關閉或被關閉，以及供應商設定的結果',
     collectedMachine:

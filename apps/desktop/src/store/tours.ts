@@ -12,9 +12,19 @@
  */
 
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { mirrorDisplayToggle } from '@/store/display-toggles'
 
-export const $toursEnabled = persistentAtom('hermes.desktop.tours.v1', true, Codecs.bool)
+import { recordFeatureToggle } from './desktop-metrics'
+
+const KEY = 'hermes.desktop.tours.v1'
+
+export const $toursEnabled = persistentAtom(KEY, true, Codecs.bool)
+
+// Off has to reach the agent, not just the renderer: the `tour` tool leaves the
+// model's schema entirely rather than staying on offer and failing.
+mirrorDisplayToggle('display.in_app_tours', KEY, $toursEnabled)
 
 export function setToursEnabled(enabled: boolean): void {
+  recordFeatureToggle('tours', $toursEnabled.get(), enabled)
   $toursEnabled.set(enabled)
 }

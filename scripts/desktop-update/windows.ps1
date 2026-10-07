@@ -17,41 +17,77 @@
 # OS component -- is "frozen".
 #
 # CONTRACT (keep in sync with apps/desktop/electron/main.ts):
-#   cmd /d /s /c start "" /min powershell -NoProfile -ExecutionPolicy Bypass
+#   cmd /d /s /c start "" /b powershell -NoProfile -ExecutionPolicy Bypass
 #     -File scripts\desktop-update\windows.ps1
 #     -InstallRoot <path>   repo checkout (HERMES_HOME\hermes-agent)
-#     -Branch <ref>         branch to update against
+#     [-Branch <ref> | -Channel stable|canary|main]  default: branch main
 #     -DesktopPid <pid>     the Electron main process to wait out
 #     [-RelaunchExe <path>] Hermes.exe to start when done (omit = no relaunch)
 #     [-NoUi]               headless (tests); default shows a progress window
 #     [-NoMarkerCleanup]    leave .hermes-update-in-progress in place (tests)
+#     [-ProbeTimeoutSeconds <n>] launcher probe bound, default 60 (tests)
+#     [-HandoffRun <id>]    protocol 2: the run id of the Desktop's bridge claim
+#
+# hermes-handoff-protocol: 2
+# (exact line above: the Desktop reads it to learn this script speaks hand-off
+# protocol 2 -- it accepts -HandoffRun and the -MarkerOp helper below.)
+#
+# HELPER OPS (Electron's only way to mutate the marker; runs right after
+# marker.ps1 loads -- no UI, log rotation, result or relaunch):
+#   powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File windows.ps1
+#     -MarkerOp reclaim|withdraw -InstallRoot <root> [-DesktopPid P] [-HandoffRun R]
+#   prints ONE line (absent | reclaimed | live <pid> | busy | withdrawn |
+#   taken <pid> | foreign) and exits 0; 64 on bad usage.
+#   (-MarkerOp custody -CustodyOf <pid> is internal: Start-MarkerCustodian.)
 #
 # SAFETY POSTURE: both preflight gates FAIL CLOSED. A Desktop that never
 # exits, or a venv shim that never unlocks, aborts the hand-off without
 # mutating the install -- a skipped update is recoverable, a half-updated
 # venv is not. Every exit path (success, abort, crash) writes
 # .hermes-update-result.json for the relaunched Desktop to surface, and
-# relaunches the Desktop so the user is never left stranded.
+# relaunches the Desktop so the user is never left stranded. The one
+# exception is a refused run (exit 2): it changed nothing and writes no result.
 #
-# Marker: we claim HERMES_HOME\.hermes-update-in-progress with OUR pid as
-# step 0 (the wrapper cmd.exe pid the Desktop saw is useless -- it exits
-# immediately), retaining HERMES_UPDATE_STARTED_AT from the Desktop hand-off.
-# hermes_cli/update_lock.py's ancestry rule lets our
-# `hermes update` child adopt the claim; electron/update-marker.ts parks a
-# relaunched Desktop on it. Cleanup only removes the marker while WE still
-# own it (a handoff partner that rewrote it keeps its claim).
+# Marker (contract C1 v2 + A7, marker.ps1): claiming HERMES_HOME\.hermes-update-
+# in-progress is the FIRST thing the script does -- before any Add-Type, UI
+# or probe -- and every read/judge/mutate of it happens inside one hold of
+# the kernel lock on "<marker>.lock". With -HandoffRun it only adopts the
+# Desktop's bridge for that run; with only -DesktopPid (an old packaged
+# Desktop) it accepts that Desktop's cmd.exe launcher claim by lineage;
+# otherwise it claims fresh, reclaiming a dead marker. Any other live owner
+# refuses the run (exit 2, nothing changed, no result file). The `hermes
+# update` child is named as the line-4 delegate BEFORE it is resumed.
+# Release deletes our claim, or hands it to a still-running delegate.
 
 param(
     [string]$InstallRoot,
     [string]$Branch = "main",
+    [ValidateSet("stable", "canary", "main")]
+    [string]$Channel,
     [int]$DesktopPid = 0,
     [string]$RelaunchExe = "",
     [switch]$NoUi,
     [switch]$NoMarkerCleanup,
+    [switch]$NoGateway,
+    [int]$ProbeTimeoutSeconds = 60,
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
-    [switch]$SelfTestMarker
+    [switch]$SelfTestMarker,
+    [switch]$SelfTestWorkingDirectory,
+    [string]$HandoffRun = "",
+    [string]$MarkerOp = "",
+    [int]$CustodyOf = 0
 )
+
+if ($MarkerOp -and -not $InstallRoot) {
+    [Console]::Error.WriteLine("-MarkerOp needs -InstallRoot")
+    exit 64
+}
+
+if ($PSBoundParameters.ContainsKey("Branch") -and $PSBoundParameters.ContainsKey("Channel")) {
+    throw "-Branch and -Channel are mutually exclusive"
+}
+$targetArgs = if ($Channel) { @("--channel", $Channel.ToLowerInvariant()) } else { @("--branch", $Branch) }
 
 if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
     # Mandatory in spirit; relaxed in the signature only so the self-test
@@ -60,8 +96,50 @@ if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
 }
 
 $ErrorActionPreference = "Continue"
-# Foreground helpers: the script is spawned via `cmd start /min`, so its
-# WinForms window comes up backgrounded unless we explicitly claim focus --
+$TempDir = if ($env:TEMP) { $env:TEMP } else { [System.IO.Path]::GetTempPath() }
+$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($InstallRoot) { Split-Path -Parent $InstallRoot } else { $TempDir }
+$env:HERMES_HOME = $HermesHome
+$MarkerPath = Join-Path $HermesHome ".hermes-update-in-progress"
+$LogDir = Join-Path $HermesHome "logs"
+$LogPath = Join-Path $LogDir "desktop-update-handoff.log"
+$ResultPath = Join-Path $HermesHome ".hermes-update-result.json"
+
+function Write-HandoffLog([string]$Message) {
+    $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
+    try { Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 } catch {}
+    if ($MarkerOp) { return }   # a helper op's stdout is its one verdict line
+    if ($script:ConsoleInput -and [HermesHandoff.ConsoleInput]::Selecting()) { return }
+    Write-Host $line
+}
+
+# Update marker (contract C1 v2 + amendments A1-A4) lives in marker.ps1 next
+# to this script. It is pure PowerShell + CIM: the claim runs before the
+# first Add-Type. A hand-off that cannot load it changes nothing.
+New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
+try { . (Join-Path $PSScriptRoot 'marker.ps1') } catch {
+    Write-HandoffLog "Update aborted: $PSScriptRoot\marker.ps1 could not be loaded ($($_.Exception.Message)). Nothing was changed. Repair the installation and try again."
+    exit 3
+}
+
+# Helper op (SPEC 6): one verdict line, before any UI, result or relaunch.
+if ($MarkerOp -ceq 'custody') { Invoke-MarkerCustody $CustodyOf; exit 0 }   # Start-MarkerCustodian's watcher
+if ($MarkerOp) { exit (Invoke-MarkerOpCli $MarkerOp $DesktopPid $HandoffRun) }
+
+# The Desktop's identity is pinned now: a reused pid later is not "still open".
+$script:DesktopCt = $null
+$script:DesktopSeenAlive = $false
+if ($DesktopPid -gt 0) {
+    $desktopProbe = Get-LiveProcessCt $DesktopPid
+    $script:DesktopSeenAlive = $desktopProbe.Alive
+    $script:DesktopCt = $desktopProbe.Ct
+}
+if (-not $SelfTestUi -and -not $SelfTestPipeDrain) {
+    $script:MarkerClaim = Invoke-MarkerClaim
+}
+
+# Foreground helpers: the script is spawned via `cmd start /b` and inherits
+# the wrapper's hidden console, so its WinForms window comes up backgrounded
+# unless we explicitly claim focus --
 # and after the update we must hand focus TO the relaunched Desktop (a
 # WMI-spawned process starts unfocused). AllowSetForegroundWindow lets us
 # pass our foreground right on to the new Hermes.exe pid.
@@ -73,27 +151,53 @@ try {
 '@ -ErrorAction Stop
     $script:Win32 = $true
 } catch { $script:Win32 = $false }
+# Console selection must never hold the hand-off (#103222). The console is
+# hidden by design (wrapHandoffForDetachedConsole), but an older Desktop or a
+# manual run can leave it visible, and conhost blocks every write to it while a
+# selection is active: the child output replayed after `hermes update` exited
+# stalled on Write-Host until the user pressed Esc, and the result, marker
+# cleanup and relaunch waited behind it. QuickEdit goes off for the run (so a
+# stray click cannot start a selection) and the console echo is skipped while
+# one is active; the log file keeps every line either way.
+try {
+    Add-Type -Namespace HermesHandoff -Name ConsoleInput -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)] public struct SelectionInfo { public uint Flags; public uint Anchor; public ulong Window; }
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+static extern IntPtr CreateFile(string name, uint access, uint share, IntPtr attributes, uint disposition, uint flags, IntPtr template);
+[DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+[DllImport("kernel32.dll")] static extern bool GetConsoleMode(IntPtr handle, out uint mode);
+[DllImport("kernel32.dll")] static extern bool SetConsoleMode(IntPtr handle, uint mode);
+[DllImport("kernel32.dll")] static extern bool GetConsoleSelectionInfo(out SelectionInfo info);
+
+// stdin is NUL under the Desktop spawn, so open the console input buffer itself.
+static uint? Swap(Func<uint, uint> change) {
+    IntPtr input = CreateFile("CONIN$", 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+    if (input == new IntPtr(-1)) return null;
+    try {
+        uint mode;
+        if (!GetConsoleMode(input, out mode) || !SetConsoleMode(input, change(mode))) return null;
+        return mode;
+    } finally { CloseHandle(input); }
+}
+// ENABLE_EXTENDED_FLAGS (0x80) makes conhost honour the cleared ENABLE_QUICK_EDIT_MODE (0x40).
+public static uint? DisableQuickEdit() { return Swap(mode => (mode & ~0x40u) | 0x80u); }
+public static void Restore(uint mode) { Swap(_ => mode); }
+public static bool Selecting() {
+    SelectionInfo info;
+    return GetConsoleSelectionInfo(out info) && (info.Flags & 1u) != 0; // CONSOLE_SELECTION_IN_PROGRESS
+}
+'@ -ErrorAction Stop
+    $script:ConsoleInput = $true
+} catch { $script:ConsoleInput = $false }
 # Render UTF-8 glyphs (checkmarks, arrows) correctly in our own console echo
 # too; the legacy conhost default OEM codepage shows them as mojibake.
 try {
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $OutputEncoding = [System.Text.Encoding]::UTF8
 } catch {}
-$TempDir = if ($env:TEMP) { $env:TEMP } else { [System.IO.Path]::GetTempPath() }
-$HermesHome = if ($InstallRoot) { Split-Path -Parent $InstallRoot } else { $TempDir }
-$MarkerPath = Join-Path $HermesHome ".hermes-update-in-progress"
-$LogDir = Join-Path $HermesHome "logs"
-$LogPath = Join-Path $LogDir "desktop-update-handoff.log"
-$ResultPath = Join-Path $HermesHome ".hermes-update-result.json"
 $script:Ui = $null
 $script:UiStage = "Hermes will open once done."   # until the first gate; matches ui.html
 $script:UiStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-
-function Write-HandoffLog([string]$Message) {
-    $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
-    try { Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 } catch {}
-    Write-Host $line
-}
 
 # ── The shim: repo-owned HTML in a chromeless default-browser app window ───
 # The window is a veneer, not a participant: the update runs identically with
@@ -108,6 +212,8 @@ $script:UiState = [hashtable]::Synchronized(@{
     status     = "running"      # running | done | manual | error
     message    = $script:UiStage
     clock      = $script:UiStopwatch
+    receipt    = $null
+    acknowledged_receipt = $null
 })
 $script:UiServer = $null     # @{ Listener; Runspace; PowerShell; Port; BrowserProc; Profile }
 
@@ -190,15 +296,26 @@ function Start-UiServer([string]$HtmlPath) {
                     $request = $reader.ReadLine()
                     # Drain headers so the client doesn't see a reset mid-send.
                     while ($true) { $h = $reader.ReadLine(); if ($null -eq $h -or $h -eq "") { break } }
-                    if ($request -match "^GET /progress") {
+                    if ($request -match "^GET /progress HTTP/1\.[01]$") {
                         $elapsed = [Math]::Floor($State.clock.Elapsed.TotalSeconds)
                         $snapshot = @{
                             status          = $State.status
                             message         = $State.message
                             elapsed_seconds = $elapsed
+                            receipt         = $State.receipt
                         } | ConvertTo-Json -Compress
                         Send-Response $stream "200 OK" "application/json; charset=utf-8" ([System.Text.Encoding]::UTF8.GetBytes($snapshot))
-                    } elseif ($request -match "^GET / ") {
+                    } elseif ($request -match "^POST /ack/([^ /?]+) HTTP/1\.[01]$") {
+                        $receipt = $Matches[1]
+                        if ($State.status -in @("done", "manual", "error") -and $State.receipt -and $receipt -ceq $State.receipt) {
+                            # Flush acceptance before waking the owner that will
+                            # close the listener. No request body is needed.
+                            Send-Response $stream "204 No Content" "text/plain" ([byte[]]@())
+                            $State.acknowledged_receipt = $receipt
+                        } else {
+                            Send-Response $stream "409 Conflict" "text/plain" ([System.Text.Encoding]::ASCII.GetBytes("unknown terminal receipt"))
+                        }
+                    } elseif ($request -match "^GET / HTTP/1\.[01]$") {
                         Send-Response $stream "200 OK" "text/html; charset=utf-8" $HtmlBytes
                     } else {
                         Send-Response $stream "404 Not Found" "text/plain" ([System.Text.Encoding]::ASCII.GetBytes("not found"))
@@ -211,6 +328,36 @@ function Start-UiServer([string]$HtmlPath) {
             }
         })
         [void]$ps.BeginInvoke()
+
+        # Readiness handshake. BeginInvoke returns before the runspace has
+        # opened its pipeline and JIT'd the script block — on a loaded machine
+        # that is seconds, during which the kernel ACCEPTS connections into
+        # the listener's backlog and nobody answers them. Anything that
+        # trusted "listener bound" as "server serving" (the browser window
+        # opening to a page that never loads; the -SelfTestUi URL that CI
+        # polls) raced that gap. Prove one /progress round-trip before
+        # handing the port out, so the URL means "serving", not "bound".
+        $ready = $false
+        $readyDeadline = [DateTime]::UtcNow.AddSeconds(15)
+        while (-not $ready -and [DateTime]::UtcNow -lt $readyDeadline) {
+            try {
+                $probe = [System.Net.HttpWebRequest]::Create("http://127.0.0.1:$port/progress")
+                $probe.Timeout = 1000
+                $probe.ReadWriteTimeout = 1000
+                $probe.KeepAlive = $false
+                $resp = $probe.GetResponse()
+                try { $ready = ([int]$resp.StatusCode -eq 200) } finally { $resp.Close() }
+            } catch {
+                Start-Sleep -Milliseconds 100
+            }
+        }
+        if (-not $ready) {
+            Write-HandoffLog "progress server did not answer /progress within 15s; continuing without UI"
+            try { $listener.Stop() } catch {}
+            try { $ps.Stop() } catch {}
+            try { $rs.Close() } catch {}
+            return $null
+        }
 
         return @{ Listener = $listener; Runspace = $rs; PowerShell = $ps; Port = $port; BrowserProc = $null; Profile = $null }
     } catch {
@@ -235,16 +382,22 @@ function Stop-UiServer([switch]$LeaveWindow) {
         } catch {}
     }
     # Best-effort removal of the dedicated browser profile dirs: this run's
-    # profile plus any stale hermes-update-ui-* leftovers from interrupted
-    # past runs. A browser that is still shutting down may hold the lock, in
-    # which case the delete silently no-ops. Safe to sweep by prefix: the
-    # update marker (.hermes-update-in-progress) serialises hand-offs, so no
-    # other run's profile can be in active use here.
+    # profile plus hermes-update-ui-<pid> leftovers whose hand-off process is
+    # gone. %TEMP% is shared by every HERMES_HOME of this user, and the marker
+    # only serialises one home, so a dir whose pid is still running belongs to
+    # another live hand-off and is left alone. A browser that is still
+    # shutting down may hold the lock; the delete then silently no-ops.
     try {
         $profileDirs = @()
         if ($script:UiServer.Profile) { $profileDirs += $script:UiServer.Profile }
         Get-ChildItem -LiteralPath $TempDir -Directory -Filter "hermes-update-ui-*" -ErrorAction SilentlyContinue |
-            ForEach-Object { $profileDirs += $_.FullName }
+            ForEach-Object {
+                $owner = 0
+                if ($_.Name -match '^hermes-update-ui-([0-9]+)$' -and [int]::TryParse($Matches[1], [ref]$owner) -and
+                    $owner -ne $PID -and -not (Get-Process -Id $owner -ErrorAction SilentlyContinue)) {
+                    $profileDirs += $_.FullName
+                }
+            }
         foreach ($dir in ($profileDirs | Select-Object -Unique)) {
             Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -253,11 +406,25 @@ function Stop-UiServer([switch]$LeaveWindow) {
 }
 
 function Publish-UiEvent([string]$Status, [string]$Message) {
-    # The event the shim listens for. One beat of poll latency (400ms) before
-    # teardown so the page actually renders the terminal state.
+    # A background browser can miss a fixed 900ms delivery window. Retain the
+    # terminal event until the page acknowledges applying this exact receipt.
+    # Older/headless clients cannot acknowledge, so teardown remains bounded.
+    $receipt = [Guid]::NewGuid().ToString('N')
+    $script:UiState.receipt = $receipt
+    $script:UiState.acknowledged_receipt = $null
     $script:UiState.message = $Message
     $script:UiState.status = $Status
-    if ($script:UiServer) { Start-Sleep -Milliseconds 900 }
+    if ($script:UiServer) {
+        $deliveryWait = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($script:UiState.acknowledged_receipt -cne $receipt -and $deliveryWait.Elapsed.TotalSeconds -lt 10) {
+            Start-Sleep -Milliseconds 50
+        }
+        if ($script:UiState.acknowledged_receipt -ceq $receipt) {
+            Write-HandoffLog "shim: terminal state '$Status' acknowledged by the window"
+        } else {
+            Write-HandoffLog "shim: terminal state '$Status' was not acknowledged within 10s; closing the progress server"
+        }
+    }
 }
 
 function Get-UiElapsedText {
@@ -279,6 +446,8 @@ function Publish-UiProgress([string]$Message) {
     $script:UiStage = $Message
     $script:UiState.message = $Message
     $script:UiState.status = "running"
+    $script:UiState.receipt = $null
+    $script:UiState.acknowledged_receipt = $null
     if ($script:Ui) {
         try {
             $script:Ui.Sub.Text = Get-UiProgressLine
@@ -378,7 +547,7 @@ function Show-ProgressWindow {
         $form.Controls.Add($title)
         $form.Controls.Add($sub)
         $form.Show()
-        # `cmd start /min` spawned us backgrounded, so the card comes up
+        # `cmd start /b` spawned us backgrounded, so the card comes up
         # behind everything without one explicit activation. Claim it ONCE
         # (so the user knows the update started), then never again — the
         # window is decoration and competes with nothing (no TopMost).
@@ -509,6 +678,11 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
     # user actually SEES how a detached update ended. $ManualAction marks an
     # ok result the user still must act on -- the Desktop surfaces those in
     # a dialog, not just the log (same protocol as posix.sh).
+    # Atomic (tmp + rename over): a reader never sees a torn file, and the
+    # previous result survives until this one is complete. run_id matches the
+    # marker across heartbeat rewrites; started_at stays for older consumers.
+    # A failed replace leaves no "<result>.<pid>.tmp" behind (finally).
+    $tmp = "$ResultPath.$PID.tmp"
     try {
         $obj = @{
             ok         = $Ok
@@ -516,25 +690,51 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
             manual     = $ManualAction
             message    = $Message
             branch     = $Branch
+            channel    = $Channel
+            run_id     = $script:ResultRunId
+            started_at = $script:StartedAt
+            warnings   = @($script:Warnings)
             finished_at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         } | ConvertTo-Json -Compress
-        [System.IO.File]::WriteAllText($ResultPath, $obj)
-    } catch {}
+        [System.IO.File]::WriteAllText($tmp, $obj, (New-Object System.Text.UTF8Encoding $false))
+        if ([System.IO.File]::Exists($ResultPath)) {
+            [System.IO.File]::Replace($tmp, $ResultPath, [NullString]::Value)
+        } else {
+            try { [System.IO.File]::Move($tmp, $ResultPath) } catch { [System.IO.File]::Replace($tmp, $ResultPath, [NullString]::Value) }
+        }
+    } catch {
+        Write-HandoffLog "WARNING: could not write the update result: $($_.Exception.Message)"
+    } finally {
+        if ([System.IO.File]::Exists($tmp)) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    }
 }
 
-function Remove-MarkerIfOwned {
-    if ($NoMarkerCleanup) { return }
-    try {
-        if (Test-Path -LiteralPath $MarkerPath) {
-            $firstLine = (Get-Content -LiteralPath $MarkerPath -TotalCount 1 -ErrorAction SilentlyContinue)
-            if ("$firstLine".Trim() -eq "$PID") {
-                Remove-Item -LiteralPath $MarkerPath -Force -ErrorAction SilentlyContinue
-                Write-HandoffLog "removed update marker (owned)"
-            } else {
-                Write-HandoffLog "leaving update marker: owned by pid '$firstLine', not us ($PID)"
-            }
-        }
-    } catch {}
+# Post-commit follow-ups (contract C3): each failed step after `hermes update`
+# exited 0 becomes a warning, never a failed update.
+$script:Warnings = New-Object System.Collections.Generic.List[string]
+$script:FollowupText = New-Object System.Collections.Generic.List[string]
+$script:ManualFollowup = $false
+$script:Committed = $false
+$script:UpdateInterrupted = $false
+function Add-Followup([string]$Warning, [string]$Sentence, [switch]$Manual) {
+    $script:Warnings.Add($Warning)
+    $script:FollowupText.Add($Sentence)
+    if ($Manual) { $script:ManualFollowup = $true }
+    Write-HandoffLog "WARNING: $Warning"
+}
+
+function Test-DesktopAlive {
+    if ($DesktopPid -le 0 -or -not $script:DesktopSeenAlive) { return $false }
+    return Test-ProcessIdentityLive $DesktopPid $script:DesktopCt
+}
+
+function Wait-DesktopExit([int]$Seconds) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ((Get-Date) -lt $deadline -and (Test-DesktopAlive)) {
+        Start-Sleep -Milliseconds 300
+        if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
+    }
+    return -not (Test-DesktopAlive)
 }
 
 function Start-DesktopRelaunch {
@@ -721,6 +921,18 @@ if ($env:HERMES_UPDATE_STEP_IDLE_SECONDS) {
     }
 }
 
+# The Desktop's quit can first join a managed SSH update it is running, which
+# legitimately outlasts a fixed 30 s. Past this ceiling the hand-off still
+# refuses, so nothing is replaced under a live Desktop. Overridable so the
+# self-tests need not sit it out; not documented as a user knob.
+$script:DesktopExitSeconds = 150
+if ($env:HERMES_UPDATE_DESKTOP_EXIT_SECONDS) {
+    $parsedExit = 0
+    if ([int]::TryParse($env:HERMES_UPDATE_DESKTOP_EXIT_SECONDS, [ref]$parsedExit) -and $parsedExit -gt 0) {
+        $script:DesktopExitSeconds = $parsedExit
+    }
+}
+
 # Silence on the pipes is NOT silence in the update. `hermes update` captures
 # the (very loud) Electron/vite build into logs/update.log instead of its own
 # stdout (hermes_cli/update_cmd.py, the update-log tee), so a real update is
@@ -748,200 +960,7 @@ function Get-StepProgressLogStamp {
     }
 }
 
-if (-not ("HermesUpdateJob" -as [type])) {
-    Add-Type -TypeDefinition @'
-using System;
-using System.Diagnostics;
-using System.IO;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Threading;
-using Microsoft.Win32.SafeHandles;
-
-public static class HermesUpdateJob {
-    public sealed class StartedProcess {
-        public Process Process;
-        public StreamReader StandardOutput;
-        public StreamReader StandardError;
-        public IntPtr Job;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct SecurityAttributes {
-        public int Length;
-        public IntPtr SecurityDescriptor;
-        public bool InheritHandle;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct StartupInfo {
-        public int Size;
-        public string Reserved;
-        public string Desktop;
-        public string Title;
-        public int X;
-        public int Y;
-        public int XSize;
-        public int YSize;
-        public int XCountChars;
-        public int YCountChars;
-        public int FillAttribute;
-        public int Flags;
-        public short ShowWindow;
-        public short Reserved2;
-        public IntPtr Reserved2Ptr;
-        public IntPtr StdInput;
-        public IntPtr StdOutput;
-        public IntPtr StdError;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct ProcessInformation {
-        public IntPtr Process;
-        public IntPtr Thread;
-        public int ProcessId;
-        public int ThreadId;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct BasicAccountingInformation {
-        public long TotalUserTime;
-        public long TotalKernelTime;
-        public long ThisPeriodTotalUserTime;
-        public long ThisPeriodTotalKernelTime;
-        public uint TotalPageFaultCount;
-        public uint TotalProcesses;
-        public uint ActiveProcesses;
-        public uint TotalTerminatedProcesses;
-    }
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr CreateJobObject(IntPtr attributes, string name);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool CreatePipe(out IntPtr read, out IntPtr write, ref SecurityAttributes attributes, int size);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool SetHandleInformation(IntPtr handle, int mask, int flags);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool CreateProcess(
-        string applicationName, StringBuilder commandLine,
-        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles,
-        int creationFlags, IntPtr environment, string currentDirectory,
-        ref StartupInfo startupInfo, out ProcessInformation processInformation
-    );
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern uint ResumeThread(IntPtr thread);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
-
-    [DllImport("kernel32.dll")]
-    private static extern IntPtr GetStdHandle(int standardHandle);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool QueryInformationJobObject(
-        IntPtr job,
-        int informationClass,
-        out BasicAccountingInformation information,
-        uint informationLength,
-        IntPtr returnLength
-    );
-
-    [DllImport("kernel32.dll")]
-    private static extern bool CloseHandle(IntPtr handle);
-
-    public static StartedProcess StartAssigned(string executable, string arguments) {
-        IntPtr job = IntPtr.Zero;
-        IntPtr outRead = IntPtr.Zero, outWrite = IntPtr.Zero;
-        IntPtr errRead = IntPtr.Zero, errWrite = IntPtr.Zero;
-        ProcessInformation pi = new ProcessInformation();
-        try {
-            job = CreateJobObject(IntPtr.Zero, null);
-            if (job == IntPtr.Zero) throw new InvalidOperationException("CreateJobObject failed");
-            SecurityAttributes sa = new SecurityAttributes();
-            sa.Length = Marshal.SizeOf(typeof(SecurityAttributes));
-            sa.InheritHandle = true;
-            if (!CreatePipe(out outRead, out outWrite, ref sa, 0) ||
-                !CreatePipe(out errRead, out errWrite, ref sa, 0))
-                throw new InvalidOperationException("CreatePipe failed");
-            if (!SetHandleInformation(outRead, 1, 0) || !SetHandleInformation(errRead, 1, 0))
-                throw new InvalidOperationException("SetHandleInformation failed");
-
-            StartupInfo si = new StartupInfo();
-            si.Size = Marshal.SizeOf(typeof(StartupInfo));
-            si.Flags = 0x00000100; // STARTF_USESTDHANDLES
-            si.StdInput = GetStdHandle(-10);
-            si.StdOutput = outWrite;
-            si.StdError = errWrite;
-            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
-            if (!CreateProcess(executable, commandLine, IntPtr.Zero, IntPtr.Zero, true,
-                    0x00000004 | 0x08000000, IntPtr.Zero, null, ref si, out pi))
-                throw new InvalidOperationException("CreateProcess failed");
-            if (!AssignProcessToJobObject(job, pi.Process)) {
-                TerminateProcess(pi.Process, 1);
-                throw new InvalidOperationException("AssignProcessToJobObject failed");
-            }
-
-            Process process = Process.GetProcessById(pi.ProcessId);
-            // Force Process to open its own stable query handle before the raw
-            // CreateProcess handle is closed; PS 5.1 otherwise reports a null
-            // ExitCode after fast children have already disappeared.
-            IntPtr stableProcessHandle = process.Handle;
-            StreamReader stdout = new StreamReader(new FileStream(
-                new SafeFileHandle(outRead, true), FileAccess.Read, 4096, false), Encoding.UTF8);
-            StreamReader stderr = new StreamReader(new FileStream(
-                new SafeFileHandle(errRead, true), FileAccess.Read, 4096, false), Encoding.UTF8);
-            outRead = IntPtr.Zero;
-            errRead = IntPtr.Zero;
-            CloseHandle(outWrite); outWrite = IntPtr.Zero;
-            CloseHandle(errWrite); errWrite = IntPtr.Zero;
-            if (ResumeThread(pi.Thread) == 0xffffffff)
-                throw new InvalidOperationException("ResumeThread failed");
-            return new StartedProcess { Process = process, StandardOutput = stdout, StandardError = stderr, Job = job };
-        } catch {
-            if (pi.Process != IntPtr.Zero) TerminateProcess(pi.Process, 1);
-            if (job != IntPtr.Zero) CloseHandle(job);
-            throw;
-        } finally {
-            if (pi.Thread != IntPtr.Zero) CloseHandle(pi.Thread);
-            if (pi.Process != IntPtr.Zero) CloseHandle(pi.Process);
-            if (outRead != IntPtr.Zero) CloseHandle(outRead);
-            if (outWrite != IntPtr.Zero) CloseHandle(outWrite);
-            if (errRead != IntPtr.Zero) CloseHandle(errRead);
-            if (errWrite != IntPtr.Zero) CloseHandle(errWrite);
-        }
-    }
-
-    public static bool TerminateAndWait(IntPtr job, uint exitCode, int timeoutMs) {
-        if (job == IntPtr.Zero || !TerminateJobObject(job, exitCode)) return false;
-        Stopwatch clock = Stopwatch.StartNew();
-        BasicAccountingInformation information;
-        do {
-            if (!QueryInformationJobObject(
-                    job, 1, out information,
-                    (uint)Marshal.SizeOf(typeof(BasicAccountingInformation)),
-                    IntPtr.Zero)) return false;
-            if (information.ActiveProcesses == 0) return true;
-            Thread.Sleep(50);
-        } while (clock.ElapsedMilliseconds < timeoutMs);
-        return false;
-    }
-
-    public static void Close(IntPtr job) {
-        if (job != IntPtr.Zero) CloseHandle(job);
-    }
-}
-'@
-}
+. (Join-Path $PSScriptRoot 'update-job.ps1')
 
 function Step-PipeDrain($Reader, [ref]$Task, $Buffer, $Sink, [ref]$Moved) {
     # Advance one redirected pipe by whatever has already arrived, without
@@ -994,6 +1013,15 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     $arguments = ($HermesArgs | ForEach-Object { '"{0}"' -f ($_ -replace '"', '\"') }) -join ' '
     # CreateProcess inherits this process's environment. Set Python's encoding
     # and buffering only for the atomic launch, then restore the hand-off host.
+    # Historical user-bin publication could be a command file rather than a
+    # native launcher. Keep the wrapper inside the same supervised job.
+    if ([IO.Path]::GetExtension($Exe) -eq '.cmd') {
+        if ($Exe -match '[%!"\x0D\x0A]' -or @($HermesArgs | Where-Object { $_ -match '[%!"\x0D\x0A]' }).Count) {
+            throw 'The legacy command launcher cannot safely quote this update target; refresh the installation launcher first.'
+        }
+        $arguments = '/d /s /c ""' + $Exe + '" ' + $arguments + '"'
+        $Exe = $env:ComSpec
+    }
     $savedPythonIoEncoding = $env:PYTHONIOENCODING
     $savedPythonUtf8 = $env:PYTHONUTF8
     $savedPythonUnbuffered = $env:PYTHONUNBUFFERED
@@ -1008,6 +1036,19 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
         if ($null -eq $savedPythonUnbuffered) { Remove-Item Env:PYTHONUNBUFFERED -ErrorAction SilentlyContinue } else { $env:PYTHONUNBUFFERED = $savedPythonUnbuffered }
     }
     $proc = $started.Process
+    # C1 rule 6 + SPEC 5: the update child is the marker's delegate from its
+    # first instruction. It is still SUSPENDED here (and its job kills it if
+    # this script dies first), so no update work can run before the delegate
+    # line is published under the marker lock -- and none runs when it can't be.
+    if ($Tag -eq 'update') {
+        $delegate = Add-MarkerDelegate @($proc.Id)
+        if ($delegate -notin @('published', 'kept')) {
+            [void][HermesUpdateJob]::TerminateAndWait($started.Job, 1, 5000)
+            [HermesUpdateJob]::Close($started.Job)
+            throw "could not name the update process as the update marker's delegate ($delegate); nothing was run"
+        }
+    }
+    [HermesUpdateJob]::Resume($started)
     $stdoutReader = $started.StandardOutput
     $stderrReader = $started.StandardError
     $job = $started.Job
@@ -1027,12 +1068,24 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     $abandoned = $false
     $lastProgressAt = Get-Date
     $progressLogStamp = Get-StepProgressLogStamp
+    $jobActivity = [HermesUpdateJob]::Activity($job)
     $stalled = $false
     while ($true) {
         $moved = $false
         $outDone = Step-PipeDrain $stdoutReader ([ref]$outTask) $outBuffer $outSink ([ref]$moved)
         $errDone = Step-PipeDrain $stderrReader ([ref]$errTask) $errBuffer $errSink ([ref]$moved)
-        if ($moved) { $lastProgressAt = Get-Date }
+        if ($moved) {
+            $lastProgressAt = Get-Date
+        } elseif ($job -ne [IntPtr]::Zero) {
+            # CPU or I/O spent inside the job is progress too: a pipe-silent
+            # wheel download or extraction is busy, not stalled. One cheap
+            # kernel query per idle pass; never on the hot drain path.
+            $currentActivity = [HermesUpdateJob]::Activity($job)
+            if ($currentActivity -ne $jobActivity) {
+                $jobActivity = $currentActivity
+                $lastProgressAt = Get-Date
+            }
+        }
         if ($proc.HasExited) {
             if ($outDone -and $errDone) { break }
             # Clock starts at the step's exit, not at its start: a slow step is
@@ -1061,11 +1114,12 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
                 # retrying while a descendant still mutates the checkout,
                 # venv, or release tree can overlap two installers and
                 # corrupt the install.
-                Write-HandoffLog ("{0}!| step stalled: no stdout/stderr for {1}s and no update.log growth while pid {2} remained alive; cancelling its process tree." -f $Tag, $script:StepIdleTimeoutSeconds, $proc.Id)
+                Write-HandoffLog ("{0}!| step stalled: no stdout/stderr, no update.log growth and no CPU/IO in its process tree for {1}s while pid {2} remained alive; cancelling its process tree." -f $Tag, $script:StepIdleTimeoutSeconds, $proc.Id)
                 $stalled = [HermesUpdateJob]::TerminateAndWait($job, 124, 10000)
                 if (-not $stalled) {
                     Write-HandoffLog ("{0}!| process-tree cancellation could not prove quiescence; refusing the timeout retry." -f $Tag)
                     $script:TreeSafeToFinalize = $false
+                    $script:UnquiescedPids = @([HermesUpdateJob]::ProcessIds($job))
                     [HermesUpdateJob]::Close($job)
                     throw "Unable to quiesce stalled update process tree"
                 }
@@ -1096,6 +1150,7 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
             }
         }
         if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
+        Update-MarkerHeartbeat
     }
     # Bounded overload deliberately: the argument-less overload also waits on
     # redirected streams, which is the very wait we just bounded. HasExited is
@@ -1119,7 +1174,58 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     return @{ Code = $code; Output = $all; TreeQuiesced = (-not $stalled -or $proc.HasExited); StartedAfterJobAssignment = $true }
 }
 
+# `hermes update` can COMPLETE (its output carries "✓ Update complete!") and
+# still be killed with the idle-watchdog sentinel 124: the post-update phase
+# (gateway restart hand-off) stayed alive and silent past the ceiling, so
+# Invoke-HermesStep terminated the tree (#96205). The install is done; failing
+# would keep the old Desktop and a legacy install would re-run the whole update.
+# Surface success so the hand-off verifies, restores the gateways and relaunches.
+# Only 124 is remapped, and never when anything after the banner reports a
+# failure: the restart/verify phase prints "✗ Update not complete", "Update
+# incomplete — …", "✗ <unit> failed to come back after restart" or
+# "verification incomplete" there. \u2717 (✗) stays an escape: Windows
+# PowerShell reads this BOM-less script as ANSI, never as UTF-8.
+function Resolve-HermesUpdateOutcome($StepResult) {
+    $banner = if ($StepResult.Output) { $StepResult.Output.LastIndexOf('Update complete!') } else { -1 }
+    if ($StepResult.Code -eq 124 -and $banner -ge 0 -and $StepResult.Output.Substring($banner) -notmatch 'incomplete|not complete|\u2717') {
+        Write-HandoffLog "update completed before the idle watchdog killed its finalizing step (exit 124); treating it as success, not retrying (#96205)"
+        $StepResult.Code = 0
+        $script:UpdateInterrupted = $true
+    }
+    return $StepResult
+}
+
+# -- The commit point (contract C3) --------------------------------------------
+# `hermes update` exits 0 once committed, except an interrupt (130) or a parked
+# autostash (1) after the commit point, and a crash of a committed run. Its own
+# receipt says which (same rule as posix.sh::update_committed_after_exit): the
+# run's receipt -- matched by the correlation id handed to it, finalized
+# (finished_at set) -- with outcome success | partial (the user still has to
+# act) | interrupted (Ctrl-C after the code moved). A reconciled "interrupted"
+# record keeps finished_at null, so it never matches.
+function Get-CommittedReceiptOutcome {
+    $root = $HermesHome
+    # hermes_constants.get_default_hermes_root: a <root>\profiles\<name> home files under <root>
+    $parent = Split-Path -Parent $root
+    if ($parent -and (Split-Path -Leaf $parent) -eq 'profiles') { $root = Split-Path -Parent $parent }
+    $path = Join-Path $root 'logs\update_receipts\latest.json'
+    $receipt = $null
+    try { $receipt = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch { return $null }
+    if ($null -eq $receipt -or -not $script:UpdateCorrelation) { return $null }
+    if ([string]$receipt.correlation_id -cne $script:UpdateCorrelation -or -not $receipt.finished_at) { return $null }
+    $outcome = [string]$receipt.outcome
+    if ($outcome -cin @('success', 'partial', 'interrupted')) { return $outcome }
+    return $null
+}
+
+function Set-InstallRootCurrentDirectory([string]$Root) {
+    $resolved = [System.IO.Path]::GetFullPath($Root)
+    [Environment]::CurrentDirectory = $resolved
+    return $resolved
+}
+
 $finalCode = 1
+$manualAction = $false
 $finalMsg = "update did not complete"
 $script:TreeSafeToFinalize = $true
 
@@ -1207,7 +1313,7 @@ $psi.Arguments = "-NoProfile -Command Start-Sleep -Seconds $Hold"
 $psi.UseShellExecute = $false
 $psi.CreateNoWindow = $true
 $grandchild = [System.Diagnostics.Process]::Start($psi)
-[System.IO.File]::WriteAllText($PidFile, [string]$grandchild.Id)
+[System.IO.File]::WriteAllLines($PidFile, @([string]$grandchild.Id, [string][System.Diagnostics.Stopwatch]::GetTimestamp()))
 Write-Output "pipe-drain step output"
 [Console]::Out.Flush()
 exit 7
@@ -1254,17 +1360,26 @@ exit 3
     [System.IO.File]::WriteAllText($floodPs1, $floodSource)
     [System.IO.File]::WriteAllText($stallPs1, $stallSource)
     [System.IO.File]::WriteAllText($logStallPs1, $logStallSource)
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $res = Invoke-HermesStep $powershell @(
-        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $childPs1,
-        "-Hold", [string]$hold, "-PidFile", $pidFile
-    ) "pipedrain"
-    $sw.Stop()
-    $elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 2)
-
+    # The leak arm measures post-exit draining, not cold PowerShell startup.
+    $savedIdle = $script:StepIdleTimeoutSeconds
+    try {
+        $script:StepIdleTimeoutSeconds = 120
+        $res = Invoke-HermesStep $powershell @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $childPs1,
+            "-Hold", [string]$hold, "-PidFile", $pidFile
+        ) "pipedrain"
+    } finally {
+        $script:StepIdleTimeoutSeconds = $savedIdle
+    }
+    $returnedAt = [System.Diagnostics.Stopwatch]::GetTimestamp()
+    $elapsed = [double]::PositiveInfinity
     $leakPid = 0
     if (Test-Path -LiteralPath $pidFile) {
-        [void][int]::TryParse((Get-Content -LiteralPath $pidFile -Raw).Trim(), [ref]$leakPid)
+        $leakReceipt = @(Get-Content -LiteralPath $pidFile)
+        [void][int]::TryParse($leakReceipt[0].Trim(), [ref]$leakPid)
+        if ($leakReceipt.Count -eq 2) {
+            $elapsed = [Math]::Round(($returnedAt - [long]$leakReceipt[1]) / [double][System.Diagnostics.Stopwatch]::Frequency, 2)
+        }
     }
     $leakAlive = $false
     if ($leakPid -gt 0) {
@@ -1357,135 +1472,120 @@ exit 3
     exit 0
 }
 
+$savedConsoleInputMode = if ($script:ConsoleInput) { [HermesHandoff.ConsoleInput]::DisableQuickEdit() } else { $null }
 try {
-    New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
-    Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue
-    Show-ProgressWindow
-    Write-HandoffLog "hand-off start: root=$InstallRoot branch=$Branch desktopPid=$DesktopPid pid=$PID"
-
-    # -- 0. Claim the update marker with OUR pid ---------------------------
-    try {
-        $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-        $startedAt = 0L
-        $hasStartedAt = [int64]::TryParse($env:HERMES_UPDATE_STARTED_AT, [ref]$startedAt)
-        if (-not $hasStartedAt -or $startedAt -gt $epoch -or ($epoch - $startedAt) -gt 1200) {
-            $startedAt = $epoch
-        }
-        # WriteAllText for byte-exact LF framing: Set-Content emits CRLF and
-        # the marker contract (Rust/TS/Python readers) is "<pid>\n<ts>\n".
-        [System.IO.File]::WriteAllText($MarkerPath, "$PID`n$startedAt`n")
-        Write-HandoffLog "claimed update marker (pid $PID)"
-    } catch {
-        Write-HandoffLog "WARNING: could not write update marker: $($_.Exception.Message)"
+    # -- 0. The marker was claimed before anything else (top of script) -----
+    if ($script:MarkerClaim -eq "refused") {
+        # A4: this run changed nothing and owns no result -- the other update
+        # (or the Desktop that gave up on this hand-off) reports its own.
+        $finalCode = 2
+        $blocker = if ($script:MarkerBlocker -gt 0) { " (process $($script:MarkerBlocker))" } else { "" }
+        $finalMsg = "Another Hermes update is already running$blocker, or the Desktop gave up on this hand-off. Nothing was changed."
+        Write-HandoffLog $finalMsg
+        exit $finalCode
     }
+    # The previous result is replaced atomically at finish, never deleted here.
+    Show-ProgressWindow
+    Write-HandoffLog "hand-off start: root=$InstallRoot branch=$Branch channel=$Channel desktopPid=$DesktopPid pid=$PID marker=$($script:MarkerClaim)"
 
     if ($SelfTestMarker) {
         $finalCode = 0
         $finalMsg = "marker self-test complete"
         exit 0
     }
+    Start-MarkerCustodian
+
+    # StartAssigned passes a null CreateProcess currentDirectory, so children
+    # inherit the hand-off process directory rather than PowerShell's $PWD.
+    # Desktop launches us from HERMES_HOME; pin the process directory to the
+    # checkout before any update child can resolve files against the wrong tree.
+    try {
+        $resolvedInstallRoot = Set-InstallRootCurrentDirectory $InstallRoot
+        Write-HandoffLog "process cwd set to install root: $resolvedInstallRoot"
+    } catch {
+        $finalCode = 3
+        $finalMsg = "Update aborted: cannot enter the install root ($InstallRoot). Nothing was changed."
+        Write-HandoffLog $finalMsg
+        exit $finalCode
+    }
+
+    # Exercise the production cwd setup and native launcher without updating.
+    if ($SelfTestWorkingDirectory) {
+        $expectedRoot = [System.IO.Path]::GetFullPath($InstallRoot)
+        $probeExe = Join-Path $PSHOME "powershell.exe"
+        $probe = Invoke-HermesStep $probeExe @("-NoProfile", "-Command", "[Environment]::CurrentDirectory; [Console]::IsInputRedirected") "cwd"
+        $observed, $stdinRedirected = @($probe.Output.Trim() -split "`r?`n" | ForEach-Object { $_.Trim() })
+        if ($probe.Code -ne 0 -or -not [string]::Equals($observed, $expectedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            $finalMsg = "WORKING-DIRECTORY SELF-TEST: FAIL expected=$expectedRoot observed=$observed code=$($probe.Code)"
+            Write-Host $finalMsg
+            exit 1
+        }
+        # A step that can read the hand-off console can block on a prompt nobody sees.
+        if ($stdinRedirected -ne "True") {
+            $finalMsg = "WORKING-DIRECTORY SELF-TEST: FAIL step stdin is an interactive console"
+            Write-Host $finalMsg
+            exit 1
+        }
+        $finalCode = 0
+        $finalMsg = "WORKING-DIRECTORY SELF-TEST: PASS $observed"
+        Write-Host $finalMsg
+        exit 0
+    }
+
+    $HermesProbeTimeoutSeconds = $ProbeTimeoutSeconds
+    . (Join-Path $PSScriptRoot 'runtime.ps1')
+    $legacyInstall = -not (Test-Path -LiteralPath (Join-Path $InstallRoot 'pm') -PathType Container)
+    try {
+        $runtimeCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot)
+    } catch {
+        $finalCode = 3
+        $finalMsg = $_.Exception.Message
+        Write-HandoffLog $finalMsg
+        exit $finalCode
+    }
 
     # -- 1. Wait for the Desktop to exit (FAIL CLOSED) ----------------------
     Publish-UiProgress "Waiting for Hermes to close"
     if ($DesktopPid -gt 0) {
-        $deadline = (Get-Date).AddSeconds(30)
-        while ((Get-Date) -lt $deadline) {
-            $proc = Get-Process -Id $DesktopPid -ErrorAction SilentlyContinue
-            if (-not $proc) { break }
-            Start-Sleep -Milliseconds 300
-            if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
-        }
-        if (Get-Process -Id $DesktopPid -ErrorAction SilentlyContinue) {
-            # A live Desktop means a live backend re-locking the venv at any
-            # moment. Updating under it is how installs brick. Abort.
+        # Identity, not pid: the Desktop's creation time was pinned at start.
+        if (-not (Wait-DesktopExit $script:DesktopExitSeconds)) {
+            # The running Desktop still owns application outputs being replaced.
             $finalCode = 4
-            $finalMsg = "Update aborted: the Hermes window (pid $DesktopPid) did not exit within 30s. Nothing was changed. Close Hermes fully and try again."
+            $finalMsg = "Update aborted: the Hermes window (pid $DesktopPid) did not exit within $($script:DesktopExitSeconds)s. Nothing was changed. Close Hermes fully and try again."
             Write-HandoffLog $finalMsg
             exit $finalCode
         }
         Write-HandoffLog "desktop exited"
     }
 
-    # -- 2. Wait for the venv shim to unlock (FAIL CLOSED) ------------------
-    Publish-UiProgress "Preparing Hermes files"
-    $shim = Join-Path $InstallRoot "venv\Scripts\hermes.exe"
-    if (Test-Path -LiteralPath $shim) {
-        $unlocked = $false
-        $deadline = (Get-Date).AddSeconds(20)
-        while ((Get-Date) -lt $deadline) {
-            try {
-                $fs = [System.IO.File]::Open($shim, 'Open', 'ReadWrite', 'None')
-                $fs.Close()
-                $unlocked = $true
-                break
-            } catch {
-                Start-Sleep -Milliseconds 400
-                if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
-            }
-        }
-        if (-not $unlocked) {
-            # Something still maps the venv. --force-ing past it guarantees a
-            # half-updated venv (the exact 2026-08-09 Access-denied brick).
-            $finalCode = 5
-            $finalMsg = "Update aborted: another process is still holding the Hermes install open (venv\Scripts\hermes.exe locked after 20s). Nothing was changed. Close other Hermes windows/terminals and try again."
-            Write-HandoffLog $finalMsg
-            exit $finalCode
-        }
-        Write-HandoffLog "venv shim unlocked"
+    # PM creates a new dependency generation. Live old Python readers do not
+    # block it; Desktop exit above protects the application output replacement.
+    $pythonExe = $runtimeCommand[0]
+    $runtimeArgs = @($runtimeCommand | Select-Object -Skip 1)
+    # --gateway restarts the local messaging gateway after the update. The
+    # Desktop passes -NoGateway when it is served by a remote gateway
+    # (#117529): restarting a local one there is never wanted, and with the
+    # same channel credentials as the remote host it becomes a competing
+    # long-poll consumer (e.g. Telegram rejects one of the two getUpdates
+    # callers).
+    $gatewayArg = @("--gateway")
+    if ($NoGateway) {
+        $gatewayArg = @()
+        Write-HandoffLog "update requested without --gateway (remote-served Desktop)"
     }
-
-    # -- 3. Run the update from the CURRENT checkout ------------------------
-    # --force skips only the hermes.exe shim guard, which step 2 just PROVED
-    # is unlocked; the venv-python holder guard (orphan reap included) stays
-    # active. Our marker claim is adopted by the child via update_lock.py's
-    # process-ancestry rule.
-    #
-    # DRIVE THE UPDATE THROUGH venv\Scripts\python.exe, NOT venv\Scripts\hermes.exe.
-    # `uv pip install -e .` has to replace the console-script shims, so
-    # _quarantine_running_hermes_exe must first rename the running hermes.exe
-    # out of the way. On Windows that rename fails whenever ANY child process
-    # spawned from that hermes.exe is still alive: a child inherits a handle on
-    # the parent image, and the resulting sharing violation is indistinguishable
-    # from a user leaving a second Hermes window open. It is the inherited
-    # handle, not the trampoline itself, that pins the file -- killing the child
-    # makes the same rename succeed immediately, and the shim flavour (uv
-    # trampoline vs distlib launcher) makes no difference.
-    #
-    # The updater reliably spawns such children itself (npx cache warm, memory
-    # provider refresh -- hindsight-api runs as a daemon with --idle-timeout
-    # 300 and outlives the step that started it), so this is a race, not a
-    # deterministic failure: the same hand-off succeeds on one run and dies on
-    # the next. Step 2's preflight cannot catch it, because the shim genuinely
-    # IS unlocked at that moment.
-    #
-    # When the rename loses that race there is no recovery: `uv pip install -e .`
-    # exits 2 and the ZIP fallback repeats the identical sequence, so the desktop
-    # build stage is never reached and apps/desktop/release is left missing -- an
-    # install whose Start Menu shortcut points at a Hermes.exe that no longer
-    # exists. (A reboot-deferred rename was the old last resort here; it needed
-    # elevation a Desktop-driven update does not have, and freed nothing for the
-    # install already in flight.)
-    #
-    # Running the same code as `python.exe -m hermes_cli.main update` puts the
-    # inherited handles on python.exe, which uv never has to replace.
-    #
-    # posix.sh is deliberately left alone: unlinking a running executable is
-    # legal there, so the equivalent call is harmless.
-    $pythonExe = Join-Path $InstallRoot "venv\Scripts\python.exe"
-    if (-not (Test-Path -LiteralPath $pythonExe)) {
-        $finalCode = 3
-        $finalMsg = "Update aborted: $pythonExe is missing. The install needs repair (run the Hermes installer or `hermes doctor`)."
-        Write-HandoffLog $finalMsg
-        exit $finalCode
-    }
-    $updateArgs = @("-m", "hermes_cli.main", "update", "--yes", "--gateway", "--force", "--branch", $Branch)
+    # --force precedes the target (the hand-off contract test reads the argv in this order).
+    $forceArg = @()
+    if ($legacyInstall) { $forceArg = @('--force') }
+    $updateArgs = $runtimeArgs + @('update', '--yes') + $gatewayArg + $forceArg + $targetArgs
     # --keep-stash: never re-apply local source edits after the update (they
     # stay parked in git stash). Probe --help first: the flag ships with newer
     # backends and an unknown flag would abort argparse with exit 2, which
     # collides with the "close all Hermes windows" sentinel.
     try {
-        $updateHelp = & $pythonExe -m hermes_cli.main update --help 2>$null | Out-String
-        if ($updateHelp -match "--keep-stash") {
+        $helpProbe = Invoke-HermesProbe $pythonExe (@($runtimeArgs) + @('update', '--help'))
+        if ($helpProbe.TimedOut) {
+            Write-HandoffLog "update --help probe timed out; running without --keep-stash"
+        } elseif ($helpProbe.Output -match "--keep-stash") {
             $updateArgs += "--keep-stash"
         } else {
             Write-HandoffLog "installed hermes predates --keep-stash; running without it"
@@ -1493,45 +1593,148 @@ try {
     } catch {
         Write-HandoffLog "could not probe update --help; running without --keep-stash"
     }
+    # The update's receipt carries this id (update_receipt._launcher_correlation_id):
+    # Get-CommittedReceiptOutcome finds THIS run's receipt by it.
+    $script:UpdateCorrelation = if ($env:HERMES_UPDATE_CORRELATION_ID) { $env:HERMES_UPDATE_CORRELATION_ID } else { $script:ResultRunId }
+    $env:HERMES_UPDATE_CORRELATION_ID = $script:UpdateCorrelation
     Write-HandoffLog ("running: python " + ($updateArgs -join " "))
     Publish-UiProgress "Updating code and dependencies"
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
+    $res = Resolve-HermesUpdateOutcome $res
 
-    if ($res.Code -ne 0 -and $res.Code -ne 2) {
-        # One retry for the update-boundary class (fresh code on disk, stale
-        # code in memory). Exit 2 ("close all Hermes windows") is not retryable.
-        Write-HandoffLog "first attempt failed; retrying once (freshly pulled fix loads on the second run)"
+    # Retry only the identified pre-PM update-boundary transition. Current
+    # update/build failures propagate and must not trigger another owner.
+    if ($legacyInstall -and $res.Code -ne 0 -and $res.Code -ne 2) {
+        Write-HandoffLog "legacy update failed; retrying once from the updated installation"
         Publish-UiProgress "Retrying update"
-        $res = Invoke-HermesStep $pythonExe $updateArgs "update"
-        Write-HandoffLog "retry exit code: $($res.Code)"
+        $runtimeCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot)
+        $pythonExe = $runtimeCommand[0]
+        $runtimeArgs = @($runtimeCommand | Select-Object -Skip 1)
+        # Same request as the first attempt (--force included): the installation is still the
+        # legacy one being converted until this run succeeds.
+        $updateArgs = $runtimeArgs + @('update', '--yes') + $gatewayArg + $forceArg + $targetArgs
+        $res = Invoke-HermesStep $pythonExe $updateArgs 'update'
+        $res = Resolve-HermesUpdateOutcome $res
     }
 
-    # -- 4. Truthful completion: don't trust exit 0 -------------------------
-    # `hermes update` treats a Desktop GUI build failure as NON-fatal (prints
-    # a one-line warning, exits 0). For a Desktop-DRIVEN update that warning
-    # is fatal: we would relaunch the old exe and call it success. Detect it,
-    # retry the build once, and propagate honestly.
-    $desktopBuildFailed = $false
-    if ($res.Code -eq 0 -and $res.Output -match "Desktop build failed") {
-        Write-HandoffLog "hermes update reported a desktop build failure (non-fatal there, fatal here); retrying build"
-        Publish-UiProgress "Rebuilding Desktop"
-        $rebuild = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.main", "desktop", "--force-build", "--build-only") "rebuild"
-        Write-HandoffLog "desktop rebuild exit code: $($rebuild.Code)"
-        if ($rebuild.Code -ne 0) { $desktopBuildFailed = $true }
-    }
-
-    if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
-        $finalCode = 0
-        $finalMsg = "Update complete."
-    } elseif ($desktopBuildFailed) {
-        $finalCode = 6
-        $finalMsg = "Code and dependencies updated, but the Desktop app REBUILD FAILED - you are running the previous build. Run `hermes desktop --force-build` from a terminal to retry."
-    } else {
+    $committedAfterExit = $null
+    if ($res.Code -ne 0 -and $res.Code -ne 2) { $committedAfterExit = Get-CommittedReceiptOutcome }
+    if ($res.Code -ne 0 -and -not $committedAfterExit) {
         $finalCode = $res.Code
         $finalMsg = "Update failed (exit $($res.Code)). Run `hermes debug share` in a terminal to send a report."
+        exit $finalCode
     }
+
+    # -- Commit point: `hermes update` exited 0 (contract C3). The install is
+    # on the new version; every step below is follow-up work whose failure is
+    # a warning on an ok result, never "still on the previous version".
+    $script:Committed = $true
+    $finalCode = 0
+    $finalMsg = "Update complete."
+    if ($script:UpdateInterrupted) {
+        Add-Followup "post-update steps (gateway resume) were interrupted; run hermes update again" "its post-update steps (gateway resume) were interrupted. Run 'hermes update' again to finish them." -Manual
+    }
+    if ($committedAfterExit) {
+        # Past the commit point with a nonzero exit: installed, with an owed follow-up.
+        $sentence = switch ($committedAfterExit) {
+            'partial' { "one step is left for you: your local source changes may still be parked in git stash. Run 'hermes update' in a terminal for the exact commands." }
+            'interrupted' { "its post-update steps were interrupted. The next launch or 'hermes update' finishes them." }
+            default { "'hermes update' exited with code $($res.Code) afterwards. Run 'hermes update' in a terminal to finish any remaining steps." }
+        }
+        Add-Followup "update: hermes update exited $($res.Code) after the commit point (receipt outcome: $committedAfterExit)" $sentence -Manual
+    }
+
+    # Pre-PM updates reported a successful exit with a failed build warning.
+    # Keep that historical transition here only; current failures propagate.
+    $desktopBuildFailed = $false
+    if ($legacyInstall -and $res.Output -match "Desktop build failed") {
+        Write-HandoffLog "hermes update reported a desktop build failure; retrying build"
+        Publish-UiProgress "Rebuilding Desktop"
+        $rebuildFailure = $null
+        try {
+            $runtimeCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot)
+            $rebuildArgs = @($runtimeCommand | Select-Object -Skip 1) + @('desktop', '--force-build', '--build-only')
+            $rebuild = Invoke-HermesStep $runtimeCommand[0] $rebuildArgs 'rebuild'
+            Write-HandoffLog "desktop rebuild exit code: $($rebuild.Code)"
+            if ($rebuild.Code -ne 0) { $rebuildFailure = "exit $($rebuild.Code)" }
+        } catch {
+            $rebuildFailure = $_.Exception.Message
+        }
+        if ($rebuildFailure) {
+            $desktopBuildFailed = $true
+            Add-Followup "desktop rebuild: $rebuildFailure" "the Desktop app rebuild failed, so you may still be running the previous build. Run 'hermes desktop --force-build' in a terminal to retry." -Manual
+        }
+    }
+
+    # Contract C3: a Desktop build that failed after the code committed is an owed follow-up
+    # (exit 0); the CLI prints one whole "Desktop app build owed:" line for it. The user is on
+    # the new Hermes but this app was not rebuilt: a manual outcome, never plain success.
+    if (-not $desktopBuildFailed -and $res.Output -match '(?m)^\s*Desktop app build owed: ') {
+        Add-Followup "build: the Desktop app build is owed by the committed update" "the Desktop app could not be rebuilt, so it still runs its old build. Run 'hermes desktop --force-build' in a terminal to rebuild it; the update log has the build error." -Manual
+    }
+
+    # Every other owed follow-up of the committed update (a gateway still on the old code, a
+    # Windows resume, a lost completion...) prints one whole "Update follow-up '<step>' did not
+    # finish:" line (hermes_cli/update_receipt.record_followup): never a plain success either.
+    $owedSteps = @([regex]::Matches(($res.Output -join "`n"), "Update follow-up '([A-Za-z0-9_]+)' did not finish: ") |
+        ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+    if ($owedSteps.Count -gt 0) {
+        $owedHint = if ($owedSteps -contains 'gateway_restart') { " Run 'hermes gateway restart' to move the messaging gateway onto the new code now." } else { '' }
+        Add-Followup ("followup: owed by the committed update: " + ($owedSteps -join ', ')) ("some follow-up steps did not finish (" + ($owedSteps -join ', ') + "). The next launch or 'hermes update' retries them; the update log has the details." + $owedHint) -Manual
+    }
+
+    # A zero-exit update is not proof that the runtime survived the update.
+    if (-not $desktopBuildFailed) {
+        $verifyFailure = $null
+        try {
+            $verifyCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot -Module 'hermes_cli.desktop_update_verify')
+            $verifyArgs = @($verifyCommand | Select-Object -Skip 1)
+            $verify = Invoke-HermesStep $verifyCommand[0] $verifyArgs 'verify'
+            if ($verify.Code -ne 0) { $verifyFailure = "exit $($verify.Code)" }
+        } catch {
+            $verifyFailure = $_.Exception.Message
+        }
+        if ($verifyFailure) {
+            Add-Followup "verify: $verifyFailure" "the new Desktop build could not be verified. Nothing was removed. If Hermes does not start normally, run 'hermes desktop --force-build' in a terminal to rebuild it." -Manual
+        }
+    }
+
+    # Desktop stopped every locally running profile gateway before handing off
+    # so their venv launchers could not hold the update lock. That happens
+    # before `hermes update` captures its Windows pause inventory, leaving the
+    # updater nothing to resume on its normal success path. Restore the same
+    # all-profile fleet after the update -- also when a follow-up above failed:
+    # the code is committed and the gateways must not stay down. A remote-served
+    # Desktop must stay passive: its -NoGateway hand-off owns no local poller.
+    if (-not $NoGateway) {
+        $gatewayFailure = $null
+        try {
+            # Resolve again after update: PM may have published a new generation,
+            # and its command can include an isolation/bootstrap prefix.
+            $gatewayCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot)
+            $gatewayArgs = @($gatewayCommand | Select-Object -Skip 1) + @("gateway", "start", "--all")
+            $gatewayRestart = Invoke-HermesStep $gatewayCommand[0] $gatewayArgs "gateway restart"
+            if ($gatewayRestart.Code -ne 0) { $gatewayFailure = "exit $($gatewayRestart.Code)" }
+        } catch {
+            $gatewayFailure = $_.Exception.Message
+        }
+        if ($gatewayFailure) {
+            Add-Followup "gateway start: $gatewayFailure" "it could not restart every messaging gateway. Run `hermes gateway start --all` in a terminal." -Manual
+        }
+    }
+
     exit $finalCode
+} catch {
+    # An unexpected throw. Before the commit point the update did not land
+    # (exit 1 below). After it, the install IS updated: report the broken
+    # follow-up as a warning on an ok result (contract C3); an unquiesced
+    # tree gets its own warning in the finally block.
+    Write-HandoffLog "hand-off error: $($_.Exception.Message)"
+    if ($script:Committed -and $script:TreeSafeToFinalize) {
+        Add-Followup "hand-off: $($_.Exception.Message)" "a post-update step failed unexpectedly. Run 'hermes update' again to finish it." -Manual
+        $finalCode = 0
+    }
 } finally {
     # Truth ordering (sibling contract to posix.sh finish()):
     #   1. durable result + marker removal (the relaunched Desktop consumes
@@ -1540,24 +1743,54 @@ try {
     #   3. only then the terminal UI state — done means "Hermes is back",
     #      manual means "it is not, reopen it", error is error (and still
     #      tries to bring the app back after showing itself).
-    if (-not $script:TreeSafeToFinalize) {
+    if ($script:MarkerClaim -eq "refused") {
+        # No result (A4). An older Desktop quits right after spawning us: bring
+        # it back when it is gone; one that gave up on this run is still open.
+        if (-not (Test-DesktopAlive)) { [void](Start-DesktopRelaunch) }
+    } elseif (-not $script:TreeSafeToFinalize) {
         # A failed job termination means a mutating descendant may still own
-        # checkout/install files. Preserve the marker and do not relaunch into
-        # that unknown state. This is intentionally fail-closed; the marker's
-        # dead-owner recovery remains the next-start escape hatch.
-        $finalCode = 7
-        $finalMsg = "Update recovery could not stop every updater process. Hermes was not restarted to avoid overlapping the active install. Wait for it to finish or restart Windows, then reopen Hermes."
-        Write-Result $false $finalCode $finalMsg
-        Write-HandoffLog $finalMsg
-        Show-ErrorFinale $finalMsg
+        # checkout/install files. Keep the marker LIVE for as long as a
+        # surviving member does and do not relaunch into that state.
+        [void](Add-MarkerDelegate $script:UnquiescedPids)
+        if ($script:Committed) {
+            # C3: the update landed; only a follow-up step outlived its cancellation.
+            $finalCode = 0
+            Add-Followup "follow-up processes could not be stopped" "a follow-up step's processes could not be stopped, so Hermes was not reopened. Reopen Hermes once they finish, or restart Windows first." -Manual
+            $finalMsg = "Hermes was updated, but " + ($script:FollowupText -join " Also, ")
+            Write-Result $true $finalCode $finalMsg $true
+            Write-HandoffLog $finalMsg
+            Show-ManualFinale $finalMsg
+        } else {
+            $finalCode = 7
+            $finalMsg = "Update recovery could not stop every updater process. Hermes was not restarted to avoid overlapping the active install. Wait for it to finish or restart Windows, then reopen Hermes."
+            Write-Result $false $finalCode $finalMsg
+            Write-HandoffLog $finalMsg
+            Show-ErrorFinale $finalMsg
+        }
         Close-ProgressWindow
     } else {
-        Write-Result ($finalCode -eq 0) $finalCode $finalMsg
-        Remove-MarkerIfOwned
+        if ($finalCode -eq 0 -and $script:FollowupText.Count -gt 0) {
+            $finalMsg = "Hermes was updated, but " + ($script:FollowupText -join " Also, ")
+        }
+        $manualAction = $finalCode -eq 0 -and $script:ManualFollowup
+        Write-Result ($finalCode -eq 0) $finalCode $finalMsg $manualAction
+        Invoke-MarkerRelease
+        # The R6 wait can last hours, and the Desktop drops a non-manual result
+        # whose finished_at is 30 minutes old: publish it again with the real
+        # finish time (unless something already consumed it).
+        if ($script:MarkerReleaseWaited -and [System.IO.File]::Exists($ResultPath)) {
+            Write-Result ($finalCode -eq 0) $finalCode $finalMsg $manualAction
+        }
         if ($finalCode -ne 0) {
             Show-ErrorFinale $finalMsg
             Close-ProgressWindow
-            [void](Start-DesktopRelaunch)
+            if (Test-DesktopAlive) {
+                # Exit 4 and friends: the old window never closed. A second
+                # instance on top of it is never the fix.
+                Write-HandoffLog "desktop pid $DesktopPid is still running; not relaunching a second instance"
+            } else {
+                [void](Start-DesktopRelaunch)
+            }
         } else {
             Publish-UiProgress "Opening Hermes"
             $cameBack = Start-DesktopRelaunch
@@ -1571,4 +1804,6 @@ try {
             Close-ProgressWindow
         }
     }
+    if ($null -ne $savedConsoleInputMode) { [HermesHandoff.ConsoleInput]::Restore($savedConsoleInputMode) }
 }
+exit $finalCode

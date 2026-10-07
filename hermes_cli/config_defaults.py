@@ -1456,12 +1456,12 @@ DEFAULT_CONFIG = {
         # highest-precedence tier — ONLY if the root is in trusted_project_dirs. false = no scan, no
         # untrusted-skills notice.
         "project_discovery": True,
-        # Trusted project roots; managed by `hermes skills trust` / `untrust`.
-        "trusted_project_dirs": [],
+        "trusted_project_dirs": [],  # trusted project roots; managed by `hermes skills trust` / `untrust`
         # Skill names pinned as fully loaded in every new session (CLI, TUI, gateway, cron, API).
         # Resolved once when the agent's prompt is first built; missing/disabled names warn and
         # skip; HERMES_IGNORE_RULES suppresses the list like the other auto-injected context.
         "auto_load": [],
+        "index_descriptions": "full",  # "names_only": the skill index lists names only (smaller prompt)
         # Substitute ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in SKILL.md content.
         "template_vars": True,
         # Pre-execute !`cmd` snippets in SKILL.md, inlining stdout (dates, git state...). Off:

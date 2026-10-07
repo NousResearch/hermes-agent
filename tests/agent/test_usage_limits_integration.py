@@ -18,6 +18,9 @@ def test_config_invalid_field_does_not_discard_other_limits(bad):
 @pytest.mark.parametrize("mode", ["turn_total_tokens", "session_total_tokens", "turn_wall_clock_seconds"])
 def test_phase_boundary_and_real_finalizer(mode, monkeypatch):
     agent = MagicMock()
+    # This is a text turn; MagicMock attributes would spuriously enable voice routing.
+    agent._voice_turn_pending = False
+    agent._voice_route_state = None
     _apply_display_config(agent, {"usage_limits": {mode: 10}}, "cli")
     agent._interrupt_requested = False
     agent._review_input_token_budget = None

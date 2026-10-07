@@ -53,7 +53,8 @@ _OP_MARKERS: List[Tuple[OperationType, re.Pattern]] = [
     (OperationType.ADD, re.compile(r'\*\*\*\s*Add\s+File:\s*(.+)')),
     (OperationType.DELETE, re.compile(r'\*\*\*\s*Delete\s+File:\s*(.+)')),
     (OperationType.MOVE, re.compile(r'\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)'))]
-_HINT_RE = re.compile(r'@@\s*(.+?)\s*@@')
+# '@@ text @@', or Codex's open-ended '@@ text'.
+_HINT_RE = re.compile(r'@@\s*(.+?)\s*(?:@@\s*)?$')
 
 
 def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[str]]:
@@ -101,6 +102,8 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
                 _flush_hunk()
                 hint_match = _HINT_RE.match(line)
                 current_hunk = Hunk(context_hint=hint_match.group(1) if hint_match else None)
+        elif line.strip() == '*** End of File':
+            pass  # Codex's end-of-file anchor; not file content
         elif current_op and line:
             if current_hunk is None:
                 current_hunk = Hunk()

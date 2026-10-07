@@ -1405,6 +1405,10 @@ def _apply_agent_section(agent, _agent_cfg):
     # "auto" (codex_responses only), true (all api_modes), false, or model substrings.
     agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
 
+    # apply_patch file writes: "auto" (GPT-5+ on OpenRouter), true, false, or model substrings.
+    # Resolved per request against the model then in use (agent/apply_patch_tool.py).
+    agent._apply_patch_tool = _agent_section.get("apply_patch_tool", "auto")
+
     # Responses `text.verbosity`: "" / unknown value = not sent (never flips the provider default).
     _verbosity = str(_agent_section.get("text_verbosity") or "").strip().lower()
     if _verbosity and _verbosity not in {"low", "medium", "high"}:

@@ -26,6 +26,7 @@ from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from agent import apply_patch_tool
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     _extract_status_code)
@@ -1567,8 +1568,13 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     # Rotation-stable logical cache scope shared by every OpenAI-wire branch
     # (memoized on the agent); anthropic/bedrock above don't use it.
     cache_scope_id = _prompt_cache_scope_for_agent(agent)
-    builder = _build_codex_kwargs if agent.api_mode == "codex_responses" else _build_chat_completions_kwargs
-    return builder(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id)
+    if agent.api_mode == "codex_responses":
+        return _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id)
+    # GPT-5+ models write files through a grammar-constrained apply_patch
+    # instead of one JSON-escaped write_file argument (agent/apply_patch_tool.py).
+    if apply_patch_tool.agent_enabled(agent):
+        tools_for_api, api_messages = apply_patch_tool.rewrite_request(tools_for_api, api_messages)
+    return _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id)
 
 
 def _model_dump_safe(obj):
@@ -2791,9 +2797,12 @@ class _ToolCallAccumulator:
     for every call in a parallel batch, distinguishing them only by id, so a new
     id at an already-seen raw index is redirected to a fresh slot."""
 
-    def __init__(self):
+    def __init__(self, apply_patch_offered: bool = False):
         self.acc: dict = {}
         self._notified: set = set()
+        # An apply_patch call streams raw patch text, not JSON; it is renamed to
+        # the internal patch tool on arrival and marked for _assemble_tool_calls.
+        self._apply_patch_offered = apply_patch_offered
         self._last_id_at_idx: dict = {}      # raw_index -> last seen non-empty id
         self._active_slot_by_idx: dict = {}  # raw_index -> current slot in acc
         # Argument deltas are collected per slot and joined once in ``materialize`` —
@@ -2835,6 +2844,9 @@ class _ToolCallAccumulator:
                 # Assignment, not +=: names arrive complete and some providers (MiniMax via
                 # NVIDIA NIM) resend the full name every chunk — += gives "read_fileread_file".
                 entry["function"]["name"] = tc_function.name
+                if self._apply_patch_offered and tc_function.name == apply_patch_tool.WIRE_TOOL_NAME:
+                    entry["function"]["name"] = apply_patch_tool.INTERNAL_TOOL_NAME
+                    entry["apply_patch"] = True
             if getattr(tc_function, "arguments", None):
                 parts.append(tc_function.arguments)
         extra = getattr(tc_delta, "extra_content", None)
@@ -3162,7 +3174,7 @@ class _StreamingCall(StreamingWaitMonitor):
         refusal_parts: list[str] = []
         reasoning_details: list = []  # OpenRouter replay data (signatures, encrypted blocks)
         pending_text_parts: list[str] = []
-        tool_calls = _ToolCallAccumulator()
+        tool_calls = _ToolCallAccumulator(apply_patch_tool.request_offers_apply_patch(self.api_kwargs))
         tool_calls_acc = tool_calls.acc
         finish_reason = model_name = usage_obj = None
         response_id = upstream_provider = None  # the provider's own id / serving upstream, from the chunks
@@ -3378,7 +3390,14 @@ class _StreamingCall(StreamingWaitMonitor):
         for idx in sorted(tool_calls_acc):
             tc = tool_calls_acc[idx]
             arguments = tc["function"]["arguments"]
-            if arguments and arguments.strip():
+            if tc.get("apply_patch"):
+                # Raw patch text. Without its end marker the call was cut off:
+                # refuse it, like a truncated JSON argument.
+                if apply_patch_tool.is_complete(arguments):
+                    arguments = apply_patch_tool.internal_arguments(arguments)
+                else:
+                    has_truncated_tool_args = True
+            elif arguments and arguments.strip():
                 try:
                     json.loads(arguments)
                 except json.JSONDecodeError:

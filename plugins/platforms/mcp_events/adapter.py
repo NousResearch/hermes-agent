@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, Optional
 
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
 
 from . import protocol, security
@@ -169,7 +170,7 @@ class MCPEventsAdapter(BasePlatformAdapter):
     interactive_resume = False
 
     def __init__(self, config, **kwargs):
-        super().__init__(config, **kwargs)
+        super().__init__(config=config, platform=Platform("mcp_events"))
         self._sec = security.MCPEventsSecurityContext.capture()
         self.host = self._sec.resolve_bind_host()
         self.port = self._sec.port

@@ -525,3 +525,14 @@ class TestDeliveryEventName:
                                   "data": {}, "cursor": None}, webhook_id="wh-name")
         assert status == 200
         assert stub.dispatched[-1]["event"] == "deploy.finished"
+
+
+class TestAdapterConstruction:
+    def test_the_adapter_constructs_with_its_platform(self, monkeypatch):
+        pytest.importorskip("gateway.config")
+        from gateway.config import Platform, PlatformConfig
+        from plugins.platforms.mcp_events.adapter import MCPEventsAdapter
+
+        monkeypatch.setattr(security.MCPEventsSecurityContext, "capture", classmethod(lambda cls: _sec()))
+        adapter = MCPEventsAdapter(PlatformConfig())
+        assert adapter.platform == Platform("mcp_events")

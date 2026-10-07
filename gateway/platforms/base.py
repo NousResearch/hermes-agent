@@ -2786,17 +2786,17 @@ class BasePlatformAdapter(ABC):
             # No running loop (unit tests): close the coroutine to avoid a never-awaited warning.
             coro.close()
 
-    # ── ``_format_exec_approval`` templates; adapters override only the MARKUP (bold, HTML,
-    # fences) — the words come from ``gateway.platforms.base_exec_approval`` so every surface
-    # says the same thing.
-    # ``_EA_HEADER`` / ``_EA_REASON_LABEL`` / ``_EA_SMART_DENY_LINE`` / ``_EA_ACTION_LABELS`` are
-    # properties (not class attrs) so the active ``display.language`` is read per render;
-    # subclasses may still shadow them with plain class attributes carrying their own markup.
+    # ── ``_format_exec_approval`` templates; adapters override only the MARKUP (bold, HTML, fences) — the words
+    # come from ``gateway.platforms.base_exec_approval`` so every surface says the same thing.
+    # ``_EA_HEADER`` / ``_EA_REASON_LABEL`` / ``_EA_SMART_DENY_LINE`` / ``_EA_ACTION_LABELS`` are properties (not class
+    # attrs) so the active ``display.language`` is read per render; subclasses may shadow them with their own markup.
     _EA_CODE_OPEN: str = "```\n"
     _EA_CODE_CLOSE: str = "\n```\n"
     _EA_DEADLINE_PREFIX: str = "\n\n"  # separates the deadline line from the reason line
     _EA_CMD_BUDGET: int = 3000
     _EA_REASON_BUDGET: int = 0  # 0 = the reason is never truncated
+    _EA_TEXT_BUDGET: Optional[int] = None  # finished card text cap; see gateway.run_turn_runner_approval_delivery
+    _EA_CHAT_LIMIT_ESTABLISHED: bool = True  # per-chat caps are each chat's own; same module
 
     @property
     def _EA_HEADER(self) -> str:  # noqa: N802 — adapter-override contract name

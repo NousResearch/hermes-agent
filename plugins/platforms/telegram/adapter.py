@@ -4193,9 +4193,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         return await self._send_prompt(
             "send_update_prompt", chat_id, metadata, build, thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
 
-    # Template attrs for the shared _format_exec_approval core (HTML mode). Properties, not class
-    # constants: the wording comes from the catalog for the language active at send time, and the
-    # translated text is HTML-escaped BEFORE the <b> wrapper (a stray ``&``/``<`` would break the card).
+    # Template attrs for the shared _format_exec_approval core (HTML mode). Properties, not class constants: the wording
+    # comes from the catalog for the active language, HTML-escaped BEFORE the <b> wrapper (a stray ``&``/``<`` breaks the card).
     @property
     def _EA_HEADER(self) -> str:  # noqa: N802 — shadows the base class attr
         return f"⚠️ <b>{_html.escape(t('gateway.exec_approval.header'))}</b>\n\n"
@@ -4212,6 +4211,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         return "\n\n" + _bold_label_html(t("gateway.exec_approval.smart_deny_line"))
 
     _EA_REASON_BUDGET = 500  # escaped chars; the reason shares the 4096 cap with the command
+    _EA_TEXT_BUDGET = MAX_MESSAGE_LENGTH  # UTF-16 units; a longer card is rejected whole
 
     def _ea_escape(self, text: str) -> str:
         return _html.escape(text)

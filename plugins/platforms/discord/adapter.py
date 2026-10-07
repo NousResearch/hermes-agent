@@ -5734,9 +5734,8 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         line = t("gateway.exec_approval.smart_deny_line")
         label, sep, rest = line.partition(":")
         return "\n\n" + (f"**{label}:**{rest}" if sep else f"**{line}**")
-    # The reason shares the 2000-char content cap with the command; unbounded it would starve
-    # the command preview to zero and push the content past the cap.
-    _EA_REASON_BUDGET = 300
+    _EA_REASON_BUDGET = 300  # shares the 2000-char content cap; unbounded it starves the command preview and overflows
+    _EA_TEXT_BUDGET = MAX_MESSAGE_LENGTH  # content cap; the command budget below reserves the mentions
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # Mentions ride in front of the content and count against the 2000-char message cap too.

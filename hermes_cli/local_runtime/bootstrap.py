@@ -57,9 +57,9 @@ def _detect_gpu_vendor() -> str | None:
 def models_dir() -> Path:
     """Machine-scoped, deliberately NOT profile-scoped: a 20 GB GGUF is a machine asset, and every
     profile shares the one managed server that serves it (same rule as runtimes_root())."""
-    from hermes_constants import get_default_hermes_root
+    from hermes_cache import managed_cache_dir
 
-    return get_default_hermes_root() / "models"
+    return managed_cache_dir("models")
 
 
 def assets_dir() -> Path:

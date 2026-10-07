@@ -3,9 +3,11 @@
 from dataclasses import FrozenInstanceError
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import plistlib
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -78,6 +80,8 @@ def test_systemd_render_keeps_argument_values_literal(spec):
     assert timer.decode().count("OnCalendar=*-*-* 21:00:00") == 1
     assert "Persistent=true" in timer.decode()
     assert "TimeoutStartSec=infinity" in text
+    assert f"StandardOutput=append:{spec.home}/logs/update-auto.out.log\n" in text
+    assert f"StandardError=append:{spec.home}/logs/update-auto.err.log\n" in text
 
 
 def test_launchd_render_is_user_only_and_never_runs_at_load(spec):
@@ -168,3 +172,31 @@ def test_unavailable_tool_is_not_an_absent_job(monkeypatch):
 def test_plan_cannot_suppress_update_schedule(spec):
     with pytest.raises(ValueError, match="must differ"):
         scheduler.SchedulerSpec(spec.identity, spec.command, spec.home, "04:00", ["04:00"])
+
+
+@pytest.mark.platforms("linux")
+def test_rendered_units_pass_installed_systemd_parser(spec, tmp_path):
+    """Offline parser validation only: never load or start a service."""
+    resolution = common.locate_command("systemd-analyze")
+    if not resolution.command:
+        pytest.skip("systemd-analyze is not installed")
+    unusual_home = tmp_path / 'profile with space\\quote"$name%h'
+    actual = scheduler.SchedulerSpec(spec.identity, [sys.executable, "-c", "print('unused')"],
+                                     unusual_home, spec.schedule, spec.plan_times)
+    service, timer = systemd.render(actual)
+    service_path = tmp_path / "hermes-auto-check.service"
+    timer_path = tmp_path / "hermes-auto-check.timer"
+    service_path.write_bytes(service)
+    timer_path.write_bytes(timer)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    result = subprocess.run([*resolution.command, "--user", "verify", "--man=no",
+                             str(service_path), str(timer_path)],
+                            env={**os.environ, "XDG_RUNTIME_DIR": str(runtime)},
+                            capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stderr
+    # The host may ship unrelated user sockets whose paths exceed sun_path in
+    # long test roots. Any diagnostic from OUR generated units is a failure.
+    diagnostics = [line for line in result.stderr.splitlines()
+                   if line.startswith((str(service_path), str(timer_path)))]
+    assert diagnostics == [], result.stderr

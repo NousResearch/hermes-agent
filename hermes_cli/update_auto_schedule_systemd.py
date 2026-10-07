@@ -40,8 +40,10 @@ def render(spec: SchedulerSpec) -> tuple[bytes, bytes]:
         "[Unit]", "Description=Hermes Agent auto-update", "", "[Service]", "Type=oneshot", "TimeoutStartSec=infinity",
         f"Environment={_quote(f'HERMES_HOME={spec.home}')}",
         f"Environment={_quote(f'HOME={Path.home()}')}", f"ExecStart={command}",
-        f"StandardOutput={_quote(stdout)}",
-        f"StandardError={_quote(stderr)}", "",
+        # These directives parse the append: prefix before the path; surrounding
+        # quotes are literal here and make systemd ignore the redirection.
+        f"StandardOutput={stdout.replace('%', '%%')}",
+        f"StandardError={stderr.replace('%', '%%')}", "",
     ])
     intervals = calendar_intervals(spec)
     timer = "\n".join([

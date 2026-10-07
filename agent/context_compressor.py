@@ -5655,7 +5655,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
-        if n_messages <= _min_for_compress:
+        if n_messages <= _min_for_compress and not force:
             self._structural_no_op_result(
                 telemetry, "insufficient_messages", f"only {n_messages} messages (need > {_min_for_compress})",
             )

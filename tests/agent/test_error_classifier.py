@@ -13,7 +13,6 @@ from agent.error_classifier import (
     _extract_status_code,
     _extract_error_body,
     _extract_error_code,
-    _classify_402,
 )
 from tests.hermes_cli.anon_portal import make_jwt
 
@@ -125,25 +124,114 @@ class TestExtractErrorCode:
 # ── Test: 402 disambiguation ───────────────────────────────────────────
 
 class TestClassify402:
-    """The critical 402 billing vs rate_limit disambiguation."""
+    """The critical 402 billing vs rate_limit vs per-model free-allowance disambiguation."""
 
     def test_billing_exhaustion(self):
         """Plain 402 = billing."""
-        result = _classify_402(
-            "payment required",
-            lambda reason, **kw: ClassifiedError(reason=reason, **kw),
-        )
+        result = classify_api_error(MockAPIError("payment required", status_code=402))
         assert result.reason == FailoverReason.billing
         assert result.should_rotate_credential is True
 
 
     def test_quota_with_retry(self):
         """402 with 'quota' + 'retry' = rate limit."""
-        result = _classify_402(
-            "quota exceeded, please retry after the window resets",
-            lambda reason, **kw: ClassifiedError(reason=reason, **kw),
+        result = classify_api_error(
+            MockAPIError(
+                "quota exceeded, please retry after the window resets",
+                status_code=402,
+            )
         )
         assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+
+    def test_402_free_model_allowance_does_not_bench_credential(self):
+        """Per-model free allowance: fall back, keep the aggregator key."""
+        e = MockAPIError(
+            "your orcarouter/free allowance is used up — top up your balance "
+            "and call a specific model with wallet billing to keep going",
+            status_code=402,
+            body={
+                "error": {
+                    "code": "free_quota_exhausted",
+                    "message": (
+                        "your orcarouter/free allowance is used up — top up your "
+                        "balance and call a specific model with wallet billing to "
+                        "keep going https://www.orcarouter.ai/console/billing"
+                        "?ref=err_free_used#add-credits"
+                    ),
+                    "metadata": {
+                        "reason": "err_free_used",
+                        "free_model": "orcarouter/free",
+                    },
+                    "type": "insufficient_quota",
+                }
+            },
+        )
+        result = classify_api_error(e, provider="orca", model="orcarouter/free")
+        assert result.reason == FailoverReason.upstream_rate_limit
+        assert result.should_fallback is True
+        assert result.should_rotate_credential is False
+
+    def test_402_free_quota_code_alone_does_not_bench_credential(self):
+        """Structured free-quota code is enough even if the message is generic."""
+        e = MockAPIError(
+            "Payment Required",
+            status_code=402,
+            body={"error": {"code": "free_quota_exhausted", "message": "Payment Required"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.upstream_rate_limit
+        assert result.should_rotate_credential is False
+        assert result.should_fallback is True
+
+    def test_402_wallet_out_of_credits_still_billing(self):
+        """Wallet-empty 402 still benches the credential."""
+        e = MockAPIError(
+            "out of credits",
+            status_code=402,
+            body={"error": {"code": "insufficient_credits", "message": "out of credits"}},
+        )
+        result = classify_api_error(e, provider="orca", model="orcarouter/fusion")
+        assert result.reason == FailoverReason.billing
+        assert result.should_rotate_credential is True
+
+    def test_400_free_prompt_cap_falls_back(self):
+        """Named-free prompt cap: hop off this lane, do not compact."""
+        e = MockAPIError(
+            "This prompt is longer than the free tier allows for a single request. "
+            "Shorten it, or add credits to use this model without the free-tier cap",
+            status_code=400,
+            body={
+                "error": {
+                    "message": (
+                        "This prompt is longer than the free tier allows for a single "
+                        "request. Shorten it, or add credits to use this model without "
+                        "the free-tier cap"
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "free_rate_limited",
+                    "metadata": {"reason": "err_free_prompt_cap", "retryable": False},
+                }
+            },
+        )
+        result = classify_api_error(
+            e, provider="orca", model="deepseek/deepseek-v4-flash-free"
+        )
+        assert result.reason == FailoverReason.upstream_rate_limit
+        assert result.should_compress is False
+        assert result.should_fallback is True
+
+    def test_400_free_prompt_cap_code_alone_falls_back(self):
+        """Structured free-prompt-cap code is enough even if the message is generic."""
+        e = MockAPIError(
+            "invalid_request_error",
+            status_code=400,
+            body={"error": {"code": "free_rate_limited", "message": "invalid_request_error"}},
+        )
+        result = classify_api_error(e, provider="orca", model="tencent/hy3-free")
+        assert result.reason == FailoverReason.upstream_rate_limit
+        assert result.should_compress is False
+        assert result.should_fallback is True
 
 
 
@@ -770,6 +858,77 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.payload_too_large
         assert result.should_compress is True
+
+    def test_413_token_rate_limit_code_is_rate_limit(self):
+        """HTTP 413 + structured rate_limit_exceeded is a TPM wall, not entity size."""
+        e = MockAPIError(
+            "Request too large for model",
+            status_code=413,
+            body={
+                "error": {
+                    "message": (
+                        "Request too large for model `qwen/qwen3.8-27b` on input "
+                        "tokens per minute (ITPM): Limit 7000, Requested 30854"
+                    ),
+                    "type": "tokens",
+                    "code": "rate_limit_exceeded",
+                }
+            },
+        )
+        result = classify_api_error(e, provider="groq", model="qwen/qwen3.8-27b")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_compress is not True
+        assert result.should_fallback is True
+
+    def test_413_tokens_per_minute_wording_is_rate_limit(self):
+        """413 whose body never sets a code still matches the TPM class."""
+        e = MockAPIError(
+            "Request too large: input tokens per minute limit exceeded, try again in 1s",
+            status_code=413,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_compress is not True
+
+    def test_413_retry_wording_stays_payload_too_large(self):
+        """Generic retry copy on a real 413 must not take the rate-limit path."""
+        e = MockAPIError(
+            "Request Entity Too Large. Please try again in 30s",
+            status_code=413,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.payload_too_large
+        assert result.should_compress is True
+
+    def test_413_throttling_wording_stays_payload_too_large(self):
+        e = MockAPIError(
+            "Request too large, throttling disabled for this key",
+            status_code=413,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.payload_too_large
+        assert result.should_compress is True
+
+    def test_413_context_length_code_is_overflow(self):
+        e = MockAPIError(
+            "Request entity too large",
+            status_code=413,
+            body={"error": {"message": "Request entity too large", "code": "context_length_exceeded"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
+    def test_413_free_quota_code_is_upstream_rate_limit(self):
+        e = MockAPIError(
+            "Request entity too large",
+            status_code=413,
+            body={"error": {"message": "Request entity too large", "code": "free_quota_exhausted"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.upstream_rate_limit
+        assert result.should_fallback is True
+        assert result.should_compress is not True
 
     # ── Context overflow ──
 

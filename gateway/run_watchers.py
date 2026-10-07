@@ -15,6 +15,8 @@ from typing import Any, Dict, Optional
 
 from gateway.session_stall import (
     format_session_stall_notification,
+    format_session_stall_watchdog_payload,
+    inject_session_stall_recovery,
     resolve_session_idle_seconds_from_activity,
     should_clear_session_stall_notification,
     should_emit_session_stall_notification,
@@ -117,7 +119,10 @@ class GatewaySessionWatchersMixin:
         """Notify once per stall episode for pending inbound sessions; returns notices sent."""
         if getattr(self, "_session_stall_notified", None) is None:  # tests may build bare runners
             self._session_stall_notified = {}
+        if getattr(self, "_session_stall_recovery_latched", None) is None:
+            self._session_stall_recovery_latched = {}
         notified_map = self._session_stall_notified
+        recovery_map = self._session_stall_recovery_latched
         sent, now, candidates = 0, time.time(), self._stall_candidates()
         # Every candidate carries a non-None pending event, so has_pending_inbound is always True.
         for session_key, (adapter, pending_event) in list(candidates.items()):
@@ -127,6 +132,7 @@ class GatewaySessionWatchersMixin:
                 timeout_seconds=timeout_seconds, idle_seconds=idle_seconds, has_pending_inbound=True
             ):
                 notified_map.pop(session_key, None)
+                recovery_map.pop(session_key, None)
             if idle_seconds is None or not should_emit_session_stall_notification(
                 timeout_seconds=timeout_seconds, idle_seconds=idle_seconds,
                 has_pending_inbound=True, already_notified=bool(notified_map.get(session_key)),
@@ -134,19 +140,40 @@ class GatewaySessionWatchersMixin:
                 continue
             if await self._notify_session_stall(
                 session_key, adapter, pending_event, idle_seconds, activity or {},
-                timeout_seconds, notified_map,
+                timeout_seconds, notified_map, recovery_map,
             ):
                 sent += 1
         # Drop latches for sessions that no longer appear in any pending map.
         for key in [k for k in notified_map if k not in candidates]:
             notified_map.pop(key, None)
+        for key in [k for k in recovery_map if k not in candidates]:
+            recovery_map.pop(key, None)
         return sent
+
+    def _inject_session_stall_recovery(self, session_key: str, idle_seconds: float,
+                                       recovery_map: dict) -> bool:
+        """Latch recovery immediately, independent of user-notice delivery."""
+        if recovery_map.get(session_key):
+            return False
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        agent = (getattr(self, "_running_agents", None) or {}).get(session_key)
+        if agent is None or agent is _AGENT_PENDING_SENTINEL:
+            recovery_map[session_key] = True
+            return False
+        payload = format_session_stall_watchdog_payload(idle_seconds)
+        injected = inject_session_stall_recovery(agent, payload)
+        recovery_map[session_key] = True
+        if not injected:
+            logger.debug("Session stall recovery inject declined: session=%s", session_key)
+        return injected
 
     async def _notify_session_stall(self, session_key: str, adapter, pending_event,
                                     idle_seconds: float, activity: dict, timeout_seconds: float,
-                                    notified_map: dict) -> bool:
+                                    notified_map: dict, recovery_map: Optional[dict] = None) -> bool:
         """Log one stall episode and deliver the notice. True only when sent (latched);
-        undeliverable (no chat_id) latches without sending; send failures never latch."""
+        undeliverable (no chat_id) latches without sending; send failures never latch.
+        Recovery is latched independently of user-notice delivery so flood-wait cannot
+        duplicate the agent nudge."""
         from gateway.run import _STALL_NOTIFY_SEND_TIMEOUT_SECONDS
         logger.warning(
             "Session stall detected: session=%s idle=%.0fs (timeout=%.0fs, ~%d min); pending "
@@ -176,7 +203,11 @@ class GatewaySessionWatchersMixin:
             logger.info("Session stall notify aborted (no longer stale): session=%s pending=%s "
                         "fresh_idle=%s", session_key, still_pending, fresh_idle)
             notified_map.pop(session_key, None)  # re-arm so a FUTURE genuine stall notifies again
+            if recovery_map is not None:
+                recovery_map.pop(session_key, None)
             return False
+        if recovery_map is not None:
+            self._inject_session_stall_recovery(session_key, idle_seconds, recovery_map)
         from gateway.warning_notifications import present_notification
         from gateway.run import _async_profile_runtime_scope
         try:
@@ -232,7 +263,8 @@ class GatewaySessionWatchersMixin:
     async def _session_stall_watcher(self, interval: float = 30.0):
         """Pending-inbound + stale-activity stall watchdog. Progress comes only from
         ``get_activity_summary()``; pending inbound is a notify policy gate, not a progress clock.
-        Notify-only: never kills the turn (contrast ``gateway_timeout`` / ``shutdown_watchdog``).
+        User notice is one-shot; recovery prefers ``AIAgent.redirect()`` (model-request cancel/retry)
+        and falls back to ``steer()``. Recovery latches independently of notice delivery.
 
         See #72016.
         See #72039.

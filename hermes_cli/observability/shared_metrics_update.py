@@ -11,6 +11,11 @@ Desktop's packaged updaters (electron-updater, App Installer, Store) never run `
 Desktop reports their outcome through the ``shared_metrics.update_run`` RPC instead. Desktop's
 source-checkout hand-off DOES run ``hermes update``; that receipt is tagged ``initiator=desktop``
 and counted here, never by the RPC, so no run is counted twice.
+
+Run and stage rows agree on where a FAILED run stopped: a run whose ``failed_stage`` names a stage it
+never marked (it exited inside it, before the stage's END mark) also gets one failed stage row for it.
+A run that passed the commit point and only owes follow-ups (contract C3) is a ``success`` run, while
+the stage that failed (``deps``, ``build``, ``restart``, ``verify``) still reads ``failed`` at stage level.
 """
 
 from __future__ import annotations
@@ -293,7 +298,29 @@ def update_receipt_fields(receipt: dict[str, Any]) -> tuple[dict[str, str], list
         }
         for stage in stages
     ]
+    if died_in := _unmarked_failed_stage(run, stages):
+        last_mark = next((s["at"] for s in reversed(stages) if s.get("at")), receipt.get("started_at"))
+        stage_rows.append({
+            "duration_bucket": update_duration_bucket(_elapsed_ms(last_mark, receipt.get("finished_at"))),
+            "outcome": "failed", "stage": died_in,
+        })
     return run, stage_rows
+
+
+def _unmarked_failed_stage(run: dict[str, str], stages: list[dict[str, Any]]) -> str | None:
+    """The stage a failed run stopped in when the receipt holds no mark for it, else None.
+
+    Stage marks are END marks, so a run that exits inside a stage (every pre-apply ``sys.exit``:
+    fetch, channel, branch, merge, HEAD checks) leaves none for it and the stage rows would show no
+    failure where the run row says it died. Only ``failed`` runs: a refusal is not a stage failure,
+    and a committed run that owes follow-ups is a ``success`` whose failed stage already has its mark.
+    """
+    from .shared_metrics_contract import UPDATE_STAGES
+
+    died_in = run["failed_stage"]
+    if run["outcome"] != "failed" or died_in not in UPDATE_STAGES or any(s["name"] == died_in for s in stages):
+        return None
+    return died_in
 
 
 def _collection_on() -> bool:

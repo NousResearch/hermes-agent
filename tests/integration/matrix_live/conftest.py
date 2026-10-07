@@ -23,7 +23,13 @@ import pytest
 from docker import errors as docker_errors
 from docker.context import ContextAPI
 from docker.context.config import get_current_context_name
-from nio import AsyncClient, LoginResponse, RegisterResponse, RoomCreateResponse
+from nio import (
+    AsyncClient,
+    AsyncClientConfig,
+    LoginResponse,
+    RegisterResponse,
+    RoomCreateResponse,
+)
 from testcontainers.core import testcontainers_config
 from testcontainers.core.container import DockerContainer, Reaper
 from testcontainers.core.labels import LABEL_SESSION_ID, SESSION_ID
@@ -46,7 +52,13 @@ class MatrixAccount:
     access_token: str
 
     def client(self, homeserver: str) -> AsyncClient:
-        client = AsyncClient(homeserver, self.user_id)
+        client = AsyncClient(
+            homeserver,
+            self.user_id,
+            config=AsyncClientConfig(
+                request_timeout=15, max_limit_exceeded=0, max_timeouts=0
+            ),
+        )
         client.restore_login(self.user_id, self.device_id, self.access_token)
         return client
 
@@ -258,7 +270,13 @@ def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network
 
 
 async def _register(url: str, localpart: str) -> MatrixAccount:
-    client = AsyncClient(url, f"@{localpart}:matrix.test")
+    client = AsyncClient(
+        url,
+        f"@{localpart}:matrix.test",
+        config=AsyncClientConfig(
+            request_timeout=15, max_limit_exceeded=0, max_timeouts=0
+        ),
+    )
     try:
         registration = await client.register(localpart, "matrix-test-password", device_name=f"{localpart}-device")
         assert isinstance(registration, RegisterResponse), registration

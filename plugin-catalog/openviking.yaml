@@ -1,10 +1,10 @@
 name: openviking
 title: OpenViking
 repo: https://github.com/volcengine/OpenViking
-sha: a768dfb5523597261b412f5109d2323b6c4c6104
+sha: 0063b6249900357d089faf2bddab6b8019b3c406
 subdir: examples/hermes-plugin
-version: "2.1.0"
-image: https://raw.githubusercontent.com/volcengine/OpenViking/a768dfb5523597261b412f5109d2323b6c4c6104/docs/images/openviking-social.jpg
+version: "2.1.1"
+image: https://raw.githubusercontent.com/volcengine/OpenViking/0063b6249900357d089faf2bddab6b8019b3c406/docs/images/openviking-social.jpg
 description: >-
   Long-term memory and searchable knowledge for Hermes. Automatically capture conversations,
   extract memories and recall them across sessions. Six provider tools search, read and browse
@@ -13,12 +13,13 @@ description: >-
   Disclosure — conversation turns, tool results and MEMORY.md / USER.md edits are sent to the
   configured OpenViking server. Quick Local downloads a private server runtime and local embedding
   model, copies the configured Hermes static LLM credentials for extraction, and keeps its server
-  running after Hermes exits. Extraction can use a remote LLM. Custom localhost connections can
+  running after Hermes exits. Rerunning Quick Local setup updates its server to the latest
+  compatible OpenViking 0.4 release; chat reuses the installed runtime. Extraction can use a remote LLM. Custom localhost connections can
   start openviking-server from PATH with a filtered profile environment.
 maintainer: volcengine
 tier: community
 category: memory
-docs_url: https://github.com/volcengine/OpenViking/tree/a768dfb5523597261b412f5109d2323b6c4c6104/examples/hermes-plugin#readme
+docs_url: https://github.com/volcengine/OpenViking/tree/0063b6249900357d089faf2bddab6b8019b3c406/examples/hermes-plugin#readme
 capabilities:
   provides_tools: []
   provides_hooks:

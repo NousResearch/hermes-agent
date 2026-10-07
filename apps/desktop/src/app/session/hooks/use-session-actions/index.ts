@@ -38,7 +38,6 @@ import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue
 import { resetSessionBackground } from '@/store/composer-status'
 import { $connectionRequests } from '@/store/connection-request'
 import {
-  $gateway,
   isActivePrimary,
   openGatewayForAgent,
   openGatewayForProfile,
@@ -67,7 +66,7 @@ import {
 } from '@/store/profile'
 import { $projectScope } from '@/store/project-scope'
 import { projectProfile, resolveNewSessionCwd } from '@/store/projects'
-import { clearAllPrompts, receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
+import { clearAllPrompts } from '@/store/prompts'
 import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $activeSessionStoredIdRotation,
@@ -168,6 +167,7 @@ import { captureDisplayHydration } from './display-hydration'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { rememberedOwnerForResume } from './remembered-owner'
+import { restorePendingApproval } from './restore-pending-approval'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
 import { createGatewaySession } from './session-create-request'
@@ -448,30 +448,6 @@ function livePromptStreamId(
   const live = projections.find(Boolean)
 
   return live ? { awaitingResponse: false, sawAssistantPayload: true, streamId: live.streamId } : {}
-}
-
-function restorePendingApproval(response: SessionResumeResult, sessionId: string): boolean {
-  const pending = response.pending_approval
-
-  if (!pending) {
-    return false
-  }
-
-  // The live `approval` server request (re-delivered from `open_requests`
-  // before this ran) already parked itself with the same queue id; don't
-  // clobber it with a copy that can only answer through the RPC fallback.
-  void receiveApprovalRequest(null, {
-    allowPermanent: pending.allow_permanent !== false,
-    choices: pending.choices,
-    command: pending.command ?? '',
-    description: pending.description ?? 'dangerous command',
-    requestId: typeof pending.request_id === 'string' ? pending.request_id : undefined,
-    sessionId,
-    smartDenied: pending.smart_denied === true
-  })
-  void replayPendingApproval($gateway.get(), sessionId).catch(() => undefined)
-
-  return true
 }
 
 function normalizeNewChatWorkspaceTarget(target: NewChatWorkspaceTarget): NewChatWorkspaceTarget {

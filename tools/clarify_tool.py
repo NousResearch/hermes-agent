@@ -116,10 +116,16 @@ def clarify_tool(questions, callback: Optional[Callable] = None) -> str:
         return tool_error(error)
     if callback is None:
         return tool_error(_UNAVAILABLE)
-    try:
-        return _result(normalized, callback(normalized))
-    except Exception as exc:
-        return tool_error(f"Failed to get user input: {exc}")
+    from tools.human_input_hooks import human_input_request
+    # Observers see the questions only; the answers stay in the tool result.
+    with human_input_request("clarify", prompt="\n".join(q["question"] for q in normalized)) as human:
+        try:
+            reply = callback(normalized)
+            human.outcome = str(reply.get("outcome") or "")
+            return _result(normalized, reply)
+        except Exception as exc:
+            human.outcome = "error"
+            return tool_error(f"Failed to get user input: {exc}")
 
 
 def check_clarify_requirements() -> bool:
@@ -169,7 +175,7 @@ CLARIFY_SCHEMA = {
                         "question": {"type": "string"},
                         "choices": {
                             "type": "array",
-                            "items": {"type": "string", "maxLength": MAX_CHOICE_CHARS},
+                            "items": {"type": "string"},  # no maxLength: llama.cpp's grammar converter rejects >=2000 (#131278); the limit is enforced above
                             "maxItems": MAX_CHOICES,
                         },
                         "multi_select": {"type": "boolean"},

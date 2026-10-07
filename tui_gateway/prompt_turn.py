@@ -947,6 +947,9 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     was_delivered = getattr(agent, "_interim_text_was_delivered", None)
     if result.get("response_previewed") or (callable(was_delivered) and was_delivered(raw) is True):
         payload["response_previewed"] = True
+    # Only the agent's reuse site sets this; never inferred from equal text (a model may say the same words twice).
+    if raw and result.get("response_reused"):
+        payload["response_reused"] = True
     # transform_llm_output may rewrite the final after streaming: the renderer must treat
     # this payload as the authoritative replacement even without a prefix relationship.
     if result.get("response_transformed"):

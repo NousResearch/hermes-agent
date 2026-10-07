@@ -306,11 +306,15 @@ export function assistantTextPart(text: string, timestamp?: number): ChatMessage
   return textPart(renderMediaTags(text), timestamp)
 }
 
-export function chatMessageText(message: ChatMessage): string {
-  return message.parts
+export function partsText(parts: ChatMessagePart[]): string {
+  return parts
     .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
     .map(part => part.text)
     .join('')
+}
+
+export function chatMessageText(message: ChatMessage): string {
+  return partsText(message.parts)
 }
 
 export interface UnspokenTurnSpeech {
@@ -465,12 +469,7 @@ export function mergeFinalAssistantText(
 
   const dedupeReference = normalizeWs(finalText)
 
-  const streamedText = normalizeWs(
-    parts
-      .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
-      .map(part => part.text)
-      .join('')
-  )
+  const streamedText = normalizeWs(partsText(parts))
 
   // An authoritative final that is exactly the concatenation of streamed text
   // confirms the content without erasing text↔reasoning activity boundaries.
@@ -486,10 +485,7 @@ export function mergeFinalAssistantText(
   if (lastToolIndex >= 0) {
     const earlier = parts.slice(0, lastToolIndex + 1)
 
-    const earlierText = earlier
-      .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
-      .map(part => part.text)
-      .join('')
+    const earlierText = partsText(earlier)
 
     // Some terminal frames carry cumulative text. Strip only an exact prefix;
     // fuzzy similarity is not proof that two assistant messages are the same.

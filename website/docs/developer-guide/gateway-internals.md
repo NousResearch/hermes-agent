@@ -271,6 +271,70 @@ The gateway runs as a long-lived process, managed via:
 
 **Profile-scoped vs global**: `start_gateway()` uses profile-scoped PID files. Standalone (one gateway per profile), `hermes -p x gateway stop` stops only that profile's gateway. Under multiplexing there is ONE gateway process per host, owned by whichever profile launched it (`gateway/host_rendezvous.py` publishes its PID, home and served set; `gateway/host_attach.py` is the attach/rescan/refuse decision every lifecycle verb goes through): `hermes gateway stop` on the owner takes every served profile down, and `hermes -p x gateway stop` for a served secondary refuses with exit 78 (it has no gateway of its own). A second `gateway run` for a served profile attaches and exits 0 — under a service supervisor it exits 75 (EX_TEMPFAIL) instead, so the redundant unit is RETRIED rather than parked: "someone else serves me right now" is a runtime observation that ends when that process does, and 78 (which systemd, s6 and launchd all treat as permanent) would strand the profile. ATTACH requires a live `identify` answer from the owner; a rendezvous record with nothing answering behind it proves an owner exists but never that it serves you, so it yields a transient refusal (exit 75), never an attach. An owner that answers `multiplex: False` to the rescan is another profile's *standalone* gateway, not a multiplexer that excluded you: the verb starts this profile's own gateway beside it (the one-process-per-profile topology), it does not refuse — refusing there exited 78 and parked every launchd unit but the first to claim the host lock. `hermes gateway stop --all` uses global `ps aux` scanning to kill all gateway processes (used during updates). Liveness is decided by `gateway.status.live_gateway_pid_for_home` (PID + start-time fingerprint), never bare PID existence.
 
+## Background process notifications
+
+`terminal(background=true, notify_on_complete=true)` starts a gateway watcher that detects
+completion and triggers a new agent turn. Verbosity: `display.background_process_notifications`
+(or `HERMES_BACKGROUND_NOTIFICATIONS`): `concise` (default; one line, failures append an output
+tail), `all` (running updates + final raw output), `result` (final raw output only), `error`
+(final raw output only on non-zero exit), `off`.
+
+The watcher is armed on the gateway loop at registration time (`terminal_tool_background.py::
+_register_completion_watcher` → `run_notifications.py::arm_process_watcher`); `pending_watchers`
+is only the fallback for processes registered before the gateway serves (checkpoint recovery) or
+while it stops, drained at startup and post-turn. Agent-notify watchers send no user-facing
+receipt (the agent's next turn is the report) unless the launching turn is still running at exit
+— then the injection only queues a follow-up, so the concise receipt goes out immediately.
+
+The idle completion watcher also drains `watch_match` / `watch_disabled`; no user follow-up is
+required. Notify-off drains these without waking. Transport failures are retried; unavailable
+durable completion owners/transports do not spend delivery attempts. Profile-namespaced process
+events keep their owning adapter, including raw progress/final notices. Adapter acceptance is
+at-least-once admission, not proof that a model turn or final outbound reply completed. API-server
+async completions remain durable delivery rows, never autonomous new model turns. Require the
+`admit_internal_event` receipt for completion/watch injection: a handler returning None is not
+acceptance. Refused admission refunds every claimed batch sibling without spending an attempt;
+actual delivery errors keep their bounded retry policy. Recognized raw API routes resolve after
+persisted messaging origins and defer quietly when unavailable; malformed routes still warn.
+
+Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
+reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
+or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored
+briefs are labelled user turns appended at a turn boundary, preserving role alternation
+(`cron/AGENTS.md`).
+
+## `/login` (off-turn, paired DM only)
+
+`/login` is registered in `hermes_cli/commands.py` with `busy_policy="dispatch"` and
+`desktop="settings"`, listed in `run_busy.py::_PLAIN_COMMANDS`, and handled by
+`GatewayLoginCommandsMixin` (`gateway/slash_commands_login.py`). It refuses outside a paired DM:
+`chat_type in {"dm","private"}`, a truthy `chat_id`, and a platform whose `"dm"` really is a paired
+conversation — ntfy, raft and a2a all report `chat_type="dm"` for a broadcast topic, a channel and
+an agent peer, so posting a consent link there would publish it.
+
+**It binds the whole install.** The sign-in writes the singleton `providers.nous`, so whoever
+approves the code owns this gateway's inference and connectors for every chat it serves. Slash
+gating is opt-in (`gateway/slash_access.py`): with no `allow_admin_from` set, every user allowed to
+DM the bot can run it. Operators of shared gateways must set it.
+
+The handler returns its ack at once and drains `anon_auth.run_sign_in` on a **private single-worker
+executor** (`_login_executor`), never the shared 10-thread gateway pool — a promotion wait can last
+the code's full expiry, and a live worker in the shared pool makes shutdown skip the SessionDB
+close/checkpoint. One attempt per process, stamped with the identity that started it: the same
+identity's second `/login` supersedes (the loser ends with the superseded copy pushed into its own
+chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside a
+worker thread, so shutdown and supersede both work through `attempt.cancelled`, which
+`wait_for_promotion` now polls on a ≤1 s tick. A shutdown-cancelled attempt pushes nothing — the
+task is dying and its adapters may already be gone — but if the server had already completed the
+transfer it still persists, because that transfer is irreversible.
+
+On completion the handler **evicts** every cached agent still on `nous/welcome` and clears any
+session model override pinned to it. It does not switch agents in place and does not write a model
+override: `settle_after_upgrade` already moved `model.default`/`model.base_url` in the config, every
+turn re-resolves the config and the credentials, and `_agent_config_signature` already forces a
+rebuild when the route changes — so an in-place swap buys no cache warmth and an override would pin
+an expiring access token that nothing refreshes.
+
 ## Multiplexed profiles
 
 With `gateway.multiplex_profiles: true` one process serves the default profile plus every live directory under `profiles/` (`hermes_cli/profiles.py::profiles_to_serve(multiplex=True)`). `os.environ` and module globals hold the **launch** profile's values, so every activity for a secondary binds its scope explicitly — a profile is home + secret scope + terminal scope together:

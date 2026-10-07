@@ -253,6 +253,13 @@ class ComputeHost:
             self._reply("turn.started", sid, request_id, started_ns=now_ns())
             with contextlib.suppress(Exception):
                 server._ensure_session_db_row(session)
+                # #85303: the parent's prompt.submit reopened this row before dispatching here (or
+                # the turn would not have been admitted), but an old parent predating that fix --
+                # or a synthesized re-entry -- must not strand the child's transcript writes in a
+                # row still marked ended_at. Same best-effort shape as the row binding above.
+                with server._session_db(session) as db:
+                    if db is not None:
+                        server._reopen_if_finalized(db, str(session.get("session_key") or ""))
             with contextlib.suppress(Exception):
                 import hermes_undo
                 hermes_undo.on_user_message_appended(session["session_key"])

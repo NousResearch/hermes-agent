@@ -212,6 +212,25 @@ def _nous_portal_env_override() -> Optional[str]:
     return _optional_base_url(_scoped_operator_override("HERMES_PORTAL_BASE_URL", "NOUS_PORTAL_BASE_URL"))
 
 
+def _nous_portal_base_url(state: Dict[str, Any]) -> str:
+    """HERMES_PORTAL_BASE_URL / NOUS_PORTAL_BASE_URL is the trusted operator override and wins
+    OUTRIGHT, bypassing the host allowlist (which exists to reject an untrusted network-provided
+    value, not one the operator configured). Otherwise the stored/default value, allowlist-gated."""
+    env_portal_override = _nous_portal_env_override()
+    if env_portal_override:
+        return env_portal_override.rstrip("/")
+    from hermes_cli.auth import _NOUS_PORTAL_ALLOWED_HOSTS, _optional_base_url
+    portal_base_url = _optional_base_url(state.get("portal_base_url")) or DEFAULT_NOUS_PORTAL_URL
+    portal_base_url = portal_base_url.rstrip("/")
+    host = urlparse(portal_base_url).hostname
+    if host and host not in _NOUS_PORTAL_ALLOWED_HOSTS:
+        logger.warning(
+            "auth: ignoring invalid portal_base_url %r (host %r not in allowlist), using default",
+            portal_base_url, host)
+        return DEFAULT_NOUS_PORTAL_URL
+    return portal_base_url
+
+
 def _scope_values(raw_scope: Any) -> set[str]:
     # OAuth token responses return a space-separated string; collections are kept for JWT ``scp``
     # claims and older stored fixtures.
@@ -1054,10 +1073,13 @@ def resolve_nous_runtime_credentials(
     identity is set up once, transparently -- the one client rule covering both reap and claim.
     """
     from hermes_cli.anon_auth import AnonCredentialDead, clear_dead_guest, ensure_portal_identity
+    from hermes_cli.anon_challenge import run_with_challenge
     try:
-        return _resolve_nous_runtime_credentials(
+        # A free-tier exchange may be answered with a browser challenge; it is worked here, after
+        # the exchange's locks have unwound, and the exchange is then run once more.
+        return run_with_challenge(lambda: _resolve_nous_runtime_credentials(
             timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle,
-            force_refresh=force_refresh, stale_access_token=stale_access_token)
+            force_refresh=force_refresh, stale_access_token=stale_access_token))
     except AnonCredentialDead as dead_exc:
         from hermes_cli.auth import get_provider_auth_state
         from hermes_cli.anon_auth import ANON_ACCOUNT_LOCKED
@@ -1068,8 +1090,8 @@ def resolve_nous_runtime_credentials(
             raise
         if ensure_portal_identity(explicit=True, timeout_seconds=timeout_seconds) is None:
             raise
-        return _resolve_nous_runtime_credentials(
-            timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle)
+        return run_with_challenge(lambda: _resolve_nous_runtime_credentials(
+            timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle))
 
 
 def _resolve_nous_runtime_credentials(
@@ -1201,7 +1223,10 @@ def _compute_nous_auth_status() -> Dict[str, Any]:
     base_status = _nous_status_from_state(
         state, logged_in=bool(state.get("access_token")), source="auth_store")
     try:
-        creds = resolve_nous_runtime_credentials()
+        # A status paint must not park on (or open a browser for) a free-tier challenge.
+        from hermes_cli.anon_challenge import background_caller
+        with background_caller():
+            creds = resolve_nous_runtime_credentials()
         refreshed_state = get_provider_auth_state("nous") or state
         base_status.update({
             "logged_in": True,
@@ -1480,6 +1505,7 @@ def _pick_nous_model_after_login(
         get_curated_nous_model_ids,
         check_nous_free_tier,
         partition_nous_models_by_tier,
+        union_with_nous_on_sale_models,
         union_with_portal_free_recommendations,
         union_with_portal_paid_recommendations,
     )
@@ -1509,6 +1535,9 @@ def _pick_nous_model_after_login(
             union_with_portal_free_recommendations if free_tier
             else union_with_portal_paid_recommendations)
         model_ids, pricing = union(model_ids, pricing, _portal)
+        if not free_tier:
+            # Paid users also see every model on sale right now (same rule as `hermes model`).
+            model_ids = union_with_nous_on_sale_models(model_ids, pricing)
         _before_policy = model_ids
         model_ids = restrict_to_nous_policy(model_ids, _policy_allowed, rescue_empty=True)
         _policy_narrowed = model_ids != _before_policy

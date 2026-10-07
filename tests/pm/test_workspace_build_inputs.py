@@ -263,6 +263,70 @@ def test_member_uv_lock_travels_with_its_member(tmp_path):
     assert not (destination / "uv.lock").exists(), "the root lock is seeded by lock_and_sync, not copied"
 
 
+@pytest.mark.parametrize("change", ["compatible", "constraint", "version"])
+def test_buildable_member_relocation_keeps_compatible_seed_pins(tmp_path, change):
+    import os
+    import tomllib
+
+    from pm.environment import PythonEnvironment
+
+    core, wheels = tmp_path / "core", tmp_path / "wheels"
+    core.mkdir(); wheels.mkdir()
+    _fixtures._wheel(wheels, "seed_dep", "1.0")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="seed-core"\nversion="1"\nrequires-python=">=3.11"\n'
+        'dependencies=["seed-dep>=1,<2"]\n[tool.uv]\npackage=false\nno-index=true\n'
+        f'find-links=[{json.dumps(wheels.as_posix())}]\n', encoding="utf-8")
+    old = tmp_path / "release-a" / "plugin"
+    old.mkdir(parents=True)
+    _buildable_source(old)
+    uv = shutil.which("uv")
+    assert uv, "seed relocation requires real offline uv"
+    env = dict(os.environ)
+    env.update(UV_OFFLINE="1", UV_PYTHON=sys.executable)
+    cache = tmp_path / "cache"
+
+    def build(member, name, seed):
+        target = tmp_path / name
+        environment = PythonEnvironment(uv=Path(uv), python=Path(sys.executable),
+                                        destination=tmp_path / (name + "-env"), cache=cache,
+                                        env=env, offline=True)
+        workspace.lock_and_sync([member], [], root=target, source=core,
+                                seed_lock=seed, environment=environment)
+        return target
+
+    first = build(old, "first", None)
+    seed = first / "uv.lock"
+    before = seed.read_bytes()
+    before_doc = tomllib.loads(before.decode())
+    assert next(p["version"] for p in before_doc["package"] if p["name"] == "seed-dep") == "1.0"
+    _fixtures._wheel(wheels, "seed_dep", "1.1")
+    new = tmp_path / "release-b" / "plugin"
+    shutil.copytree(old, new)
+    if change == "constraint":
+        metadata = new / "pyproject.toml"
+        metadata.write_text(metadata.read_text().replace(
+            'readme="README.md"', 'dependencies=["seed-dep==1.1"]\nreadme="README.md"'))
+    elif change == "version":
+        metadata = new / "pyproject.toml"
+        metadata.write_text(metadata.read_text().replace('version="1.0"', 'version="2.0"'))
+        backend = new / "build/backend.py"
+        backend.write_text(backend.read_text().replace("replay_plugin-1.0", "replay_plugin-2.0")
+                           .replace("Name: replay-plugin\\nVersion: 1.0",
+                                    "Name: replay-plugin\\nVersion: 2.0"))
+    second = build(new, "second", seed)
+    locked = tomllib.loads((second / "uv.lock").read_text())
+    member = next(p for p in locked["package"] if p["name"] == "replay-plugin")
+    expected = "plugin-sources/" + workspace._member_key(new)
+    assert member["source"] == {"editable": expected}
+    assert (second / expected / "pyproject.toml").is_file()
+    assert not (second / "plugin-sources" / workspace._member_key(old)).exists()
+    assert member["version"] == ("2.0" if change == "version" else "1.0")
+    pin = next(p["version"] for p in locked["package"] if p["name"] == "seed-dep")
+    assert pin == ("1.1" if change == "constraint" else "1.0")
+    assert seed.read_bytes() == before
+
+
 def test_nested_dist_travels_but_root_dist_stays_out(tmp_path):
     """Bundled dashboard plugins ship a tracked dashboard/dist/ the snapshot's code serves."""
     core = tmp_path / "core"

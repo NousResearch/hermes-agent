@@ -347,6 +347,95 @@ def install_node_sidecar(
     return None
 
 
+def _rebase_seed_lock(data: bytes, root: Path) -> bytes:
+    """Relocate uniquely matched editable snapshots, retaining dependency preferences."""
+    import re
+    import tomllib
+
+    def normalized(name):
+        return re.sub(r"[-_.]+", "-", name).lower()
+
+    def owned_path(value):
+        if (not isinstance(value, str) or "\\" in value or
+                not re.fullmatch(r"plugin-sources/[a-z0-9._-]+", value) or
+                value.split("/")[1] in {".", ".."}):
+            raise InstallError("venv", "unsafe editable seed member path")
+        return value
+
+    document = tomllib.loads(data.decode("utf-8-sig"))
+    generated = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8-sig"))
+    members = generated.get("tool", {}).get("uv", {}).get("workspace", {}).get("members", [])
+    current = {}
+    for relative in members:
+        if not relative.startswith("plugin-sources/"):
+            continue
+        owned_path(relative)
+        path = root / relative / "pyproject.toml"
+        if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+            raise InstallError("venv", "editable seed member escapes candidate workspace")
+        metadata = tomllib.loads(path.read_text(encoding="utf-8-sig"))
+        if "build-system" not in metadata and metadata.get("tool", {}).get("uv", {}).get("package") is not True:
+            continue  # Virtual/removed members remain uv's reconciliation responsibility.
+        project = metadata.get("project", {})
+        name = project.get("name") if isinstance(project, dict) else None
+        if not isinstance(name, str) or not name:
+            continue  # uv owns setup.py/dynamic metadata; do not invent a binding.
+        current.setdefault(normalized(name), []).append(relative)
+    replacements, previous, bindings = {}, {}, {}
+    for package in document.get("package", []):
+        source = package.get("source", {})
+        old = source.get("editable")
+        if not isinstance(old, str) or not old.startswith("plugin-sources/"):
+            continue
+        name = normalized(package["name"])
+        matches = current.get(name, [])
+        if not matches:
+            continue
+        owned_path(old)
+        if len(matches) != 1 or (name in previous and previous[name] != old):
+            raise InstallError("venv", "ambiguous editable seed member binding")
+        previous[name] = old
+        if old in bindings and bindings[old] != matches[0]:
+            raise InstallError("venv", "ambiguous editable seed member binding")
+        bindings[old] = matches[0]
+        if old != matches[0]:
+            if set(source) != {"editable"}:
+                raise InstallError("venv", "unsupported editable seed source reference")
+            replacements[old] = matches[0]
+    if not replacements:
+        return data
+
+    def owned_reference(value):
+        return isinstance(value, str) and any(
+            value == old or value.startswith(old + "/") for old in replacements)
+
+    def rebase(value, path=()):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if owned_reference(child):
+                    package = len(path) >= 3 and path[0] == "package" and isinstance(path[1], int)
+                    supported = package and key == "editable" and (
+                        path[2:] == ("source",) or
+                        (path[2] in {"dependencies", "optional-dependencies", "dev-dependencies"}
+                         and path[-1] == "source") or
+                        (len(path) == 5 and path[2:4] == ("metadata", "requires-dist")))
+                    if not supported or child not in replacements:
+                        raise InstallError("venv", "unsupported editable seed path reference")
+                    value[key] = replacements[child]
+                else:
+                    rebase(child, (*path, key))
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                if owned_reference(child):
+                    raise InstallError("venv", "unsupported editable seed path reference")
+                rebase(child, (*path, index))
+
+    rebase(document)
+    import tomli_w
+
+    return tomli_w.dumps(document).encode("utf-8")
+
+
 def lock_and_sync(
     plugin_dirs: list[Path] | Mapping[Path, Path],
     extras: list[str],
@@ -369,7 +458,8 @@ def lock_and_sync(
     if replay is None:
         _generate_pyproject(plugin_dirs, root, source=source)
         if seed_lock is not None:
-            (root / "uv.lock").write_bytes(seed_lock.read_bytes())
+            data = seed_lock.read_bytes()
+            (root / "uv.lock").write_bytes(data if frozen else _rebase_seed_lock(data, root))
     else:
         if not (replay / "pyproject.toml").is_file() or not (replay / "uv.lock").is_file():
             raise InstallError("venv", f"recorded workspace is missing: {replay}")

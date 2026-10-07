@@ -123,8 +123,20 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
     that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible. An
     inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream."""
-    if session.get("active_session_lease") is not None:
-        return None
+    if (held := session.get("active_session_lease")) is not None:
+        from hermes_cli.active_sessions import (
+            ActiveSessionRefusal, SESSION_COORDINATION_UNAVAILABLE, SESSION_TAKEN_OVER,
+            active_session_lease_is_current)
+        current = active_session_lease_is_current(held)
+        if current is True:
+            return None
+        session.pop("active_session_lease", None)
+        if current is False:
+            held.released = True  # successor owns the registry row; never delete it
+            session["_lease_taken_over"] = True
+            return ActiveSessionRefusal(
+                "This chat is now live in another Hermes window/computer.", SESSION_TAKEN_OVER)
+        return ActiveSessionRefusal(_SESSION_OWNERSHIP_UNAVAILABLE, SESSION_COORDINATION_UNAVAILABLE)
     key = str(session.get("session_key") or "")
     lease, limit_message = _claim_active_session_slot(
         key, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"))
@@ -134,7 +146,44 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     from hermes_cli.active_sessions import SESSION_NOT_OWNED
     if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED and _take_over_detached_runtime_lease(sid, session, key):
         return None
+    if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED:
+        takeover = _take_over_foreign_runtime_lease(sid, session, key)
+        if takeover is not None:
+            lease, refusal = takeover
+            if refusal is None:
+                _attach_lease(session, lease)
+                return None
+            return refusal
     return limit_message
+
+
+def _take_over_foreign_runtime_lease(sid: str, session: dict, key: str):
+    """Try the config-gated cross-process handoff after in-process rescue declined."""
+    config = _load_cfg()
+    from hermes_cli.active_sessions import resolve_session_takeover, take_over_active_session
+    mode = resolve_session_takeover(config)
+    if mode == "off":
+        return None
+    holder_has_live_turn = False
+    if mode == "idle":
+        try:
+            from hermes_state import SessionDB
+            from hermes_constants import get_hermes_home
+            from pathlib import Path
+            home = Path(session.get("profile_home") or get_hermes_home())
+            db = SessionDB(home / "state.db", read_only=True)
+            try:
+                holder_has_live_turn = db.has_live_session_turn_lease(key)
+            finally:
+                db.close()
+        except Exception:
+            logger.warning("Could not verify turn idleness for session takeover", exc_info=True)
+            return None
+    return take_over_active_session(
+        session_id=key, surface=_session_source(session), config=config,
+        holder_has_live_turn=holder_has_live_turn, registry_home=session.get("profile_home"),
+        metadata=_lease_metadata(sid),
+        track_liveness=_session_source(session).strip().lower() == "desktop")
 
 
 def _attach_lease(session: dict, lease) -> None:

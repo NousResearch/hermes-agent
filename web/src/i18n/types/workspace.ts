@@ -1,6 +1,8 @@
 export interface WorkspaceTranslations {
   // ── Sessions page ──
   sessions: {
+    reasoningAction: string
+    reasoningResult: string
     title: string
     history: string
     overview: string
@@ -145,6 +147,8 @@ export interface WorkspaceTranslations {
 
   // ── Model configuration ──
   modelSettings: {
+    followTask: string
+    inheritsFrom: string
     addPreset: string
     addReferenceModel: string
     aggregator: string

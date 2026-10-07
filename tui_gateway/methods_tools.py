@@ -141,7 +141,7 @@ def _mcp_config_server_or_error(rid, params):
 
 def _busy_error(rid, session, cmd: str):
     if session.get("running"):
-        return _err(rid, 4009, busy_message(cmd))
+        return _err(rid, 4009, busy_message(cmd, bool(session.get("_manual_compress_active"))))
     return None
 
 
@@ -863,13 +863,6 @@ def _cmd_retry(rid, params, session, name, arg):
     return _ok(rid, {"type": "send", "message": content})
 
 
-def _tui_model_friction(signal, session, turns=1):
-    from hermes_cli.observability.shared_metrics_model import record_model_friction
-    record_model_friction(
-        signal, session_id=session.get("session_key"), agent=session.get("agent"),
-        hermes_home=session.get("profile_home"), turns=turns)
-
-
 def _cmd_steer(rid, params, session, name, arg):
     if not arg:
         return _err(rid, 4004, "usage: /steer <prompt>")
@@ -999,6 +992,8 @@ def _cmd_compress(rid, params, session, name, arg):
     try:
         output = _compress_live_with_feedback(sid, session, session["agent"], arg, snapshot_kwargs=True)
         return _exec_out(rid, output)
+    except CompressionBusy as exc:  # a turn won the race after the unlocked pre-check above
+        return _err(rid, 4009, str(exc))
     except Exception as exc:
         _tools_mod("agent.conversation_compression").finalize_context_engine_compression_notification(
             session["agent"], committed=False)
@@ -1225,7 +1220,7 @@ def _(rid, params: dict, session) -> dict:
     # Full-history rollback mutates session history → rejected mid-turn (prompt.submit
     # would drop the agent's output or clobber it). File-scoped only touches disk.
     if not file_path and session.get("running"):
-        return _err(rid, 4009, busy_message("rollback restore"))
+        return _err(rid, 4009, busy_message("rollback restore", bool(session.get("_manual_compress_active"))))
 
     def go(mgr, cwd):
         if reason := _container_checkpoint_refusal(session, mgr, cwd):
@@ -1341,7 +1336,7 @@ def _(rid, params: dict) -> dict:
     session = None
     if sid:
         session, err = _sess_nowait(params, rid)
-        if err:
+        if err or (err := _busy_error(rid, session, "tools")):  # the reset bumps history_version mid-turn
             return err
     # The client sends session_id, not profile; the live session is authoritative.
     home = (session or {}).get("profile_home")
@@ -1464,9 +1459,9 @@ def _skills_install(rid, params, query):
             self.lines.append(" ".join(str(a) for a in args))
 
     captured = _Capture()
-    verdict = _tools_mod("hermes_cli.skills_hub").do_install(
-        query, skip_confirm=True, console=captured)
-    installed = verdict is True
+    verdict = _tools_mod("hermes_cli.skills_hub").do_install(query, skip_confirm=True, console=captured)
+    bundled = _tools_mod("tools.skills_sync_bundled_ops").bundled_skill_for_install
+    installed = verdict is True or (verdict is None and bool(bundled(query)))  # an active built-in is no failure
     if not installed:
         # The tail carries the reason the CLI user would have seen: the scan-block message,
         # the "Multiple skills named" candidate table, or the fetch failure.
@@ -1608,8 +1603,7 @@ def _(rid, params: dict) -> dict:
     if bearer_token := params.get("bearer_token"):
         server_config["headers"] = mc._save_bearer_auth_token(name, str(bearer_token))
     saved_ok = mc._save_mcp_server(name, server_config)
-    source = "catalog" if entry is not None else ("url" if server_config.get("url") else "local")
-    catalog.record_mcp_install(source, entry.name if entry else None, "success" if saved_ok else "failed")
+    _tools_mod("tui_gateway.mcp_rpc_helpers").record_mcp_add(entry, server_config, saved_ok)
     if not saved_ok:
         return _err(rid, 4001, f"server '{name}' rejected: suspicious command/args configuration")
     saved = mc._get_mcp_servers().get(name, server_config)

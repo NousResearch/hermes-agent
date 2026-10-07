@@ -417,6 +417,8 @@ export const settingsZh: TranslationOverride<
     createSkill: '创建技能'
   },
   files: {
+    brokenSymbolicLink: "符号链接已失效",
+    brokenLink: "失效链接",
     root: '文件',
     refresh: '刷新文件列表',
     path: '路径',

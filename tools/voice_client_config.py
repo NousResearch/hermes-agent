@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Wire shapes the desktop knows how to speak. Anything else → relay.
 #   openai-multipart : POST {base_url}/audio/transcriptions (multipart, Bearer)
-#   xai-stt          : POST {base_url}/stt (multipart, Bearer, format=true)
+#   xai-stt          : POST {base_url}/stt (multipart, Bearer, model, format=true)
 #   elevenlabs-stt   : POST {base_url}/speech-to-text (multipart, xi-api-key)
 #   openai-speech    : POST {base_url}/audio/speech (JSON, Bearer) → audio bytes
 #   elevenlabs-tts   : POST {base_url}/text-to-speech/{voice_id} (JSON, xi-api-key)
@@ -145,7 +145,8 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
         api_key = str(get_env_value("XAI_API_KEY") or "").strip()
         if not api_key:
             return _relay("xai oauth (server-managed) or no credentials")
-        return direct(STT_WIRE_XAI, env_base_url("XAI_STT_BASE_URL", tc.XAI_STT_BASE_URL), api_key, None)
+        return direct(STT_WIRE_XAI, env_base_url("XAI_STT_BASE_URL", tc.XAI_STT_BASE_URL), api_key,
+                      tc.normalize_xai_stt_model(section.get("model")))
     if provider == "elevenlabs":
         api_key = tt._resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
         if not api_key:
@@ -234,14 +235,21 @@ def resolve_client_voice_config() -> Dict[str, Any]:
     (the web server's ``_config_profile_scope``) before calling — identical to
     how ``/api/audio/transcribe`` scopes ``transcribe_recording``.
     """
-    if not _client_direct_enabled():
-        disabled = _relay("voice.client_direct disabled")
-        return {"stt": disabled, "tts": disabled}
     out: Dict[str, Any] = {}
-    for key, resolver in (("stt", _resolve_stt_client_config), ("tts", _resolve_tts_client_config)):
-        try:
-            out[key] = resolver()
-        except Exception:
-            logger.exception("client voice-config %s resolution failed", key.upper())
-            out[key] = _relay("resolution error")
+    if not _client_direct_enabled():
+        out = {"stt": _relay("voice.client_direct disabled"), "tts": _relay("voice.client_direct disabled")}
+    else:
+        for key, resolver in (("stt", _resolve_stt_client_config), ("tts", _resolve_tts_client_config)):
+            try:
+                out[key] = resolver()
+            except Exception:
+                logger.exception("client voice-config %s resolution failed", key.upper())
+                out[key] = _relay("resolution error")
+    # Live dictation always goes through the host's /api/audio/transcribe-stream socket (keys stay
+    # server-side), independent of client_direct; the verdict above remains the blob fallback.
+    from tools.transcription_streaming import streaming_available
+    try:
+        out["stt"]["streaming"] = streaming_available()
+    except Exception:
+        logger.debug("live STT capability probe failed", exc_info=True)
     return out

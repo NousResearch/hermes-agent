@@ -73,6 +73,7 @@ export interface ShellTranslations {
 
   // ── App shell ──
   app: {
+    sharedMetricsReaskBody: string
     brand: string
     brandShort: string
     closeNavigation: string
@@ -150,6 +151,7 @@ export interface ShellTranslations {
 
   // ── Chat sidebar ──
   chatSidebar: {
+    chatTerminal: string
     sidecarGaveUp: string
     missingKey: string
     sidecarDisconnected: string
@@ -254,6 +256,7 @@ export interface ShellTranslations {
     fixBlockers: string
   }
   status: {
+    actionFinishedOwed: string
     actionFailed: string
     actionFinished: string
     actions: string

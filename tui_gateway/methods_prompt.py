@@ -729,6 +729,7 @@ def _(rid, params: dict) -> dict:
     voice_context = params.get("voice_context")
     session["voice_live_context"] = (
         voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
+    session["voice_turn"] = params.get("voice_turn") is True
     has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
     if has_truncation and isinstance(text, str):
         # A rewind replays what the transcript shows: re-expand a skill invocation or

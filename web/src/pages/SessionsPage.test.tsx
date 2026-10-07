@@ -29,7 +29,11 @@ vi.mock("@/lib/api", () => ({
   getManagementProfile: vi.fn(() => ""),
 }));
 vi.mock("@/components/PlatformsCard", () => ({ PlatformsCard: () => null }));
-vi.mock("@/components/Markdown", () => ({ Markdown: () => null }));
+// Passthrough so transcript assertions can see exactly what text the
+// Markdown path would put in the DOM (React escapes it, like production).
+vi.mock("@/components/Markdown", () => ({
+  Markdown: ({ content }: { content: string }) => <div data-testid="markdown">{content}</div>,
+}));
 
 let container: HTMLDivElement;
 let root: Root;
@@ -279,5 +283,75 @@ describe("SessionsPage per-row profile routing (#99387)", () => {
     await act(async () => click(confirm ?? null));
 
     expect(apiMocks.deleteSession).toHaveBeenCalledWith("sid-worker", "worker");
+  });
+});
+
+describe("structured reasoning rendering (#59957)", () => {
+  const reasoningSession = () => {
+    apiMocks.getSessionMessages.mockResolvedValue({
+      session_id: "sid-reasoning",
+      messages: [
+        { role: "user", content: "run the tool" },
+        {
+          role: "assistant",
+          content:
+            '<thinking>I will run the tool now. <action>tool_call</action><result>{"ok":true}</result></thinking> Done.',
+        },
+      ],
+    });
+    return [
+      { id: "sid-reasoning", profile: "default", source: "cli", model: null, title: "Reasoning", started_at: 1,
+        ended_at: null, last_active: 1, is_active: false, message_count: 2, tool_call_count: 0,
+        input_tokens: 1, output_tokens: 1, preview: "run" },
+    ];
+  };
+
+  async function expandFirstSession() {
+    await act(async () => click(button("Delete session")!.closest("div.cursor-pointer")));
+  }
+
+  it("renders assistant reasoning as prose plus labeled code blocks, not raw wrapper tags", async () => {
+    await renderSessionsPage(reasoningSession());
+    await expandFirstSession();
+    await waitFor(() => (document.body.textContent ?? "").includes("tool_call"));
+
+    const text = document.body.textContent ?? "";
+    // No raw wrapper tags cluttering the transcript — the core bug.
+    expect(text).not.toContain("<thinking>");
+    expect(text).not.toContain("</thinking>");
+    expect(text).not.toContain("<action>");
+    expect(text).not.toContain("</action>");
+    expect(text).not.toContain("<result>");
+    expect(text).not.toContain("</result>");
+    expect(text).toContain("I will run the tool now.");
+    expect(text).toContain('{"ok":true}');
+    expect(text).toContain("Action");
+    expect(text).toContain("Result");
+    // Action and result payloads land in code blocks.
+    expect(document.querySelectorAll("pre code").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps literal known tags in user messages on the Markdown path", async () => {
+    apiMocks.getSessionMessages.mockResolvedValue({
+      session_id: "sid-reasoning",
+      messages: [
+        {
+          role: "user",
+          content: 'Please echo <action>tool_call</action> and <result>{"ok":true}</result> literally.',
+        },
+      ],
+    });
+    await renderSessionsPage([
+      { id: "sid-reasoning", profile: "default", source: "cli", model: null, title: "Echo", started_at: 1,
+        ended_at: null, last_active: 1, is_active: false, message_count: 1, tool_call_count: 0,
+        input_tokens: 1, output_tokens: 1, preview: "echo" },
+    ]);
+    await expandFirstSession();
+    await waitFor(() => (document.body.textContent ?? "").includes("Please echo"));
+
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("<action>tool_call</action>");
+    expect(text).toContain('<result>{"ok":true}</result>');
+    expect(document.querySelectorAll("pre code").length).toBe(0);
   });
 });

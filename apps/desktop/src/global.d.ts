@@ -2,12 +2,14 @@ import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { ChallengeOutcome } from '../electron/challenge-window'
 import type { ScreenshotApi } from '../electron/command-screenshot-types'
 import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
 import type { KeepAwakeMode } from '../electron/power-save'
+import type { UpdateHoldWire } from '../electron/update-hold-types'
 import type { UpdateRunReport } from '../electron/updater/update-metrics'
 import type { GrowRequest } from '../electron/window-growth'
 
@@ -412,6 +414,17 @@ declare global {
       setPreviewGuestHidden?: (webContentsId: number, hidden: boolean) => void
       openExternal: (url: string) => Promise<void>
       onExternalOpenFailed?: (callback: (payload: ExternalOpenFailedPayload) => void) => () => void
+      /** The free tier's browser challenge (electron/challenge-window.ts): load
+       *  the account service's page in a hidden window, revealed only if the
+       *  page asks for the human. Resolves with how the window ended. */
+      freeTierChallenge?: {
+        run: (request: {
+          url: string
+          required: boolean
+          expiresIn?: number
+          attempt?: number
+        }) => Promise<ChallengeOutcome>
+      }
       /** One-shot loopback callback listener for MCP OAuth against remote
        *  backends (electron/mcp-oauth-callback-ipc.ts): bind on THIS machine,
        *  pass redirectUri as client_redirect_uri to mcp.servers.oauth.start,
@@ -610,6 +623,12 @@ declare global {
       continueBootstrapLocal: () => Promise<{ ok: boolean }>
       recycleBackend?: (profile?: null | string) => Promise<{ ok: boolean }>
       resetBootstrap: () => Promise<{ ok: boolean }>
+      // The blocked boot screen's actions (an earlier update still holds the install).
+      updateHold: {
+        recheck: () => Promise<{ ok: boolean }>
+        quit: () => Promise<{ ok: boolean }>
+        startAnyway: (request: { holdId: string; confirmed: true }) => Promise<{ ok: boolean }>
+      }
       repairBootstrap: () => Promise<{ ok: boolean; error?: string }>
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
@@ -645,6 +664,7 @@ declare global {
       uninstall: {
         summary: () => Promise<DesktopUninstallSummary>
         run: (mode: DesktopUninstallMode) => Promise<DesktopUninstallResult>
+        openAppsSettings: () => Promise<void>
       }
       themes: {
         // Download a VS Code Marketplace extension and return the raw color
@@ -804,6 +824,8 @@ export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
 export interface DesktopUninstallSummary {
   /** Local package ownership, resolved by Electron before offering removal. */
   code_removal_allowed: boolean
+  /** Native removal steps when the OS or a package manager owns removal. */
+  native_removal_instructions: null | string
   hermes_home: string
   agent_installed: boolean
   gui_installed: boolean
@@ -1093,6 +1115,7 @@ export interface DesktopConnectionTestResult {
     | 'auth-failed'
     | 'hermes-not-found'
     | 'host-key-changed'
+    | 'interactive-auth'
     | 'timeout'
     | 'unreachable'
     | 'unsupported-platform'
@@ -1231,6 +1254,8 @@ export interface DesktopManagedUpdateReceipt {
   preVersion?: string
   postVersion?: string
   stopReason?: string
+  followups?: Array<{ step: string; reason: string }>
+  userAction?: { step: string; reason: string } | null
 }
 
 export interface DesktopManagedConnectionUpdateResult {
@@ -1243,6 +1268,8 @@ export interface DesktopManagedConnectionUpdateResult {
   exitCode: number | null
   receipt: DesktopManagedUpdateReceipt | null
   scopes: Array<{ profile: string; restored: boolean; error?: string }>
+  /** Post-commit steps a successful update still owes (named in `message`). */
+  owed?: Array<{ step: string; reason: string }>
   error?: string
   message?: string
 }
@@ -1389,7 +1416,12 @@ export interface DesktopBootProgress {
   /** Structured HTTP status when the boot failure carried one (e.g. 503). */
   statusCode?: number | null
   timestamp: number
+  /** Set while an earlier update's hold keeps the local backend from starting (blocked boot screen). */
+  updateHold?: UpdateHoldWire | null
 }
+
+/** What holds the install while the boot is blocked: one definition, shared with the main process. */
+export type { UpdateHoldWire } from '../electron/update-hold-types'
 
 // First-launch install ("bootstrap") event types -- emitted by
 // electron/bootstrap-runner.ts and observed by the renderer install overlay.

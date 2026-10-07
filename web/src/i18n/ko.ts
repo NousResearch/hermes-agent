@@ -95,6 +95,7 @@ export const ko: TranslationOverlay = {
   status: {
     actionFailed: "작업 실패",
     actionFinished: "완료됨",
+    actionFinishedOwed: "업데이트되었지만 아직 남은 작업이 있습니다 (완료하려면 `hermes update`를 다시 실행하세요)",
     actions: "작업",
     agent: "에이전트",
     activeSessions: "활성 세션",

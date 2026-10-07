@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { createPluginContext } from '@/contrib/plugin'
 import { $pluginDecisions, $pluginRecords, dropPlugin, patchPlugin, publishPlugin } from '@/contrib/plugins-store'
 import { queryClient } from '@/lib/query-client'
 import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
@@ -718,5 +719,48 @@ describe('PluginsTab catalog UX', () => {
     )
 
     await waitFor(() => expect($pluginInstallRequest.get()).not.toBeNull())
+  })
+  // The gear no longer unfolds an inline form under the row: plugin settings
+  // live in Settings ▸ Plugins (one entry per plugin, WoW-AddOns style) and the
+  // gear deep-links there.
+  it('sends the settings gear to the plugin’s page in Settings ▸ Plugins', () => {
+    $agentPlugins.set([
+      {
+        description: '',
+        key: 'notes',
+        name: 'notes',
+        settings_schema: [{ description: '', key: 'region', label: 'Region', required: false, type: 'string' }],
+        source: 'user',
+        status: 'enabled',
+        version: '1.0.0'
+      }
+    ])
+
+    render(<PluginsTab profile={null} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Settings: notes' }))
+
+    expect(window.location.hash).toBe('#/settings?tab=plugins&agent=notes')
+    expect(screen.queryByTestId('plugin-settings-notes-settings-form')).toBeNull()
+  })
+
+  it('gives a desktop plugin that registered a settings page a gear too', () => {
+    publishPlugin(
+      { id: 'weather', kind: 'disk', name: 'Weather', status: 'loaded' },
+      {
+        activate: () => undefined,
+        deactivate: () => undefined
+      }
+    )
+    const ctx = createPluginContext('weather')
+    const dispose = ctx.registerSettingsPage({ id: 'main', render: () => null, title: 'Weather' })
+
+    try {
+      render(<PluginsTab profile={null} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Settings: Weather' }))
+      expect(window.location.hash).toBe('#/settings?tab=plugins&plugin=weather')
+    } finally {
+      dispose()
+      dropPlugin('weather')
+    }
   })
 })

@@ -73,13 +73,6 @@ export type ChatMessage = {
   serverRowSpan?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
-  /** Backend-authored transcript notice rather than a message any view sent: a
-   *  model switch, an auto-continue, a background-process completion. It renders
-   *  on the timeline like any other system row but belongs to no view, so the
-   *  stale-transcript compare must not count it (see
-   *  `messagesIfTranscriptBehind`) — counting it made one model switch report a
-   *  second window ahead and refuse every send. */
-  systemNotice?: boolean
 }
 
 export type GatewayEventPayload = {
@@ -151,7 +144,7 @@ export type GatewayEventPayload = {
   // approval server request (dangerous command / execute_code) — session-keyed
   command?: string
   description?: string
-  // False when a tirith content-security warning forbids a permanent allow.
+  // False when the backend forbids a permanent allow.
   allow_permanent?: boolean
   smart_denied?: boolean
   // secret.request (skill credential capture)

@@ -426,6 +426,8 @@ export const settingsEn: Pick<
     createSkill: 'Create skill'
   },
   files: {
+    brokenSymbolicLink: "Broken symbolic link",
+    brokenLink: "Broken link",
     root: 'Files',
     refresh: 'Refresh files',
     path: 'Path',

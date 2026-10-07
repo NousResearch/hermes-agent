@@ -95,6 +95,7 @@ export const ja: TranslationOverlay = {
   status: {
     actionFailed: "アクションが失敗しました",
     actionFinished: "完了",
+    actionFinishedOwed: "更新済みですが未完了の処理があります（完了するには `hermes update` を再実行してください）",
     actions: "アクション",
     agent: "エージェント",
     activeSessions: "アクティブなセッション",

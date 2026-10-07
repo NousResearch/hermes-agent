@@ -80,6 +80,7 @@ export const shellZh: TranslationOverride<
     messageWithDetail: '{message}：{detail}'
   },
   app: {
+    sharedMetricsReaskBody: "再次询问：早期版本可能在你看到此问题前就保存了“不用了”。",
     multiplexStandaloneBanner:
       '网关当前只服务一个配置。未接入的配置：{profiles}。原因：{reason}。请运行 hermes gateway migrate --multiplex。',
     brand: 'Hermes Agent',
@@ -157,6 +158,7 @@ export const shellZh: TranslationOverride<
     sharedMetricsSaveFailed: '无法保存你的选择'
   },
   chatSidebar: {
+    chatTerminal: "聊天终端",
     sidecarGaveUp: '网关辅助连接已断开，重试 {count} 次后停止。请点击“重新连接”。',
     missingKey: '尚未为 {provider} 设置 API 密钥，消息将无法发送。请在“密钥”页面添加密钥，或选择其他服务商。',
     sidecarDisconnected: '会话侧栏（模型与工具活动）无法连接，会话仍可使用。请点击“重新连接侧栏”重试。',
@@ -260,6 +262,7 @@ export const shellZh: TranslationOverride<
     fixBlockers: '请先解决下列阻塞问题'
   },
   status: {
+    actionFinishedOwed: "已更新，但仍有待完成的步骤（重新运行 `hermes update` 以完成）",
     actionFailed: '操作失败',
     actionFinished: '已完成',
     actions: '操作',

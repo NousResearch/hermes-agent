@@ -5,6 +5,8 @@ export const workspaceEn: Pick<
   'sessions' | 'analytics' | 'models' | 'modelSettings' | 'logs' | 'channels' | 'cron' | 'profiles'
 > = {
   sessions: {
+    reasoningAction: "Action",
+    reasoningResult: "Result",
     title: 'Sessions',
     history: 'History',
     overview: 'Overview',
@@ -149,6 +151,8 @@ export const workspaceEn: Pick<
     startSession: 'Start a session to see model data here'
   },
   modelSettings: {
+    followTask: "Follow {task}",
+    inheritsFrom: "inherits {task} · {route}",
     addPreset: 'Add preset',
     addReferenceModel: 'Add reference model',
     aggregator: 'Aggregator',
@@ -209,6 +213,7 @@ export const workspaceEn: Pick<
     },
     useAs: 'Use as',
     auxTasks: {
+      voice_chat: { label: "Voice Chat", hint: "Spoken voice-mode replies" },
       vision: { label: 'Vision', hint: 'Image analysis' },
       compression: { label: 'Compression', hint: 'Context compaction' },
       skills_hub: { label: 'Skills Hub', hint: 'Skill search' },

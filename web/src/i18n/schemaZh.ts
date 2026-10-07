@@ -1,6 +1,8 @@
 // Chinese labels for config schema keys used by AutoField.
 
 export const SCHEMA_ZH_LABEL: Record<string, string> = {
+  'stt.streaming': '语音识别 → 实时转录',
+  'stt.openai.streaming_model': '语音识别 → OpenAI → 实时转录模型',
   'agent.api_max_retries': 'Agent → API 最大重试次数',
   'agent.disabled_toolsets': 'Agent → 禁用的工具集',
   'agent.gateway_auto_continue_freshness': 'Agent → 网关自动继续有效期',
@@ -321,6 +323,7 @@ export const SCHEMA_ZH_LABEL: Record<string, string> = {
 // path belong here. Generated English path descriptions are intentionally not
 // repeated under a Chinese label.
 export const SCHEMA_ZH_DESCRIPTION: Record<string, string> = {
+  'stt.openai.streaming_model': '实时语音转录所使用的 OpenAI 模型。',
   model: '默认使用的模型，例如 anthropic/claude-sonnet-4.6。',
   model_context_length: '覆盖模型上下文窗口；设为 0 时从模型元数据自动检测。',
   'terminal.backend': '执行终端命令所使用的后端。',
@@ -703,6 +706,7 @@ export const SCHEMA_ZH_TERM: Record<string, string> = {
 }
 
 export const SCHEMA_ZH_SEGMENT: Record<string, string> = {
+  voice_chat: '语音聊天',
   active_preset: '当前预设',
   adopt_existing_tab: '接管现有标签页',
   allow_any_attachment: '允许任意附件',

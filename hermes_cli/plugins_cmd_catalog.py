@@ -49,7 +49,7 @@ def raise_if_removed(*candidates: str) -> None:
                 detail += f" (removed {removed.date})"
             raise PluginOperationError(
                 f"Plugin '{removed.name}' was removed from the Hermes plugin catalog and is blocked from "
-                f"installation: {detail}")
+                f"installation: {detail}", failure_class="removed_from_catalog")
 
 
 def resolve_catalog_name(identifier: str, console) -> PluginCatalogEntry:
@@ -231,7 +231,7 @@ def _refuse_unsupported_catalog_platform(entry: PluginCatalogEntry) -> None:
     if current not in normalized_platforms(entry.platforms):
         raise PluginOperationError(
             f"Plugin '{entry.name}' is unavailable on {current}; supported platforms: "
-            f"{', '.join(entry.platforms)}."
+            f"{', '.join(entry.platforms)}.", failure_class="incompatible",
         )
 
 

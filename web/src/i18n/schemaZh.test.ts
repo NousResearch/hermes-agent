@@ -134,3 +134,9 @@ it('treats prototype property names as unknown schema fields', () => {
     expect(resolveSchemaDescription(zhSchema, key, 'Original description')).toBe('Original description')
   }
 })
+
+it('labels the live transcription and voice-chat model settings', () => {
+  expect(resolveSchemaLabel(zhSchema, 'stt.streaming', 'Streaming')).toBe('语音识别 → 实时转录')
+  expect(resolveSchemaLabel(zhSchema, 'stt.openai.streaming_model', 'Streaming Model')).toBe('语音识别 → OpenAI → 实时转录模型')
+  expect(resolveSchemaLabel(zhSchema, 'auxiliary.voice_chat.model', 'Model')).toBe('辅助 → 语音聊天 → 模型')
+})

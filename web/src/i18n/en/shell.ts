@@ -81,6 +81,7 @@ export const shellEn: Pick<
     messageWithDetail: '{message}: {detail}'
   },
   app: {
+    sharedMetricsReaskBody: "Asking once more: an earlier version could save \"No thanks\" before you saw this question.",
     brand: 'Hermes Agent',
     brandShort: 'HA',
     closeNavigation: 'Close navigation',
@@ -161,6 +162,7 @@ export const shellEn: Pick<
     sharedMetricsSaveFailed: "Couldn't save your choice"
   },
   chatSidebar: {
+    chatTerminal: "Chat terminal",
     sidecarGaveUp: 'Gateway sidecar disconnected — gave up after {count} attempts. Use Reconnect.',
     missingKey:
       'No API key set for {provider}, so messages will fail. Add a key under Keys, or pick a different provider.',
@@ -273,6 +275,7 @@ export const shellEn: Pick<
     fixBlockers: 'Fix the blockers below first'
   },
   status: {
+    actionFinishedOwed: "Updated, but still owed (re-run `hermes update` to finish)",
     actionFailed: 'Action failed',
     actionFinished: 'Finished',
     actions: 'Actions',

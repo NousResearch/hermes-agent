@@ -5,6 +5,8 @@ export const workspaceZh: TranslationOverride<
   Pick<Translations, 'sessions' | 'analytics' | 'models' | 'modelSettings' | 'logs' | 'channels' | 'cron' | 'profiles'>
 > = {
   sessions: {
+    reasoningAction: "操作",
+    reasoningResult: "结果",
     title: '会话',
     history: '历史',
     overview: '概览',
@@ -146,6 +148,8 @@ export const workspaceZh: TranslationOverride<
     startSession: '开始会话后将在此显示模型数据'
   },
   modelSettings: {
+    followTask: "跟随 {task}",
+    inheritsFrom: "继承 {task} · {route}",
     addPreset: '添加预设',
     addReferenceModel: '添加参考模型',
     aggregator: '聚合模型',
@@ -205,6 +209,7 @@ export const workspaceZh: TranslationOverride<
     },
     useAs: '用途',
     auxTasks: {
+      voice_chat: { label: "语音聊天", hint: "语音模式回复" },
       vision: { label: '视觉', hint: '图像分析' },
       compression: { label: '上下文压缩', hint: '压缩会话上下文' },
       skills_hub: { label: '技能中心', hint: '搜索技能' },

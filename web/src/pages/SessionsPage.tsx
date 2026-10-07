@@ -8,14 +8,11 @@ import {
   ChevronRight,
   Database,
   ListFilter,
-  MessageSquare,
   Search,
   Trash2,
   Clock,
   Terminal,
   Globe,
-  MessageCircle,
-  Hash,
   X,
   Play,
   Eraser,
@@ -32,7 +29,19 @@ import { importSummary, parseImportSessions, SessionImportParseError } from "@/l
 import type { SessionInfo, SessionMessage, SessionSearchResult, SessionStoreStats, StatusResponse } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
+import {
+  AUTOMATION_SESSION_SOURCES,
+  NO_MATCHING_SESSION_SOURCE,
+  SOURCE_CONFIG,
+  type SessionFilterCategory,
+  type SourceSelectionsByCategory,
+  isAutomationSource,
+  sourceBelongsToCategory,
+  sourceLabel,
+} from "./SessionsPage_sources";
+import { StructuredReasoning } from "@/components/StructuredReasoning";
 import { PlatformsCard } from "@/components/PlatformsCard";
+import { shouldRenderStructuredReasoning } from "@/lib/reasoning-markup";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
@@ -60,95 +69,6 @@ import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
 
-const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> = {
-  cli: { icon: Terminal, color: "text-primary" },
-  tui: { icon: Terminal, color: "text-primary" },
-  telegram: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]" },
-  discord: { icon: Hash, color: "text-[oklch(0.65_0.15_280)]" },
-  slack: { icon: MessageSquare, color: "text-[oklch(0.7_0.15_155)]" },
-  whatsapp: { icon: Globe, color: "text-success" },
-  whatsapp_cloud: { icon: Globe, color: "text-success" },
-  signal: { icon: MessageCircle, color: "text-success" },
-  matrix: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]" },
-  email: { icon: MessageSquare, color: "text-[oklch(0.7_0.15_155)]" },
-  sms: { icon: MessageCircle, color: "text-success" },
-  cron: { icon: Clock, color: "text-warning" },
-  tool: { icon: Play, color: "text-warning" },
-  oneshot: { icon: Terminal, color: "text-warning" },
-  api_server: { icon: Globe, color: "text-muted-foreground" },
-  acp: { icon: Database, color: "text-muted-foreground" },
-  hermes_flow: { icon: Play, color: "text-warning" },
-  vulcan_delegate: { icon: Play, color: "text-warning" },
-  webhook: { icon: Globe, color: "text-warning" },
-};
-
-const AUTOMATION_SESSION_SOURCES = [
-  "cron",
-  "tool",
-  "oneshot",
-  "api_server",
-  "acp",
-  "hermes_flow",
-  "vulcan_delegate",
-  "webhook",
-];
-const AUTOMATION_SESSION_SOURCE_SET = new Set(AUTOMATION_SESSION_SOURCES);
-const NO_MATCHING_SESSION_SOURCE = "__hermes_dashboard_no_matching_source__";
-import type { Translations } from "@/i18n";
-
-type SessionFilterCategory = "chats" | "automation" | "all";
-type SourceSelectionsByCategory = Record<SessionFilterCategory, string[] | null>;
-
-function isAutomationSource(source: string): boolean {
-  return AUTOMATION_SESSION_SOURCE_SET.has(source);
-}
-
-function sourceBelongsToCategory(source: string, category: SessionFilterCategory): boolean {
-  if (category === "all") return true;
-  if (category === "automation") return isAutomationSource(source);
-  return !isAutomationSource(source);
-}
-
-function sourceLabel(source: string, translations: Translations["sessions"]): string {
-  switch (source) {
-    case "api_server":
-      return translations.sourceApiServer;
-    case "acp":
-      return "ACP";
-    case "cli":
-      return "CLI";
-    case "tui":
-      return "TUI";
-    case "telegram":
-      return "Telegram";
-    case "discord":
-      return "Discord";
-    case "slack":
-      return "Slack";
-    case "whatsapp":
-      return "WhatsApp";
-    case "whatsapp_cloud":
-      return "WhatsApp Cloud";
-    case "sms":
-      return "SMS";
-    case "cron":
-      return translations.sourceCron;
-    case "tool":
-      return translations.sourceTool;
-    case "hermes_flow":
-      return translations.sourceHermesFlow;
-    case "vulcan_delegate":
-      return translations.sourceVulcanDelegate;
-    case "webhook":
-      return "Webhook";
-    default:
-      return source
-        .split("_")
-        .filter(Boolean)
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join(" ");
-  }
-}
 
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
@@ -357,7 +277,14 @@ function MessageBubble({ msg, highlight }: { msg: SessionMessage; highlight?: st
       </div>
       {msg.content &&
         (msg.role === "system" ? (
-          <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">{msg.content}</div>
+          <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
+            {msg.content}
+          </div>
+        ) : shouldRenderStructuredReasoning(msg.role, msg.content) ? (
+          <StructuredReasoning
+            content={msg.content}
+            highlightTerms={highlightTerms}
+          />
         ) : (
           <Markdown content={msg.content} highlightTerms={highlightTerms} />
         ))}

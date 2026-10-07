@@ -95,6 +95,7 @@ export const uk: TranslationOverlay = {
   status: {
     actionFailed: "Дія не вдалася",
     actionFinished: "Завершено",
+    actionFinishedOwed: "Оновлено, але роботу ще не завершено (запустіть `hermes update` знову, щоб завершити)",
     actions: "Дії",
     agent: "Агент",
     activeSessions: "Активні сесії",

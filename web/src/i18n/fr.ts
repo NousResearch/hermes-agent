@@ -95,6 +95,7 @@ export const fr: TranslationOverlay = {
   status: {
     actionFailed: "Action échouée",
     actionFinished: "Terminé",
+    actionFinishedOwed: "Mis à jour, mais encore en attente (relancez `hermes update` pour terminer)",
     actions: "Actions",
     agent: "Agent",
     activeSessions: "Sessions actives",

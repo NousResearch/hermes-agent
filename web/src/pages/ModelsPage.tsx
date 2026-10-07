@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Brain, ChevronDown, Cpu, DollarSign, Eye, RefreshCw, Settings2, Star, Wrench, X, Zap } from "lucide-react";
 import { api } from "@/lib/api";
+import { localizedAuxTaskLabel, auxTaskRows } from "@/lib/aux-tasks";
 import type {
   AuxiliaryModelsResponse,
   AuxiliaryTaskAssignment,
@@ -37,22 +38,6 @@ const PERIODS = [
   { label: "7d", days: 7 },
   { label: "30d", days: 30 },
   { label: "90d", days: 90 },
-] as const;
-
-// Stable task IDs must match _AUX_TASK_SLOTS in hermes_cli/web_server.py;
-// user-facing labels and hints live under modelSettings.auxTasks in the catalog.
-const AUX_TASKS: readonly { key: string }[] = [
-  { key: "vision" },
-  { key: "compression" },
-  { key: "skills_hub" },
-  { key: "approval" },
-  { key: "mcp" },
-  { key: "title_generation" },
-  { key: "review" },
-  { key: "triage_specifier" },
-  { key: "kanban_decomposer" },
-  { key: "profile_describer" },
-  { key: "curator" },
 ] as const;
 
 function formatTokens(n: number): string {
@@ -208,6 +193,7 @@ function UseAsMenu({
   model,
   isMain,
   mainAuxTask,
+  auxTasks,
   onAssigned,
 }: {
   provider: string;
@@ -216,6 +202,8 @@ function UseAsMenu({
   isMain: boolean;
   /** If this model is assigned to a specific aux task, that task's key. */
   mainAuxTask: string | null;
+  /** Auxiliary rows as served (built-ins + plugin tasks); see auxTaskRows. */
+  auxTasks: AuxiliaryTaskAssignment[];
   onAssigned(): void;
 }) {
   const { t } = useI18n();
@@ -313,7 +301,7 @@ function UseAsMenu({
             <span>{t.modelSettings.allAuxiliaryTasks}</span>
           </button>
 
-          {AUX_TASKS.map((task) => (
+          {auxTaskRows(auxTasks).map((task) => (
             <button
               key={task.key}
               type="button"
@@ -321,7 +309,7 @@ function UseAsMenu({
               disabled={busy}
               className="flex w-full items-center justify-between px-3 py-1.5 text-xs uppercase hover:bg-muted/50 disabled:opacity-40"
             >
-              <span>{t.modelSettings.auxTasks[task.key]?.label ?? task.key}</span>
+              <span>{t.modelSettings.auxTasks[task.key]?.label ?? task.label}</span>
               {mainAuxTask === task.key && (
                 <span className="text-display text-xs tracking-wider text-primary">{t.modelPicker.currentTag}</span>
               )}
@@ -401,7 +389,7 @@ function ModelCard({
                 <span className="inline-flex items-center bg-purple-500/10 px-1.5 py-0.5 text-display text-xs font-medium tracking-wider text-purple-600 dark:text-purple-400">
                   {t.modelSettings.auxBadge.replace(
                     "{task}",
-                    t.modelSettings.auxTasks[mainAuxTask]?.label ?? mainAuxTask,
+                    localizedAuxTaskLabel(aux, mainAuxTask, t.modelSettings),
                   )}
                 </span>
               )}
@@ -443,6 +431,7 @@ function ModelCard({
               model={entry.model}
               isMain={isMain}
               mainAuxTask={mainAuxTask}
+              auxTasks={aux}
               onAssigned={onAssigned}
             />
           </div>
@@ -587,9 +576,15 @@ function AuxiliaryTasksModal({
         </header>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-1">
-          {AUX_TASKS.map((task) => {
+          {auxTaskRows(aux?.tasks).map((task) => {
             const cur = aux?.tasks.find((a) => a.task === task.key);
-            const isAuto = !cur || cur.provider === "auto" || !cur.provider;
+            const isAuto =
+              !cur || cur.provider === "auto" || !cur.provider;
+            const eff = cur?.effective;
+            const effRoute =
+              eff?.provider && eff.provider !== "auto"
+                ? `${eff.provider} · ${eff.model || `(${t.modelSettings.providerDefault})`}`
+                : t.modelSettings.autoUseMain;
             const copy = t.modelSettings.auxTasks[task.key];
             return (
               <div
@@ -598,15 +593,35 @@ function AuxiliaryTasksModal({
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
-                    <span className="text-xs font-medium">{copy?.label ?? task.key}</span>
-                    <span className="text-xs text-text-tertiary">{copy?.hint ?? ""}</span>
+                    <span className="text-xs font-medium">{copy?.label ?? task.label}</span>
+                    <span className="text-xs text-text-tertiary">{copy?.hint ?? task.hint}</span>
                   </div>
                   <div className="text-xs font-mono text-text-secondary truncate">
-                    {isAuto
-                      ? t.modelSettings.autoUseMain
-                      : `${cur?.provider} · ${cur?.model || `(${t.modelSettings.providerDefault})`}`}
+                    {isAuto && task.inheritFrom
+                      ? t.modelSettings.inheritsFrom.replace("{task}", localizedAuxTaskLabel(aux?.tasks, task.inheritFrom, t.modelSettings)).replace("{route}", effRoute)
+                      : isAuto
+                        ? t.modelSettings.autoUseMain
+                        : `${cur?.provider} · ${cur?.model || `(${t.modelSettings.providerDefault})`}`}
                   </div>
                 </div>
+                {task.inheritFrom && !isAuto && (
+                  <Button
+                    size="sm"
+                    outlined
+                    onClick={async () => {
+                      await api.setModelAssignment({
+                        scope: "auxiliary",
+                        task: task.key,
+                        provider: "auto",
+                        model: "",
+                      });
+                      onSaved();
+                    }}
+                    className="h-6 text-xs uppercase"
+                  >
+                    {t.modelSettings.followTask.replace("{task}", localizedAuxTaskLabel(aux?.tasks, task.inheritFrom!, t.modelSettings))}
+                  </Button>
+                )}
                 <Button
                   size="sm"
                   outlined
@@ -628,7 +643,7 @@ function AuxiliaryTasksModal({
             currentAssignment={assignmentToPickerCurrent(aux?.tasks.find((a) => a.task === picker.task))}
             title={t.modelSettings.setAuxiliary.replace(
               "{task}",
-              t.modelSettings.auxTasks[picker.task]?.label ?? picker.task,
+              localizedAuxTaskLabel(aux?.tasks, picker.task, t.modelSettings),
             )}
             onApply={async ({ provider, model, confirmExpensiveModel }) => {
               const result = await api.setModelAssignment({
@@ -983,7 +998,10 @@ function ModelSettingsPanel({
   };
 
   // Count how many aux tasks have overrides
-  const auxOverrideCount = aux?.tasks.filter((a) => a.provider && a.provider !== "auto").length ?? 0;
+  const auxOverrideCount = aux?.tasks.filter(
+    (a) => a.provider && a.provider !== "auto",
+  ).length ?? 0;
+  const auxTaskCount = auxTaskRows(aux?.tasks).length;
 
   return (
     <Card className="min-w-0 max-w-full overflow-hidden">
@@ -1031,8 +1049,8 @@ function ModelSettingsPanel({
               {auxOverrideCount > 0
                 ? t.modelSettings.overrideSummary
                     .replace("{overrides}", String(auxOverrideCount))
-                    .replace("{automatic}", String(AUX_TASKS.length - auxOverrideCount))
-                : t.modelSettings.allAutoSummary.replace("{count}", String(AUX_TASKS.length))}
+                    .replace("{automatic}", String(auxTaskCount - auxOverrideCount))
+                : t.modelSettings.allAutoSummary.replace("{count}", String(auxTaskCount))}
             </div>
           </div>
           <Button

@@ -890,6 +890,14 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     # alias metadata (``canonical_model`` / ``reasoning_effort``) the id list flattens.
     entries = _parse_model_entries(resp)
     ids = [e["id"] for e in entries]
+    if not ids:
+        # A 200 that parses to zero models is the SPA-catch-all signature (#83128): a real
+        # OpenAI-compatible /models answers JSON with a usable list. ``_parse_model_entries``
+        # is lenient by design, so classify the empty result here instead of reporting
+        # success. ok:false + reachable:true is a warning in the UI — Save stays possible
+        # for endpoints that legitimately expose no model list.
+        return {"ok": False, "reachable": True, "message": _no_models_probe_message(resp, resolved),
+                "models": [], "model_details": [], "resolved_base_url": resolved}
     # /models answering proves nothing about the transport the runtime will POST to:
     # a Responses-only host lists models fine and 404s every /chat/completions (#93622).
     # Probe the route the saved mode (or the runtime's URL auto-detect) actually uses, on the
@@ -907,6 +915,30 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     if missing:
         result.update(ok=False, message=missing)
     return result
+
+def _no_models_probe_message(resp: Any, base_url: str) -> str:
+    """Why a 200 ``/models`` probe yielded no usable models (#83128).
+
+    Distinguishes the three ways that happens — a non-JSON body (an SPA catch-all serves
+    HTML for every route, so 200 proves nothing), a JSON body without a model list, and a
+    genuinely empty list — mirroring the onboarding store's wording for the last case.
+    """
+    url = base_url + "/models"
+    content_type = (resp.headers.get("content-type") or "").split(";")[0].strip()
+    try:
+        payload = resp.json()
+    except ValueError:  # json.JSONDecodeError — a non-JSON body (HTML, plain text) is the case being named
+        payload = None
+    if not isinstance(payload, (dict, list)):
+        kind = content_type or "a non-JSON body"
+        return (f"Connected to {url}, but it returned {kind} instead of a JSON model list — "
+                "the URL may be an SPA catch-all or a wrong base URL, not an OpenAI-compatible API.")
+    data = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(data, list):
+        return f"Connected to {url}, but its response is not an OpenAI-compatible model list."
+    return (f"Connected to {url}, but it advertised no models. "
+            "Start a model on that endpoint and try again.")
+
 
 async def _probe_openai_compatible_models(base_url: str, headers: Optional[dict]) -> Tuple[str, Any]:
     """GET ``{base}/models``, then ``{base}/v1/models`` (or the ``/v1``-stripped variant) when the

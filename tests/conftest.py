@@ -385,10 +385,6 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     monkeypatch.setenv("AWS_METADATA_SERVICE_TIMEOUT", "1")
     monkeypatch.setenv("AWS_METADATA_SERVICE_NUM_ATTEMPTS", "1")
-    # Tirith auto-installs from GitHub when enabled and missing. Unit tests
-    # should never perform that implicit network/bootstrap path; Tirith-specific
-    # tests opt back in by patching the security config directly.
-    monkeypatch.setenv("TIRITH_ENABLED", "false")
     # On-demand extras (pm.sync_venv) install mid-test-run by design —
     # _allow_lazy_installs() fails open for users. Unit tests must never reach
     # pip/the network: with the SDK absent, any agent init whose tool checks

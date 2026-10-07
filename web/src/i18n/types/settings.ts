@@ -402,6 +402,8 @@ export interface SettingsTranslations {
   }
 
   files: {
+    brokenSymbolicLink: string
+    brokenLink: string
     root: string
     refresh: string
     path: string

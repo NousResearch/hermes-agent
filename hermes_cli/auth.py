@@ -54,7 +54,7 @@ from hermes_cli.auth_nous import (  # noqa: F401  re-exported
     _compute_nous_auth_status, _format_nous_entitlement_auth_error, _healed_nous_inference_url,
     _login_nous, _merge_shared_nous_oauth_state, _migrate_stale_nous_portal_url,
     _nous_device_code_login, _nous_inference_env_override, _nous_invoke_jwt_is_usable,
-    _nous_invoke_jwt_status, _nous_portal_env_override, _nous_shared_store_lock,
+    _nous_invoke_jwt_status, _nous_portal_base_url, _nous_portal_env_override, _nous_shared_store_lock,
     _nous_shared_store_path, _pool_first_oauth_status, _quarantine_nous_oauth_state,
     _quarantine_nous_pool_entries, _read_shared_nous_state, _refresh_access_token,
     _refresh_nous_or_quarantine, _select_nous_invoke_jwt, _sync_nous_pool_from_auth_store,
@@ -1806,31 +1806,28 @@ _RESOLVE_TOKEN_CACHE: "dict[str, tuple[float, str]]" = {}
 _RESOLVE_TOKEN_CACHE_TTL_S = 5.0
 
 
-def _nous_portal_base_url(state: Dict[str, Any]) -> str:
-    """HERMES_PORTAL_BASE_URL / NOUS_PORTAL_BASE_URL is the trusted operator override and wins
-    OUTRIGHT, bypassing the host allowlist (which exists to reject an untrusted network-provided
-    value, not one the operator configured). Otherwise the stored/default value, allowlist-gated."""
-    env_portal_override = _nous_portal_env_override()
-    if env_portal_override:
-        return env_portal_override.rstrip("/")
-    portal_base_url = _optional_base_url(state.get("portal_base_url")) or DEFAULT_NOUS_PORTAL_URL
-    portal_base_url = portal_base_url.rstrip("/")
-    host = urlparse(portal_base_url).hostname
-    if host and host not in _NOUS_PORTAL_ALLOWED_HOSTS:
-        logger.warning(
-            "auth: ignoring invalid portal_base_url %r (host %r not in allowlist), using default",
-            portal_base_url, host)
-        return DEFAULT_NOUS_PORTAL_URL
-    return portal_base_url
-
-
 def resolve_nous_access_token(
     *,
     timeout_seconds: float = 15.0,
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     refresh_skew_seconds: int = ACCESS_TOKEN_REFRESH_SKEW_SECONDS) -> str:
-    """Resolve a refresh-aware Nous Portal access token for managed tool gateways."""
+    """Resolve a refresh-aware Nous Portal access token for managed tool gateways.
+
+    A free-tier exchange may be answered with a browser challenge (``anon_challenge``); it is worked
+    here, after the exchange's locks have unwound, and the exchange is then run once more."""
+    from hermes_cli.anon_challenge import run_with_challenge
+    return run_with_challenge(lambda: _resolve_nous_access_token(
+        timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle,
+        refresh_skew_seconds=refresh_skew_seconds))
+
+
+def _resolve_nous_access_token(
+    *,
+    timeout_seconds: float,
+    insecure: Optional[bool],
+    ca_bundle: Optional[str],
+    refresh_skew_seconds: int) -> str:
     # Only a default-TLS resolution is memoised; error paths never populate the memo.
     memoable = not insecure and ca_bundle is None
     cache_key = hermes_home_key()

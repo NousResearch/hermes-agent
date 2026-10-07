@@ -862,3 +862,129 @@ class A2AAdapter(BasePlatformAdapter):
                 ProcessingOutcome.FAILURE: (protocol.STATE_FAILED, "[agent processing failed]"),
                 ProcessingOutcome.CANCELLED: (protocol.STATE_CANCELED, ""),
             }.get(outcome, default))
+
+
+# A2A is request/response over JSON-RPC — the live adapter's send() only
+# fulfils a *pending inbound task*. Cron jobs run in a separate process with
+# no live adapter, so they need an independent sender that opens its own
+# HTTP call to the peer. Mirrors the standalone_sender_fn contract used by
+# every other platform (wecom/telegram/slack/...). Added 2026-08-23 to fix
+# "早安·娜娜" cron delivery: "No live adapter for platform 'a2a'".
+
+def _standalone_peer_for_chat(chat_id: str) -> Optional[dict]:
+    """Map a cron deliver target (e.g. ``a2a:studio1`` / ``a2a:ctx-...``) to a
+    configured peer dict + agent label.
+
+    Resolution order:
+      1. If the chat id (after stripping ``a2a:``) names a configured
+         ``a2a_agents`` entry (or is a full URL), use it directly.
+      2. Otherwise look up the name in channel_directory (id -> name like
+         ``a2a:studio1``) and resolve that.
+      3. Fall back to the first configured peer.
+    """
+    import yaml as _yaml
+
+    def _load_cfg():
+        try:
+            from hermes_cli.config import load_config
+            return load_config() or {}
+        except Exception:
+            try:
+                p = os.path.expanduser("~/.hermes/config.yaml")
+                with open(p) as f:
+                    return _yaml.safe_load(f) or {}
+            except Exception:
+                return {}
+
+    def _resolve(agent: str) -> Optional[dict]:
+        if agent.startswith("http://") or agent.startswith("https://"):
+            return {"url": agent, "auth": {}, "timeout": 120}
+        cfg = _load_cfg()
+        peers = cfg.get("a2a_agents") or {}
+        entry = peers.get(agent)
+        if not entry:
+            return None
+        return {
+            "url": entry.get("url", ""),
+            "auth": entry.get("auth", {}) or {},
+            "timeout": int(entry.get("timeout", 120)),
+        }
+
+    raw = str(chat_id or "").strip()
+    if raw.startswith("a2a:"):
+        raw = raw[len("a2a:"):]
+    if raw.startswith("ctx-"):
+        # Context id — find the peer name from channel_directory (id -> name).
+        try:
+            cd = json.load(open(os.path.expanduser("~/.hermes/channel_directory.json")))
+            for ch in (cd.get("platforms", {}).get("a2a", []) or []):
+                if ch.get("id") == raw:
+                    name = str(ch.get("name") or "")
+                    if name.startswith("a2a:"):
+                        agent = name[len("a2a:"):]
+                        peer = _resolve(agent)
+                        if peer and peer.get("url"):
+                            return {"agent": agent, "peer": peer, "context": raw}
+        except Exception:
+            pass
+        # Fall through to first configured peer, keeping context id.
+        cfg = _load_cfg()
+        peers = cfg.get("a2a_agents") or {}
+        if peers:
+            agent = next(iter(peers))
+            peer = _resolve(agent)
+            if peer and peer.get("url"):
+                return {"agent": agent, "peer": peer, "context": raw}
+        return None
+    if raw:
+        peer = _resolve(raw)
+        if peer and peer.get("url"):
+            return {"agent": raw, "peer": peer, "context": None}
+    cfg = _load_cfg()
+    peers = cfg.get("a2a_agents") or {}
+    if peers:
+        agent = next(iter(peers))
+        peer = _resolve(agent)
+        if peer and peer.get("url"):
+            return {"agent": agent, "peer": peer, "context": None}
+    return None
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+):
+    """Standalone A2A delivery for cron / out-of-process sends.
+
+    Opens a direct JSON-RPC ``message/send`` call to the peer (no live
+    adapter needed). Returns the standard dict contract used by the cron
+    delivery layer.
+    """
+    if media_files:
+        return {"error": "A2A standalone send does not support media files yet"}
+    resolved = _standalone_peer_for_chat(chat_id)
+    if not resolved:
+        return {"error": f"A2A: no peer configured for chat_id '{chat_id}'"}
+    agent = resolved["agent"]
+    peer = resolved["peer"]
+    context = resolved["context"]
+    try:
+        # Reuse the shared synchronous send path from tools.py (redaction,
+        # audit, persistence, HTTP POST all handled there).
+        from .tools import _send_task
+        reply, ctx, state = _send_task(agent, peer, message, context)
+        return {
+            "success": True,
+            "platform": "a2a",
+            "chat_id": chat_id,
+            "reply": reply,
+            "context_id": ctx,
+            "note": "A2A standalone send completed",
+        }
+    except Exception as exc:
+        return {"error": f"A2A standalone send failed: {exc}"}

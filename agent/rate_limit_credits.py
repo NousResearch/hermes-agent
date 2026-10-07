@@ -67,6 +67,29 @@ class RateLimitCreditsMixin:
         aggregated ``Message`` drops them). Fail-open."""
         self._capture_rate_limits(http_response)
         self._capture_credits(http_response)
+        self._bench_spent_subscription_window(http_response)
+
+    def _bench_spent_subscription_window(self, http_response: Any) -> None:
+        """Record a spent Anthropic plan window on the pool entry that served this response, so
+        selection skips it until the reset. Fail-open."""
+        headers = _response_headers(http_response)
+        pool = getattr(self, "_credential_pool", None)
+        if not headers or pool is None:
+            return
+        try:
+            from agent.credential_pool_quota_window import spent_quota_reset_at
+            reset_at = spent_quota_reset_at(headers)
+            if reset_at is None:
+                return
+            raw_id = getattr(self, "_credential_pool_entry_id", None)
+            pool.mark_quota_exhausted(
+                reset_at=reset_at, credential_id=raw_id if isinstance(raw_id, str) and raw_id else None,
+                # The token this request actually sent: the per-request credential refresh can swap
+                # it under a stale ``api_key`` / entry id, and the pool trusts the key when they disagree.
+                api_key_hint=getattr(self, "_anthropic_api_key", None) or getattr(self, "api_key", None) or None,
+            )
+        except Exception:
+            logger.debug("spent subscription window bench failed", exc_info=True)
 
     def _capture_credits(self, http_response: Any) -> None:
         """Parse x-nous-credits-* headers, cache CreditsState, fire threshold notices.

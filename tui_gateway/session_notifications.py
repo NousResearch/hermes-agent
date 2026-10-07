@@ -161,13 +161,17 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
 
 
 def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> None:
-    """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure."""
+    """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure.
+    The text is notification-formatted (worker summaries, process output), never
+    composer input, so it reaches the turn literally — expanding it would let a
+    worker summary attach local files, and a refused expansion drops an event the
+    poller already claimed (#134703)."""
     try:
         from gateway.warning_notifications import render_notification
         with _session_profile_runtime_scope(session):
             render_notification(lambda: _emit("message.start", sid), platform="tui",
                                 diagnostic=(kwargs.get("display_metadata") or {}).get("notification_category") == "diagnostic")
-        _run_prompt_submit(rid, sid, session, text, **kwargs)
+        _run_prompt_submit(rid, sid, session, text, expand_references=False, **kwargs)
     except Exception as exc:
         _notif_log_failure(what, exc)
         _notif_release_turn(session)
@@ -252,7 +256,8 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     started = False
     try:
         _emit("status.update", sid, {"kind": "heartbeat", "text": f"♥ heartbeat #{mgr.state.fire_count} firing…"})
-        started = bool(_run_prompt_submit(f"__heartbeat__{int(time.time() * 1000)}", sid, session, prompt))
+        started = bool(_run_prompt_submit(f"__heartbeat__{int(time.time() * 1000)}", sid, session, prompt,
+                                          expand_references=False))
     except Exception as exc:
         _notif_log_failure("heartbeat dispatch failed", exc)
     if not started:
@@ -294,7 +299,7 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
             _notif_slash_loop_tick(rid, sid, session, mgr, wakeup)
         else:
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, wakeup)
+            _run_prompt_submit(rid, sid, session, wakeup, expand_references=False)
     except Exception as exc:
         _notif_log_failure("loop wakeup dispatch failed", exc)
         _notif_release_turn(session)
@@ -667,9 +672,12 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
                           error=error, reason=reason)
 
     try:
+        # The messaging gateway already @-expanded this inbound human text
+        # (run_inbound) before persisting the delivery; re-expanding here would
+        # double-process it (#134703).
         started = _run_prompt_submit(f"__bot_dm__{delivery_id}", sid, session, claimed["message"],
                                      image_paths=[], terminal_callback=terminal_receipt,
-                                     turn_author=claimed.get("author") or None,
+                                     turn_author=claimed.get("author") or None, expand_references=False,
                                      **({"display_metadata": {"notification_category": "diagnostic"}}
                                         if claimed.get("notification_category") == "diagnostic" else {}))
     except Exception as exc:

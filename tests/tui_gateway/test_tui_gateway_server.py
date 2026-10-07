@@ -11757,6 +11757,83 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
     assert captured["prompt"] == "expanded prompt"
 
 
+def test_synthesized_turn_text_is_not_reference_expanded(monkeypatch):
+    """#134703: notification/wake-up/goal turns carry machine-generated text (worker
+    summaries embed @file:/@folder:/@git:), never composer input. Expanding them
+    would let a worker attach local files into the prompt — and a refused
+    expansion returns None after the event was claimed, silently dropping it.
+    expand_references=False keeps the text literal with no expansion machinery."""
+    captured = {}
+    calls = []
+
+    class _Agent:
+        model = "test/model"
+        base_url = ""
+        api_key = ""
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            captured["prompt"] = prompt
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, **_thread_options):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    fake_calls = calls
+
+    def _must_not_expand(message, **kwargs):
+        fake_calls.append(message)
+        raise AssertionError("synthesized turns must not reach @-expansion")
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr("agent.context_references.preprocess_context_references", _must_not_expand)
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length",
+                        lambda *args, **kwargs: 100000)
+
+    started = server._run_prompt_submit(
+        "rid", "sid", server._sessions["sid"], "done; see @file:notes.txt and @folder:.",
+        display_kind="notification", expand_references=False)
+
+    assert started is True
+    assert calls == []
+    assert captured["prompt"] == "done; see @file:notes.txt and @folder:."
+
+
+def test_notif_submit_marks_the_turn_literal(monkeypatch):
+    """The notification lanes (_notif_submit: Kanban completions, process batches)
+    must hand _run_prompt_submit expand_references=False — the text embeds worker
+    summaries, and the composer-only default must not leak onto it (#134703)."""
+    captured_kwargs = {}
+
+    def _fake_submit(rid, sid, session, text, **kwargs):
+        captured_kwargs.update(kwargs)
+        return True
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _fake_submit)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_session_profile_runtime_scope",
+                        lambda session: contextlib.nullcontext())
+    monkeypatch.setattr(
+        "gateway.warning_notifications.render_notification",
+        lambda announce, **_kwargs: announce())
+
+    session = {"history_lock": threading.Lock(), "running": True, "history": []}
+    server._notif_submit("rid", "sid", session, "@worker summary with @file:notes.txt", "kanban")
+
+    assert captured_kwargs.get("expand_references") is False
+    assert session["running"] is True  # a started turn keeps the claim; no failure release
+
+
 def test_image_attach_appends_local_image(monkeypatch):
     fake_cli = types.ModuleType("cli")
     fake_cli._IMAGE_EXTENSIONS = {".png"}
@@ -19496,7 +19573,7 @@ def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
     turns = []
     emitted = []
 
-    def _fake_run_prompt_submit(rid, sid, session, text):
+    def _fake_run_prompt_submit(rid, sid, session, text, **_kwargs):
         turns.append(text)
         with session["history_lock"]:
             session["running"] = False

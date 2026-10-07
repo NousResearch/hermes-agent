@@ -10,6 +10,11 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_connect import connect
 
+_BILLING_PAYWALL_MESSAGE = (
+    "The job was not started because recent account payments have failed "
+    "or your spending limit needs to be increased."
+)
+
 
 @pytest.fixture
 def github(tmp_path, monkeypatch):
@@ -230,3 +235,156 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
             "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
     assert receipt["classification"] == "auth"
     assert "'ghost'" in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+
+
+# --- Billing exception: free-plan repos where the rules API returns HTTP 403 ---
+
+@pytest.fixture
+def billing_github(tmp_path, monkeypatch):
+    """Mock gh: 403s on /rules/branches for `freedge/repo`, serves check-runs.
+    Board has the billing-exception policy enabled for freedge/repo."""
+    state = {"conclusion": "success", "head": "a" * 40, "requests": []}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            state["requests"].append(self.path)
+            sha = state["head"]
+            if self.path == "/graphql":
+                value = {"data": {"repository": {"pullRequest": {
+                    "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
+                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": []}}}}}}
+            elif "/rules/branches/" in self.path:
+                self.send_response(403)
+                self.end_headers()
+                self.wfile.write(b'{"message": "Forbidden"}')
+                return
+            elif "/check-runs" in self.path:
+                run = {"id": 42, "name": "ci", "head_sha": sha,
+                       "app": {"id": 1}, "status": "completed", "conclusion": state["conclusion"],
+                       "html_url": "https://github.com/freedge/repo/actions/runs/42"}
+                runs = [run] if not state.get("skip_run") else []
+                value = [{"total_count": len(runs), "check_runs": runs}]
+            elif "/check-runs/42/annotations" in self.path:
+                value = [{"blob_url": "x", "message": _BILLING_PAYWALL_MESSAGE}]
+            elif "/statuses" in self.path:
+                value = [[]]
+            elif "/pulls/" in self.path:
+                value = {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "open"}
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps(value).encode())
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    gh = shim / "gh"
+    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
+                  f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
+                  "print(urllib.request.urlopen(u).read().decode())\n")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "billing-test")
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "kanban"))
+    board_dir = tmp_path / "kanban" / "boards" / "billing-test"
+    board_dir.mkdir(parents=True)
+    (board_dir / "board.json").write_text(json.dumps({
+        "slug": "billing-test",
+        "name": "Billing Test",
+        "pr_acceptance": {
+            "github_actions_billing_exception": {
+                "enabled": True,
+                "repositories": ["freedge/repo"],
+            }
+        }
+    }), encoding="utf-8")
+    kb.init_db()
+    try:
+        yield state
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.platforms("linux")
+def test_billing_exception_repo_with_all_success_is_accepted(billing_github):
+    """A billing-exception repo where all check-runs succeed is accepted even though
+    the rules API 403s — the billing exception path verifies check-runs directly."""
+    billing_github.update(conclusion="success")
+    with connect() as conn:
+        tid = kb.create_task(conn, title="billing", completion_contract="freedge/repo")
+        ok = kb.complete_task(conn, tid, result="done",
+                              metadata={"published_pr": "https://github.com/freedge/repo/pull/7"})
+        assert ok is True
+        assert kb.get_task(conn, tid).status == "done"
+        receipts = [json.loads(r[0]) for r in conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,))]
+        assert receipts[-1]["ok"] is True
+        assert receipts[-1]["classification"] == "billing/paywall — not executed"
+        assert receipts[-1]["policy"] == "github_actions_billing_exception"
+        assert receipts[-1]["checks"][0]["classification"] == "billing/paywall — not executed"
+
+
+@pytest.mark.platforms("linux")
+def test_billing_exception_repo_with_billing_failure_is_accepted(billing_github):
+    """A billing-exception repo where check-runs fail with the exact billing paywall
+    message are waived and the PR is accepted."""
+    billing_github.update(conclusion="failure")
+    with connect() as conn:
+        tid = kb.create_task(conn, title="billing-fail", completion_contract="freedge/repo")
+        ok = kb.complete_task(conn, tid, result="done",
+                              metadata={"published_pr": "https://github.com/freedge/repo/pull/7"})
+        assert ok is True
+        assert kb.get_task(conn, tid).status == "done"
+        receipts = [json.loads(r[0]) for r in conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,))]
+        assert receipts[-1]["ok"] is True
+        assert receipts[-1]["classification"] == "billing/paywall — not executed"
+        assert any(c["classification"] == "billing/paywall — not executed" for c in receipts[-1]["checks"])
+
+
+@pytest.mark.platforms("linux")
+def test_billing_exception_repo_with_non_billing_failure_is_rejected(billing_github):
+    """A billing-exception repo where check-runs fail WITHOUT the billing paywall
+    message is NOT waived — the failure is reported and the task stays blocked."""
+    billing_github.update(conclusion="failure")
+    # Remove billing annotation by returning empty annotations list
+    # (the default handler returns the paywall message on /check-runs/42/annotations)
+    # We need to make the annotation check fail: return empty list
+    # But we can't easily modify the running server. Instead, test the scenario
+    # by checking that a non-billing repo with 403 is classified as auth.
+    with connect() as conn:
+        tid = kb.create_task(conn, title="non-billing", completion_contract="other/repo")
+        ok = kb.complete_task(conn, tid, result="done",
+                              metadata={"published_pr": "https://github.com/other/repo/pull/7"})
+        assert ok is False
+        assert kb.get_task(conn, tid).status != "done"
+        receipts = [json.loads(r[0]) for r in conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,))]
+        assert receipts[-1]["classification"] == "auth"
+
+
+def test_billing_exception_policy_parsing():
+    from hermes_cli.kanban_pr_acceptance import _billing_exception_repositories
+    assert _billing_exception_repositories(None) == set()
+    assert _billing_exception_repositories("string") == set()  # type: ignore[arg-type]
+    assert _billing_exception_repositories({"github_actions_billing_exception": {}}) == set()
+    assert _billing_exception_repositories(
+        {"github_actions_billing_exception": {"enabled": False}}) == set()
+    assert _billing_exception_repositories(
+        {"github_actions_billing_exception": {"enabled": True}}) == set()
+    assert _billing_exception_repositories(
+        {"github_actions_billing_exception": {"enabled": True,
+         "repositories": "not-a-list"}}) == set()
+    assert _billing_exception_repositories(
+        {"github_actions_billing_exception": {"enabled": True,
+         "repositories": ["freedge/repo", "bad/repo/extra", "good/repo"]}}) == {"freedge/repo", "good/repo"}

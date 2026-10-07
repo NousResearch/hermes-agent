@@ -1410,3 +1410,152 @@ def test_local_turn_relays_utf8_reply_under_a_gbk_default_codec(tmp_path, monkey
 
     assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
     assert reply in capsys.readouterr().out
+
+
+# ── structured context ──────────────────────────────────────────────────────
+#
+# `context` is a convenience for the READER, not a trust boundary: the sending
+# model writes every value in it. The tests below pin the encoding and the
+# validation, and the last one pins the warning that says so — if that text is
+# ever dropped, the feature starts reading like authorization.
+
+
+def test_context_rides_the_body_as_a_fenced_json_block(tmp_path, monkeypatch):
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(
+            target="researcher",
+            message="Order 4812 is short-paid.",
+            context={"order_id": 4812, "currency": "MYR", "settled": False},
+            agent=agent,
+        )
+    )
+    assert result["status"] == "queued"
+
+    _mode, dm_file, _argv = _runner_parts(calls[0]["command"])
+    content = Path(dm_file).read_text(encoding="utf-8")
+
+    # prose first, then one canonical spelling of each fact
+    assert content.startswith("Message from 🤖 hermes (@hermes): ")
+    assert "Order 4812 is short-paid." in content
+    assert "```json context" in content
+    block = content.split("```json context", 1)[1].split("```", 1)[0]
+    assert json.loads(block) == {
+        "order_id": 4812,
+        "currency": "MYR",
+        "settled": False,
+    }
+    # never on the command line — same rule the message body follows
+    assert "4812" not in calls[0]["command"]
+
+
+def test_context_is_optional_and_absent_changes_nothing(tmp_path, monkeypatch):
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    bot_mode_dm.message_agent_tool(
+        target="researcher", message="plain message", agent=agent
+    )
+    _mode, dm_file, _argv = _runner_parts(calls[0]["command"])
+    content = Path(dm_file).read_text(encoding="utf-8")
+    assert content == "Message from 🤖 hermes (@hermes): plain message"
+    assert "```" not in content
+
+
+def test_context_accepts_a_json_string(tmp_path, monkeypatch):
+    """Models routinely serialize object arguments; refusing that is a papercut."""
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    bot_mode_dm.message_agent_tool(
+        target="researcher",
+        message="see attached",
+        context='{"ticket": "OPS-91"}',
+        agent=agent,
+    )
+    _mode, dm_file, _argv = _runner_parts(calls[0]["command"])
+    block = Path(dm_file).read_text(encoding="utf-8").split("```json context", 1)[1]
+    assert json.loads(block.split("```", 1)[0]) == {"ticket": "OPS-91"}
+
+
+def test_context_reaches_a_peer_delivery_too(tmp_path, monkeypatch):
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, peers=("spark",))
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    bot_mode_dm.message_agent_tool(
+        target="spark/researcher",
+        message="handing over",
+        context={"run_id": "r-77"},
+        agent=agent,
+    )
+    _mode, dm_file, _argv = _runner_parts(calls[0]["command"])
+    assert '"run_id": "r-77"' in Path(dm_file).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "bad, needle",
+    [
+        ({"nested": {"a": 1}}, "nested objects"),
+        ({"arr": [1, 2]}, "nested objects"),
+        ({"1bad": "x"}, "invalid"),
+        ({"has space": "x"}, "invalid"),
+        ("not json at all", "must be a JSON object"),
+        ([1, 2, 3], "must be a JSON object"),
+    ],
+)
+def test_context_rejects_what_it_cannot_carry(tmp_path, monkeypatch, bad, needle):
+    """Reject rather than coerce: a flattened value is not what the caller wrote."""
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(
+            target="researcher", message="hi", context=bad, agent=agent
+        )
+    )
+    assert needle in result["error"]
+    assert "status" not in result
+    assert calls == []  # nothing delivered
+
+
+def test_context_size_limits(tmp_path, monkeypatch):
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    too_many = {f"k{i}": i for i in range(bot_mode_dm.CONTEXT_MAX_KEYS + 1)}
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(
+            target="researcher", message="hi", context=too_many, agent=agent
+        )
+    )
+    assert "too many keys" in result["error"]
+
+    too_big = {"blob": "x" * (bot_mode_dm.CONTEXT_MAX_CHARS + 50)}
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(
+            target="researcher", message="hi", context=too_big, agent=agent
+        )
+    )
+    assert "too large" in result["error"]
+    assert calls == []
+
+
+def test_schema_declares_context_and_warns_it_is_not_proof(tmp_path):
+    """The 'not proof' wording is load-bearing: it is what stops a reader
+    treating a model-written id as authenticated identity."""
+    schema = bot_mode_dm.message_agent_tool_schema()
+    props = schema["function"]["parameters"]["properties"]
+    assert "context" in props
+    assert props["context"]["type"] == "object"
+    assert schema["function"]["parameters"]["required"] == ["target", "message"]
+    desc = props["context"]["description"].lower()
+    assert "not proof" in desc
+    assert "must not authorize" in desc

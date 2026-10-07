@@ -53,10 +53,63 @@ _LIVE_WAIT_SECONDS = 300
 # sender's notify slot: past this the runner reports pending (do not resend) and exits.
 _LIVE_WAIT_MAX_SECONDS = 30 * 60
 
+# `context` carries FACTS the recipient would otherwise parse back out of prose (an id, a ticket
+# number, an amount), rendered as a fenced JSON block after the message. NOT a trust boundary:
+# every key is written by the SENDING MODEL, so it is exactly as trustworthy as the prose beside
+# it. Never authorize on a value that arrived this way.
+CONTEXT_MAX_KEYS = 16
+CONTEXT_MAX_CHARS = 2000
+_CONTEXT_KEY_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,63}$")
+# Scalars only: a nested object invites a schema, and a schema invites the belief that the
+# receiver can trust its shape.
+_CONTEXT_SCALARS = (str, int, float, bool)
+
 # '<peer>/<agent>' — peer names are lowercase (``hermes peer`` normalizes them).
 _PEER_TARGET_RE = re.compile(r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$")
 # Same shape as ``tools.bot_relay._HANDLE_RE`` (kept local: see import note above).
 _LOCAL_TARGET_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
+
+
+def _validate_context(raw: Any) -> tuple[Optional[dict], Optional[str]]:
+    """``(context, None)`` or ``(None, error)``. A flat mapping of scalars, or a JSON string of one
+    (models routinely serialize object arguments). Anything else is rejected, never flattened: a
+    caller who sent a nested object meant something this channel does not carry."""
+    if raw is None or raw == "":
+        return None, None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return None, "context must be a JSON object (or omitted)."
+    if not isinstance(raw, dict):
+        return None, "context must be a JSON object of scalar values (or omitted)."
+    if len(raw) > CONTEXT_MAX_KEYS:
+        return None, f"context has too many keys ({len(raw)} > {CONTEXT_MAX_KEYS})."
+    out: dict = {}
+    for key, val in raw.items():
+        k = str(key)
+        if not _CONTEXT_KEY_RE.match(k):
+            return None, (f"context key {k!r} is invalid — use letters, digits and "
+                          "underscores, starting with a letter.")
+        if val is not None and not isinstance(val, _CONTEXT_SCALARS):
+            return None, (f"context value for {k!r} must be a string, number, boolean or "
+                          "null — nested objects and arrays are not carried.")
+        out[k] = val
+    rendered = json.dumps(out, ensure_ascii=False, sort_keys=True)
+    if len(rendered) > CONTEXT_MAX_CHARS:
+        return None, (f"context too large ({len(rendered)} chars > {CONTEXT_MAX_CHARS}). "
+                      "Send the essentials; share bulk data as a file path instead.")
+    return (out or None), None
+
+
+def _render_context(context: Optional[dict]) -> str:
+    """The block appended to a delivered message, or ''. Rendered into the body rather than out of
+    band so all three delivery paths carry it unchanged. NOT AUTHORIZATION: a `chat_jid` or
+    `account_id` that arrives this way is a hint to look something up, never proof of who asks."""
+    if not context:
+        return ""
+    return ("\n\n```json context\n"
+            + json.dumps(context, ensure_ascii=False, indent=2, sort_keys=True) + "\n```")
 
 
 def _default_home() -> str:
@@ -111,6 +164,23 @@ def message_agent_tool_schema() -> dict:
                             "The message YOU composed for that agent (max "
                             f"{MESSAGE_MAX_CHARS} chars). Do not include the "
                             "'Message from …' prefix — it is added automatically."
+                        ),
+                    },
+                    "context": {
+                        "type": "object",
+                        "description": (
+                            "OPTIONAL flat object of scalar facts the recipient "
+                            "should not have to parse out of your prose — an id, a "
+                            "ticket number, an amount, a status "
+                            "(e.g. {\"order_id\": 4812, \"currency\": \"MYR\"}). "
+                            f"Max {CONTEXT_MAX_KEYS} keys, {CONTEXT_MAX_CHARS} "
+                            "chars; values must be strings, numbers, booleans or "
+                            "null — no nested objects or arrays. It is delivered "
+                            "as a JSON block after your message, so still write "
+                            "the message so it reads on its own. This is a "
+                            "convenience for the reader, NOT proof of anything: "
+                            "you are writing these values, so the recipient must "
+                            "not authorize on them."
                         ),
                     },
                 },
@@ -198,7 +268,8 @@ def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | No
     return json.dumps(payload)
 
 
-def message_agent_tool(target: str = "", message: str = "", task_id: Optional[str] = None, agent: Any = None) -> str:
+def message_agent_tool(target: str = "", message: str = "", context: Any = None,
+                       task_id: Optional[str] = None, agent: Any = None) -> str:
     """Deliver ``message`` to ``target``'s Bot Chat. Returns a JSON ack/error.
     ``agent`` is the calling AIAgent — used for the Bot Chat gate and sender identity."""
     home = _agent_home(agent)
@@ -235,6 +306,12 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     if len(body) > MESSAGE_MAX_CHARS:
         return _err(f"message too long ({len(body)} chars > {MESSAGE_MAX_CHARS}). "
                     "Send the essentials; share large content as a file path instead.")
+    # Validated before any delivery path branches: a malformed context is one error to the
+    # sender, never a message delivered minus its context.
+    ctx, ctx_err = _validate_context(context)
+    if ctx_err:
+        return _err(ctx_err)
+    body += _render_context(ctx)
 
     raw_target = str(target or "").strip().lstrip("@")
     if not raw_target:

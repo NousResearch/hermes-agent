@@ -17,6 +17,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from agent.adaptive_reasoning import rebase_adaptive_turn
 from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
 from agent.memory_context import build_memory_context_block, sanitize_context
@@ -1257,6 +1258,7 @@ def build_turn_context(
         # turn starts, like an in-turn switch is announced when it happens: never after the answer. A
         # background wake turn leaves it pending for the next turn the user is watching.
         agent._emit_pending_fallback_notice()
+    rebase_adaptive_turn(agent)  # a restored primary baseline re-derives this turn's adjustment
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)
 

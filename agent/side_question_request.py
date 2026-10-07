@@ -49,13 +49,20 @@ class SideQuestionCapture:
     turn_id: str
     runtime: tuple  # runtime_key(parent) at capture
     context: contextvars.Context = field(repr=False)
+    # The level the captured request went out on; an adaptive turn's own level differs from the
+    # baseline ``runtime`` holds, and the fork replays it. None: the fork keeps the parent's level.
+    reasoning_config: Optional[dict[str, Any]] = None
 
 
 def runtime_key(agent: Any) -> tuple:
     """What decides which model the fork talks to and how: a turn routed elsewhere (voice chat)
     restores the main runtime after ``post_llm_call``, and the captured prompt must not go out
-    on it."""
-    return tuple(getattr(agent, name, None) for name in ("model", "provider", "base_url", "api_mode", "reasoning_config"))
+    on it. An adaptive-reasoning adjustment is the turn's own level, not a runtime: the key holds
+    the baseline the turn's end restores (``turn_baseline_reasoning``)."""
+    from agent.adaptive_reasoning import turn_baseline_reasoning
+
+    return (*(getattr(agent, name, None) for name in ("model", "provider", "base_url", "api_mode")),
+            turn_baseline_reasoning(agent))
 
 
 @dataclass
@@ -119,6 +126,8 @@ def _build_fork(parent: Any, capture: SideQuestionCapture) -> Any:
     fork.tools = capture.tools
     fork.valid_tool_names = {tool["function"]["name"] for tool in capture.tools}
     fork.session_id = capture.session_id
+    if capture.reasoning_config is not None:
+        fork.reasoning_config = capture.reasoning_config
     return fork
 
 

@@ -132,6 +132,18 @@ def _aux_task_cfg(cfg: dict, task: str) -> dict:
     return aux.get(task, {}) if isinstance(aux.get(task), dict) else {}
 
 
+def _aux_task_cfg_for_display(cfg: dict, task: str) -> dict:
+    """The routing dict to *display* for *task*. A plugin task registered with ``inherit_from``
+    shows its resolved route (base included), so the menu never reports "auto" while the task
+    actually runs on the base's provider; every other task shows exactly what is stored."""
+    with contextlib.suppress(Exception):
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        if any(e.get("key") == task and e.get("inherit_from") for e in get_plugin_auxiliary_tasks()):
+            from agent.auxiliary_client import _get_auxiliary_task_config
+            return _get_auxiliary_task_config(task)
+    return _aux_task_cfg(cfg, task)
+
+
 def _aux_task_display_name(task: str) -> str:
     """Display name for a task key, covering the special delegation entry."""
     if task == _DELEGATION_TASK_KEY:
@@ -227,7 +239,7 @@ def _aux_config_menu() -> None:
         desc_col = max(len(desc) for _, _, desc in menu_tasks) + 4
         entries = [
             (task_key, f"{name.ljust(name_col)}{('(' + desc + ')').ljust(desc_col)}"
-                       f"{_format_aux_current(_aux_task_cfg(cfg, task_key))}")
+                       f"{_format_aux_current(_aux_task_cfg_for_display(cfg, task_key))}")
             for task_key, name, desc in menu_tasks]
         entries.append(("__reset__", "Reset all to auto"))
         entries.append(("__back__", "Back"))
@@ -251,7 +263,8 @@ def _aux_select_for_task(task: str) -> None:
     ``build_aux_picker_rows()`` (shared substrate): only already-configured providers appear."""
     from hermes_cli.config import load_config
     from hermes_cli.inventory import build_aux_picker_rows, format_aux_picker_entries
-    task_cfg = _aux_task_cfg(load_config(), task)
+    cfg = load_config()
+    task_cfg = _aux_task_cfg(cfg, task)
     current_provider = str(task_cfg.get("provider") or "auto").strip() or "auto"
     current_model = str(task_cfg.get("model") or "").strip()
     current_base_url = str(task_cfg.get("base_url") or "").strip()
@@ -274,7 +287,7 @@ def _aux_select_for_task(task: str) -> None:
     entries.append(("__custom__", f"Custom endpoint (direct URL){custom_marker}", []))
     entries.append(("__back__", "Back", []))
 
-    _say("", f"  Configure {display_name} — current: {_format_aux_current(task_cfg)}", "")
+    _say("", f"  Configure {display_name} — current: {_format_aux_current(_aux_task_cfg_for_display(cfg, task))}", "")
     idx = _prompt_provider_choice([label for _, label, _ in entries], default=0)
     if idx is None:
         return
@@ -882,8 +895,9 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
     rows have ``members == []``; saved custom providers and trailing actions stay flat. Honors
     ``model_catalog.excluded_providers`` (slug or alias, case-insensitive) like the gateway/TUI."""
     from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_ALIASES
-    from hermes_cli.models_catalog_static import group_providers, provider_group_for_slug
+    from hermes_cli.models_catalog_static import group_providers, listed_canonical_providers, provider_group_for_slug
     canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
+    listed = listed_canonical_providers()
     _cli_excluded = {
         str(p).strip().lower()
         for p in (config.get("model_catalog", {}) or {}).get("excluded_providers") or []
@@ -893,9 +907,9 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
         _names_for: dict[str, set[str]] = {_p.slug: {_p.slug.lower()} for _p in CANONICAL_PROVIDERS}
         for _alias, _canon in _PROVIDER_ALIASES.items():
             _names_for.setdefault(_canon, {_canon.lower()}).add(_alias.lower())
-        _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS if not _names_for.get(p.slug, {p.slug.lower()}) & _cli_excluded]
+        _visible_slugs = [p.slug for p in listed if not _names_for.get(p.slug, {p.slug.lower()}) & _cli_excluded]
     else:
-        _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS]
+        _visible_slugs = [p.slug for p in listed]
 
     # The active provider's group when grouped, otherwise the active slug itself.
     active_group = provider_group_for_slug(active) if active else ""

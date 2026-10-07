@@ -9,8 +9,9 @@ import path from 'node:path'
 
 import {
   createKeepAwake,
+  KEEP_AWAKE_RELEASE_GRACE_MS,
+  keepAwakeHeld,
   type KeepAwakeMode,
-  keepAwakeWanted,
   parseKeepAwakeMode,
   type PowerSaveBlockerLike,
   readKeepAwakeMode
@@ -65,8 +66,24 @@ export function createKeepAwakeController(deps: KeepAwakeControllerDeps): KeepAw
     }
   }
 
+  // 'while-working' holds the blocker KEEP_AWAKE_RELEASE_GRACE_MS past idle (#134434): Windows
+  // counts sleep idleness from the last user input, so a bare release lets an unattended machine
+  // sleep before a follow-up turn re-arms busy. Live work re-arms the window.
+  let graceTimer: null | ReturnType<typeof setTimeout> = null
+
   const apply = (working = deps.isWorking()) => {
-    keepAwake.set(keepAwakeWanted(mode, working))
+    keepAwake.set(keepAwakeHeld(mode, working, graceTimer !== null))
+
+    if (working) {
+      if (graceTimer !== null) {
+        clearTimeout(graceTimer)
+      }
+
+      graceTimer = setTimeout(() => {
+        graceTimer = null
+        apply()
+      }, KEEP_AWAKE_RELEASE_GRACE_MS)
+    }
   }
 
   return {
@@ -89,6 +106,11 @@ export function createKeepAwakeController(deps: KeepAwakeControllerDeps): KeepAw
 
       if (next === null) {
         return
+      }
+
+      if (graceTimer !== null) {
+        clearTimeout(graceTimer)
+        graceTimer = null
       }
 
       mode = next

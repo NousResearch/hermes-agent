@@ -4421,13 +4421,13 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         The marker alone is not enough (a reply could quote it while discussing
         compaction), so the boilerplate AFTER the marker must carry compaction
-        vocabulary (the marker's own words never count) and the body must keep a
-        template "## " section, which an explanatory reply lacks."""
+        vocabulary (the marker's own words never count) and the body must keep the
+        task-snapshot section every committed summary is grounded with."""
         if not text.startswith(_HANDOFF_MARKER_PREFIX):
             return False
         head_end = len(_HANDOFF_MARKER_PREFIX)
         window = text[head_end:head_end + _PARAPHRASED_HANDOFF_WINDOW].lower()
-        return any(token in window for token in _PARAPHRASED_HANDOFF_TOKENS) and bool(re.search(r"(?m)^##\s", text))
+        return any(token in window for token in _PARAPHRASED_HANDOFF_TOKENS) and bool(_HISTORICAL_TASK_SECTION_RE.search(text))
 
     @classmethod
     def classify_summary_content(cls, content: Any, paraphrased: bool = False) -> Optional[str]:

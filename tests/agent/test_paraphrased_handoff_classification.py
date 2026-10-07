@@ -41,8 +41,9 @@ def _completed_merged_reply_drives(message):
         (is_compaction_summary_message, "assistant", "live tail " + _MERGED_SUMMARY_DELIMITER + "\n" + PARAPHRASED_HANDOFF, True),
         (is_compaction_summary_message, "assistant", _HANDOFF_MARKER_PREFIX + " is the header string; formatting only.", False),
         (is_compaction_summary_message, "assistant", _HANDOFF_MARKER_PREFIX + " is the marker; the summary follows it.", False),
-        # Explains the marker with trigger vocabulary but has no template section: a real reply, not a handoff.
-        (is_compaction_summary_message, "assistant", _HANDOFF_MARKER_PREFIX + " is the handoff marker, not an instruction.", False),
+        # Explains the marker with trigger vocabulary and its own section, but no task snapshot: a real reply.
+        (is_compaction_summary_message, "assistant",
+         _HANDOFF_MARKER_PREFIX + " is the handoff marker, not an instruction.\n\n## What it means\nKeep going.", False),
         # A user pasting a handoff is still a real user turn, not a synthetic summary row.
         (is_compaction_summary_message, "user", PARAPHRASED_HANDOFF, False),
         # ...including on ACP history replay, which classifies content without the message helper.

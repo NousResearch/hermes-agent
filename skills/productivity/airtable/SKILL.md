@@ -26,7 +26,7 @@ Work with Airtable's REST API directly via `curl` using the `terminal` tool. No 
    - `data.records:write` — create / update / delete rows
    - `schema.bases:read` — list bases and tables
 3. **Important:** in the same token UI, add each base you want to access to the token's **Access** list. PATs are scoped per-base — a valid token on the wrong base returns `403`.
-4. Store the token in `~/.hermes/.env` (or via `hermes setup`):
+4. Store the token in `${HERMES_HOME:-~/.hermes}/.env` (or via `hermes setup`):
    ```
    AIRTABLE_API_KEY=pat_your_token_here
    ```
@@ -44,10 +44,10 @@ Work with Airtable's REST API directly via `curl` using the `terminal` tool. No 
 Base curl pattern:
 ```bash
 curl -s "https://api.airtable.com/v0/$BASE_ID/$TABLE?maxRecords=5" \
-  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python3 -m json.tool
+  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python -m json.tool
 ```
 
-`-s` suppresses curl's progress bar — keep it set for every call so the tool output stays clean for Hermes. Pipe through `python3 -m json.tool` (always present) or `jq` (if installed) for readable JSON.
+`-s` suppresses curl's progress bar — keep it set for every call so the tool output stays clean for Hermes. Pipe through `python -m json.tool` (always present) or `jq` (if installed) for readable JSON.
 
 ## Field Types (request body shapes)
 
@@ -73,35 +73,35 @@ Pass `"typecast": true` at the top level of a create/update body to let Airtable
 ### List bases the token can see
 ```bash
 curl -s "https://api.airtable.com/v0/meta/bases" \
-  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python3 -m json.tool
+  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python -m json.tool
 ```
 
 ### List tables + schema for a base
 ```bash
 curl -s "https://api.airtable.com/v0/meta/bases/$BASE_ID/tables" \
-  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python3 -m json.tool
+  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python -m json.tool
 ```
 Use this BEFORE mutating — confirms exact field names and IDs, surfaces `options.choices` for select fields, and shows primary-field names.
 
 ### List records (first 10)
 ```bash
 curl -s "https://api.airtable.com/v0/$BASE_ID/$TABLE?maxRecords=10" \
-  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python3 -m json.tool
+  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python -m json.tool
 ```
 
 ### Get a single record
 ```bash
 curl -s "https://api.airtable.com/v0/$BASE_ID/$TABLE/$RECORD_ID" \
-  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python3 -m json.tool
+  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python -m json.tool
 ```
 
 ### Filter records (filterByFormula)
 Airtable formulas must be URL-encoded. Let Python stdlib do it — never hand-encode:
 ```bash
 FORMULA="{Status}='Todo'"
-ENC=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$FORMULA")
+ENC=$(python -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$FORMULA")
 curl -s "https://api.airtable.com/v0/$BASE_ID/$TABLE?filterByFormula=$ENC&maxRecords=20" \
-  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python3 -m json.tool
+  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python -m json.tool
 ```
 
 Useful formula patterns:
@@ -115,14 +115,14 @@ Useful formula patterns:
 ### Sort + select specific fields
 ```bash
 curl -s "https://api.airtable.com/v0/$BASE_ID/$TABLE?sort%5B0%5D%5Bfield%5D=Priority&sort%5B0%5D%5Bdirection%5D=asc&fields%5B%5D=Name&fields%5B%5D=Status" \
-  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python3 -m json.tool
+  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python -m json.tool
 ```
 Square brackets in query params MUST be URL-encoded (`%5B` / `%5D`).
 
 ### Use a named view
 ```bash
 curl -s "https://api.airtable.com/v0/$BASE_ID/$TABLE?view=Grid%20view&maxRecords=50" \
-  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python3 -m json.tool
+  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python -m json.tool
 ```
 Views apply their saved filter + sort server-side.
 
@@ -133,7 +133,7 @@ Views apply their saved filter + sort server-side.
 curl -s -X POST "https://api.airtable.com/v0/$BASE_ID/$TABLE" \
   -H "Authorization: Bearer $AIRTABLE_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"fields":{"Name":"New task","Status":"Todo","Priority":"High"}}' | python3 -m json.tool
+  -d '{"fields":{"Name":"New task","Status":"Todo","Priority":"High"}}' | python -m json.tool
 ```
 
 ### Create up to 10 records in one call
@@ -147,7 +147,7 @@ curl -s -X POST "https://api.airtable.com/v0/$BASE_ID/$TABLE" \
       {"fields": {"Name": "Task A", "Status": "Todo"}},
       {"fields": {"Name": "Task B", "Status": "In progress"}}
     ]
-  }' | python3 -m json.tool
+  }' | python -m json.tool
 ```
 Batch endpoints are capped at **10 records per request**. For larger inserts, loop in batches of 10 with a short sleep to respect 5 req/sec/base.
 
@@ -156,7 +156,7 @@ Batch endpoints are capped at **10 records per request**. For larger inserts, lo
 curl -s -X PATCH "https://api.airtable.com/v0/$BASE_ID/$TABLE/$RECORD_ID" \
   -H "Authorization: Bearer $AIRTABLE_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"fields":{"Status":"Done"}}' | python3 -m json.tool
+  -d '{"fields":{"Status":"Done"}}' | python -m json.tool
 ```
 
 ### Upsert by a merge field (no ID needed)
@@ -169,20 +169,20 @@ curl -s -X PATCH "https://api.airtable.com/v0/$BASE_ID/$TABLE" \
     "records": [
       {"fields": {"Email": "user@example.com", "Status": "Active"}}
     ]
-  }' | python3 -m json.tool
+  }' | python -m json.tool
 ```
 `performUpsert` creates records whose merge-field values are new, patches records whose merge-field values already exist. Great for idempotent syncs.
 
 ### Delete a record
 ```bash
 curl -s -X DELETE "https://api.airtable.com/v0/$BASE_ID/$TABLE/$RECORD_ID" \
-  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python3 -m json.tool
+  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python -m json.tool
 ```
 
 ### Delete up to 10 records in one call
 ```bash
 curl -s -X DELETE "https://api.airtable.com/v0/$BASE_ID/$TABLE?records%5B%5D=rec1&records%5B%5D=rec2" \
-  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python3 -m json.tool
+  -H "Authorization: Bearer $AIRTABLE_API_KEY" | python -m json.tool
 ```
 
 ## Pagination
@@ -195,8 +195,8 @@ while :; do
   URL="https://api.airtable.com/v0/$BASE_ID/$TABLE?pageSize=100"
   [ -n "$OFFSET" ] && URL="$URL&offset=$OFFSET"
   RESP=$(curl -s "$URL" -H "Authorization: Bearer $AIRTABLE_API_KEY")
-  echo "$RESP" | python3 -c 'import json,sys; d=json.load(sys.stdin); [print(r["id"], r["fields"].get("Name","")) for r in d["records"]]'
-  OFFSET=$(echo "$RESP" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("offset",""))')
+  echo "$RESP" | python -c 'import json,sys; d=json.load(sys.stdin); [print(r["id"], r["fields"].get("Name","")) for r in d["records"]]'
+  OFFSET=$(echo "$RESP" | python -c 'import json,sys; d=json.load(sys.stdin); print(d.get("offset",""))')
   [ -z "$OFFSET" ] && break
 done
 ```
@@ -222,8 +222,8 @@ done
 ## Important Notes for Hermes
 
 - **Always use the `terminal` tool with `curl`.** Do NOT use `web_extract` (it can't send auth headers) or `browser_navigate` (needs UI auth and is slow).
-- **`AIRTABLE_API_KEY` flows from `~/.hermes/.env` into the subprocess automatically** when this skill is loaded — no need to re-export it before each `curl` call.
-- **Escape curly braces in formulas carefully.** In a heredoc body, `{Status}` is literal. In a shell argument, `{Status}` is safe outside `{...}` brace-expansion context — but pass dynamic strings through `python3 urllib.parse.quote` before splicing into a URL.
-- **Pretty-print with `python3 -m json.tool`** (always present) rather than `jq` (optional). Only reach for `jq` when you need filtering/projection.
+- **`AIRTABLE_API_KEY` flows from `${HERMES_HOME:-~/.hermes}/.env` into the subprocess automatically** when this skill is loaded — no need to re-export it before each `curl` call.
+- **Escape curly braces in formulas carefully.** In a heredoc body, `{Status}` is literal. In a shell argument, `{Status}` is safe outside `{...}` brace-expansion context — but pass dynamic strings through `python urllib.parse.quote` before splicing into a URL.
+- **Pretty-print with `python -m json.tool`** (always present) rather than `jq` (optional). Only reach for `jq` when you need filtering/projection.
 - **Pagination is per-page, not global.** Airtable's 100-record cap is a hard limit; there is no way to bump it. Loop with `offset` until the field is absent.
 - **Read the `errors` array** on non-2xx responses — Airtable returns structured error codes like `AUTHENTICATION_REQUIRED`, `INVALID_PERMISSIONS`, `MODEL_ID_NOT_FOUND`, `INVALID_MULTIPLE_CHOICE_OPTIONS` that tell you exactly what's wrong.

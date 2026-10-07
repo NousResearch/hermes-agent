@@ -8,9 +8,9 @@ description: "Agent 创建的技能的后台维护——使用跟踪、过期检
 
 Curator 是针对 **agent 创建的技能**的后台维护流程。它跟踪每个技能被查看、使用和修补的频率，将长期未使用的技能经历 `active → stale → archived` 状态流转，并定期启动一个短暂的辅助模型审查，提出合并或修补漂移的建议。
 
-它的存在是为了防止通过[自我改进循环](/user-guide/features/skills#agent-managed-skills-skill_manage-tool)创建的技能无限堆积。每次 agent 解决新问题并保存技能时，该技能都会落入 `~/.hermes/skills/`。若没有维护，最终会出现数十个范围狭窄的近似重复项，污染技能目录并浪费 token（令牌）。
+它的存在是为了防止通过[自我改进循环](./skills.md#agent-managed-skills-skill_manage-tool)创建的技能无限堆积。每次 agent 解决新问题并保存技能时，该技能都会落入 `~/.hermes/skills/`。若没有维护，最终会出现数十个范围狭窄的近似重复项，污染技能目录并浪费 token（令牌）。
 
-Curator **绝不触碰**随仓库附带的捆绑技能，也不触碰通过 [agentskills.io](https://agentskills.io) 安装的 hub 技能。它只审查 agent 自身创作的技能。它也**绝不自动删除**——最坏的结果是归档到 `~/.hermes/skills/.archive/`，这是可恢复的。
+默认情况下（`prune_builtins: true`），Curator 在 `archive_after_days` 天未使用后，可以归档**未使用的捆绑内置技能**（随仓库附带），与它主要管理的 agent 自创技能一并处理。通过 [agentskills.io](https://agentskills.io) 安装的 hub 技能始终不受影响。设置 `curator.prune_builtins: false` 可恢复旧的“仅 agent 自创”行为，此时捆绑技能绝不会被触碰。Curator 也**绝不自动删除**——最坏的结果是归档到 `~/.hermes/skills/.archive/`，这是可恢复的。
 
 跟踪 [issue #7816](https://github.com/NousResearch/hermes-agent/issues/7816)。
 
@@ -31,7 +31,7 @@ Curator 由空闲检查触发，而非 cron 守护进程。在 CLI 会话启动�
 
 一次运行分为两个阶段：
 
-1. **自动状态转换**（确定性，无 LLM）。未使用时间超过 `stale_after_days`（30 天）的技能变为 `stale`；未使用时间超过 `archive_after_days`（90 天）的技能被移至 `~/.hermes/skills/.archive/`。
+1. **自动状态转换**（确定性，无 LLM）。未使用时间超过 `stale_after_days`（14 天）的技能变为 `stale`；未使用时间超过 `archive_after_days`（30 天）的技能被移至 `~/.hermes/skills/.archive/`。
 2. **LLM 审查**（单次辅助模型 pass，`max_iterations=8`）。派生的 agent 审查 agent 创建的技能，可通过 `skill_view` 读取任意技能，并逐技能决定是保留、修补（通过 `skill_manage`）、合并重叠项，还是通过终端工具归档。
 
 已固定（pinned）的技能对 curator 的自动状态转换和 agent 自身的 `skill_manage` 工具均不可操作。详见下方[固定技能](#pinning-a-skill)。
@@ -45,8 +45,8 @@ curator:
   enabled: true
   interval_hours: 168          # 7 days
   min_idle_hours: 2
-  stale_after_days: 30
-  archive_after_days: 90
+  stale_after_days: 14
+  archive_after_days: 30
 ```
 
 若要完全禁用，设置 `curator.enabled: false`。
@@ -242,7 +242,7 @@ Curator 在 `min_idle_hours` 未经过时也会拒绝运行，因此在活跃的
 
 ## 另请参阅
 
-- [技能系统](/user-guide/features/skills)——技能的总体工作原理及创建技能的自我改进循环
-- [内存](/user-guide/features/memory)——维护长期记忆的并行后台审查
-- [捆绑技能目录](/reference/skills-catalog)
+- [技能系统](./skills.md)——技能的总体工作原理及创建技能的自我改进循环
+- [内存](./memory.md)——维护长期记忆的并行后台审查
+- [捆绑技能目录](../../reference/skills-catalog.md)
 - [Issue #7816](https://github.com/NousResearch/hermes-agent/issues/7816)——原始提案与设计讨论

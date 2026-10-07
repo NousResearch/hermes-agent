@@ -34,7 +34,7 @@ description: "构建一个自动化 AI 代码审查器，监控你的仓库、�
 
 ## 前提条件
 
-- **已安装 Hermes Agent** — 参见[安装指南](/getting-started/installation)
+- **已安装 Hermes Agent** — 参见[安装指南](../getting-started/installation.md)
 - **Gateway 已运行**（用于 cron 任务）：
   ```bash
   hermes gateway install   # Install as a service
@@ -50,7 +50,7 @@ description: "构建一个自动化 AI 代码审查器，监控你的仓库、�
   # Authenticate
   gh auth login
   ```
-- **已配置消息通知**（可选）— [Telegram](/user-guide/messaging/telegram) 或 [Discord](/user-guide/messaging/discord)
+- **已配置消息通知**（可选）— [Telegram](../user-guide/messaging/telegram.md) 或 [Discord](../user-guide/messaging/discord.md)
 
 :::tip 没有消息通知？没关系
 使用 `deliver: "local"` 将审查结果保存到 `~/.hermes/cron/output/`。在接入通知之前用于测试非常方便。
@@ -297,7 +297,7 @@ GitHub 对已认证用户每小时允许 5,000 次 API 请求。每次 PR 审查
 ## 下一步
 
 - **[基于 Webhook 的 PR 审查](./webhook-github-pr-review.md)** — 在 PR 被打开时立即获得审查（需要公开端点）
-- **[每日简报 Bot](/guides/daily-briefing-bot)** — 将 PR 审查与你的晨间资讯摘要结合
-- **[构建 Plugin](/guides/build-a-hermes-plugin)** — 将审查逻辑封装为可共享的 plugin
-- **[Profiles](/user-guide/profiles)** — 运行一个专属审查器 profile，拥有独立的 memory 和配置
-- **[Fallback Providers](/user-guide/features/fallback-providers)** — 确保在某个 provider 不可用时审查任务仍能正常运行
+- **[每日简报 Bot](./daily-briefing-bot.md)** — 将 PR 审查与你的晨间资讯摘要结合
+- **[构建 Plugin](../developer-guide/plugins/index.md)** — 将审查逻辑封装为可共享的 plugin
+- **[Profiles](../user-guide/profiles.md)** — 运行一个专属审查器 profile，拥有独立的 memory 和配置
+- **[Fallback Providers](../user-guide/features/fallback-providers.md)** — 确保在某个 provider 不可用时审查任务仍能正常运行

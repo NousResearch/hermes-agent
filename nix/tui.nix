@@ -1,35 +1,26 @@
-# nix/tui.nix — Hermes TUI (Ink/React) compiled with tsc and bundled
-{ pkgs, hermesNpmLib, ... }:
-let
-  src = ../ui-tui;
-  npmDeps = pkgs.fetchNpmDeps {
-    inherit src;
-    hash = "sha256-F6/MzZOWc0zhW9mIfnaY+PrllPvJcsA/OdFdEM+NpLY=";
-  };
-
-  npm = hermesNpmLib.mkNpmPassthru { folder = "ui-tui"; attr = "tui"; pname = "hermes-tui"; };
-
-  packageJson = builtins.fromJSON (builtins.readFile (src + "/package.json"));
-  version = packageJson.version;
-in
-pkgs.buildNpmPackage (npm // {
-  pname = "hermes-tui";
-  inherit src npmDeps version;
+# Self-contained Hermes TUI, compiled by the same recipe as npm.
+{ hermesNpmLib, ... }:
+hermesNpmLib.buildNpmPackage {
+  dirs = [
+    "ui-tui"
+    "apps/shared"
+    "scripts/build/tui.mjs"
+    "scripts/build/freshness.mjs"
+    "scripts/build/frontend-common.mjs"
+  ];
 
   doCheck = false;
-  npmFlags = [ "--legacy-peer-deps" ];
+
+  buildPhase = ''
+    runHook preBuild
+    node scripts/build/tui.mjs --source "$PWD" --out "$TMPDIR/tui-product"
+    runHook postBuild
+  '';
 
   installPhase = ''
     runHook preInstall
-
     mkdir -p $out/lib/hermes-tui
-
-    # Single self-contained bundle built by scripts/build.mjs (esbuild).
-    cp -r dist $out/lib/hermes-tui/dist
-
-    # package.json kept for "type": "module" resolution on `node dist/entry.js`.
-    cp package.json $out/lib/hermes-tui/
-
+    cp -r "$TMPDIR/tui-product/." $out/lib/hermes-tui/
     runHook postInstall
   '';
-})
+}

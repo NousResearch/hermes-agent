@@ -1,0 +1,136 @@
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { renderHook } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import type { ContextBreakdown, UsageStats } from '@/types/hermes'
+
+import { ContextMeterDetail, ContextUsagePanel } from './context-usage-panel'
+import { useContextBreakdown } from './hooks/use-context-breakdown'
+
+const usage: UsageStats = {
+  calls: 1,
+  context_max: 272_000,
+  context_percent: 47,
+  context_used: 128_200,
+  input: 0,
+  output: 0,
+  total: 0
+}
+
+const breakdown: ContextBreakdown = {
+  categories: [{ color: 'teal', id: 'conversation', label: 'Conversation', tokens: 241_400 }],
+  context_max: 272_000,
+  context_percent: 89,
+  context_used: 241_400,
+  estimated_total: 286_600,
+  model: 'test-model'
+}
+
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
+
+describe('useContextBreakdown', () => {
+  it('fetches for a session that has not run a turn yet', async () => {
+    const requestGateway = vi.fn().mockResolvedValue(breakdown)
+
+    const { result } = renderHook(() =>
+      useContextBreakdown({ busy: false, enabled: true, requestGateway, sessionId: 'runtime-1' })
+    )
+
+    await waitFor(() => expect(result.current.breakdown).toEqual(breakdown))
+    expect(requestGateway).toHaveBeenCalledWith('session.context_breakdown', { session_id: 'runtime-1' })
+  })
+
+  it('does not fetch while the gauge is hidden, and fetches once it is shown', async () => {
+    const requestGateway = vi.fn().mockResolvedValue(breakdown)
+
+    const { rerender } = renderHook(
+      ({ enabled }) => useContextBreakdown({ busy: false, enabled, requestGateway, sessionId: 'runtime-1' }),
+      { initialProps: { enabled: false } }
+    )
+
+    expect(requestGateway).not.toHaveBeenCalled()
+
+    rerender({ enabled: true })
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(1))
+  })
+
+  it('skips the estimate mid-turn — the gateway streams measured usage then', () => {
+    const requestGateway = vi.fn().mockResolvedValue(breakdown)
+
+    renderHook(() => useContextBreakdown({ busy: true, enabled: true, requestGateway, sessionId: 'runtime-1' }))
+
+    expect(requestGateway).not.toHaveBeenCalled()
+  })
+
+  it('refetches on a session switch and never reports the previous session numbers', async () => {
+    const requestGateway = vi.fn().mockResolvedValue(breakdown)
+
+    const { rerender, result } = renderHook(
+      ({ sessionId }) => useContextBreakdown({ busy: false, enabled: true, requestGateway, sessionId }),
+      { initialProps: { sessionId: 'runtime-1' } }
+    )
+
+    await waitFor(() => expect(result.current.breakdown).toEqual(breakdown))
+
+    // Switching sessions must drop the numbers immediately — painting them
+    // under the new session's name would be a lie until its own fetch lands.
+    requestGateway.mockImplementation(() => new Promise(() => undefined))
+    rerender({ sessionId: 'runtime-2' })
+
+    expect(result.current.breakdown).toBeNull()
+    expect(requestGateway).toHaveBeenLastCalledWith('session.context_breakdown', { session_id: 'runtime-2' })
+  })
+})
+
+describe('ContextUsagePanel', () => {
+  it('marks estimates but preserves the provider-usage header', () => {
+    for (const estimated of [true, false]) {
+      const { container, unmount } = render(
+        <ContextUsagePanel breakdown={breakdown} loading={false} usage={{ ...usage, context_estimated: estimated }} />
+      )
+
+      const header = container.querySelector('[data-slot="context-usage-panel"] > div')?.textContent ?? ''
+
+      expect(header.includes('~')).toBe(estimated)
+      expect(container.querySelector('li')?.textContent).toContain('~')
+      unmount()
+    }
+  })
+
+  it('renders the usage it is handed, so the popover matches the bar', () => {
+    render(<ContextUsagePanel breakdown={breakdown} loading={false} usage={usage} />)
+
+    expect(screen.getByText('47% Full')).toBeTruthy()
+    expect(screen.getByText('Conversation')).toBeTruthy()
+  })
+
+  it('reports the live compression count, zero included, and never invents one', () => {
+    const { rerender } = render(<ContextUsagePanel breakdown={breakdown} loading={false} usage={usage} />)
+
+    expect(screen.queryByTestId('context-panel-compressions')).toBeNull()
+
+    for (const compressions of [0, 3]) {
+      rerender(<ContextUsagePanel breakdown={breakdown} loading={false} usage={{ ...usage, compressions }} />)
+      expect(screen.getByTestId('context-panel-compressions').textContent).toBe(`Compressions: ${compressions}`)
+    }
+  })
+})
+
+describe('ContextMeterDetail', () => {
+  it('adds the count to the meter only once the session has compacted', () => {
+    for (const compressions of [undefined, 0]) {
+      const { container, unmount } = render(<ContextMeterDetail bar="[██░░] 47%" compressions={compressions} />)
+
+      expect(container.textContent).toBe('[██░░] 47%')
+      unmount()
+    }
+
+    render(<ContextMeterDetail bar="[██░░] 47%" compressions={2} />)
+
+    expect(screen.getByTestId('context-meter-compressions').textContent).toBe('2')
+  })
+})

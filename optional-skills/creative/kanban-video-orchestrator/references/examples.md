@@ -39,8 +39,8 @@ T8  reviewer         final QA                                 (parent: T7)
 **Key choices:**
 - Local ComfyUI via `comfyui` skill is preferred over external API for
   cost/control — but external APIs are fine if ComfyUI isn't installed
-- `editor` profile is ffmpeg-only, no Hermes skill required beyond
-  `kanban-worker`
+- `editor` profile is ffmpeg-only, no Hermes skill required (kanban guidance
+  is auto-injected into every kanban worker)
 - Storyboarder produces `storyboard.excalidraw` alongside the markdown
 
 ## Example 2 — Product / marketing teaser
@@ -216,7 +216,7 @@ When the user describes a video, look for these signals to map to an example:
 - **"Audio-reactive", "real-time", "installation"** → Example 6 (TouchDesigner)
 - **Comic-style narrative** → use `renderer-comic` (`baoyu-comic` skill)
 - **Retro game / pixel-art aesthetic** → use `renderer-pixel` (`pixel-art` skill)
-- **3D scene, photoreal environment** → use `renderer-3d` (`blender-mcp`)
+- **3D scene, photoreal environment** → use `renderer-3d` (Blender via `blender -b` scripting)
 - **Generative art, particle system, shader** → use `renderer-p5js` (`p5js`)
 - **AI-generated photoreal stills + animation** → use `renderer-comfyui`
   (`comfyui`) for both stills and image-to-video

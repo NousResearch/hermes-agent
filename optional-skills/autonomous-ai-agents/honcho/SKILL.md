@@ -1,6 +1,6 @@
 ---
 name: honcho
-description: Configure and use Honcho memory with Hermes -- cross-session user modeling, multi-profile peer isolation, observation config, dialectic reasoning, session summaries, and context budget enforcement. Use when setting up Honcho, troubleshooting memory, managing profiles with Honcho peers, or tuning observation, recall, and dialectic settings.
+description: Configure and troubleshoot Honcho memory for Hermes.
 version: 2.0.0
 author: Hermes Agent
 license: MIT
@@ -28,6 +28,12 @@ Honcho provides AI-native cross-session user modeling. It learns who the user is
 - Configuring context budgets and session summary injection
 
 ## Setup
+
+Honcho is a plugin-catalog memory provider maintained by Plastic Labs. Install it once per machine (homes upgraded from a release that bundled Honcho get it automatically):
+
+```bash
+hermes plugins install honcho
+```
 
 ### Cloud (app.honcho.dev)
 

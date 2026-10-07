@@ -56,6 +56,75 @@ real language server. Two channels, independent signals — the
 agent sees a syntax-clean file with semantic problems as
 ``lint: ok`` plus a populated ``lsp_diagnostics``.
 
+### Workspace trust
+
+Many language servers run code that the project itself ships:
+pyright executes the configured Python interpreter,
+typescript-language-server loads the project's
+`node_modules/typescript`, svelte-language-server loads
+`svelte.config.js`, rust-analyzer runs `cargo check` (build scripts,
+proc-macros) on every save, and servers such as jdtls,
+kotlin-language-server, elixir-ls, zls or haskell-language-server
+evaluate the project's build files (Gradle, `mix.exs`, `build.zig`,
+Cabal/Stack) when they start. That is fine for your own project, but
+not for a repository the agent has just cloned.
+
+Hermes therefore treats every workspace as untrusted unless it is:
+
+- the git worktree of a directory you pointed Hermes at: where you
+  launched it (`cd my-app && hermes`), the worktree `hermes -w`
+  created, the project a Desktop or TUI session is opened in, or a
+  gateway's `terminal.cwd`, or
+- a directory listed under `lsp.trusted_workspaces` (or any
+  directory below one).
+
+A `cd` in the agent's terminal does not move the session's workspace.
+Cron jobs and Kanban workers get no automatic trust, because the agent
+can choose their workdir or workspace; list the directories they should
+trust under `lsp.trusted_workspaces`. A checkout nested inside a trusted
+worktree has its own `.git`, so it is not trusted, and neither is a git
+repository at or above your home directory (a dotfiles repo there would
+otherwise trust everything below it). Trust covers the whole directory
+you pointed Hermes at, including anything later cloned into it, and
+lasts until Hermes exits.
+
+In an untrusted workspace Hermes **denies by default**: only the
+servers below start, each with settings that keep it on Hermes-side
+tools. Every other server is skipped, including rust-analyzer, gopls,
+jdtls, kotlin-language-server, elixir-ls, zls, clojure-lsp,
+haskell-language-server, lua-language-server, terraform-ls, prisma,
+astro, vue-language-server (it loads the `vueCompilerOptions.plugins`
+a project's `tsconfig.json` names) and any server you declare under `lsp.servers`. The diagnostics
+log records `skipped: untrusted workspace …; add it to
+lsp.trusted_workspaces`, and `hermes lsp status` marks those servers
+`[trusted workspaces only]`.
+
+| Server | Untrusted workspace |
+|---|---|
+| pyright | `VIRTUAL_ENV` or the Hermes-managed Python, never the project's `.venv`/`venv` |
+| typescript-language-server | `tsserver.path` pinned to the TypeScript next to the server; skipped if there is none |
+| svelte-language-server | `isTrusted: false` (no `svelte.config.js`, no project `svelte`/`prettier`) |
+| bash-language-server, yaml-language-server, dockerfile-ls, intelephense | unchanged: they run no project code (yaml-language-server may fetch the JSON schemas a file names) |
+| clangd | unchanged: Hermes never passes `--query-driver`, so no project compiler runs |
+
+On a local backend, the post-write shell linters that would use the
+checkout's own toolchain are skipped the same way whenever the terminal's
+current directory is untrusted: `npx tsc` (it runs
+the repository's `node_modules/.bin/tsc`, or installs from the
+registry its `.npmrc` names) and `rustfmt --check` (rustup honours the
+repository's `rust-toolchain.toml`). Sandboxed backends (Docker, SSH,
+Modal, …) are unchanged.
+
+Diagnostics that need the project's dependencies (for example
+unresolved-import warnings) may be less precise until you trust the
+workspace.
+
+```yaml
+lsp:
+  trusted_workspaces:
+    - ~/code/my-app
+```
+
 ## Supported languages
 
 | Language | Server | Auto-install |
@@ -72,6 +141,7 @@ agent sees a syntax-clean file with semantic problems as
 | YAML | `yaml-language-server` | npm |
 | Lua | `lua-language-server` | manual (GitHub releases) |
 | PHP | `intelephense` | npm |
+| Laravel Blade (`.blade.php`) | `laravel-lsp` | manual (composer) |
 | OCaml | `ocaml-lsp` | manual (opam) |
 | Dockerfile | `dockerfile-language-server-nodejs` | npm |
 | Terraform | `terraform-ls` | manual |
@@ -86,18 +156,68 @@ agent sees a syntax-clean file with semantic problems as
 | Prisma | `prisma language-server` | manual |
 | Kotlin | `kotlin-language-server` | manual |
 | Java | `jdtls` | manual |
+| PowerShell | `PowerShellEditorServices` (`pwsh` host) | manual (release zip) |
 
 For "manual" entries, install the server through whatever toolchain
 manager makes sense for that language (rustup, ghcup, opam, brew,
 …). Hermes auto-detects the binary on PATH or in
 `<HERMES_HOME>/lsp/bin/`.
 
+### PowerShell
+
+PowerShellEditorServices isn't a single binary — it's a PowerShell
+module bundle launched by a `pwsh` (PowerShell 7+) or `powershell`
+host. Setup:
+
+1. Install [PowerShell](https://github.com/PowerShell/PowerShell) so
+   `pwsh` (or Windows `powershell`) is on PATH.
+2. Download the latest release zip from
+   [PowerShellEditorServices releases](https://github.com/PowerShell/PowerShellEditorServices/releases)
+   and extract it.
+3. Point Hermes at the extracted bundle — the directory that contains
+   `PowerShellEditorServices/Start-EditorServices.ps1`. Either:
+   - set `lsp.servers.powershell.command: ["/path/to/bundle"]` in
+     `config.yaml`, or
+   - extract it to `<HERMES_HOME>/lsp/PowerShellEditorServices`, or
+   - export `PSES_BUNDLE_PATH=/path/to/bundle`.
+
+`hermes lsp status` reports `installed` once `pwsh` is found; if the
+bundle is missing you'll see a one-time warning in the logs with the
+download link.
+
+### Laravel Blade
+
+`.blade.php` templates go to [laravel-lsp](https://github.com/laravel/lsp)
+(Blade, Eloquent, Facades) while plain `.php` files stay with
+intelephense. Install it once with Composer and make sure the binary
+is on PATH (or pin it with `lsp.servers.laravel-lsp.command`):
+
+```bash
+composer global require laravel/lsp
+export PATH="$HOME/.config/composer/vendor/bin:$PATH"
+```
+
+Hermes launches it as `laravel-lsp lsp` (stdio). There is no
+auto-install recipe; `hermes lsp status` shows `manual-only` until the
+binary is found.
+
 A few servers are installed alongside a peer dependency that npm
-won't auto-pull. The current case is `typescript-language-server`,
-which requires the `typescript` SDK importable from the same
-`node_modules` tree — Hermes installs both packages together when you
-run `hermes lsp install typescript` or auto-install fires on first
-use.
+won't auto-pull. `typescript-language-server` and `@vue/language-server`
+require the `typescript` SDK importable from the same `node_modules`
+tree — Hermes installs `typescript@6` (the last JavaScript-based line;
+TypeScript 7 is the Go port and ships no `tsserver.js`) together with
+the server when you run `hermes lsp install typescript` /
+`hermes lsp install vue-language-server` or auto-install fires on first use.
+
+Vue is pinned to `@vue/language-server@2`, started with
+`vue.hybridMode: false` so it hosts its own TypeScript service. The 3.x
+line only works behind a client-hosted `tsserver` tunnel (the VS Code /
+Neovim setup) that Hermes's generic client does not run, so it never
+publishes diagnostics. If an earlier Hermes installed 3.x, the log shows a
+one-time `vue-language-server: ... 3.x` warning; delete
+`<HERMES_HOME>/lsp/node_modules/@vue` and `<HERMES_HOME>/lsp/bin/vue-language-server*`,
+then run `hermes lsp install vue-language-server` (the recipe co-installs the
+TypeScript SDK).
 
 ## CLI
 
@@ -128,12 +248,71 @@ lsp:
 
   # How long to wait for diagnostics after each write.
   wait_mode: document      # "document" or "full"
+  # Max seconds to wait for the server on each of the two waits an
+  # edit makes: the pre-edit baseline snapshot and the post-edit
+  # re-check. Only *fresh* diagnostics (produced for the post-edit
+  # content) are ever reported; if the server doesn't finish within
+  # this budget, the edit reports "no LSP data" rather than stale
+  # errors from before the edit. Raise this for slow servers on big
+  # projects (tsserver, rust-analyzer mid-indexing).
   wait_timeout: 5.0
+
+  # Budget for the FIRST request against a workspace whose server is
+  # not running yet — spawn, initialize and the server's initial program
+  # build all happen inside it (tsserver on a 10k-file project can need
+  # a minute). Once the client is up, wait_timeout applies again.
+  # 0 = no extra grace (same as wait_timeout).
+  warmup_timeout: 0
+
+  # After a server fails for a workspace (spawn error, or the request
+  # outran its budget) that (server, root) pair is skipped. 0 = for the
+  # rest of the process (until `hermes lsp restart`); N = retried after
+  # N seconds, so one transient stall does not silence a workspace
+  # forever. Skips are logged once per root at INFO with the retry time.
+  broken_retry_seconds: 0
+
+  # Workspace roots where no language server runs at all — glob
+  # patterns matched against the resolved project root (~ expanded; a
+  # bare path also matches everything beneath it). Use it for the one
+  # huge monorepo whose server cannot finish in budget while every other
+  # workspace keeps its diagnostics — unlike servers.<id>.disabled,
+  # which switches the server off everywhere. Must be a list; any other
+  # shape logs a warning and skips LSP for every workspace until fixed.
+  exclude_roots: []
+  # exclude_roots: ["~/work/huge-monorepo", "/srv/checkouts/*/vendor"]
+
+  # Directories whose projects a language server may load code from
+  # (see "Workspace trust" above). ~ expanded; everything under an
+  # entry counts. The worktree of the directory you launched Hermes in,
+  # or opened the session in, is always trusted.
+  trusted_workspaces: []
+  # trusted_workspaces: ["~/code/my-app"]
 
   # How to handle missing server binaries.
   #   auto    — install via npm/pip/go install into <HERMES_HOME>/lsp/bin
   #   manual  — only use binaries already on PATH
   install_strategy: auto
+
+  # Node package manager for the npm-based servers: npm (default), pnpm
+  # or yarn. Installs still land in <HERMES_HOME>/lsp/node_modules; a
+  # manager that is configured but not installed — or a value outside
+  # npm|pnpm|yarn — skips the install with a warning instead of silently
+  # using npm, so a pnpm/yarn supply-chain policy (minimumReleaseAge,
+  # allowBuilds, …) is never bypassed. Yarn Berry (2+): its default PnP
+  # linker writes no node_modules/.bin, so set `nodeLinker: node-modules`
+  # in <HERMES_HOME>/lsp/.yarnrc.yml. pnpm 11 blocks git-hosted transitive
+  # deps by default (ERR_PNPM_EXOTIC_SUBDEP); @vue/language-server 2.x pulls
+  # one in, so under pnpm that server is skipped with the pnpm error in the
+  # log — install it once with npm, or relax block-exotic-subdeps in
+  # <HERMES_HOME>/lsp/.npmrc if your policy allows it.
+  package_manager: npm
+
+  # How long an unused language-server client stays alive (seconds).
+  # Idle servers are shut down automatically and respawned on the next
+  # relevant file operation. Set to 0 to disable idle reaping and keep
+  # servers alive for the life of the process. Values below 30s are
+  # clamped to 30 so a sweep can never reap a client mid-operation.
+  idle_timeout: 600
 
   # Per-server overrides (all optional).
   servers:
@@ -156,9 +335,38 @@ lsp:
 * `command: [bin, ...args]` — pin a custom binary path. Bypasses
   auto-install.
 * `env: {KEY: value}` — extra env vars passed to the spawned process.
+  Servers and the npm / `go install` auto-installers start from Hermes'
+  scrubbed child environment (no gateway tokens or provider API keys),
+  so a server that needs one of those gets it only through this key.
 * `initialization_options: {...}` — merged into the LSP
   `initializationOptions` payload sent in the `initialize`
   handshake. Server-specific; consult the language server's docs.
+
+### Custom servers
+
+Any `lsp.servers` key that is **not** a built-in server id declares
+your own language server. It needs `command` and `extensions`; the
+other keys are optional. Custom servers are matched *before* the
+built-ins, so they can also take over an extension Hermes already
+handles.
+
+```yaml
+lsp:
+  servers:
+    panache:
+      command: ["panache-lsp", "--stdio"]   # PATH lookup or an absolute/~ path
+      extensions: [".pnch"]                 # or basenames like "Justfile"
+      root_markers: ["panache.toml"]        # nearest dir with one of these; default: workspace root
+      language_id: "panache"                # didOpen languageId; default: derived from the extension
+      description: "Panache markdown"
+      env: { PANACHE_LOG: "warn" }          # same optional keys as built-ins
+      initialization_options: {}
+```
+
+Custom servers are never auto-installed: put the binary on PATH (or
+give an absolute path) and `hermes lsp status` lists it as
+`installed`. A malformed entry is logged and skipped without
+affecting the other servers.
 
 ## Installation locations
 
@@ -184,11 +392,55 @@ The LSP layer adds a few milliseconds to clean writes when no
 diagnostics are emitted. When diagnostics are emitted, the wait
 budget is `wait_timeout` seconds — typically the server responds in
 tens of milliseconds for pyright/tsserver and a few seconds for
-rust-analyzer mid-indexing.
+rust-analyzer mid-indexing. Each edit waits twice (a pre-edit
+baseline snapshot for the delta, then the post-edit re-check), so a
+server that never answers costs at most `2 × wait_timeout` per edit.
+The very first request against a workspace also pays the spawn and the
+server's initial program build; give large projects room with
+`lsp.warmup_timeout` (only that first, cold request uses it — the
+steady-state budget is unchanged) rather than raising `wait_timeout`,
+which would let every later edit block for the cold-build duration.
 
-Servers are kept alive for the life of the Hermes process. There's
-no idle-timeout reaper — the cost of restarting the server's index
-on every write would be far higher than holding the daemon.
+A server that fails for a workspace — spawn error, or a request that
+outran its budget — marks that `(server, root)` pair broken and every
+later request for it is skipped (logged once per root at INFO). By
+default the pair stays broken until `hermes lsp restart` or process
+exit; `lsp.broken_retry_seconds: N` retries it after N seconds so one
+transient stall does not cost the workspace its diagnostics for good.
+A root you never want served — one monorepo whose server cannot finish
+in any budget — goes in `lsp.exclude_roots`; other workspaces keep
+their servers.
+
+Diagnostics are **freshness-gated**: a result only counts when the
+server produced it for the content of the current edit (a
+`publishDiagnostics` push at/after the change, or a pull request
+answered after it). Slow servers that haven't re-checked yet result
+in "no data" for that edit — never in yesterday's errors being
+re-reported as current.
+
+Servers are kept alive while they're being used and shut down after
+`lsp.idle_timeout` seconds (default 600) with no file activity — a
+long-running gateway that touches many worktrees no longer accumulates
+one language-server process per workspace forever. A reaped server is
+respawned automatically on the next relevant file operation. Set
+`idle_timeout: 0` to disable reaping and hold every server's index warm
+for the life of the process.
+
+Servers are also released when their workspace goes away, even if they
+are not idle: removing a Hermes-managed worktree (`hermes -w` session
+end, Kanban task cleanup, a delegated subagent's pruned worktree) shuts
+down that tree's language servers before `git worktree remove` runs, and
+the periodic sweep shuts down any server whose project root no longer
+exists on disk (deleted outside Hermes). The sweep is part of the idle
+reaper, so `idle_timeout: 0` also disables deleted-root reaping; the
+worktree-removal release always runs. A multi-root server only drops the
+vanished folder and keeps serving its sibling roots.
+
+Servers that support multi-root workspaces (currently pyright) run as a
+**single process** per Hermes process: the first Python project spawns
+it, and every further project root — for example sibling git worktrees
+edited by parallel subagents — is attached to that same server as an
+additional workspace folder instead of starting another copy.
 
 ## Disabling
 

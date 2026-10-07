@@ -1,0 +1,6 @@
+name: meta-ai-provider
+kind: model-provider
+version: 1.0.0
+description: Meta Model API — Muse Spark family (Meta Superintelligence Labs)
+author: Beto de Paola
+homepage: https://github.com/albertodepaola/hermes-meta-provider

@@ -1,5 +1,0 @@
-name: supermemory
-version: 1.0.0
-description: "Supermemory semantic long-term memory with profile recall, semantic search, explicit memory tools, and session ingest."
-pip_dependencies:
-  - supermemory

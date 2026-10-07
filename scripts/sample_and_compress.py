@@ -211,7 +211,7 @@ def sample_from_datasets(
         source = entry.get("_source_dataset", "unknown").split("/")[-1]
         source_counts[source] = source_counts.get(source, 0) + 1
     
-    print(f"\n📌 Sample distribution by source:")
+    print("\n📌 Sample distribution by source:")
     for source, count in sorted(source_counts.items()):
         print(f"      {source}: {count:,}")
     
@@ -269,7 +269,7 @@ def run_compression(input_dir: Path, output_dir: Path, config_path: str):
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from trajectory_compressor import TrajectoryCompressor, CompressionConfig
     
-    print(f"\n🗜️  Running trajectory compression...")
+    print("\n🗜️  Running trajectory compression...")
     print(f"   Input: {input_dir}")
     print(f"   Output: {output_dir}")
     print(f"   Config: {config_path}")
@@ -298,7 +298,7 @@ def merge_output_to_single_jsonl(input_dir: Path, output_file: Path):
     for jsonl_file in sorted(input_dir.glob("*.jsonl")):
         if jsonl_file.name == output_file.name:
             continue
-        with open(jsonl_file, 'r', encoding='utf-8') as f:
+        with open(jsonl_file, 'r', encoding='utf-8-sig') as f:
             for line in f:
                 line = line.strip()
                 if line:
@@ -348,7 +348,7 @@ def main(
     else:
         dataset_list = DEFAULT_DATASETS
     
-    print(f"\n📋 Configuration:")
+    print("\n📋 Configuration:")
     print(f"   Total samples: {total_samples:,}")
     print(f"   Min tokens filter: {min_tokens:,}")
     print(f"   Parallel workers: {num_proc}")
@@ -401,7 +401,7 @@ def main(
     print(f"\n📁 Raw samples:        {sampled_dir}")
     print(f"📁 Compressed batches: {compressed_dir}")
     print(f"📁 Final output:       {final_output}")
-    print(f"\nTo upload to HuggingFace:")
+    print("\nTo upload to HuggingFace:")
     print(f"   huggingface-cli upload NousResearch/{output_name} {final_output}")
 
 

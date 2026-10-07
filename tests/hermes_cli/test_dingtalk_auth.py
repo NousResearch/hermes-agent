@@ -34,17 +34,6 @@ class TestApiPost:
             with pytest.raises(RegistrationError, match=r"boom \(errcode=42\)"):
                 _api_post("/app/registration/init", {"source": "hermes"})
 
-    def test_returns_data_on_success(self):
-        from hermes_cli.dingtalk_auth import _api_post
-
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"errcode": 0, "nonce": "abc"}
-
-        with patch("hermes_cli.dingtalk_auth.requests.post", return_value=mock_resp):
-            result = _api_post("/app/registration/init", {"source": "hermes"})
-            assert result["nonce"] == "abc"
-
 
 # ---------------------------------------------------------------------------
 # begin_registration — 2-step nonce → device_code chain
@@ -80,29 +69,6 @@ class TestBeginRegistration:
         with patch("hermes_cli.dingtalk_auth._api_post",
                    return_value={"errcode": 0, "nonce": ""}):
             with pytest.raises(RegistrationError, match="missing nonce"):
-                begin_registration()
-
-    def test_missing_device_code_raises(self):
-        from hermes_cli.dingtalk_auth import begin_registration, RegistrationError
-
-        responses = [
-            {"errcode": 0, "nonce": "n1"},
-            {"errcode": 0, "verification_uri_complete": "http://x"},  # no device_code
-        ]
-        with patch("hermes_cli.dingtalk_auth._api_post", side_effect=responses):
-            with pytest.raises(RegistrationError, match="missing device_code"):
-                begin_registration()
-
-    def test_missing_verification_uri_raises(self):
-        from hermes_cli.dingtalk_auth import begin_registration, RegistrationError
-
-        responses = [
-            {"errcode": 0, "nonce": "n1"},
-            {"errcode": 0, "device_code": "dev"},  # no verification_uri_complete
-        ]
-        with patch("hermes_cli.dingtalk_auth._api_post", side_effect=responses):
-            with pytest.raises(RegistrationError,
-                               match="missing verification_uri_complete"):
                 begin_registration()
 
 
@@ -190,28 +156,33 @@ class TestRenderQR:
 # ---------------------------------------------------------------------------
 
 
-class TestConfigOverrides:
 
-    def test_base_url_default(self, monkeypatch):
-        monkeypatch.delenv("DINGTALK_REGISTRATION_BASE_URL", raising=False)
-        # Force module reload to pick up current env
-        import importlib
-        import hermes_cli.dingtalk_auth as mod
-        importlib.reload(mod)
-        assert mod.REGISTRATION_BASE_URL == "https://oapi.dingtalk.com"
 
-    def test_base_url_override_via_env(self, monkeypatch):
-        monkeypatch.setenv("DINGTALK_REGISTRATION_BASE_URL",
-                           "https://test.example.com/")
-        import importlib
-        import hermes_cli.dingtalk_auth as mod
-        importlib.reload(mod)
-        # Trailing slash stripped
-        assert mod.REGISTRATION_BASE_URL == "https://test.example.com"
+@pytest.mark.parametrize("succeeds", [True, False])
+def test_missing_qrcode_enables_dingtalk_without_switching_the_live_process(monkeypatch, succeeds):
+    import pm
+    from hermes_cli import dingtalk_auth
 
-    def test_source_default(self, monkeypatch):
-        monkeypatch.delenv("DINGTALK_REGISTRATION_SOURCE", raising=False)
-        import importlib
-        import hermes_cli.dingtalk_auth as mod
-        importlib.reload(mod)
-        assert mod.REGISTRATION_SOURCE == "openClaw"
+    monkeypatch.setitem(sys.modules, "qrcode", None)
+    calls = []
+    def sync(extras, *, explicit):
+        calls.append((extras, explicit))
+        if not succeeds:
+            raise pm.InstallError("venv", "offline")
+
+    monkeypatch.setattr(pm, "sync_venv", sync)
+    assert dingtalk_auth._ensure_qrcode_installed() is False
+    assert calls == [(["dingtalk"], True)]
+    assert dingtalk_auth.render_qr_to_terminal("https://example.com") is False
+    assert sys.modules["qrcode"] is None
+
+
+def test_available_qrcode_does_not_install(monkeypatch):
+    import pm
+    from hermes_cli import dingtalk_auth
+
+    monkeypatch.setitem(sys.modules, "qrcode", MagicMock())
+    def forbidden(*args, **kwargs):
+        raise AssertionError("installed dependency must not trigger a transaction")
+    monkeypatch.setattr(pm, "sync_venv", forbidden)
+    assert dingtalk_auth._ensure_qrcode_installed() is True

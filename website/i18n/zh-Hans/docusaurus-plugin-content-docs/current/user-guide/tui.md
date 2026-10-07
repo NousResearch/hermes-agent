@@ -85,6 +85,8 @@ hermes --tui
 
 快捷键与 [Classic CLI](cli.md#keybindings) 完全一致。仅有以下行为差异：
 
+- **`Ctrl+T`** — 将输入框上方的实时子智能体栏展开为完整 `/agents` 列表；**Enter/t** 查看实时日志，**`d`** 查看详细信息，**`e`** 引导，**`x`** 停止选中的工作者。可见行数随终端高度调整，关闭后保留输入草稿。
+- **`F7`** — 在多行预览和单行摘要之间切换，保留输入焦点，不写入配置。
 - **鼠标拖拽** — 以统一选区背景色高亮文本。
 - **`Cmd+V` / `Ctrl+V`** — 优先尝试普通文本粘贴，然后回退到 OSC52/原生剪贴板读取，最后在剪贴板或粘贴内容解析为图片时进行图片附件操作。
 - **`/terminal-setup`** — 安装本地 VS Code / Cursor / Windsurf 终端绑定，以在 macOS 上获得更好的 `Cmd+Enter` 和撤销/重做一致性。
@@ -172,7 +174,7 @@ TUI 的状态栏实时跟踪 agent 状态：
 - **工作目录及 git 分支** — `~/projects/hermes-agent (docs/two-week-gap-sweep)`。在旁边的终端执行 `git checkout` 时，分支后缀会更新（mtime 缓存），TUI 反映的是实际活跃分支，而非启动时的分支。
 - **每条 prompt 的耗时** — 轮次运行时显示 `⏱ 12s/3m 45s`（实时），轮次完成后冻结为 `⏲ 32s / 3m 45s`。第一个数字是自上次用户消息以来的时间；第二个是会话总时长。每次新 prompt 时重置。
 - **`🗜️ N`** — 当前会话被自动压缩的次数。首次压缩触发后显示。
-- **`▶ N`** — 当前会话中正在运行的 `/background` 任务数量。至少有一个任务在执行时显示。
+- **`▶ N`** — 当前会话中正在运行的 `/bg` 任务数量。至少有一个任务在执行时显示。
 - **`⚠ YOLO`** — 每当 YOLO 模式开启时（`hermes --yolo`、`/yolo` 或 `HERMES_YOLO_MODE=1`）显示的可见警告。同一徽章也出现在启动 banner 中，确保你不会在未注意到的情况下启动自动审批会话。
 
 ## 配置
@@ -229,24 +231,15 @@ TUI 附带有主见的按区块默认值，将轮次以实时转录形式流式�
 
 会话生命周期、搜索、压缩和导出，请参阅[会话](sessions.md)。
 
-## 连接到运行中的 gateway
+## TUI 如何与其 gateway 通信
 
-默认情况下，TUI 会在进程内启动自己的 gateway，因此每个 TUI 实例是自包含的。如果你已有一个长期运行的 gateway（例如在 tmux 中运行 `hermes gateway run`，或 systemd / launchd 服务），可以将 TUI 指向该 gateway——TUI 将成为一个瘦客户端，与连接到同一 gateway 的所有其他界面（消息平台、Web 仪表板、其他 TUI 会话）共享状态。
+默认情况下，TUI 会在进程内启动自己的 gateway，因此每个 TUI 实例是自包含的——无需任何配置。
 
-启动前通过环境变量设置 websocket URL：
+你可能会在代码或日志中看到 `HERMES_TUI_GATEWAY_URL` 环境变量。它是 **Web 仪表板的内部接线细节**，并非面向用户的远程连接开关。当你打开仪表板的 "Chat" 标签页（`hermes dashboard` → `/chat`）时，仪表板的 Web 服务器会派生一个内嵌的 TUI 子进程，并注入 `HERMES_TUI_GATEWAY_URL`，让该子进程通过本地回环 WebSocket（`/api/ws`）连接到仪表板自己的进程内 `tui_gateway`。`/api/ws` 端点仅存在于仪表板服务器内部（`hermes_cli/web_server.py`），并绑定到该进程的生命周期和认证。
 
-```bash
-export HERMES_TUI_GATEWAY_URL="ws://localhost:8765/api/ws?token=<auth-token>"
-hermes --tui
-```
+不存在通用的"将任意 TUI 指向任意独立 gateway 端口"的模式。特别是，OpenAI 兼容 API 服务器（`hermes gateway` / `api_server` 平台）**不**提供 `/api/ws`——它是模型后端接口（`/v1/chat/completions`、`/v1/models` 等），并刻意不暴露 TUI 的 JSON-RPC 控制通道。将 `HERMES_TUI_GATEWAY_URL` 设置为该端口将返回 404。
 
-token 来自 gateway 的 API 认证配置（参见 [API Server](features/api-server.md)）。设置该环境变量后，TUI 将：
-
-- 完全跳过启动本地 gateway——无重复平台适配器，无端口冲突。
-- 通过 websocket 将所有操作（斜杠命令、图片附件、浏览器进度、语音事件等）路由到共享 gateway。
-- 在请求之间 gateway URL 轮换（新 token）时自动重连。
-
-这与 Web 仪表板内嵌 TUI 使用的是同一通道（参见 [Web Dashboard](features/web-dashboard.md#chat)）——一个 gateway，多个客户端。
+如果你希望多个界面共享同一组会话，请使用共享的 `~/.hermes/state.db`（参见[会话](sessions.md)）或 Web 仪表板的内嵌聊天（参见 [Web Dashboard](features/web-dashboard.md#chat)）——而不是手动设置 gateway URL。
 
 ## 回退到 Classic CLI
 

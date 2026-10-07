@@ -1,0 +1,62 @@
+import { atom, computed } from 'nanostores'
+
+// Per-session flag while auto-compaction runs mid-turn. Without it the
+// transcript looks like it reset; per-session so a background chat can't
+// clobber the foreground view.
+const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
+const hasSession = (sessions: Record<string, true>, key: string): boolean => Object.hasOwn(sessions, key)
+
+export const $compactingSessions = atom<Record<string, true>>({})
+
+/** Is `sessionId` compacting? Per-session because a transcript may be a tile,
+ *  and a tile must never wear the primary chat's compaction state. */
+export function sessionCompacting(sessionId: null | string) {
+  return computed($compactingSessions, sessions => hasSession(sessions, keyFor(sessionId)))
+}
+
+export function setSessionCompacting(sessionId: string | null | undefined, active: boolean): void {
+  const key = keyFor(sessionId)
+  const sessions = $compactingSessions.get()
+
+  if (active) {
+    if (hasSession(sessions, key)) {
+      return
+    }
+
+    $compactingSessions.set({ ...sessions, [key]: true })
+
+    return
+  }
+
+  if (!hasSession(sessions, key)) {
+    return
+  }
+
+  const next = { ...sessions }
+  delete next[key]
+  $compactingSessions.set(next)
+}
+
+// A manual /compress whose RPC answers `pending` (#97948) returns before the
+// compute host is done, so the handler never reaches the branch that renders
+// the summary. Claim the session here and let the `compacted`/`ready` edge
+// announce the completion instead — that edge is the only one the client gets.
+const deferredCompressSessions = new Set<string>()
+
+export function markCompressDeferred(sessionId: string | null | undefined): void {
+  deferredCompressSessions.add(keyFor(sessionId))
+}
+
+/** Consume the claim. True only for the first terminal edge, so a later
+ *  auto-compaction on the same session cannot replay the notice. */
+export function takeCompressDeferred(sessionId: string | null | undefined): boolean {
+  return deferredCompressSessions.delete(keyFor(sessionId))
+}
+
+/** Clear compaction only when the gateway proves the turn resumed or ended. */
+export function reconcileSessionCompacting(
+  sessionId: string | null | undefined,
+  _evidence: 'resumed' | 'terminal'
+): void {
+  setSessionCompacting(sessionId, false)
+}

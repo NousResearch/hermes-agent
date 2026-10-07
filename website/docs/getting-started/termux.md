@@ -1,242 +1,173 @@
 ---
 sidebar_position: 3
 title: "Android / Termux"
-description: "Run Hermes Agent directly on an Android phone with Termux"
+description: "Install Hermes Agent on Android from its signed Termux APT repository"
 ---
 
 # Hermes on Android with Termux
 
-This is the tested path for running Hermes Agent directly on an Android phone through [Termux](https://termux.dev/).
+:::danger Termux is currently broken
+The Termux package does not work right now. A fix is in progress and will
+ship soon. Until then, the steps below may fail or install a package that
+does not run.
+:::
 
-It gives you a working local CLI on the phone, plus the core extras that are currently known to install cleanly on Android.
+The Termux package runs Hermes on **aarch64 (arm64-v8a)** Android devices.
+Two APT channels are published under
+`https://hermes-assets.nousresearch.com/releases/termux/<channel>`:
 
-## What is supported in the tested path?
+| Channel | APT suite | Contents |
+| --- | --- | --- |
+| `stable` | `hermes-stable` | Tagged `vMAJOR.MINOR.PATCH` releases that passed the stable release gate |
+| `canary` | `hermes-canary` | Prerelease builds from canary tags; versions carry `~canary.<timestamp>` |
 
-The tested Termux bundle installs:
-- the Hermes CLI
-- cron support
-- PTY/background terminal support
-- Telegram gateway support (manual / best-effort background runs)
-- MCP support
-- Honcho memory support
-- ACP support
+The steps below use `stable`. To follow prereleases, replace `stable` with
+`canary` and `hermes-stable` with `hermes-canary` in steps 2 and 4. Both
+channels are signed with the same key.
 
-Concretely, it maps to:
+The package includes Python, Node.js, npm, uv, ripgrep, ffmpeg, and their runtime libraries.
+CI builds the native Python wheels and the TUI before it creates the package.
+The device does not compile core dependencies or assemble its base Python
+environment during installation. The package uses Python 3.14 with the bionic
+interpreter pin; it does not require the same patch version as desktop CPython.
+The wheel closure is core plus `acp`, not all desktop extras.
 
-```bash
-python -m pip install -e '.[termux]' -c constraints-termux.txt
-```
+## Install
 
-## What is not part of the tested path yet?
+Use the standard [Termux](https://termux.dev/) application.
+The package requires its standard prefix, `/data/data/com.termux/files/usr`.
+Other architectures and renamed Termux application packages are not supported.
+The wheels target Android API 24 (`android_24_arm64_v8a`).
+Do not use the desktop/server `install.sh` or a glibc Linux archive on this target.
 
-A few features still need desktop/server-style dependencies that are not published for Android, or have not been validated on phones yet:
+1. Install the tools for repository setup:
 
-- `.[all]` is not supported on Android today
-- the `voice` extra is blocked by `faster-whisper -> ctranslate2`, and `ctranslate2` does not publish Android wheels
-- automatic browser / Playwright bootstrap is skipped in the Termux installer
-- Docker-based terminal isolation is not available inside Termux
-- Android may still suspend Termux background jobs, so gateway persistence is best-effort rather than a normal managed service
+   ```bash
+   pkg install curl gnupg
+   ```
 
-That does not stop Hermes from working well as a phone-native CLI agent — it just means the recommended mobile install is intentionally narrower than the desktop/server install.
+2. Download the public key:
 
----
+   ```bash
+   mkdir -p "$PREFIX/etc/apt/keyrings"
+   curl -fsSL \
+     https://hermes-assets.nousresearch.com/releases/termux/stable/key.asc \
+     -o "$PREFIX/etc/apt/keyrings/hermes-agent.asc"
+   ```
 
-## Option 1: One-line installer
+3. Verify its primary fingerprint:
 
-Hermes now ships a Termux-aware installer path:
+   ```bash
+   gpg --show-keys --with-fingerprint "$PREFIX/etc/apt/keyrings/hermes-agent.asc"
+   ```
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
-```
+   The repository key fingerprint is:
 
-On Termux, the installer automatically:
-- uses `pkg` for system packages
-- creates the venv with `python -m venv`
-- attempts the broad `.[termux-all]` extra first and falls back to the smaller `.[termux]` extra (then a base install) — the curl installer matches this order automatically
-- links `hermes` into `$PREFIX/bin` so it stays on your Termux PATH
-- skips the untested browser / WhatsApp bootstrap
+   ```text
+   C572 B5FD D1A2 9CCF A9A9 12B6 840B 0848 E139 156D
+   ```
 
-If you want the explicit commands or need to debug a failed install, use the manual path below.
+   If the fingerprint differs, stop. Do not disable signature verification.
 
----
+4. Add the repository:
 
-## Option 2: Manual install (fully explicit)
+   ```bash
+   printf '%s\n' \
+     "deb [signed-by=$PREFIX/etc/apt/keyrings/hermes-agent.asc] https://hermes-assets.nousresearch.com/releases/termux/stable hermes-stable main" \
+     > "$PREFIX/etc/apt/sources.list.d/hermes-agent.list"
+   ```
 
-### 1. Update Termux and install system packages
+5. Install Hermes:
+
+   ```bash
+   pkg update
+   pkg install hermes-agent
+   ```
+
+6. Configure a provider, then start the TUI:
+
+   ```bash
+   hermes setup
+   hermes --tui
+   ```
+
+The `hermes`, `hermes-agent`, and `hermes-acp` commands use the packaged runtimes.
+They do not require Termux's `python` or `nodejs` packages.
+
+## Files and updates
+
+| Contents | Location |
+| --- | --- |
+| Package files | `$PREFIX/lib/hermes-agent/` |
+| Command symlinks | `$PREFIX/bin/hermes`, `$PREFIX/bin/hermes-agent`, `$PREFIX/bin/hermes-acp` |
+| Configuration and user data | `~/.hermes/`, or the selected `HERMES_HOME` |
+
+Update through APT:
 
 ```bash
 pkg update
-pkg install -y git python clang rust make pkg-config libffi openssl nodejs ripgrep ffmpeg
+pkg upgrade hermes-agent
 ```
 
-Why these packages?
-- `python` — runtime + venv support
-- `git` — clone/update the repo
-- `clang`, `rust`, `make`, `pkg-config`, `libffi`, `openssl` — needed to build a few Python dependencies on Android
-- `nodejs` — optional Node runtime for experiments beyond the tested core path
-- `ripgrep` — fast file search
-- `ffmpeg` — media / TTS conversions
+`hermes update` refuses to modify an APT-owned installation.
+It prints the package-manager command instead.
+Canary versions contain `~canary.<timestamp>` and sort before the corresponding
+stable version. Each suite only lists its own channel's packages; to move
+between channels, edit the channel path and suite in `hermes-agent.list`, then
+`pkg update && pkg upgrade hermes-agent`.
 
-### 2. Clone Hermes
+## Gateway
+
+This APT installation does not use systemd, launchd, or Windows Scheduled Tasks.
+Run the gateway in a Termux session:
 
 ```bash
-git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
+hermes gateway run
 ```
 
-If you already cloned without submodules:
+For a background process:
 
 ```bash
-git submodule update --init --recursive
+mkdir -p "${HERMES_HOME:-$HOME/.hermes}/logs"
+nohup hermes gateway run >> "${HERMES_HOME:-$HOME/.hermes}/logs/gateway.log" 2>&1 &
 ```
 
-### 3. Create a virtual environment
+:::warning Android process limits
+Android can suspend or terminate background Termux processes.
+Battery optimization exemptions and `termux-wake-lock` can help, but do not guarantee persistent operation.
+:::
+
+## Limits
+
+The package does not include the `nemo-relay` exporter. Its vendored build
+toolchain does not support this target.
+
+The package does not include Electron, local Chromium, or desktop computer-use
+tools. A local Docker daemon is not part of the Termux environment. Remote
+services have their own requirements and connectivity limits.
+
+Phone-native Termux:API microphone and clipboard adapters are not provided by
+this package path. The prebuilt CLI/TUI is not proof of local voice or wake-word
+support. Optional integrations and third-party plugins can require dependencies
+that do not support Android.
+
+Python 3.14 on this target reports `sys.platform == "android"`. A dependency
+or skill gated only to `linux` is not automatically available on Android.
+
+## Uninstall
 
 ```bash
-python -m venv venv
-source venv/bin/activate
-export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"
-python -m pip install --upgrade pip setuptools wheel
+pkg uninstall hermes-agent
 ```
 
-`ANDROID_API_LEVEL` is important for Rust / maturin-based packages such as `jiter`.
-
-### 4. Install the tested Termux bundle
-
-```bash
-python -m pip install -e '.[termux]' -c constraints-termux.txt
-```
-
-If you only want the minimal core agent, this also works:
-
-```bash
-python -m pip install -e '.' -c constraints-termux.txt
-```
-
-### 5. Put `hermes` on your Termux PATH
-
-```bash
-ln -sf "$PWD/venv/bin/hermes" "$PREFIX/bin/hermes"
-```
-
-`$PREFIX/bin` is already on PATH in Termux, so this makes the `hermes` command persist across new shells without re-activating the venv every time.
-
-### 6. Verify the install
-
-```bash
-hermes version
-hermes doctor
-```
-
-### 7. Start Hermes
-
-```bash
-hermes
-```
-
----
-
-## Recommended follow-up setup
-
-### Configure a model
-
-```bash
-hermes model
-```
-
-Or set keys directly in `~/.hermes/.env`.
-
-### Re-run the full interactive setup wizard later
-
-```bash
-hermes setup
-```
-
-### Install optional Node dependencies manually
-
-The tested Termux path skips Node/browser bootstrap on purpose. If you want to experiment with browser tooling later:
-
-```bash
-pkg install nodejs-lts
-npm install
-```
-
-The browser tool automatically includes Termux directories (`/data/data/com.termux/files/usr/bin`) in its PATH search, so `agent-browser` and `npx` are discovered without any extra PATH configuration.
-
-Treat browser / WhatsApp tooling on Android as experimental until documented otherwise.
-
----
+APT removes the package and its command symlinks. It preserves your configuration, sessions, skills, and memories.
 
 ## Troubleshooting
 
-### `No solution found` when installing `.[all]`
+- **Package not found:** verify the repository entry, then run `pkg update`.
+- **Signature error:** verify the public key fingerprint. Do not use an unsigned repository or bypass the error.
+- **Missing command:** verify that `$PREFIX/bin` is on `PATH`, or reinstall the package.
+- **Missing library or TUI bundle:** report `hermes --version` and the complete error. The core package must not require a local rebuild.
+- **Gateway stops with the screen off:** review Android's battery and background-process limits.
 
-Use the tested Termux bundle instead:
-
-```bash
-python -m pip install -e '.[termux]' -c constraints-termux.txt
-```
-
-The blocker is currently the `voice` extra:
-- `voice` pulls `faster-whisper`
-- `faster-whisper` depends on `ctranslate2`
-- `ctranslate2` does not publish Android wheels
-
-### `uv pip install` fails on Android
-
-Use the Termux path with the stdlib venv + `pip` instead:
-
-```bash
-python -m venv venv
-source venv/bin/activate
-export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -e '.[termux]' -c constraints-termux.txt
-```
-
-### `jiter` / `maturin` complains about `ANDROID_API_LEVEL`
-
-Set the API level explicitly before installing:
-
-```bash
-export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"
-python -m pip install -e '.[termux]' -c constraints-termux.txt
-```
-
-### `hermes doctor` says ripgrep or Node is missing
-
-Install them with Termux packages:
-
-```bash
-pkg install ripgrep nodejs
-```
-
-### Build failures while installing Python packages
-
-Make sure the build toolchain is installed:
-
-```bash
-pkg install clang rust make pkg-config libffi openssl
-```
-
-Then retry:
-
-```bash
-python -m pip install -e '.[termux]' -c constraints-termux.txt
-```
-
----
-
-## Known limitations on phones
-
-- Docker backend is unavailable
-- local voice transcription via `faster-whisper` is unavailable in the tested path
-- browser automation setup is intentionally skipped by the installer
-- some optional extras may work, but only `.[termux]` and `.[termux-all]` are currently documented as the tested Android bundles
-
-If you hit a new Android-specific issue, please open a GitHub issue with:
-- your Android version
-- `termux-info`
-- `python --version`
-- `hermes doctor`
-- the exact install command and full error output
+For general diagnostics, run `hermes doctor`.

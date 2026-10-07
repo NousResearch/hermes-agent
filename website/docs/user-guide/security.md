@@ -268,6 +268,10 @@ On messaging platforms, the agent sends the dangerous command details to the cha
 
 The `HERMES_EXEC_ASK=1` environment variable is automatically set when running the gateway.
 
+#### Approvals nobody can answer
+
+If a chat has no way to show the prompt to anyone allowed to answer it, Hermes doesn't wait for the timeout. The command is denied at once, and the agent is told why, so it can tell you instead of stalling. Saved session approvals and smart-approval verdicts don't apply there either. Which chats this covers is decided per platform.
+
 ### Permanent Allowlist
 
 Commands approved with "always" are saved to `~/.hermes/config.yaml`:

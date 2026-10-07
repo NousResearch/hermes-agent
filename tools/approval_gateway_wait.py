@@ -135,7 +135,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     out. Shared by the terminal command guard, the execute_code guard, the plugin
     escalation gate, and MCP elicitation. Returns ``{"resolved", "choice",
     "reason"}`` or ``{"resolved": False, "choice": None, "notify_failed": True}``
-    when the notify callback raised. Persisting the choice and building the
+    when the notify callback raised or the session's prompts can't be answered (which also sets
+    ``unanswerable`` to the reason). Persisting the choice and building the
     tool-facing result stay with the caller.
 
     Identical concurrent approvals (same command text + pattern-key set) are
@@ -145,6 +146,11 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     the leader, so the follower falls through to a fresh prompt."""
     from tools import approval as _approval
     from agent.terminal_approval_batch import approval_published, preparing_terminal_approval, register_prepared_approval
+
+    # No permitted person can answer this turn's prompts (approval.register_gateway_notify): treat it as
+    # undeliverable up front, so callers end at once instead of waiting out the timeout.
+    if (reason := _approval.unanswerable_reason(session_key)) is not None:
+        return {"resolved": False, "choice": None, "notify_failed": True, "unanswerable": reason}
 
     primary_key = approval_data.get("pattern_key", "")
     payload = {

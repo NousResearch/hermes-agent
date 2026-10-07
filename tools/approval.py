@@ -118,13 +118,21 @@ def _denial_breaker_addendum(session_key: str) -> str:
 # instead of only hearing "denied". Ported from qwibitai/nanoclaw#2832.
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+# session_key → why no permitted person can answer this turn's approval prompts (shown to the agent).
+# A prompt nobody permitted will ever see fails closed at once instead of waiting out approvals.timeout.
+_gateway_unanswerable: dict[str, str] = {}
 
 
-def register_gateway_notify(session_key: str, cb) -> None:
+def register_gateway_notify(session_key: str, cb, *, unanswerable: Optional[str] = None) -> None:
     """Register ``cb(approval_data: dict) -> None`` for sending approval requests. The callback
-    bridges sync→async: it runs in the agent thread and must schedule the send on the loop."""
+    bridges sync→async: it runs in the agent thread and must schedule the send on the loop.
+    ``unanswerable`` (a reason) marks this turn's approvals as ones no permitted person can answer."""
     with _lock:
         _gateway_notify_cbs[session_key] = cb
+        if unanswerable:
+            _gateway_unanswerable[session_key] = unanswerable
+        else:
+            _gateway_unanswerable.pop(session_key, None)
 
 
 def unregister_gateway_notify(session_key: str) -> None:
@@ -132,8 +140,22 @@ def unregister_gateway_notify(session_key: str) -> None:
     they don't hang forever (agent run finished or interrupted)."""
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
+        _gateway_unanswerable.pop(session_key, None)
         for entry in _gateway_queues.pop(session_key, []):
             entry.event.set()
+
+
+def unanswerable_reason(session_key: str) -> Optional[str]:
+    """Why *session_key*'s approval prompts can't be answered this turn, or None when they can."""
+    with _lock:
+        return _gateway_unanswerable.get(session_key)
+
+
+def _unanswerable_blocked(reason: str, pattern_key: str, description: str, noun: str = "command") -> dict:
+    return _denied(
+        f"BLOCKED: {reason} Do NOT retry this command, do NOT rephrase it, and do NOT attempt the same "
+        "outcome via a different command.",
+        pattern_key=pattern_key, description=description, outcome="unanswerable", noun=noun)
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -967,6 +989,8 @@ def _run_approval_gate(
     if _yolo_active() or approval_context._get_approval_mode() == "off":
         return _approved()
     session_key = get_current_session_key()
+    if (reason := unanswerable_reason(session_key)) is not None:  # see check_all_command_guards
+        return _unanswerable_blocked(reason, pattern_key, description, noun)
     if is_approved(session_key, pattern_key):
         return _approved()
 
@@ -1161,7 +1185,13 @@ def check_all_command_guards(command: str, env_type: str,
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     session_key = get_current_session_key()
-    if not is_dangerous or is_approved(session_key, pattern_key):
+    if not is_dangerous:
+        return _approved()
+    # Nobody permitted can answer here: deny before a session grant (is_approved) or a smart-approval
+    # verdict (inside _human_decision) can approve on the session's behalf.
+    if (reason := unanswerable_reason(session_key)) is not None:
+        return _unanswerable_blocked(reason, pattern_key, description)
+    if is_approved(session_key, pattern_key):
         return _approved()
     return _human_decision(
         _COMMAND_GATE, command=command, description=description,
@@ -1226,6 +1256,8 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
         return _approved()
 
     session_key = get_current_session_key()
+    if (reason := unanswerable_reason(session_key)) is not None:  # see check_all_command_guards
+        return _unanswerable_blocked(reason, pattern_key, description, "code")
     # Built only past the early-return gates so common paths don't copy a potentially-large script into this string.
     command = f"execute_code <<'PY'\n{code}\nPY"
 

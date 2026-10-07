@@ -1,50 +1,55 @@
 import type { ModelOptionProvider } from '@hermes/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { requests, getEventHandler, setEventHandler, getFakeGateway } = vi.hoisted(() => {
+const { requests, profileRequests, getEventHandler, getFakeGateway, createGateway, readConfig } = vi.hoisted(() => {
   const requests: [string, Record<string, unknown>][] = []
-  type Handler = (event: { type: string; payload?: unknown }) => void
-  let currentHandler: Handler | null = null
-
-  const fake = {
-    request: (method: string, params: Record<string, unknown>) => {
-      requests.push([method, params])
-      return Promise.resolve({})
-    },
-    onEvent: (handler: Handler) => {
-      currentHandler = handler
-      return () => {
-        if (currentHandler === handler) {
-          currentHandler = null
+  const profileRequests: [string, string, Record<string, unknown>][] = []
+  type Handler = (event: { type: string; payload?: unknown; profile?: string }) => void
+  const createGateway = () => {
+    const handlers = new Set<Handler>()
+    return {
+      handlers,
+      request: (method: string, params: Record<string, unknown>) => {
+        requests.push([method, params])
+        return Promise.resolve({})
+      },
+      onEvent: (handler: Handler) => {
+        handlers.add(handler)
+        return () => {
+          handlers.delete(handler)
         }
       }
     }
   }
-
+  const fake = createGateway()
   return {
     requests,
-    getEventHandler: () => currentHandler,
-    setEventHandler: (h: Handler | null) => { currentHandler = h },
+    profileRequests,
+    createGateway,
+    readConfig: vi.fn((): Promise<{ value?: null | readonly string[] }> => Promise.resolve({})),
+    getEventHandler: () => [...fake.handlers].at(-1),
     getFakeGateway: () => fake
   }
 })
 
-vi.mock('@/store/gateway', () => {
-  const fake = getFakeGateway()
+vi.mock('@/store/gateway', async () => {
+  const { atom } = await import('nanostores')
+  const $gateway = atom<ReturnType<typeof createGateway> | null>(getFakeGateway())
+  const $activeGatewayRoute = atom('default')
   return {
-    $gateway: {
-      get: () => fake,
-      listen: () => () => {},
-      subscribe: (fn: (gw: unknown) => (() => void) | void) => {
-        const cleanup = fn(fake)
-        return () => {
-          cleanup?.()
-        }
-      }
-    },
-    activeGateway: () => fake
+    $gateway,
+    $activeGatewayRoute,
+    activeGateway: () => $gateway.get(),
+    activeGatewayProfileKey: () => $activeGatewayRoute.get(),
+    requestGatewayForProfile: (profile: string, method: string, params: Record<string, unknown>) => {
+      profileRequests.push([profile, method, params])
+      requests.push([method, params])
+      return method === 'config.get' ? readConfig() : Promise.resolve({})
+    }
   }
 })
+
+import { $activeGatewayRoute, $gateway } from '@/store/gateway'
 
 import {
   collapseModelFamilies,
@@ -536,9 +541,126 @@ describe('resetModelVisibility', () => {
 
 describe('model visibility crosses surfaces', () => {
   beforeEach(() => {
+    $gateway.set(getFakeGateway() as unknown as typeof $gateway.value)
+    $activeGatewayRoute.set('default')
+    readConfig.mockReset().mockResolvedValue({})
     requests.length = 0
+    profileRequests.length = 0
     localStorage.clear()
     adoptVisibleModels(null)
+  })
+
+  it('targets config reads and writes at the active profile, even on a shared socket', async () => {
+    const unbind = initVisibleModelsGatewaySync()
+    try {
+      $activeGatewayRoute.set('worker')
+      await Promise.resolve()
+      expect(profileRequests).toContainEqual(['worker', 'config.get', { key: 'visible_models' }])
+      setVisibleModels(new Set(['worker::model']))
+      expect(profileRequests.at(-1)).toEqual([
+        'worker',
+        'config.set',
+        { key: 'visible_models', value: ['worker::model'] }
+      ])
+    } finally {
+      unbind()
+    }
+  })
+
+  it('removes old socket listeners on switch, disconnect and disposal', () => {
+    const first = createGateway()
+    const second = createGateway()
+    $gateway.set(first as unknown as typeof $gateway.value)
+    const unbind = initVisibleModelsGatewaySync()
+    $gateway.set(second as unknown as typeof $gateway.value)
+    expect(first.handlers.size).toBe(0)
+    expect(second.handlers.size).toBeGreaterThan(0)
+    $gateway.set(null)
+    expect(second.handlers.size).toBe(0)
+    $gateway.set(second as unknown as typeof $gateway.value)
+    const count = second.handlers.size
+    unbind()
+    expect(second.handlers.size).toBe(count - 1)
+  })
+
+  it('ignores reads and queued events from a retired route, including after disposal', async () => {
+    let resolve!: (value: { value: readonly string[] }) => void
+    readConfig.mockImplementationOnce(
+      () =>
+        new Promise(done => {
+          resolve = done
+        })
+    )
+    const unbind = initVisibleModelsGatewaySync()
+    const staleHandler = getEventHandler()
+    $activeGatewayRoute.set('worker')
+    adoptVisibleModels(['worker::current'])
+    resolve({ value: ['default::stale'] })
+    await Promise.resolve()
+    staleHandler?.({ type: 'visible_models.changed', payload: { value: ['default::stale-event'] } })
+    expect($visibleModels.get()).toEqual(new Set(['worker::current']))
+    const currentHandler = getEventHandler()
+    currentHandler?.({ type: 'visible_models.changed', profile: 'default', payload: { value: ['default::wrong'] } })
+    expect($visibleModels.get()).toEqual(new Set(['worker::current']))
+    unbind()
+    currentHandler?.({ type: 'visible_models.changed', payload: { value: ['worker::disposed'] } })
+    expect($visibleModels.get()).toEqual(new Set(['worker::current']))
+  })
+
+  it('does not seed the new profile from a stale null read', async () => {
+    let resolve!: (value: { value: null }) => void
+    readConfig.mockImplementationOnce(
+      () =>
+        new Promise(done => {
+          resolve = done
+        })
+    )
+    const unbind = initVisibleModelsGatewaySync()
+    try {
+      $activeGatewayRoute.set('worker')
+      adoptVisibleModels(['worker::current'])
+      profileRequests.length = 0
+      resolve({ value: null })
+      await Promise.resolve()
+      expect(profileRequests).toEqual([])
+      expect($visibleModels.get()).toEqual(new Set(['worker::current']))
+    } finally {
+      unbind()
+    }
+  })
+
+  it('ignores pending reads after disposal', async () => {
+    let resolve!: (value: { value: readonly string[] }) => void
+    readConfig.mockImplementationOnce(
+      () =>
+        new Promise(done => {
+          resolve = done
+        })
+    )
+    const unbind = initVisibleModelsGatewaySync()
+    unbind()
+    resolve({ value: ['nous::disposed'] })
+    await Promise.resolve()
+    expect($visibleModels.get()).toBeNull()
+  })
+
+  it('does not let the initial read overwrite a newer broadcast', async () => {
+    let resolve!: (value: { value: readonly string[] }) => void
+    readConfig.mockImplementationOnce(
+      () =>
+        new Promise(done => {
+          resolve = done
+        })
+    )
+    const unbind = initVisibleModelsGatewaySync()
+    try {
+      getEventHandler()?.({ type: 'visible_models.changed', payload: { value: ['nous::new'] } })
+      resolve({ value: ['nous::old'] })
+      await Promise.resolve()
+      expect($visibleModels.get()).toEqual(new Set(['nous::new']))
+    } finally {
+      unbind()
+    }
   })
 
   it('pushes edits to the gateway so another surface stays in sync', () => {
@@ -551,9 +673,7 @@ describe('model visibility crosses surfaces', () => {
   it('adoptVisibleModels takes a roster the backend reports', () => {
     adoptVisibleModels(['anthropic::claude-opus-5'])
     expect($visibleModels.get()).toEqual(new Set(['anthropic::claude-opus-5']))
-    expect(localStorage.getItem('hermes.desktop.visible-models')).toBe(
-      JSON.stringify(['anthropic::claude-opus-5'])
-    )
+    expect(localStorage.getItem('hermes.desktop.visible-models')).toBe(JSON.stringify(['anthropic::claude-opus-5']))
 
     adoptVisibleModels(null)
     expect($visibleModels.get()).toBeNull()

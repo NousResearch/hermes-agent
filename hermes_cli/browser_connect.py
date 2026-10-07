@@ -383,8 +383,24 @@ _AUTH_REFRESH_PROFILE_FILES = (
 
 
 def real_profile_copy_dir(browser: str) -> str:
-    """Return the hermes-owned snapshot dir for ``browser``'s real profile."""
-    return str(get_hermes_home() / "browser-profile" / browser)
+    """Return the hermes-owned snapshot dir for ``browser``'s real profile.
+
+    The ``-real-profile`` suffix keeps the snapshot away from the plain ``<browser>``
+    dir name, which other launch paths can also resolve to (agent-browser's persistent
+    profile / ``AGENT_BROWSER_PROFILE``). Two engines on one user-data-dir deadlock on
+    Chromium's SingletonLock (#134684)."""
+    return str(get_hermes_home() / "browser-profile" / f"{browser}-real-profile")
+
+
+def _remove_legacy_snapshot_dir(browser: str) -> None:
+    """Delete a pre-#134684 snapshot stored under the plain ``<browser>`` dir name.
+
+    That legacy name is exactly what could collide with another engine's user-data-dir,
+    and the dir holds credential copies, so it must not linger once the suffixed dir
+    exists. Best-effort: a dir still held open (Windows) is retried on a later launch."""
+    legacy = get_hermes_home() / "browser-profile" / browser
+    if os.path.isdir(legacy):
+        shutil.rmtree(legacy, ignore_errors=True)
 
 
 def _last_used_profile(src: str) -> str:
@@ -720,6 +736,9 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     # Only a copy that previously COMPLETED counts as populated; a half-written tree is
     # rebuilt — otherwise a torn first copy poisons freshness forever.
     populated = os.path.isfile(marker)
+    # The plain ``<browser>`` dir name predates the suffix and can collide with another
+    # engine's user-data-dir; clear it once the suffixed snapshot exists (#134684).
+    _remove_legacy_snapshot_dir(browser)
     try:
         os.makedirs(dst, exist_ok=True)
         # Secure the snapshot dir AND its browser-profile parent on EVERY launch so a failed

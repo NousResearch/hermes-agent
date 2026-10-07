@@ -240,8 +240,12 @@ def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> Tuple[Opt
     except (subprocess.SubprocessError, OSError) as e:
         return None, f"{_RP}the launch failed: {e}"
     if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip().splitlines()
-        return None, f"{_RP}the real-profile browser failed to start: {tail[-1] if tail else f'exit {proc.returncode}'}"
+        # Chrome's LAST stderr line is often a generic launch hint (the --no-sandbox
+        # suggestion), not the actual exit reason — report the code plus the tail
+        # lines instead of trusting that one line (#134684).
+        tail = [ln.strip() for ln in (proc.stderr or proc.stdout or "").strip().splitlines() if ln.strip()][-3:]
+        detail = "; ".join(tail) if tail else "no output"
+        return None, f"{_RP}the real-profile browser failed to start (exit {proc.returncode}): {detail}"
     cdp = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
     our_port = _read_devtools_port(copy_dir)
     if our_port is not None and (m := re.search(r":(\d+)", cdp or "")) and m.group(1) != our_port:

@@ -69,9 +69,16 @@ def _request_limited_response(method: str, url: str, **kwargs: Any) -> httpx.Res
                 )
             chunks.append(chunk)
 
+        # ``iter_bytes`` already decoded the transfer encoding, so the rebuilt response must
+        # not carry ``Content-Encoding`` (httpx would decode the plain body a second time —
+        # a gzipped token response fails with ``zlib ... incorrect header check``) nor the
+        # original ``Content-Length`` (it described the compressed body).
+        headers = httpx.Headers(response.headers)
+        headers.pop("content-encoding", None)
+        headers.pop("content-length", None)
         return httpx.Response(
             status_code=response.status_code,
-            headers=response.headers,
+            headers=headers,
             content=b"".join(chunks),
             request=response.request,
         )

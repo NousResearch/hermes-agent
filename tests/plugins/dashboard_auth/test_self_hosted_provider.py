@@ -930,3 +930,66 @@ class TestPluginRegister:
         registered = ctx.register_dashboard_auth_provider.call_args.args[0]
         assert registered._client_secret == "cfg-secret"
 
+
+# ---------------------------------------------------------------------------
+# _request_limited_response
+# ---------------------------------------------------------------------------
+
+
+def _stream_via_mock_transport(handler):
+    """``httpx.stream`` stand-in that routes through a real client + MockTransport, so the
+    response goes through httpx's genuine streaming/decoding path."""
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    def fake_stream(method, url, **kwargs):
+        return client.stream(method, url, **kwargs)
+
+    return fake_stream
+
+
+class TestRequestLimitedResponse:
+    def test_gzip_encoded_body_is_decoded_once(self, monkeypatch):
+        """A gzipped IdP response (Cloudflare Access gzips its token endpoint) must be usable.
+
+        ``iter_bytes`` already decompresses the stream; rebuilding the response with the
+        original ``Content-Encoding`` header made httpx decompress the plain body again and
+        raise ``DecodingError`` ("incorrect header check"), which surfaced to the operator as
+        "Provider unreachable: OIDC token endpoint unreachable".
+        """
+        import gzip
+
+        payload = b'{"access_token": "at", "id_token": "idt", "token_type": "Bearer"}'
+        body = gzip.compress(payload)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={
+                    "content-type": "application/json",
+                    "content-encoding": "gzip",
+                    "content-length": str(len(body)),
+                },
+                content=body,
+            )
+
+        monkeypatch.setattr(shared.httpx, "stream", _stream_via_mock_transport(handler))
+
+        resp = shared._request_limited_response("POST", "https://idp.example/token", timeout=5)
+
+        assert resp.status_code == 200
+        assert resp.json()["id_token"] == "idt"
+        assert "content-encoding" not in resp.headers
+        # httpx recomputes Content-Length for the rebuilt (decoded) body; the compressed length is gone.
+        assert resp.headers["content-length"] == str(len(payload))
+        assert resp.headers["content-type"] == "application/json"
+
+    def test_identity_encoded_body_unchanged(self, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, headers={"content-type": "application/json"}, content=b'{"ok": true}')
+
+        monkeypatch.setattr(shared.httpx, "stream", _stream_via_mock_transport(handler))
+
+        resp = shared._request_limited_response(
+            "GET", "https://idp.example/.well-known/openid-configuration", timeout=5,
+        )
+        assert resp.json() == {"ok": True}

@@ -170,6 +170,74 @@ def test_lock_during_unlock_wins_and_only_the_owning_session_release_drops_a_tok
         unlock_mod.set_current_session_id(None)
 
 
+def test_master_password_env_unlocks_headlessly_without_a_prompt(fake_bw, monkeypatch):
+    """A master password in the profile's secret scope mints the session token on first use — no
+    prompt, even in a cron session — and reaches bw only through the vendor ``--passwordenv``
+    contract (never argv, never the process env). Mirrors 1Password's service-account token."""
+    exe, log = fake_bw
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from tools.browser_vault_tool import browser_vault_list
+
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")  # headless: a prompt could not be answered
+    prompts = []
+    unlock_mod.set_unlock_prompt_callback(lambda *a: prompts.append(a) or "never used")
+    token = set_secret_scope({"BW_MASTER_PASSWORD": "correct horse"}, profile_home=os.environ["HERMES_HOME"])
+    try:
+        patcher, backend = _enabled(exe)
+        assert backend._auto_master == "correct horse"
+        with patcher, patch("agent.vault_backends.enabled_backends", return_value=[backend]):
+            listed = json.loads(browser_vault_list())
+        assert listed.get("locked", []) == [] and listed["items"][0]["handle"] == "bw:abc"
+        assert prompts == [], "a stored master password must never fall back to the prompt"
+        assert unlock_mod.is_unlocked("bitwarden")
+    finally:
+        reset_secret_scope(token)
+        unlock_mod.set_unlock_prompt_callback(None)
+
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    unlock_calls = [c for c in calls if c["argv"][:2] == ["unlock", "--raw"]]
+    assert len(unlock_calls) == 1 and unlock_calls[0]["pw"] == "correct horse"
+    assert all("correct horse" not in " ".join(c["argv"]) for c in calls), "master password must never be argv"
+    assert os.environ.get("BW_MASTER_PASSWORD") is None, "the scoped secret must not leak into os.environ"
+
+
+def test_master_password_env_is_profile_scoped_and_a_wrong_value_falls_back_to_locked(fake_bw):
+    """The password is read from the *profile* secret scope, not the launch environment (a multiplexed
+    gateway must not unlock profile B with profile A's password); a rotated/wrong value logs a warning
+    and leaves the manager locked, so the masked prompt path still applies."""
+    exe, log = fake_bw
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+    # Wrong password: no crash, stays locked, bw was asked exactly once.
+    token = set_secret_scope({"BW_MASTER_PASSWORD": "stale password"}, profile_home=os.environ["HERMES_HOME"])
+    try:
+        _patcher, backend = _enabled(exe)
+        assert backend.is_unlocked() is False
+        assert not unlock_mod.is_unlocked("bitwarden")
+    finally:
+        reset_secret_scope(token)
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert [c["argv"][:2] for c in calls] == [["unlock", "--raw"]]
+
+    # No scoped value: the backend is built without an auto-master, i.e. stock prompt behavior.
+    token = set_secret_scope({}, profile_home=os.environ["HERMES_HOME"])
+    try:
+        _patcher, backend = _enabled(exe)
+        assert backend._auto_master == ""
+        assert backend.is_unlocked() is False
+    finally:
+        reset_secret_scope(token)
+
+    # The env var name is configurable, like 1Password's ``service_account_token_env``.
+    token = set_secret_scope({"APEX_BW_PW": "correct horse"}, profile_home=os.environ["HERMES_HOME"])
+    try:
+        backend = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe), "master_password_env": "APEX_BW_PW"})
+        assert backend.is_unlocked() is True
+    finally:
+        reset_secret_scope(token)
+        unlock_mod.lock("bitwarden")
+
+
 def test_bitwarden_multi_uri_item_binds_every_saved_web_origin():
     """A Bitwarden login with several URIs binds all of them (deduped, first stays
     primary); non-web URIs and URIs marked match=Never (5) never widen the fill set."""

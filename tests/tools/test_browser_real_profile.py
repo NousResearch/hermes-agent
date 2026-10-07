@@ -266,7 +266,7 @@ class TestRealProfileCdpLaunch:
              patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
              patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
-                          side_effect=[None, "http://127.0.0.1:41000"]), \
+                          side_effect=["http://127.0.0.1:41000"]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch.object(bt_session, "_popen_agent_browser", side_effect=fake_agent_browser_spawn), \
              patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)), \
@@ -308,6 +308,7 @@ class TestRealProfileCdpLaunch:
              patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
                           side_effect=["http://127.0.0.1:5000", "http://127.0.0.1:41000"]), \
+             patch.object(bt_real_profile, "_agent_browser_daemon_alive", return_value=True), \
              patch.object(bt_real_profile, "_cdp_http_ready", return_value=True), \
              patch.object(bt_real_profile, "_cdp_on_data_dir", return_value=False), \
              patch.object(bt_real_profile, "_agent_browser_close_session",
@@ -350,7 +351,8 @@ class TestRealProfileCdpLaunch:
              patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
              patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
-                          side_effect=[None, "http://127.0.0.1:41000"]), \
+                          side_effect=[None, "http://127.0.0.1:41000"] if daemon_alive
+                          else ["http://127.0.0.1:41000"]) as get_cdp, \
              patch.object(bt_real_profile, "_agent_browser_close_session", side_effect=closed.append), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch.object(bt_session, "_popen_agent_browser",
@@ -361,6 +363,46 @@ class TestRealProfileCdpLaunch:
         assert err is None
         assert cdp == "http://127.0.0.1:41000"
         assert closed == ([bt._REAL_PROFILE_SESSION] if daemon_alive else [])
+        # Without a live daemon the bare probe is skipped (it would make agent-browser spawn its
+        # own browser): only the post-attach verification call runs.
+        assert get_cdp.call_count == (2 if daemon_alive else 1)
+        self._reset()
+
+    def test_attach_to_foreign_browser_fails_closed(self, tmp_path):
+        """Agent-browser bound to a browser other than the profile copy must fail closed
+        (session closed, error), never report our own port as if it were the truth."""
+        import tools.browser_tool as bt
+        self._reset()
+        copy_dir = tmp_path / "copy"
+        copy_dir.mkdir()
+        closed = []
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            (copy_dir / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n", encoding="utf-8")
+            return FakeChrome()
+
+        with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(copy_dir)), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(copy_dir), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt_real_profile, "_agent_browser_get_cdp",
+                          return_value="http://127.0.0.1:41999"), \
+             patch.object(bt_real_profile, "_agent_browser_close_session", side_effect=closed.append), \
+             patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt_session, "_popen_agent_browser",
+                          side_effect=lambda *a, **k: Mock(wait=Mock(return_value=0), returncode=0)), \
+             patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch.object(bt_cloud, "_is_headed_mode", return_value=False):
+            cdp, err = bt_real_profile._real_profile_cdp()
+        assert cdp is None
+        assert err and "different browser" in err
+        assert closed == [bt._REAL_PROFILE_SESSION]
         self._reset()
 
     @pytest.mark.parametrize("live_browser_id", ["/devtools/browser/x", "/devtools/browser/other"])
@@ -1017,6 +1059,7 @@ class TestReviewRound3:
              patch.object(bt_lightpanda_fallback, "_using_lightpanda_engine", return_value=False), \
              patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
              patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
+             patch.object(bt_real_profile, "_agent_browser_daemon_alive", return_value=True), \
              patch.object(bt_real_profile, "_agent_browser_get_cdp", return_value="http://127.0.0.1:9251"), \
              patch.object(bt_real_profile, "_cdp_http_ready", return_value=True), \
              patch.object(bt_real_profile, "_cdp_on_data_dir", return_value=True), \

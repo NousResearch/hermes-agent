@@ -234,8 +234,9 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> Tuple[Option
 def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> Tuple[Optional[str], Optional[str]]:
     """Make agent-browser ATTACH to the running Chrome (never launch its own); returns ``(http_cdp, error)``.
 
-    The daemon may answer with the endpoint of a browser IT spawned (throwaway temp profile);
-    the DevToolsActivePort OUR Chrome wrote is authoritative on disagreement.
+    The daemon may answer with the endpoint of a browser IT spawned (throwaway temp profile).
+    The requested ``port`` is authoritative: on disagreement the session is closed and the call
+    fails closed rather than reporting a CDP endpoint the session does not actually drive.
     """
     _bt = _origin()
     try:
@@ -256,11 +257,17 @@ def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> Tuple[Opt
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()
         return None, f"{_RP}the real-profile browser failed to start: {tail[-1] if tail else f'exit {proc.returncode}'}"
     cdp = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
-    our_port = _read_devtools_port(copy_dir)
-    if our_port is not None and (m := re.search(r":(\d+)", cdp or "")) and m.group(1) != our_port:
-        cdp = f"http://127.0.0.1:{our_port}"
-    if not cdp:
+    got = re.search(r":(\d+)", cdp or "")
+    if not cdp or not got:
+        _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
         return None, _RP + "the real-profile browser started without exposing a devtools endpoint. Retry, or turn the toggle off."
+    if got.group(1) != str(port):
+        # The session drives a browser other than the profile copy (e.g. one agent-browser
+        # spawned on its own). Returning our own port would claim success while every command
+        # goes to the wrong browser: close the session and fail closed.
+        _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
+        return None, (_RP + "agent-browser attached to a different browser than the profile copy; "
+                      "the session was closed. Retry, or turn the toggle off.")
     return cdp, None
 
 
@@ -319,7 +326,14 @@ def _real_profile_cdp() -> tuple:
         # Cookies / Login Data) must NOT run while a live copy-browser (maybe from a previous
         # hermes process) holds the user-data-dir open — that corrupts the databases.
         copy_dir = real_profile_copy_dir(browser)
-        existing = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
+        # `get cdp-url` on a session with no browser attached makes agent-browser's CLI SPAWN its
+        # own managed Chrome (connectOrCreate in its client). That throwaway browser is not our
+        # profile copy, and on hosts where it dies (restricted unprivileged user namespaces) it
+        # leaves the session daemon poisoned so the real attach below fails with the browser's
+        # misleading last stderr line. Only probe when a daemon is running: with no daemon there
+        # is nothing to reuse, and the attach below creates a clean one.
+        existing = (_agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
+                    if _agent_browser_daemon_alive(_bt._REAL_PROFILE_SESSION) else None)
         if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
             _bt._real_profile_cdp_cache["cdp"] = existing
             return existing, None

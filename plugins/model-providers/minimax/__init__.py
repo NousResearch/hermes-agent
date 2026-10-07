@@ -46,6 +46,7 @@ minimax_cn = MiniMaxProfile(
     name="minimax-cn", aliases=("minimax-china", "minimax_cn"), api_mode="anthropic_messages",
     env_vars=("MINIMAX_CN_API_KEY",), base_url="https://api.minimaxi.com/anthropic", auth_type="api_key",
     default_aux_model="MiniMax-M3",
+    models_url="https://api.minimaxi.com/v1/models",
 )
 
 minimax_oauth = MiniMaxProfile(

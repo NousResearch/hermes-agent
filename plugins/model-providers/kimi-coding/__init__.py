@@ -46,7 +46,15 @@ class KimiProfile(ProviderProfile):
         confirmed_coding_endpoint = _is_confirmed_kimi_coding_url(effective_base)
         if confirmed_coding_endpoint and urlparse(effective_base).path.rstrip("/") == "/coding":
             effective_base += "/v1"
-        models = super().fetch_models(api_key=api_key, base_url=effective_base or None, timeout=timeout)
+        # The models endpoint is fetched via urllib (not httpx), which does not
+        # auto-decompress gzip responses.  Temporarily strip Accept-Encoding
+        # so the response arrives as plain text/json.
+        saved = dict(self.default_headers)
+        self.default_headers = {k: v for k, v in saved.items() if k.lower() != "accept-encoding"}
+        try:
+            models = super().fetch_models(api_key=api_key, base_url=effective_base or None, timeout=timeout)
+        finally:
+            self.default_headers = saved
         if models is None or confirmed_coding_endpoint:
             return models
         return [model for model in models if model.strip().lower() != "k3"]
@@ -59,16 +67,18 @@ class KimiProfile(ProviderProfile):
         return thinking_toggle_extras(reasoning_config, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES)
 
 
-def _kimi(name: str, aliases: tuple, env_vars: tuple, base_url: str) -> KimiProfile:
+def _kimi(name: str, aliases: tuple, env_vars: tuple, base_url: str, *, fallback_models: tuple = ()) -> KimiProfile:
     return KimiProfile(
         name=name, aliases=aliases, env_vars=env_vars, base_url=base_url,
         fixed_temperature=OMIT_TEMPERATURE, default_max_tokens=32000,
         default_headers=dict(_HEADERS), default_aux_model="kimi-k2-turbo-preview",
+        fallback_models=fallback_models,
     )
 
 
 kimi = _kimi("kimi-coding", ("kimi", "moonshot", "kimi-for-coding"), ("KIMI_API_KEY", "KIMI_CODING_API_KEY"),
-             "https://api.moonshot.ai/v1")
+             "https://api.kimi.com/coding/v1",
+             fallback_models=("kimi-for-coding", "kimi-for-coding-highspeed", "k3", "k3-256k", "kimi-k2-turbo-preview"))
 kimi_cn = _kimi("kimi-coding-cn", ("kimi-cn", "moonshot-cn"), ("KIMI_CN_API_KEY",), "https://api.moonshot.cn/v1")
 
 register_provider(kimi)

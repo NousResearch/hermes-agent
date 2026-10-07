@@ -7,13 +7,17 @@ import {
   clearQueuedPrompts,
   dequeueQueuedPrompt,
   enqueueQueuedPrompt,
+  getFrozenQueuedTransport,
   getQueuedPrompts,
   isQueueParked,
   migrateQueuedPrompts,
   parkQueuedPrompts,
   promoteQueuedPrompt,
   removeQueuedPrompt,
+  resetFrozenQueuedTransportsForTests,
+  resolveQueuedPromptTransport,
   shouldAutoDrain,
+  simulateComposerQueueReloadForTests,
   unparkQueuedPrompts,
   updateQueuedPrompt,
   updateQueuedPromptText
@@ -201,6 +205,7 @@ describe('migrateQueuedPrompts', () => {
   beforeEach(() => {
     window.localStorage.removeItem(QUEUE_STORAGE_KEY)
     $queuedPromptsBySession.set({})
+    resetFrozenQueuedTransportsForTests()
   })
 
   it('moves entries from a dead runtime key onto the live one', () => {
@@ -253,6 +258,7 @@ describe('parked queue sessions', () => {
     window.localStorage.removeItem(QUEUE_STORAGE_KEY)
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    resetFrozenQueuedTransportsForTests()
   })
 
   it('parks only sessions with queued entries', () => {
@@ -389,11 +395,174 @@ describe('cross-window sync (#46732)', () => {
     expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
   })
 
+  it("keeps both windows' entries when they queue into the same session before either syncs", async () => {
+    // One fresh module instance per window, both booted from the same storage.
+    vi.resetModules()
+    const windowA = await import('./composer-queue')
+    vi.resetModules()
+    const windowB = await import('./composer-queue')
+
+    windowA.enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'x from A' })
+    // B's storage event for A's write has not arrived yet.
+    windowB.enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'y from B' })
+
+    const stored = JSON.parse(window.localStorage.getItem(QUEUE_STORAGE_KEY)!)[SESSION_KEY]
+
+    expect(stored.map((entry: { text: string }) => entry.text)).toEqual(['x from A', 'y from B'])
+  })
+
   it('ignores storage events for unrelated keys', () => {
     enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'kept' })
 
     dispatchStorage('unrelated.key', '{}')
 
     expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['kept'])
+  })
+})
+
+const TERMINAL_CHIP_DRAFT = 'look at @terminal:`zsh:23-58`'
+const SELECTION_A = 'selection A from pane one'
+const SELECTION_A_TRANSPORT = '```terminal\nselection A from pane one\n```\n\nlook at'
+
+describe('composer queue terminal payload persistence', () => {
+  beforeEach(() => {
+    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
+    $queuedPromptsBySession.set({})
+    resetFrozenQueuedTransportsForTests()
+  })
+
+  it('does not persist frozen terminal CONTENTS into hermes.desktop.composerQueue.v1', () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, {
+      attachments: [],
+      text: TERMINAL_CHIP_DRAFT,
+      displayText: TERMINAL_CHIP_DRAFT,
+      frozenTransport: SELECTION_A_TRANSPORT
+    })
+
+    expect(entry).not.toBeNull()
+    expect(getFrozenQueuedTransport(entry!.id)).toBe(SELECTION_A_TRANSPORT)
+
+    const raw = String(window.localStorage.getItem(QUEUE_STORAGE_KEY))
+
+    expect(raw).toContain(TERMINAL_CHIP_DRAFT)
+    expect(raw).not.toContain(SELECTION_A)
+    expect(raw).not.toContain('```terminal')
+    expect(JSON.parse(raw)[SESSION_KEY][0].text).toBe(TERMINAL_CHIP_DRAFT)
+  })
+
+  it('fails closed after reload when chips remain but the runtime payload is gone', () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, {
+      attachments: [],
+      text: TERMINAL_CHIP_DRAFT,
+      displayText: TERMINAL_CHIP_DRAFT,
+      frozenTransport: SELECTION_A_TRANSPORT
+    })
+
+    expect(resolveQueuedPromptTransport(entry!).ok).toBe(true)
+
+    simulateComposerQueueReloadForTests()
+
+    const restored = getQueuedPrompts(SESSION_KEY)[0]
+
+    expect(restored).toBeDefined()
+    expect(restored!.id).toBe(entry!.id)
+    expect(restored!.text).toBe(TERMINAL_CHIP_DRAFT)
+    expect(getFrozenQueuedTransport(restored!.id)).toBeUndefined()
+
+    const resolved = resolveQueuedPromptTransport(restored!)
+
+    expect(resolved).toEqual({ ok: false, reason: 'missing-terminal-payload' })
+  })
+
+  it('lets an ordinary text queue survive reload and send normally', () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'plain follow-up' })
+
+    simulateComposerQueueReloadForTests()
+
+    const restored = getQueuedPrompts(SESSION_KEY)[0]
+
+    expect(restored!.id).toBe(entry!.id)
+    expect(resolveQueuedPromptTransport(restored!)).toEqual({
+      ok: true,
+      transportText: 'plain follow-up'
+    })
+  })
+
+  it('cleans the ephemeral payload on remove and clear', () => {
+    const first = enqueueQueuedPrompt(SESSION_KEY, {
+      attachments: [],
+      text: TERMINAL_CHIP_DRAFT,
+      displayText: TERMINAL_CHIP_DRAFT,
+      frozenTransport: SELECTION_A_TRANSPORT
+    })
+
+    const second = enqueueQueuedPrompt(SESSION_KEY, {
+      attachments: [],
+      text: 'second @terminal:`bash:1-2`',
+      displayText: 'second @terminal:`bash:1-2`',
+      frozenTransport: '```terminal\nother\n```\n\nsecond'
+    })
+
+    expect(getFrozenQueuedTransport(first!.id)).toBeDefined()
+    expect(removeQueuedPrompt(SESSION_KEY, first!.id)).toBe(true)
+    expect(getFrozenQueuedTransport(first!.id)).toBeUndefined()
+    expect(getFrozenQueuedTransport(second!.id)).toBeDefined()
+
+    const dequeued = dequeueQueuedPrompt(SESSION_KEY)
+
+    expect(dequeued?.id).toBe(second!.id)
+    expect(getFrozenQueuedTransport(second!.id)).toBeUndefined()
+
+    const third = enqueueQueuedPrompt(SESSION_KEY, {
+      attachments: [],
+      text: TERMINAL_CHIP_DRAFT,
+      displayText: TERMINAL_CHIP_DRAFT,
+      frozenTransport: SELECTION_A_TRANSPORT
+    })
+
+    clearQueuedPrompts(SESSION_KEY)
+
+    expect(getFrozenQueuedTransport(third!.id)).toBeUndefined()
+    expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
+  })
+
+  it('preserves the ephemeral payload by id across migrate, promote, and replacement edit', () => {
+    const entry = enqueueQueuedPrompt('rt-old', {
+      attachments: [],
+      text: TERMINAL_CHIP_DRAFT,
+      displayText: TERMINAL_CHIP_DRAFT,
+      frozenTransport: SELECTION_A_TRANSPORT
+    })
+
+    enqueueQueuedPrompt('rt-old', { attachments: [], text: 'later' })
+
+    expect(migrateQueuedPrompts('rt-old', 'rt-new')).toBe(true)
+    expect(entry!.id).toBe(getQueuedPrompts('rt-new')[0]?.id)
+    expect(getFrozenQueuedTransport(entry!.id)).toBe(SELECTION_A_TRANSPORT)
+
+    const later = getQueuedPrompts('rt-new')[1]!
+
+    expect(promoteQueuedPrompt('rt-new', later.id)).toBe(true)
+    expect(getFrozenQueuedTransport(entry!.id)).toBe(SELECTION_A_TRANSPORT)
+
+    const replacement = '```terminal\nselection B after edit\n```\n\nlook at'
+
+    expect(
+      updateQueuedPrompt('rt-new', entry!.id, {
+        text: TERMINAL_CHIP_DRAFT,
+        displayText: TERMINAL_CHIP_DRAFT,
+        frozenTransport: replacement
+      })
+    ).toBe(true)
+    expect(getFrozenQueuedTransport(entry!.id)).toBe(replacement)
+    expect(String(window.localStorage.getItem(QUEUE_STORAGE_KEY))).not.toContain('selection B after edit')
+
+    expect(
+      updateQueuedPrompt('rt-new', entry!.id, {
+        text: 'no longer a terminal chip',
+        frozenTransport: null
+      })
+    ).toBe(true)
+    expect(getFrozenQueuedTransport(entry!.id)).toBeUndefined()
   })
 })

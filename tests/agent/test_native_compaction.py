@@ -538,17 +538,23 @@ class TestPrunePreCheckpointItems:
             "tail ask",
         ]
 
-    def test_retention_budget_newest_first_with_truncation(self):
+    @pytest.mark.parametrize(
+        ("char", "kept_chars"),
+        # ASCII 4 chars/token; Cyrillic 2 bytes/char; CJK 1 token/char.
+        [("x", 400), ("ж", 200), ("中", 100)],
+    )
+    def test_retention_budget_newest_first_with_truncation(self, char, kept_chars):
         from agent.native_compaction import prune_pre_checkpoint_items
 
-        old = {"role": "user", "content": "x" * 4000}   # ~1000 tokens
+        old = {"role": "user", "content": char * 4000}
         newer = {"role": "user", "content": "y" * 2000}  # ~500 tokens
         items = [old, newer, {"type": "compaction", "encrypted_content": "b"}]
         out = prune_pre_checkpoint_items(items, retained_user_token_budget=600)
         users = [i["content"] for i in out if i.get("role") == "user"]
-        # Newest kept whole; boundary (older) head-truncated to remaining budget.
+        # Newest kept whole; boundary (older) head-truncated to the remaining
+        # 100 tokens as costed by the budget's estimator, not budget*4 chars.
         assert users[-1] == "y" * 2000
-        assert users[0] == "x" * 400  # (600-500)*4 chars
+        assert users[0] == char * kept_chars
         assert out[0]["type"] == "compaction"
 
     def test_zero_budget_keeps_only_post_tail(self):
@@ -579,8 +585,8 @@ class TestPrunePreCheckpointItems:
         # The checkpoint's own turn content is emitted AFTER the checkpoint
         # in wire order (sidecar items lead the assistant branch), so it
         # survives in the post tail — call pairing for that turn is intact.
-        assert {"role": "assistant", "content": "ok"} in items
-        assert items.index({"role": "assistant", "content": "ok"}) > 0
+        assert {"type": "message", "role": "assistant", "content": "ok"} in items
+        assert items.index({"type": "message", "role": "assistant", "content": "ok"}) > 0
 
     def test_adapter_without_checkpoint_unchanged_shape(self):
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
@@ -647,7 +653,7 @@ class TestCheckpointGatedOnCurrentEligibility:
         assert items == pre_feature
         # Specifically: no checkpoint on the wire, no deleted history.
         assert all(i.get("type") != "compaction" for i in items)
-        assert {"role": "assistant", "content": _CODEX_ON_IT} in items
+        assert {"type": "message", "role": "assistant", "content": _CODEX_ON_IT} in items
 
     def test_eligible_request_still_restructures(self):
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
@@ -665,7 +671,7 @@ class TestCheckpointGatedOnCurrentEligibility:
 
         items = _chat_messages_to_responses_input(self._history())
         assert all(i.get("type") != "compaction" for i in items)
-        assert {"role": "assistant", "content": "on it"} in items
+        assert {"type": "message", "role": "assistant", "content": "on it"} in items
 
     def test_build_kwargs_without_field_does_not_prune(self):
         """Model swapped out of the gpt-5.6 family / kill switch fired:
@@ -679,7 +685,7 @@ class TestCheckpointGatedOnCurrentEligibility:
         )
         assert "context_management" not in kwargs
         assert all(i.get("type") != "compaction" for i in kwargs["input"])
-        assert {"role": "assistant", "content": "on it"} in kwargs["input"]
+        assert {"type": "message", "role": "assistant", "content": "on it"} in kwargs["input"]
 
     def test_build_kwargs_with_field_prunes(self):
         from agent.transports.codex import ResponsesApiTransport
@@ -700,7 +706,7 @@ class TestCheckpointGatedOnCurrentEligibility:
             self._history(), is_codex_backend=True
         )
         assert all(i.get("type") != "compaction" for i in items)
-        assert {"role": "assistant", "content": _CODEX_ON_IT} in items
+        assert {"type": "message", "role": "assistant", "content": _CODEX_ON_IT} in items
 
     def test_auxiliary_responses_adapter_never_prunes(self, monkeypatch):
         """Auxiliary calls (compression, flush_memories, MoA) replay real
@@ -738,4 +744,4 @@ class TestCheckpointGatedOnCurrentEligibility:
 
         assert seen.get("native_compaction_eligible") is False
         assert all(i.get("type") != "compaction" for i in seen["input"])
-        assert {"role": "assistant", "content": _CODEX_ON_IT} in seen["input"]
+        assert {"type": "message", "role": "assistant", "content": _CODEX_ON_IT} in seen["input"]

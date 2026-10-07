@@ -141,10 +141,7 @@ def prepare_iteration(
     # key before the one in hand expires (local JWT exp read; no network unless inside the skew)
     # instead of letting this iteration's request 401. With many agents sharing the hour that
     # 401 was a storm, and the pool benched the sole credential for all of them.
-    try:
-        agent._adopt_nous_key_before_expiry()
-    except Exception:
-        logger.debug("Nous key pre-expiry adoption failed", exc_info=True)
+    agent._adopt_nous_key_before_expiry()
 
     # Drain a /steer sent during the last API call so it lands THIS iteration. Delivered as a
     # standalone user row after the newest tool result (never smeared onto the tool row: that
@@ -428,7 +425,7 @@ def apply_retry_restarts(
     ``_preflight_compression_blocked`` so the fallback gets a fresh preflight (#84733).
 
     The two refunding restart paths (redirect and rebuilt-for-fallback) are bounded by
-    ``max_retries`` via ``restart_count`` (a per-turn accumulator) so a runaway
+    ``max_retries`` via ``restart_count`` (restarts since the last response) so a runaway
     interrupt/redirect that keeps re-arming a restart flag cannot refund the budget
     forever and hold the turn lease indefinitely."""
 
@@ -539,4 +536,9 @@ def apply_retry_restarts(
         agent._emit_diagnostic_status("❌ The model provider didn't answer after all retries. Send /retry, or switch models with /model.")
         agent._persist_session(messages, conversation_history)
         return _verdict("break")
+    # A response arrived, so the turn is not stuck re-issuing a cancelled request: start
+    # the refunding-restart bound over (restart_count = restarts since the last response).
+    # Counting every mid-turn correction for the whole turn ended healthy interactive
+    # turns on the (max_retries + 1)th message (#128000).
+    restart_count = 0
     return _verdict("fallthrough")

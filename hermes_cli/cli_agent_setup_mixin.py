@@ -12,7 +12,7 @@ from agent.i18n import t
 from utils import base_url_host_matches
 
 
-def _single_query_clarify_callback(question: str, choices=None, multi_select=False) -> str:
+def _single_query_clarify_callback(questions: list) -> dict:
     """Headless clarify answer for ``hermes chat -q``.
 
     A -q turn never builds the prompt_toolkit app, so the interactive clarify modal
@@ -23,11 +23,9 @@ def _single_query_clarify_callback(question: str, choices=None, multi_select=Fal
     The oneshot path answers immediately via ``_oneshot_clarify_callback``; single-query turns need the same
     headless behavior (#94943).
     """
-    prefix = f"[single-query mode: no user available to answer {question!r}. "
-    if choices:
-        what = "subset" if multi_select else "option"
-        return f"{prefix}Pick the best {what} from {choices} using your own judgment and continue.]"
-    return f"{prefix}Make the most reasonable assumption you can and continue.]"
+    return {"answers": {}, "outcome": "undelivered", "notice": (
+        "single-query mode: no user available to answer. Pick the best choices using your own "
+        "judgment, or make the most reasonable assumption you can, and continue.")}
 
 
 def _current_runtime(cli) -> dict:
@@ -525,16 +523,18 @@ class CLIAgentSetupMixin:
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Effective model/runtime config for one turn — always the session's primary
-        provider. With `/fast` on (service_tier == "priority") attach request_overrides;
+        provider. With a static `/fast` tier (fast / ultrafast) attach request_overrides;
         auto/cold tiers are applied per request by agent.fast_mode instead."""
+        from agent.fast_mode import STATIC_TIERS
         from hermes_cli.models import resolve_fast_mode_overrides
         runtime = _current_runtime(self)
         route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime)}
         overrides = None
-        if getattr(self, "service_tier", None) == "priority":
+        tier = getattr(self, "service_tier", None)
+        if tier in STATIC_TIERS:
             try:
                 overrides = resolve_fast_mode_overrides(
-                    route["model"], provider=runtime["provider"], base_url=runtime["base_url"])
+                    route["model"], provider=runtime["provider"], base_url=runtime["base_url"], tier=tier)
             except Exception:
                 pass
         route["request_overrides"] = overrides
@@ -635,7 +635,6 @@ class CLIAgentSetupMixin:
         self.finalize_preloaded_skills()
         _prepare_deferred_agent_startup()
         self._install_tool_callbacks()
-        self._ensure_tirith_security()
         if not self._ensure_runtime_credentials():
             return False
         from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
@@ -787,6 +786,16 @@ class CLIAgentSetupMixin:
             session_meta,
             lambda rid: self._console_print(
                 f"[dim]{_escape(t('cli.resume.compressed_into', session_id=self.session_id, descendant=rid))}[/]"))
+        # A Kanban worker transcript resumes only through a dispatcher-owned run (#68779) —
+        # an ordinary CLI resume would be a live writer the board cannot observe. Refuse AND
+        # fall back to a fresh session id, so this process never appends to the worker row.
+        from hermes_cli.kanban_resume_guard import kanban_resume_refusal
+        if (kanban_refusal := kanban_resume_refusal(self._session_db, self.session_id)):
+            self._console_print(f"[bold red]{_escape(kanban_refusal)}[/]")
+            self._resumed = False
+            from hermes_state_ids import new_session_id
+            self.session_id = new_session_id(self.session_start)
+            return False
         resume_limit_error = self._resume_history_limit_error()
         if resume_limit_error:
             self._resume_history_error = resume_limit_error

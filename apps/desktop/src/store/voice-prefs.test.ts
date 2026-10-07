@@ -9,10 +9,12 @@ import { saveHermesConfig } from '@/hermes'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 
 import {
+  $bargeInEnabled,
   $bargeInThresholdMultiplier,
   $voiceSilenceMs,
   $voiceStopPhrase,
   $voiceStopPhraseConfig,
+  applyBargeInEnabledFromConfig,
   applyBargeInThresholdFromConfig,
   applyVoiceSilenceMsFromConfig,
   applyVoiceStopPhraseFromConfig
@@ -171,6 +173,30 @@ describe('applyBargeInThresholdFromConfig', () => {
 
     applyBargeInThresholdFromConfig(null)
     expect($bargeInThresholdMultiplier.get()).toBeNull()
+  })
+})
+
+// `voice.barge_in` mirrors the gateway's `_arm_barge_listener_if_enabled`
+// (tui_gateway/methods_voice.py): the listener is armed unless the key is
+// explicitly false.
+describe('applyBargeInEnabledFromConfig', () => {
+  it('disarms only an explicit false', () => {
+    applyBargeInEnabledFromConfig({ voice: { barge_in: false } })
+    expect($bargeInEnabled.get()).toBe(false)
+
+    applyBargeInEnabledFromConfig({ voice: { barge_in: true } })
+    expect($bargeInEnabled.get()).toBe(true)
+  })
+
+  it('absent, null, or malformed values keep barge-in enabled', () => {
+    for (const voice of [undefined, {}, { barge_in: null }, { barge_in: 'nope' }, { barge_in: 0 }]) {
+      applyBargeInEnabledFromConfig({ voice: { barge_in: false } })
+      applyBargeInEnabledFromConfig({ voice })
+      expect($bargeInEnabled.get()).toBe(true)
+    }
+
+    applyBargeInEnabledFromConfig(null)
+    expect($bargeInEnabled.get()).toBe(true)
   })
 })
 

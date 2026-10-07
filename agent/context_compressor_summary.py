@@ -27,6 +27,36 @@ def _accepts_keyword_argument(callable_obj: Any, name: str) -> bool:
 
 
 class SummaryDispatchMixin:
+    def _apply_summary_route(self, call_kwargs: dict, pinned: Optional[Dict[str, Any]] = None) -> None:
+        """Pin the summary route onto ``call_kwargs`` for both compression entry points.
+
+        After a fallback, an omitted route is NOT "use the main model": ``call_llm`` re-resolves
+        ``auxiliary.compression`` from config — the model that just failed — and a second fallback
+        is refused, so every later attempt aborts (#123362). Name the main runtime explicitly.
+        A stall-fallback ``pinned`` route replaces the whole route: merged over the main runtime, the
+        main api_key/base_url would ride into the fallback entry's call (to its host, or instead of it).
+        """
+        if pinned:
+            # Clear first: a keyless pin (local server) resolves its own credential, never the main one.
+            for key in ("provider", "model", "base_url", "api_key", "api_mode"):
+                call_kwargs.pop(key, None)
+            call_kwargs.update(pinned)
+            return
+        if self.summary_model:
+            call_kwargs["model"] = self.summary_model
+            return
+        if not getattr(self, "_summary_model_fallen_back", False):
+            return
+        for key, value in (
+            ("provider", self.provider),
+            ("model", self.model),
+            ("base_url", self.base_url),
+            ("api_key", self.api_key),
+            ("api_mode", getattr(self, "api_mode", "")),
+        ):
+            if value:
+                call_kwargs[key] = value
+
     def _summarize_window(
         self, messages: List[Dict[str, Any]], turns_to_summarize: List[Dict[str, Any]], scan: "_HandoffScan",
         focus_topic: Optional[str], memory_context: str, bypass_cooldown: bool,

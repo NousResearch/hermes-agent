@@ -132,3 +132,51 @@ def test_launcher_dying_without_touching_its_files_is_broadcast_as_stopped(tmp_p
         if launcher.poll() is None:
             launcher.kill()
             launcher.wait(5)
+
+
+def test_screen_start_and_stop_reach_the_models_turn_notes(tmp_path, monkeypatch):
+    """#125830: a screen started/stopped mid-session must reach the model without waiting for a
+    prompt rebuild — the watcher stages the Bot Screen line as a one-shot per-turn note on every
+    live session of THAT profile. The staged note is consumed on the next turn
+    (``agent/turn_context.py``), so only its presence here is asserted."""
+    import psutil
+    import tui_gateway.server as server
+
+    home = tmp_path / "home"
+    (home / "bot-desktop").mkdir(parents=True)
+    events = _watching(server, home, monkeypatch)
+
+    class _Agent:  # a plain object: MagicMock would auto-create the note attribute
+        _gateway_turn_context_notes = ""
+
+    agent, other = _Agent(), _Agent()
+    server._sessions["ws-a"] = {"agent": agent, "profile_home": str(home), "transport": server._detached_ws_transport}
+    other_home = tmp_path / "other"
+    other_home.mkdir()
+    server._sessions["ws-b"] = {"agent": other, "profile_home": str(other_home), "transport": server._detached_ws_transport}
+    # the stub "launcher": a real live process with matching create_time, like runtime.start() records
+    launcher = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], stdin=subprocess.DEVNULL)  # noqa: S603
+    try:
+        server._poll_runtime_files()  # seed: stopped
+        assert not getattr(agent, "_gateway_turn_context_notes", "")
+
+        born = psutil.Process(launcher.pid).create_time()
+        (home / "bot-desktop" / "launcher.pid").write_text(f"{launcher.pid} {born!r}", encoding="utf-8")
+        (home / "bot-desktop" / "env").write_text("DISPLAY=:77\n", encoding="utf-8")
+        server._poll_runtime_files()
+        note = getattr(agent, "_gateway_turn_context_notes", "")
+        assert "Bot Screen" in note and "display :77" in note and "RUNNING" in note, note
+        assert not getattr(other, "_gateway_turn_context_notes", ""), "another profile's session was told"
+
+        (home / "bot-desktop" / "env").unlink()  # stop() from another process
+        server._poll_runtime_files()
+        note = getattr(agent, "_gateway_turn_context_notes", "")
+        assert "no longer running" in note, note
+        assert [e for e in events if e[0] == "display.status"]  # the broadcast still happened
+    finally:
+        with server._sessions_lock:
+            server._sessions.pop("ws-a", None)
+            server._sessions.pop("ws-b", None)
+        if launcher.poll() is None:
+            launcher.kill()
+            launcher.wait(5)

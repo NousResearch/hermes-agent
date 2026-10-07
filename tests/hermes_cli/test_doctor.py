@@ -285,7 +285,6 @@ class TestDoctorToolAvailabilityOverrides:
 
 
     def test_marks_kanban_available_only_when_missing_worker_env_gate(self, monkeypatch):
-        monkeypatch.setattr(doctor_state, "_honcho_is_configured_for_doctor", lambda: False)
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 
         available, unavailable = doctor_tools._apply_doctor_tool_availability_overrides(
@@ -419,12 +418,12 @@ class TestDoctorMemoryProviderSection:
         assert "Mem0" not in out
 
 
-    def test_mem0_provider_not_installed_shows_fail(self, monkeypatch, tmp_path):
-        # Make mem0 import fail
-        monkeypatch.setitem(sys.modules, "plugins.memory.mem0", None)
+    def test_catalog_provider_not_installed_names_install_command(self, monkeypatch, tmp_path):
+        # mem0 left core for the plugin catalog: a home still configured for it gets the exact command.
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
-        assert "Memory Provider" in out
+        section = out.split("Memory Provider", 1)[1][:600]
         assert "Built-in memory active" not in out
+        assert "mem0 plugin not found" in section and "plugins install mem0" in section
 
     @pytest.mark.parametrize("memory_enabled", [False, True])
     def test_stale_builtin_files_reported_only_when_store_enabled(

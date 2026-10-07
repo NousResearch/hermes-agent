@@ -197,6 +197,22 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert saved["type"] == "authorized_user"
 
 
+def test_gmail_search_empty_result_prints_json_array(
+    api_module: types.ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Python-fallback empty search prints [] like the gws path (#131711)."""
+    service = MagicMock()
+    service.users().messages().list().execute.return_value = {"resultSizeEstimate": 0}
+    monkeypatch.setattr(api_module, "_gws_binary", lambda: None)
+    monkeypatch.setattr(api_module, "build_service", lambda *_args: service)
+
+    api_module.gmail_search(api_module.argparse.Namespace(query="is:unread", max=10))
+
+    assert json.loads(capsys.readouterr().out) == []
+
+
 def _tabbed_doc():
     """A Doc with two tabs (one nested), as the Docs API returns with includeTabsContent."""
     def body(text):

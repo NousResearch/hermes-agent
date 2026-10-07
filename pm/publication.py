@@ -142,7 +142,7 @@ class StagedPlugin:
     def publish(self, project: Path) -> None:
         import os
         import uuid
-        from hermes_cli.auth import _file_lock
+        from hermes_cli.file_lock import _file_lock
         from pm.store import tree_digest
 
         if selection_snapshot() != self.configs:

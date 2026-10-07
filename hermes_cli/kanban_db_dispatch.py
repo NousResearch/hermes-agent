@@ -2042,6 +2042,15 @@ def _dispatch_lane_task(
     skip is recorded on ``result``.
     """
     task_id = row["id"]
+    from hermes_cli.profile_invocation_acl import admitted_kanban_source, permits, install_root
+    # A CLI/dashboard-supplied `created_by` is never source authority. The
+    # native kanban_create tool records a separate admission event atomically
+    # with creation. Legacy/unattested cards remain usable only for targets
+    # without a configured ACL; recheck the *current* assignee every tick.
+    source = admitted_kanban_source(conn, task_id, target=assignee, lane=lane)
+    if not permits(source, assignee, root=install_root()):
+        result.skipped_nonspawnable.append(task_id)
+        return False
     # Non-profile assignees (control-plane lanes that pull via ``claim_task``)
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
@@ -2293,10 +2302,14 @@ def _any_spawnable_review(
     if not review_rows:
         return False
     profile_exists = _profile_exists_fn()
+    from hermes_cli.profile_invocation_acl import admitted_kanban_source, permits, install_root
     running = per_profile_running or {}
     for row in review_rows:
         assignee = row["assignee"]
         if not assignee:
+            continue
+        if not permits(admitted_kanban_source(conn, row["id"], target=assignee, lane="review"),
+                       assignee, root=install_root()):
             continue
         if profile_exists is not None and not profile_exists(assignee):
             continue

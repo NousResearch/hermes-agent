@@ -27,7 +27,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
@@ -3427,6 +3427,7 @@ def request_review(
     conn: sqlite3.Connection, task_id: str, *, summary: Optional[str] = None,
     metadata: Optional[dict] = None, reviewer: Optional[str] = None,
     expected_run_id: Optional[int] = None, force: bool = False, with_reason: bool = False,
+    _admit_review: Optional[Callable[[sqlite3.Connection, str, Optional[str], int], None]] = None,
 ):
     """``running``/``ready`` -> ``review``; never touches block recurrence accounting.
 
@@ -3545,6 +3546,12 @@ def request_review(
             if staged:
                 payload["artifacts"] = staged
             _append_event(conn, task_id, "review_requested", payload, run_id=run_id)
+            if _admit_review is not None:
+                # Native-tool provenance must commit with THIS review handoff;
+                # CLI callers never supply the callback. Any callback failure
+                # rolls back both the transition and its authorization event.
+                event_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                _admit_review(conn, task_id, reviewer, event_id)
     except Exception:
         if staged_copies:
             _discard_staged_copies(staged_copies, staged_copies[0].parent)

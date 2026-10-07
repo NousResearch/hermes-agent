@@ -109,6 +109,12 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
         resolved = "default" if profile.lower() == "hermes" else profile
         if resolved not in known:
             return _err(rid, 4092, f"no profile '{profile}' on this gateway")
+        from hermes_cli.profile_invocation_acl import permits
+        # The Desktop transport authenticates a human principal, not the bot
+        # profile on the other connection. from_profile is client-supplied.
+        # A configured target must refuse until a profile-bound credential exists.
+        if not permits(None, resolved, root=root):
+            return _err(rid, 4093, "agent invocation denied: caller profile is unauthenticated")
         # The sender stamped itself with its bare @handle; a relayed "@hermes" is ANOTHER machine's
         # default, so re-stamp it with the form this gateway can reply to (#103731).
         from tools.bot_mode_probe import local_taken_forms

@@ -6,6 +6,7 @@ Covers the threading behavior control for multi-chunk replies:
 - "all": All chunks thread to original message
 """
 import os
+from typing import Optional
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
@@ -17,8 +18,11 @@ from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 @pytest.fixture()
 def adapter_factory():
     """Factory to create TelegramAdapter with custom reply_to_mode."""
-    def create(reply_to_mode: str = "first"):
-        config = PlatformConfig(enabled=True, token="test-token", reply_to_mode=reply_to_mode)
+    def create(reply_to_mode: str = "first", reply_to_mode_groups: Optional[str] = None):
+        config = PlatformConfig(
+            enabled=True, token="test-token",
+            reply_to_mode=reply_to_mode, reply_to_mode_groups=reply_to_mode_groups,
+        )
         return TelegramAdapter(config)
     return create
 
@@ -309,3 +313,67 @@ class TestDMTopicSyntheticSendRouting:
         call = adapter._bot.send_message.call_args_list[0]
         assert call.kwargs.get("message_thread_id") == 42
         assert call.kwargs.get("direct_messages_topic_id") is None
+
+
+class TestReplyToModeGroups:
+    """Groups-scoped override (``reply_to_mode_groups``): groups get their own mode, DMs keep the platform mode."""
+
+    def test_group_chat_uses_groups_mode(self, adapter_factory):
+        adapter = adapter_factory(reply_to_mode="first", reply_to_mode_groups="off")
+        assert adapter._should_thread_reply("msg-1", 0, "-5520263153") is False
+        assert adapter._should_thread_reply("msg-1", 1, "-5520263153") is False
+
+    def test_dm_keeps_platform_mode(self, adapter_factory):
+        adapter = adapter_factory(reply_to_mode="first", reply_to_mode_groups="off")
+        assert adapter._should_thread_reply("msg-1", 0, "12345") is True
+        assert adapter._should_thread_reply("msg-1", 1, "12345") is False
+
+    def test_missing_groups_mode_inherits_platform_mode(self, adapter_factory):
+        adapter = adapter_factory(reply_to_mode="first")
+        assert adapter._should_thread_reply("msg-1", 0, "-5520263153") is True
+
+    def test_no_chat_context_falls_back_to_platform_mode(self, adapter_factory):
+        adapter = adapter_factory(reply_to_mode="first", reply_to_mode_groups="off")
+        assert adapter._should_thread_reply("msg-1", 0) is True
+
+    @pytest.mark.asyncio
+    async def test_groups_off_suppresses_anchors_in_group_chat(self, adapter_factory):
+        adapter = adapter_factory(reply_to_mode="first", reply_to_mode_groups="off")
+        adapter._bot = MagicMock()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2"]
+
+        await adapter.send("-5520263153", "test content", reply_to="999")
+
+        for call in adapter._bot.send_message.call_args_list:
+            assert call.kwargs.get("reply_to_message_id") is None
+
+    @pytest.mark.asyncio
+    async def test_groups_mode_still_threads_in_dm(self, adapter_factory):
+        adapter = adapter_factory(reply_to_mode="first", reply_to_mode_groups="off")
+        adapter._bot = MagicMock()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2"]
+
+        await adapter.send("12345", "test content", reply_to="999")
+
+        calls = adapter._bot.send_message.call_args_list
+        assert calls[0].kwargs.get("reply_to_message_id") == 999
+        assert calls[1].kwargs.get("reply_to_message_id") is None
+
+
+class TestReplyToModeGroupsConfig:
+    """Config plumbing for ``reply_to_mode_groups``."""
+
+    def test_from_dict_loads_groups_mode(self):
+        config = PlatformConfig.from_dict({"enabled": True, "token": "t", "reply_to_mode_groups": "off"})
+        assert config.reply_to_mode_groups == "off"
+
+    def test_from_dict_normalises_yaml_bool_off(self):
+        # YAML 1.1 parses a bare `off` as False; it must mean "off", not a silent no-op.
+        config = PlatformConfig.from_dict({"enabled": True, "token": "t", "reply_to_mode_groups": False})
+        assert config.reply_to_mode_groups == "off"
+
+    def test_from_dict_defaults_to_none(self):
+        config = PlatformConfig.from_dict({"enabled": True, "token": "t"})
+        assert config.reply_to_mode_groups is None

@@ -72,6 +72,28 @@ class TestCLIPersonalityNone:
             cli._handle_personality_command("/personality kawaii")
         assert "kawaii" in cli.system_prompt.lower()
 
+    def test_set_composes_manual_prompt_in_live_cli(self):
+        cli = self._make_cli()
+        with (
+            patch("hermes_cli.personality.persist_personality", return_value=True),
+            patch("hermes_cli.config.read_raw_config", return_value={
+                "agent": {"system_prompt": "manual forever"},
+            }),
+        ):
+            cli._handle_personality_command("/personality helpful")
+        assert cli.system_prompt == "manual forever\n\nYou are helpful."
+
+    def test_explicit_env_prompt_remains_authoritative_after_live_switch(self):
+        cli = self._make_cli()
+        with (
+            patch.dict(os.environ, {"HERMES_EPHEMERAL_SYSTEM_PROMPT": "explicit"}),
+            patch("hermes_cli.personality.persist_personality", return_value=True),
+        ):
+            cli._handle_personality_command("/personality helpful")
+            assert cli.system_prompt == "explicit"
+            cli._handle_personality_command("/personality none")
+            assert cli.system_prompt == "explicit"
+
 # ── Gateway tests ──────────────────────────────────────────────────────────
 
 class TestGatewayPersonalityNone:
@@ -147,8 +169,21 @@ class TestGatewayPersonalityNone:
         assert saved["agent"]["system_prompt"] == "manual forever"
         assert saved["display"]["personality"] == "helpful"
         with p1, p2:
-            assert runner._get_system_prompt_for_channel(None, "c") == "You are helpful."
+            assert runner._get_system_prompt_for_channel(None, "c") == "manual forever\n\nYou are helpful."
         assert "helpful" in result.lower()
+
+    def test_explicit_environment_prompt_replaces_composed_global(self, tmp_path):
+        runner = self._make_runner()
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "agent": {"system_prompt": "manual", "personalities": {"helpful": "friendly"}},
+            "display": {"personality": "helpful"},
+        }))
+        with (
+            patch("gateway.run._hermes_home", tmp_path),
+            patch.dict(os.environ, {"HERMES_HOME": str(tmp_path),
+                                 "HERMES_EPHEMERAL_SYSTEM_PROMPT": "explicit"}),
+        ):
+            assert runner._get_system_prompt_for_channel(None, "c") == "explicit"
 
 class TestPersonalityDictFormat:
     """Test dict-format custom personalities with description, tone, style."""

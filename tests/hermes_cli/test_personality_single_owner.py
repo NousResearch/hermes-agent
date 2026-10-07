@@ -77,12 +77,26 @@ def test_resolve_personality_unknown_raises():
         resolve_personality("doesnotexist", {})
 
 
-def test_resolve_overlay_personality_wins_over_manual_prompt():
+def test_resolve_overlay_composes_standing_prompt_before_personality():
     cfg = {
         "display": {"personality": "kawaii"},
         "agent": {"system_prompt": "manual forever"},
     }
-    assert resolve_ephemeral_system_prompt(cfg) == KAWAII
+    assert resolve_ephemeral_system_prompt(cfg) == "manual forever\n\n" + KAWAII
+
+
+def test_resolve_overlay_renders_structured_personality_with_list_manual_prompt():
+    cfg = {"display": {"personality": "coder"}, "agent": {
+        "system_prompt": ["Keep the scope narrow.", "Cite evidence."],
+        "personalities": {"coder": {"system_prompt": "Use technical language.", "tone": "direct"}},
+    }}
+    assert resolve_ephemeral_system_prompt(cfg) == (
+        "Keep the scope narrow.\nCite evidence.\n\nUse technical language.\nTone: direct"
+    )
+
+
+def test_resolve_overlay_personality_alone_has_no_extra_separator():
+    assert resolve_ephemeral_system_prompt({"display": {"personality": "kawaii"}}) == KAWAII
 
 
 def test_resolve_overlay_falls_back_to_manual_prompt():

@@ -204,16 +204,21 @@ def test_attested_probe_fails_closed_without_a_well_formed_dead_attestation(atte
     the same death to the user.
     """
     marker = attest_home / "state" / "gateway.start-attestation.json"
-    assert gateway_windows.attested_gateway_died(current_pids=[]) is False  # no marker yet
+    assert gateway_windows.attested_death_generation(current_pids=[]) is None  # no marker yet
 
     marker.parent.mkdir(exist_ok=True)
-    for malformed in ('{"pids": null}', '{"pids": 555}', '["not", "a", "dict"]', "not json"):
+    # Exact positive ints only: ``True`` is an int subclass, 0/-1 are not PIDs, and a single
+    # malformed item taints the list (the writer never emits such values).
+    for malformed in (
+        '{"pids": null}', '{"pids": 555}', '["not", "a", "dict"]', "not json",
+        '{"pids": [true]}', '{"pids": [0]}', '{"pids": [-1]}', '{"pids": [555, "556"]}', '{"pids": [555, 0]}',
+    ):
         marker.write_text(malformed, encoding="utf-8")
-        assert gateway_windows.attested_gateway_died(current_pids=[]) is False, malformed
+        assert gateway_windows.attested_death_generation(current_pids=[]) is None, malformed
 
     gateway_windows._write_start_attestation([555], "cold-start after update")
-    assert gateway_windows.attested_gateway_died(current_pids=[555]) is False  # alive
-    assert gateway_windows.attested_gateway_died(current_pids=[]) is True  # dead, unclean
+    assert gateway_windows.attested_death_generation(current_pids=[555]) is None  # alive
+    assert gateway_windows.attested_death_generation(current_pids=[]) is not None  # dead, unclean
     assert marker.exists()  # unconsumed — the CLI start below still reports it
     assert gateway_windows.check_start_attestation(current_pids=[]) is not None
 
@@ -222,4 +227,71 @@ def test_attested_probe_fails_closed_without_a_well_formed_dead_attestation(atte
         encoding="utf-8",
     )
     gateway_windows._write_start_attestation([556], "cold-start after update")
-    assert gateway_windows.attested_gateway_died(current_pids=[]) is False  # planned stop
+    assert gateway_windows.attested_death_generation(current_pids=[]) is None  # planned stop
+
+
+def test_attested_probe_treats_a_marker_past_the_horizon_as_no_authority(attest_home):
+    """#110020 review (d): a historical marker must not later override Desktop ownership into a
+    duplicate gateway (#76129). Missing/unparsable/old ``ts`` all fail closed."""
+    marker = attest_home / "state" / "gateway.start-attestation.json"
+    marker.parent.mkdir(exist_ok=True)
+    gateway_windows._write_start_attestation([555], "direct spawn (PID 555)")
+    assert gateway_windows.attested_death_generation(current_pids=[]) is not None  # fresh
+    data = json.loads(marker.read_text(encoding="utf-8"))
+    for ts in (None, "not-a-date", "2020-01-01T00:00:00+00:00"):
+        stale = {k: v for k, v in data.items() if k != "ts"} if ts is None else {**data, "ts": ts}
+        marker.write_text(json.dumps(stale), encoding="utf-8")
+        assert gateway_windows.attested_death_generation(current_pids=[]) is None, ts
+        assert marker.exists()  # not consumed either
+
+
+def _sentinel(attest_home, **fields):
+    state = attest_home / "state"
+    state.mkdir(exist_ok=True)
+    (state / "gateway.lifecycle.json").write_text(json.dumps(fields), encoding="utf-8")
+
+
+def test_attestation_bound_to_create_time_is_no_authority_once_the_sentinel_moved_on(monkeypatch, attest_home):
+    """#110020 review (gateway_windows.py:937): the sentinel used to be matched by numeric PID only, so a
+    stale marker for PID 111 flipped from clean to crash once an unrelated PID 222 lifecycle overwrote
+    the sentinel. A marker bound to 111's process birth fails closed: another PID or another birth
+    time reads as undecidable, never as dead. (Birth, not the ledger's ``start_time``: that is stamped
+    seconds later, once imports finish.)"""
+    monkeypatch.setattr("hermes_cli.process_identity._process_create_time", lambda pid=None: 1000.0)
+    gateway_windows._write_start_attestation([111], "direct spawn (PID 111)")
+    marker = json.loads((attest_home / "state" / "gateway.start-attestation.json").read_text(encoding="utf-8"))
+    assert marker["create_times"] == {"111": 1000.0}
+    for fields in (
+        {"phase": "exited", "pid": 222, "create_time": 5000.0},  # unrelated lifecycle overwrote it
+        {"phase": "running", "pid": 222, "create_time": 5000.0},
+        {"phase": "running", "pid": 111, "create_time": 1003.0},  # PID reuse: different incarnation
+    ):
+        _sentinel(attest_home, **fields)
+        assert gateway_windows.attested_death_generation(current_pids=[]) is None, fields
+        assert gateway_windows.check_start_attestation(current_pids=[]) is None, fields
+        gateway_windows._write_start_attestation([111], "direct spawn (PID 111)")  # consumed above
+
+
+def test_attestation_bound_to_create_time_keeps_authority_for_its_own_incarnation(monkeypatch, attest_home):
+    """A running sentinel for the same PID within 2s of the bound create time is the attested
+    incarnation: gone with no clean exit → dead. Its own clean exit (create_time carried by
+    ``mark_exited``) → planned stop. A sentinel from a gateway older than the identity stamp, and
+    older markers without ``create_times``, keep PID-only matching."""
+    monkeypatch.setattr("hermes_cli.process_identity._process_create_time", lambda pid=None: 1000.0)
+    gateway_windows._write_start_attestation([111], "direct spawn (PID 111)")
+    _sentinel(attest_home, phase="running", pid=111, create_time=1001.5)
+    assert gateway_windows.attested_death_generation(current_pids=[]) is not None
+    _sentinel(attest_home, phase="exited", pid=111, create_time=1001.5, exit_reason="graceful_shutdown")
+    assert gateway_windows.attested_death_generation(current_pids=[]) is None
+    # Pre-identity sentinel (no create_time, start_time is the later ledger claim): PID-only rule.
+    _sentinel(attest_home, phase="running", pid=111, start_time=1007.0)
+    assert gateway_windows.attested_death_generation(current_pids=[]) is not None
+    # No sentinel at all: the process never booted far enough to claim one → dead.
+    (attest_home / "state" / "gateway.lifecycle.json").unlink()
+    assert gateway_windows.attested_death_generation(current_pids=[]) is not None
+    # Legacy marker (no create_times): PID-only rule unchanged.
+    path = attest_home / "state" / "gateway.start-attestation.json"
+    legacy = {k: v for k, v in json.loads(path.read_text(encoding="utf-8")).items() if k != "create_times"}
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    _sentinel(attest_home, phase="running", pid=111, create_time=1003.0)
+    assert gateway_windows.attested_death_generation(current_pids=[]) is not None

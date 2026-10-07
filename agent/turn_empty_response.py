@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from agent import empty_response_guard as _empty_guard
 from agent.message_metadata import append_message
+from agent.turn_context_compaction import _refund_api_call
 from agent.turn_recovery import interruptible_backoff_sleep
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -39,6 +40,7 @@ class EmptyResponseVerdict:
     turn_exit_reason: Any
     active_system_prompt: Any
     preflight_compression_blocked: bool
+    api_call_count: int
 
 
 def _retry_empty(
@@ -73,7 +75,7 @@ def _retry_empty(
         " — high-cost request, reduced retry budget"
         if budget < _empty_guard.DEFAULT_EMPTY_RETRY_BUDGET else ""
     )
-    agent._buffer_status(
+    agent._buffer_diagnostic_status(
         f"⚠️ Empty response from model — retrying ({n}/{budget}) in {wait_time:.0f}s{_budget_note}"
     )
     _interrupted = interruptible_backoff_sleep(
@@ -94,11 +96,11 @@ def _retry_empty(
 
 def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, messages: Any) -> str:
     """Retries and fallback exhausted: persist the ``(empty)`` sentinel row and return the
-    delivery text. Reasoning is surfaced ONLY here, for delivery — the persisted row keeps
-    the sentinel so later "continue" turns don't replay it and loop on empties."""
+    delivery text. Reasoning is never copied into the delivery text here — the persisted row
+    keeps the sentinel so later "continue" turns don't replay it and loop on empties."""
     _streak_cost = _empty_guard.streak_cost_usd(agent)
     if _streak_cost is not None:
-        agent._buffer_status(
+        agent._buffer_diagnostic_status(
             f"ℹ️ Estimated cost of these empty attempts: ~${_streak_cost:.2f} (input tokens are billed "
             f"per attempt even when no answer is produced)"
         )
@@ -117,25 +119,22 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
             agent._empty_content_retries, agent.model,
             agent.provider,
         )
-        agent._emit_status(
+        agent._emit_diagnostic_status(
             "❌ Model returned no content after all retries"
             + (" and fallback attempts." if agent._fallback_chain else
                ". No fallback providers configured.")
         )
         return "(empty)"
 
-    reasoning_preview = reasoning_text[:500] + "..." if len(reasoning_text) > 500 else reasoning_text
     logger.warning(
-        "Reasoning-only response (no visible content) after exhausting retries and fallback. Reasoning: %s", reasoning_preview,
+        "Reasoning-only response after %d retries; keeping it out of the terminal result "
+        "(model=%s provider=%s)",
+        agent._empty_content_retries, agent.model, agent.provider,
     )
-    agent._emit_status(
+    agent._emit_diagnostic_status(
         "⚠️ Model produced reasoning but no visible response after all retries. Returning empty."
     )
-    return (
-        "⚠️ The model produced only internal reasoning and no final answer, despite retries"
-        + (" and fallback" if agent._fallback_chain else "")
-        + ". Its last reasoning, which may contain the answer:\n\n" + reasoning_preview
-    )
+    return "(empty)"
 
 
 def recover_empty_response(
@@ -157,6 +156,7 @@ def recover_empty_response(
             action=action, result=result, final_response=final_response,
             turn_exit_reason=_turn_exit_reason, active_system_prompt=active_system_prompt,
             preflight_compression_blocked=_preflight_compression_blocked,
+            api_call_count=api_call_count,
         )
 
     # Partial stream recovery: content streamed before the connection died becomes the
@@ -169,7 +169,7 @@ def recover_empty_response(
             "Partial stream content delivered (%d chars) — using as final response",
             len(_recovered),
         )
-        agent._emit_status("↻ Stream interrupted — using delivered content " "as final response")
+        agent._emit_diagnostic_status("↻ Stream interrupted — using delivered content " "as final response")
         final_response = _recovered
         # A streamed fragment isn't a confirmed preview: gateway fallback delivery
         # sends the text plus the abnormal-turn explanation.
@@ -183,13 +183,16 @@ def recover_empty_response(
     if fallback and getattr(agent, '_last_content_tools_all_housekeeping', False):
         _turn_exit_reason = "fallback_prior_turn_content"
         logger.info("Empty follow-up after tool calls — using prior turn content as final response")
-        agent._emit_status("↻ Empty response after tool calls — using earlier content as final answer")
+        agent._emit_diagnostic_status("↻ Empty response after tool calls — using earlier content as final answer")
         agent._last_content_with_tools = None
         agent._last_content_tools_all_housekeeping = False
         agent._empty_content_retries = 0
         # Do NOT modify the assistant message content (injected text poisoned history).
         final_response = agent._strip_think_blocks(fallback).strip()
         agent._response_was_previewed = True
+        # The final IS the response streamed before the housekeeping tool: name that identity
+        # so a client settles the text it already shows instead of painting it a second time.
+        agent._reused_response_text = final_response
         return _verdict("break")
 
     # Post-tool-call empty (no prior content, or only mid-task narration): nudge once.
@@ -207,7 +210,7 @@ def recover_empty_response(
         agent._last_content_with_tools = None
         agent._last_content_tools_all_housekeeping = False
         logger.info("Empty response after tool calls — nudging model " "to continue processing")
-        agent._buffer_status("⚠️ Model returned empty after tool calls — " "nudging to continue")
+        agent._buffer_diagnostic_status("⚠️ Model returned empty after tool calls — " "nudging to continue")
         # tool → assistant("(empty)") → user keeps the sequence valid.
         _nudge_msg = agent._build_assistant_message(assistant_message, finish_reason)
         _nudge_msg["content"] = "(empty)"
@@ -232,7 +235,7 @@ def recover_empty_response(
             "Thinking-only response (no visible content) — prefilling to continue (%d/2)",
             agent._thinking_prefill_retries,
         )
-        agent._buffer_status(
+        agent._buffer_diagnostic_status(
             f"↻ Thinking-only response — prefilling to continue ({agent._thinking_prefill_retries}/2)"
         )
         interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
@@ -259,7 +262,7 @@ def recover_empty_response(
             "skipping remaining retries",
             agent.model, agent.provider, finish_reason,
         )
-        agent._buffer_status(
+        agent._buffer_diagnostic_status(
             "⚠️ Model is repeatedly returning empty content — skipping further retries "
             "to avoid repeat charges"
         )
@@ -270,11 +273,11 @@ def recover_empty_response(
             "Empty response after %d retries — attempting fallback (model=%s, provider=%s)",
             agent._empty_content_retries, agent.model, agent.provider,
         )
-        agent._buffer_status("⚠️ Model returning empty responses — " "switching to fallback provider...")
+        agent._buffer_diagnostic_status("⚠️ Model returning empty responses — " "switching to fallback provider...")
         if agent._try_activate_fallback():
             active_system_prompt = _sync_failover_system_message(agent, api_messages, active_system_prompt)
             agent._empty_content_retries = 0
-            agent._buffer_status(f"↻ Switched to fallback: {agent.model} " f"({agent.provider})")
+            agent._buffer_diagnostic_status(f"↻ Switched to fallback: {agent.model} " f"({agent.provider})")
             logger.info(
                 "Fallback activated after empty responses: now using %s on %s",
                 agent.model, agent.provider,
@@ -282,6 +285,9 @@ def recover_empty_response(
             # OUTER loop: `continue` re-runs preflight against the fallback's window;
             # `break` would end the turn without calling the fallback.
             _preflight_compression_blocked = False
+            # The fallback hop is a provider switch, not a model turn: refund the empty
+            # call so a mid-turn fallback doesn't eat the iteration budget (#77305).
+            api_call_count = _refund_api_call(agent, api_call_count)
             return _verdict("continue")
 
     _turn_exit_reason = "empty_response_exhausted"

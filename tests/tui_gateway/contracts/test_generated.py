@@ -45,6 +45,7 @@ _SUBAGENT_RELAY = re.compile(r"\"(subagent\.[a-z_]+)\"")
 _DESKTOP_UI_EMIT = re.compile(r"desktop_ui\.(?:emit|emit_or_error)\(\s*\"([a-z_][a-z0-9_.]*)\"")
 _BROKER_FRAME = re.compile(r"^FRAME_[A-Z_]+ = \"(browser\.controller\.[a-z_]+)\"", re.M)
 _SETUP_READY = re.compile(r"^SETUP_READY_EVENT = \"([a-z_.]+)\"", re.M)
+_FREE_TIER_CHALLENGE = re.compile(r"^CHALLENGE_EVENT = \"([a-z_.]+)\"", re.M)
 
 
 def _read(path: Path) -> str:
@@ -66,10 +67,13 @@ def emitted_event_names() -> set[str]:
     for src in (REPO / "tools").glob("delegate_tool*.py"):
         names.update(_SUBAGENT_RELAY.findall(_read(src)))
     names.discard("subagent.text")  # mirrored into the watch window as message.delta, never emitted
-    for src in (REPO / "tools").glob("*.py"):
+    from tools.registry import _tool_module_candidates
+
+    for src in _tool_module_candidates(REPO / "tools"):
         names.update(_DESKTOP_UI_EMIT.findall(_read(src)))
     names.update(_BROKER_FRAME.findall(_read(REPO / "gateway" / "browser_control_broker.py")))
     names.update(_SETUP_READY.findall(_read(REPO / "hermes_cli" / "free_tier_bootstrap.py")))
+    names.update(_FREE_TIER_CHALLENGE.findall(_read(REPO / "hermes_cli" / "anon_challenge.py")))
     return names
 
 

@@ -123,7 +123,7 @@ def test_shared_bot_satellite_resolves_primary_transport_for_restored_sources(mu
     sources (no transport ref); a disconnected secondary that owns a credential stays fail-closed."""
     restored = SessionSource(platform=Platform.TELEGRAM, chat_id="72719239", chat_type="dm", user_id="7", profile="ops")
     assert mux.runner._authorization_adapter(Platform.TELEGRAM, "ops") is mux.primary
-    assert mux.runner._adapter_for_source(restored) is mux.primary
+    assert mux.runner._delivery_adapter_for(restored) is mux.primary
     assert mux.runner._resolve_injection_adapter("telegram", restored) is mux.primary
     mux.runner._profile_adapters["team_b"] = {}  # team_b's bot is down: never borrow the primary
     assert mux.runner._authorization_adapter(Platform.TELEGRAM, "team_b") is None

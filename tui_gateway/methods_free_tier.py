@@ -1,8 +1,9 @@
-"""Nous free-tier JSON-RPC handlers: a renderer reads the profile's local auth state (pull); nothing
-is pushed except the boot bootstrap's one ``setup.ready`` event. ``free_tier.status`` answers from the
+"""Nous free-tier JSON-RPC handlers. ``free_tier.status`` answers from the
 auth store with zero network and zero side effects; ``free_tier.provision`` is the explicit retry when
 the boot bootstrap could not create the identity (desktop-only entry); ``free_tier.ack_notice``
 persists the one-time notice flag on the free-tier identity itself, so it dies with that identity.
+``free_tier.challenge_result`` records a presentation hint for the pending attempt; the
+backend still exchanges with the portal to determine whether the credential is cleared.
 Bodies are rebound onto server.py's globals (method_ctx.bind_module) and reference them bare.
 """
 
@@ -31,10 +32,21 @@ def _(rid, params: dict) -> dict:
         from hermes_cli import anon_auth
         has_guest = anon_auth.has_guest()
         enabled = anon_auth.guest_enabled()
-        return _ok(rid, {
+        payload = {
             "has_guest": has_guest, "enabled": enabled, "available": has_guest and enabled,
             "notice_pending": bool(has_guest and enabled and anon_auth.guest_notice_pending()),
-            "model": anon_auth.GUEST_MODEL, "label": anon_auth.FREE_TIER_LABEL})
+            "model": anon_auth.GUEST_MODEL, "label": anon_auth.FREE_TIER_LABEL}
+        if enabled and not has_guest:
+            # Why there is no identity, when the last attempt to make one failed:
+            # ``{error, error_code, retryable, retry_after}`` (the mint memo's verdict).
+            payload.update(anon_auth.last_mint_failure() or {})
+        # A browser challenge the account service is waiting on (``anon_challenge``): the same
+        # payload the ``free_tier.challenge`` event carried, for a client that connected after it.
+        from hermes_cli import anon_challenge
+        challenge = anon_challenge.pending_challenge()
+        if challenge:
+            payload["challenge"] = challenge
+        return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5090, str(e))
 
@@ -45,21 +57,27 @@ def _(rid, params: dict) -> dict:
     """Explicit retry of the free-tier set-up for the focused profile: adopt the shared store's
     identity, else mint one (blocking, short timeout). The boot bootstrap normally did this already;
     the desktop calls this when the record says the identity is missing (portal down at boot, gate
-    turned on later) and the user asks again. ``{has_guest, enabled}``; ``error`` when the portal
-    refused."""
+    turned on later) and the user asks again. The user's click is the one attempt that may run
+    inside the mint memo's cooldown. ``{has_guest, enabled}``, plus
+    ``{error, error_code, retryable, retry_after}`` when the portal refused."""
     try:
         from hermes_cli import anon_auth
+        from hermes_cli import free_tier_bootstrap
         enabled = anon_auth.guest_enabled()
-        error = None
         if enabled and not anon_auth.has_guest():
-            try:
-                anon_auth.ensure_portal_identity(explicit=True)
-            except Exception as exc:
-                logger.info("free tier provisioning failed: %s", exc)
-                error = str(exc)
-        payload = {"has_guest": anon_auth.has_guest(), "enabled": enabled}
-        if error:
-            payload["error"] = error
+            if free_tier_bootstrap.current_record() is not None and not params.get("profile"):
+                # The launch profile: refresh the boot record too, so ``setup.status`` and the
+                # ``setup.ready`` listeners move with the outcome.
+                free_tier_bootstrap.retry_bootstrap_mint(force=True)
+            else:
+                try:
+                    anon_auth.ensure_portal_identity(explicit=True, force=True)
+                except Exception as exc:   # memoised by the primitive before it re-raised
+                    logger.info("free tier provisioning failed: %s", exc)
+        has_guest = anon_auth.has_guest()
+        payload = {"has_guest": has_guest, "enabled": enabled}
+        if enabled and not has_guest:
+            payload.update(anon_auth.last_mint_failure() or {})
         return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5092, str(e))
@@ -75,6 +93,13 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"acked": bool(anon_auth.mark_guest_notice_shown())})
     except Exception as e:
         return _err(rid, 5091, str(e))
+
+
+@method("free_tier.challenge_result")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    from hermes_cli.anon_challenge import record_host_outcome
+    return _ok(rid, {"accepted": record_host_outcome(params["url"], params.get("attempt", 0), params["outcome"])})
 
 
 def register(server) -> None:

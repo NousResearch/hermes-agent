@@ -103,6 +103,7 @@ def test_concurrent_preflight_interrupt_skips_all(monkeypatch):
     all tools are skipped with cancellation messages."""
     agent = _make_agent(monkeypatch)
     agent._interrupt_requested = True
+    agent._tool_interrupt_reason = "user sent a new message"
 
     tc1 = _FakeToolCall("tool_a", call_id="tc_a")
     tc2 = _FakeToolCall("tool_b", call_id="tc_b")
@@ -112,8 +113,8 @@ def test_concurrent_preflight_interrupt_skips_all(monkeypatch):
     agent._execute_tool_calls_concurrent(msg, messages, "test_task")
 
     assert len(messages) == 2
-    assert "skipped due to user interrupt" in messages[0]["content"]
-    assert "skipped due to user interrupt" in messages[1]["content"]
+    assert "User sent a new message" in messages[0]["content"]
+    assert "User sent a new message" in messages[1]["content"]
     # _invoke_tool should never have been called
     agent._invoke_tool.assert_not_called()
 

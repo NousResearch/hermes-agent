@@ -72,7 +72,7 @@ Delivery targets are case-sensitive and require the correct platform to be confi
 | `local` | Write access to `~/.hermes/cron/output/` |
 | `origin` | Delivers to the chat where the job was created |
 
-Other supported platforms include `mattermost`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, and `webhook`. You can also target a specific chat with `platform:chat_id` syntax (e.g., `telegram:-1001234567890`).
+Other supported platforms include `mattermost`, `homeassistant` (plugin), `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, and `webhook`. You can also target a specific chat with `platform:chat_id` syntax (e.g., `telegram:-1001234567890`).
 
 If delivery fails, the job still runs — it just won't send anywhere. Check `hermes cron list` for updated `last_error` field (if available).
 
@@ -232,4 +232,4 @@ If you've worked through this guide and the issue persists:
 
 ---
 
-*For the complete cron reference, see [Automate Anything with Cron](/guides/automate-with-cron) and [Scheduled Tasks (Cron)](/user-guide/features/cron).*
+*For the complete cron reference, see [Automate Anything with Cron](./automate-with-cron.md) and [Scheduled Tasks (Cron)](../user-guide/features/cron.md).*

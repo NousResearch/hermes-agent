@@ -15,11 +15,10 @@ import types
 from argparse import Namespace
 
 import pytest
+from tests.dotenv_stub import install as _install_dotenv_stub
 
 if "dotenv" not in sys.modules:
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    sys.modules["dotenv"] = fake_dotenv
+    _install_dotenv_stub()
 
 from hermes_cli.auth import resolve_api_key_provider_credentials
 from hermes_cli.models import normalize_provider

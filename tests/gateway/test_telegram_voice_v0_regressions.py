@@ -19,6 +19,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
+from tests.dotenv_stub import install as _install_dotenv_stub
 
 
 def _source():
@@ -179,7 +180,7 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
 ):
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
     monkeypatch.setenv("HERMES_GATEWAY_NOTIFY_INTERVAL", "0")
-    monkeypatch.setitem(sys.modules, "dotenv", types.SimpleNamespace(load_dotenv=lambda: None))
+    _install_dotenv_stub(monkeypatch)
     monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=_PendingVoiceAgent))
 
     adapter = _PendingVoiceAdapter()

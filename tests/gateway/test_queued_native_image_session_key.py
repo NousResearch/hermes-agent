@@ -10,6 +10,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
+from tests.dotenv_stub import install as _install_dotenv_stub
 
 
 _ONE_BY_ONE_PNG = base64.b64decode(
@@ -97,9 +98,7 @@ def _make_runner(adapter):
 async def test_queued_followup_uses_pending_event_session_key_for_native_images(monkeypatch, tmp_path):
     CaptureQueuedNativeImageAgent.calls = []
 
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    _install_dotenv_stub(monkeypatch)
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = CaptureQueuedNativeImageAgent

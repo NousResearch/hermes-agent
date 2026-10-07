@@ -26,6 +26,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 from gateway.session import SessionSource
+from tests.dotenv_stub import install as _install_dotenv_stub
 
 
 class HookRecordingAdapter(BasePlatformAdapter):
@@ -118,9 +119,7 @@ def _make_runner(adapter):
 
 
 def _install_fake_agent(monkeypatch, tmp_path, agent_cls):
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    _install_dotenv_stub(monkeypatch)
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = agent_cls

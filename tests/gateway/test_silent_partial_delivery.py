@@ -41,6 +41,7 @@ from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.session import SessionSource
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from tests.dotenv_stub import install as _install_dotenv_stub
 
 
 STREAMED_PREFIX = "Deploy summary: 713 items published (578 as of 08-26"
@@ -290,9 +291,7 @@ async def _run_turn(monkeypatch, tmp_path, *, consumer_cls=None, session_id):
         encoding="utf-8",
     )
 
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    _install_dotenv_stub(monkeypatch)
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = PrefixOnlyAgent

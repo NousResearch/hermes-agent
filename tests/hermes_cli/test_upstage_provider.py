@@ -10,12 +10,10 @@ config provider was discarded, and resolution fell through to env auto-detect.
 from __future__ import annotations
 
 import sys
-import types
+from tests.dotenv_stub import install as _install_dotenv_stub
 
 if "dotenv" not in sys.modules:
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    sys.modules["dotenv"] = fake_dotenv
+    _install_dotenv_stub()
 
 class TestUpstageResolver:
     """The providers.py resolver must recognise upstage (the actual bug)."""

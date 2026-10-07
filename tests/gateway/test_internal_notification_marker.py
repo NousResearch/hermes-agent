@@ -17,8 +17,6 @@ Covered:
    and the marker is stripped from provider-bound payload copies.
 """
 
-import sys
-import types
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -28,15 +26,14 @@ import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource
+from tests.dotenv_stub import install as _install_dotenv_stub
 
 SESSION_KEY = "agent:main:telegram:group:-1001:12345"
 
 
 def _bootstrap(monkeypatch, tmp_path):
     """Minimal GatewayRunner setup (pattern from test_42039)."""
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    _install_dotenv_stub(monkeypatch)
 
     config = GatewayConfig()
     runner = gateway_run.GatewayRunner(config)

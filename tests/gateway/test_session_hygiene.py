@@ -24,6 +24,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource
+from tests.dotenv_stub import install as _install_dotenv_stub
 
 
 # ---------------------------------------------------------------------------
@@ -77,9 +78,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
     in place, the transcript MUST be preserved — an unconditional
     rewrite_transcript() would replace the original messages with only the
     summary (permanent data loss). Mirrors the /compress guard (#44794)."""
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    _install_dotenv_stub(monkeypatch)
 
     class NonRotatingCompressAgent:
         last_instance = None
@@ -211,9 +210,7 @@ async def test_session_hygiene_preserves_transcript_when_in_place_configured_but
     stays False.  The guard must read the *result* flag, not the *config* flag,
     otherwise the transcript is unconditionally rewritten with only the summary
     (permanent data loss identical to #21301)."""
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    _install_dotenv_stub(monkeypatch)
 
     class InPlaceConfiguredAgent:
         last_instance = None
@@ -313,9 +310,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     clean up the temporary agent only after the worker actually returns.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    _install_dotenv_stub(monkeypatch)
 
     worker_started = threading.Event()
     release_worker = threading.Event()
@@ -484,9 +479,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     summary without rotating/compacting, the guard preserves the original
     transcript, and the same oversized session is reloaded on every turn.
     """
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    _install_dotenv_stub(monkeypatch)
 
     stored_system_prompt = (
         "You are Hermes.\n\n"
@@ -641,9 +634,7 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
     but WILL when the user lowers the hard-limit to 10.  Verifies the new
     config key is actually read and applied at the force-compress gate.
     """
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    _install_dotenv_stub(monkeypatch)
 
     class FakeCompressAgent:
         last_instance = None
@@ -758,9 +749,7 @@ def _make_cooldown_runner(monkeypatch, tmp_path, agent_cls, session_db, session_
     cooldown check/write paths exercise the actual SQLite-backed methods."""
     from hermes_state import AsyncSessionDB
 
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    _install_dotenv_stub(monkeypatch)
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = agent_cls

@@ -49,8 +49,11 @@ class SessionToolRetriesMixin:
             return []
         lineage = self._resume_lineage_ids(session_id)
         key = self.TOOL_RETRY_METADATA_KEY
+        # Every turn of every desktop chat asks. The LIKE pre-filter skips the JSON parse on rows that cannot hold
+        # the key (nearly all of them); json_extract still decides.
         select = ("SELECT id, tool_name, display_metadata FROM messages "
                   f"WHERE session_id IN ({_placeholders(lineage)}){_DISPLAY_ACTIVE_CLAUSE} "
+                  f"AND display_metadata LIKE '%\"{key}\"%' "
                   f"AND {_sql_json_extract('display_metadata', '$.' + key)} IS NOT NULL ORDER BY id")
 
         def _unannounced(row) -> Optional[Dict[str, Any]]:

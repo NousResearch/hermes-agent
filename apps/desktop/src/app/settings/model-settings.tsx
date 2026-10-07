@@ -179,6 +179,7 @@ function switchProviderFor(
       }
 
       setSelectedModel('')
+
       return slug
     })
 

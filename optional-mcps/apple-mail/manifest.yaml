@@ -14,9 +14,9 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-mail-mcp@2.20.1`:
+# On macOS, `npx -y apple-mail-mcp@2.20.5`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.20.1 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.20.5 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 52 tools, every one carrying a description;
 #   - resolves all 18 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
@@ -145,12 +145,41 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # on send/mutation tools that are disabled below.
 # No new tools since 2.19.16: still 52 tools, all 18 default_enabled entries
 # resolve.
+#
+# 2.20.5 is re-pinned on the same footing — two more defects in
+# default_enabled tools, both on huge iCloud mailboxes (@j5pu):
+#   - By-id reads on a numeric id that missed (`get-message`, `get-thread`'s
+#     seed lookup, and the source reads behind `list-attachments` /
+#     `fetch-attachment`) fell back to an unbounded AppleScript
+#     `whose id is N` probe over every mailbox of every account: 21–53 s on
+#     255k/794k-message mailboxes, surfacing as a timeout (#270). 2.20.3 first
+#     cut these read-only lookups to a 15 s fail-fast timeout with a specific
+#     error; 2.20.4 (#278) fixes the cause. An explicit `account` + `mailbox`
+#     that misses now returns not-found immediately and never scans; the
+#     unscoped fallback skips mailboxes over
+#     `APPLE_MAIL_MAX_BYID_SCAN_MAILBOX` messages (default 50,000) and stops
+#     after a 9 s budget, and a miss names the mailboxes it skipped.
+#   - One slow IMAP `search-messages` held the server's serialized call queue
+#     until it finished: an unscoped body search over 32 iCloud mailboxes ran
+#     134–141 s, so a `list-accounts` sent 3 s later returned after 126 s, and
+#     `notifications/cancelled` changed nothing (#276). 2.20.5 (#279) honours
+#     cancellation and adds a per-call deadline,
+#     `APPLE_MAIL_MCP_SEARCH_DEADLINE_MS` (default 45 s, counted from arrival
+#     so queue time counts), returning matches so far with `partial: true`,
+#     `timedOutMailboxes` and `stoppedBy`. A slow search can still hold the
+#     queue for up to the deadline.
+# Riding along: 2.20.2 is a Dependabot bump (bundled MCP SDK 1.30.0 ->
+# 1.31.0, `nodemailer` 10.0.10 -> 10.0.13 on the disabled send path, lint
+# tooling); 2.20.4 also floors the dev-only `source-map-js` (#277,
+# GHSA-68fv-2mgg-jv7q), not in the shipped bundle. The by-id changes also
+# reach `get-message-headers` and reply/forward, which stay disabled below.
+# No new tools: still 52 tools, all 18 default_enabled entries resolve.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-mail-mcp@2.20.1"
+    - "apple-mail-mcp@2.20.5"
 
 # Drives Apple Mail locally via AppleScript; no credentials.
 auth:

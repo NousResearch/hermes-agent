@@ -1,4 +1,4 @@
-"""Astra (including its ``-900k`` picker alias) and exact gpt-6.1-sol require official
+"""Astra (including its ``-900k`` picker alias) and gpt-6.1-sol (exact, or its ``-900k`` alias) require official
 Codex OAuth for native compaction (#103720).
 
 The destination capability and per-request gate must agree; trusted proxy capabilities
@@ -30,7 +30,11 @@ _CODEX = "https://chatgpt.com/backend-api/codex"
     ("gpt-6.1-sol", "openai-codex", "https://chatgpt.com.example/backend-api/codex", False),
     ("gpt-6.1-sol", "openai-codex", "http://chatgpt.com/backend-api/codex", False),
     ("gpt-6.1-sol", "openai-codex", None, False),
-    ("gpt-6.1-sol-900k", "openai-codex", _CODEX, False),
+    ("gpt-6.1-sol-900k", "openai-codex", _CODEX, True),
+    ("GPT-6.1-SOL-900K", "openai-codex", "https://chatgpt.com:443/backend-api/codex/", True),
+    ("gpt-6.1-sol-900k", "openai", "https://api.openai.com/v1", False),
+    ("gpt-6.1-sol-900k", "openai-codex", "https://relay.example/v1", False),
+    ("gpt-6.1-sol-800k", "openai-codex", _CODEX, False),
     ("gpt-6.1-sol-mini", "openai-codex", _CODEX, False),
     ("openai/gpt-6.1-sol", "openai-codex", _CODEX, False),
     ("gpt-6-astra-900k", "openai-codex", "https://relay.example/v1", False),
@@ -63,12 +67,13 @@ def test_capability_and_request_gate_agree(model, provider, base_url, eligible):
         assert (payload is not None) is eligible
 
 
+@pytest.mark.parametrize("model", ["gpt-6.1-sol", "gpt-6.1-sol-900k"])
 @pytest.mark.parametrize("eligible", [True, False])
-def test_sol_request_and_checkpoint_replay_follow_current_gate(eligible):
+def test_sol_request_and_checkpoint_replay_follow_current_gate(eligible, model):
     from run_agent import AIAgent
 
     agent = AIAgent(
-        model="gpt-6.1-sol", provider="openai-codex", base_url=_CODEX,
+        model=model, provider="openai-codex", base_url=_CODEX,
         api_mode="codex_responses", api_key="test-key", quiet_mode=True,
         skip_context_files=True, skip_memory=True, enabled_toolsets=[],
     )
@@ -84,8 +89,14 @@ def test_sol_request_and_checkpoint_replay_follow_current_gate(eligible):
         {"role": "user", "content": "next"},
     ]
     kwargs = agent._build_api_kwargs(history)
+    # The -900k picker alias reaches the wire as the same slug, so its checkpoints replay too.
+    assert kwargs["model"] == "gpt-6.1-sol"
     assert ("context_management" in kwargs) is eligible
     replayed = [item for item in kwargs["input"] if item.get("type") == "compaction"]
     assert replayed == ([{"type": "compaction", "encrypted_content": "opaque-sol-checkpoint"}] if eligible else [])
-    old_answer = {"role": "assistant", "content": [{"type": "output_text", "text": "old answer"}]}
-    assert (old_answer in kwargs["input"]) is not eligible
+    # Pre-checkpoint rows are pruned only when the checkpoint replays; match by text, not item shape.
+    old_answer_sent = any(
+        item.get("role") == "assistant" and any(part.get("text") == "old answer" for part in item.get("content") or [])
+        for item in kwargs["input"]
+    )
+    assert old_answer_sent is not eligible

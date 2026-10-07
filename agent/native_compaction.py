@@ -3,7 +3,7 @@
 ``context_management=[{"type": "compaction", "compact_threshold": N}]`` makes the server
 summarize older context into an opaque ``compaction`` item once the input crosses N tokens.
 Deliberately narrow: gpt-5.6 on api.openai.com or the ChatGPT Codex backend, plus gpt-6-astra
-(and its ``-900k`` picker alias) and exact gpt-6.1-sol on official Codex OAuth. The local compressor
+(and its ``-900k`` picker alias) and gpt-6.1-sol (exact, or its ``-900k`` alias) on official Codex OAuth. The local compressor
 stays armed as fallback (native threshold clamped below the local trigger); compaction items
 ride the ``codex_reasoning_items`` sidecar. No transport imports (shared gate, no cycles).
 """
@@ -27,15 +27,17 @@ LOCAL_TRIGGER_SAFETY_MARGIN = 8_192
 DEFAULT_COMPACT_THRESHOLD = 200_000
 # Substring match so dated snapshots and variants (gpt-5.6-mini) stay eligible.
 _ELIGIBLE_MODEL_MARKER = "gpt-5.6"
+# Exact Sol slugs: the wire model and its Hermes-side ``-900k`` picker alias (same wire slug).
+_SOL_MODEL_IDS = frozenset({"gpt-6.1-sol", "gpt-6.1-sol-900k"})
 
 
 def is_native_compaction_model(
     model: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None,
 ) -> bool:
-    """Preserve gpt-5.6 eligibility; Astra (including its picker aliases) and exact Sol
-    additionally require official Codex OAuth."""
+    """Preserve gpt-5.6 eligibility; Astra (including its picker aliases) and Sol (exact slug or its
+    ``-900k`` picker alias, stripped before the wire) additionally require official Codex OAuth."""
     return _ELIGIBLE_MODEL_MARKER in (model or "").lower() or (
-        (is_astra_model(model) or (model or "").lower() == "gpt-6.1-sol")
+        (is_astra_model(model) or (model or "").lower() in _SOL_MODEL_IDS)
         and (provider or "").strip().lower() == "openai-codex"
         and is_official_codex_base_url(base_url or "")
     )

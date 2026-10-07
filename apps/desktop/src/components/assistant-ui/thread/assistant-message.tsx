@@ -438,7 +438,11 @@ const AssistantStatusSlot: FC = () => {
     return null
   }
 
-  return slot === 'placeholder' ? <ResponseLoadingIndicator /> : <TurnActivityIndicator thinking={slot === 'thinking'} />
+  return slot === 'placeholder' ? (
+    <ResponseLoadingIndicator />
+  ) : (
+    <TurnActivityIndicator thinking={slot === 'thinking'} />
+  )
 }
 
 /**

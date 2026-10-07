@@ -16,11 +16,13 @@ async function waitFor(selector: string, timeoutMs = 6000, ready = () => true): 
   const deadline = Date.now() + timeoutMs
 
   while (Date.now() < deadline) {
-    const visible = ready() && [...document.querySelectorAll(selector)].some(node => {
-      const { width, height } = node.getBoundingClientRect()
+    const visible =
+      ready() &&
+      [...document.querySelectorAll(selector)].some(node => {
+        const { width, height } = node.getBoundingClientRect()
 
-      return width > 0 && height > 0 && !node.closest('[data-pane-hidden]')
-    })
+        return width > 0 && height > 0 && !node.closest('[data-pane-hidden]')
+      })
 
     if (visible) {
       return true

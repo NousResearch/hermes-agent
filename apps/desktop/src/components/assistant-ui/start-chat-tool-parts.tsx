@@ -14,7 +14,10 @@ const CAPTION = 'text-[length:var(--conversation-caption-font-size)] text-(--ui-
 const stringArg = (value: unknown): null | string => (typeof value === 'string' ? value : null)
 
 /** Card title before the session row exists: outcome title, then the requested title, then the message head. */
-export function requestedTitle(started: null | { title?: null | string }, args: Record<string, unknown>): null | string {
+export function requestedTitle(
+  started: null | { title?: null | string },
+  args: Record<string, unknown>
+): null | string {
   const message = stringArg(args.message)?.trim() ?? ''
 
   return started?.title || stringArg(args.title)?.trim() || message.slice(0, TITLE_LIMIT) || null

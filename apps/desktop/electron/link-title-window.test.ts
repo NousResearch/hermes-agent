@@ -73,7 +73,7 @@ test('createLinkTitleWindow hides and zeroes opacity so Windows cannot flash a b
       calls.hide += 1
     }
 
-    this.setOpacity = (value) => {
+    this.setOpacity = value => {
       calls.opacity.push(value)
     }
   }

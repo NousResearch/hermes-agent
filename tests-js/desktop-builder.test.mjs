@@ -23,6 +23,28 @@ test('desktop development composition reuses prepared icon pixels instead of pro
   expect(compile[compile.indexOf('--icons') + 1]).toBe(input.icons)
 })
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+
+test('desktop development composition restages native inputs only when their receipt is stale', async () => {
+  const { buildSourceDesktop } = await import('../apps/desktop/scripts/build.mjs')
+  const { recordNativeInputs } = await import('../apps/desktop/scripts/prepared-native-deps.mjs')
+  const input = fixture()
+  put(join(input.source, 'package-lock.json'), '{}')
+  const nativeDeps = join(input.source, 'apps/desktop/build/native-deps')
+  cpSync(input.nativeDeps, nativeDeps, { recursive: true })
+  const staged = () => {
+    const commands = []
+    buildSourceDesktop({ source: input.source, run: (command, args) => commands.push([command, ...args]) })
+    return commands.some(command => command.some(arg => /stage-native-deps\.mjs$/.test(arg)))
+  }
+  expect(staged()).toBe(true) // no receipt
+  recordNativeInputs({ source: input.source, out: nativeDeps, platform: process.platform, arch: process.arch })
+  expect(staged()).toBe(false)
+  put(join(nativeDeps, 'native/helper-fixture'), 'tampered')
+  expect(staged()).toBe(true) // the tree no longer matches its digest
+  recordNativeInputs({ source: input.source, out: nativeDeps, platform: process.platform, arch: process.arch })
+  put(join(input.source, 'package-lock.json'), '{"lockfileVersion":3}')
+  expect(staged()).toBe(true) // a dependency pin moved
+})
 function put(path, text) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text) }
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'desktop build with spaces-'))

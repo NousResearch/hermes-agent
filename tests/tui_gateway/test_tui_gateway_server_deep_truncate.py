@@ -52,18 +52,51 @@ def test_prompt_submit_refuses_deep_truncation_without_confirm(monkeypatch):
         assert _submit(confirm_deep_truncate=True).get("error") is None
         assert replaced == [history[:2]]
 
-        # Durable-carrier cut: the target (101) was absorbed into a repaired live carrier;
+        # Durable-carrier cut: the target (150) was absorbed into a repaired live carrier;
         # the refusal counts live rows from the carrier on, never live minus physical.
         physical = [{"_row_id": 100, "role": "user", "content": "u0"},
-                    {"_row_id": 101, "role": "user", "content": "u0b"}, *history[1:]]
+                    {"_row_id": 150, "role": "user", "content": "u0b"}, *history[1:]]
         _FakeDB.get_messages_as_conversation = lambda self, key, **_kw: [dict(m) for m in physical]  # type: ignore[attr-defined]
         sess["running"] = False  # the confirmed submit above left a (never-started) turn
-        sess["history"] = [{"_row_id": 100, "_absorbed_row_ids": [101], "role": "user",
+        sess["history"] = [{"_row_id": 100, "_absorbed_row_ids": [150], "role": "user",
                             "content": "u0\n\nu0b"}, *history[1:]]
-        carrier = _submit(truncate_before_row_id=101)
+        carrier = _submit(truncate_before_row_id=150)
         assert carrier["error"]["data"] == {"archived_messages": 6, "archived_user_turns": 3}
     finally:
         server._sessions.pop("deep-trunc-sid", None)
+
+
+def test_deep_truncate_counts_every_durable_row_a_merged_carrier_holds(monkeypatch):
+    """A user;user run repaired into one live carrier is several durable user turns: cutting at
+    its first row archives all of them, so it needs confirm_deep_truncate like any deep cut."""
+    replaced = []
+
+    physical = [{"_row_id": 101, "role": "user", "content": "a"}, {"_row_id": 102, "role": "user", "content": "b"},
+                {"_row_id": 103, "role": "user", "content": "c"}, {"_row_id": 104, "role": "assistant", "content": "reply"}]
+
+    class _FakeDB:
+        def get_messages_as_conversation(self, key, **_kwargs):
+            return [dict(m) for m in physical]
+
+        def replace_messages(self, key, messages, **_kwargs):
+            replaced.append(list(messages))
+
+    history = [{"_row_id": 101, "_absorbed_row_ids": [102, 103], "role": "user", "content": "a\n\nb\n\nc"},
+               {"_row_id": 104, "role": "assistant", "content": "reply"}]
+    sess = _session(history=list(history))
+    server._sessions["deep-carrier-sid"] = sess
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server.threading, "Thread", lambda *a, **k: types.SimpleNamespace(start=lambda: None))
+    try:
+        refused = server.handle_request({"id": "1", "method": "prompt.submit", "params": {
+            "session_id": "deep-carrier-sid", "text": "a", "truncate_before_row_id": 101,
+            "confirm_truncate": True, "confirm_empty_truncate": True}})
+        assert refused["error"]["code"] == 4033
+        assert refused["error"]["data"]["archived_user_turns"] == 3
+        assert sess["history"] == history and replaced == []
+    finally:
+        server._sessions.pop("deep-carrier-sid", None)
 
 
 def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):

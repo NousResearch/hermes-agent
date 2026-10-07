@@ -1300,6 +1300,16 @@ class FeishuAdapter(BasePlatformAdapter):
         self._settings = self._load_settings(config.extra or {})
         self._apply_settings(self._settings)
         self._client: Optional[Any] = None
+        # Generation of this adapter's current tool-client binding, allocated
+        # by the binding registry's per-profile monotonic counter (NOT a local
+        # count), so a replacement adapter instance for the same profile can
+        # never collide with a stale instance's generation. Retained for the
+        # compare-and-remove teardown in ``_unpublish_tool_clients``.
+        self._tool_binding_generation = 0
+        # Profile key captured at publication time: disconnect() may run under
+        # a different contextvar scope than connect(), and teardown must target
+        # the registry entry this adapter actually published.
+        self._tool_binding_profile_key: Optional[str] = None
         # Adapter-owned pool for blocking SDK calls, recreated on demand: a torn-down default
         # executor can no longer wedge sends with "Executor shutdown has been called".
         # See issue #10849.
@@ -1545,6 +1555,13 @@ class FeishuAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
         self._running = False
+        # Retract the tool-client binding FIRST, before any await: a
+        # mid-teardown failure (webhook runner cleanup raising, a hard
+        # cancellation at an await point) must never leave this adapter's
+        # credential-bearing client discoverable in the registry.
+        # Compare-and-remove: only this adapter's generation is removed, so a
+        # stale adapter tearing down cannot clear a newer adapter's binding.
+        self._unpublish_tool_clients()
         if self._ws_supervisor is not None:
             self._ws_supervisor.cancel()
             self._ws_supervisor = None
@@ -3896,6 +3913,13 @@ class FeishuAdapter(BasePlatformAdapter):
         # under multiplex (and the supervisor task inherits it), so snapshot it here.
         self._ws_future = loop.run_in_executor(
             self._get_sdk_executor(), contextvars.copy_context().run, _run_official_feishu_ws_client, self._ws_client, self)
+        # Publish only after every step above succeeded — a failed connect
+        # attempt must never expose a tool client with no live adapter behind
+        # it (see tools/feishu_client_binding.py). The supervisor's
+        # fatal-thread restart path funnels through this same method, so a
+        # replacement client re-publishes under the same profile scope with a
+        # fresh generation.
+        self._publish_tool_clients()
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:
@@ -3909,6 +3933,10 @@ class FeishuAdapter(BasePlatformAdapter):
         # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
         from gateway.platforms.shared_ingress import bind_listener
         self._webhook_runner = await bind_listener(self, app, self._webhook_host, self._webhook_port, self._webhook_path)
+        # Publish only after every step above succeeded — a failed connect
+        # attempt must never expose a tool client with no live adapter behind
+        # it (see tools/feishu_client_binding.py).
+        self._publish_tool_clients()
 
     def _prepare_client(self) -> Any:
         """Build the lark client + event dispatcher for this adapter's domain; returns the SDK domain."""
@@ -3921,6 +3949,38 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _build_lark_client(self, domain: Any) -> Any:
         return _build_lark_client(self._app_id, self._app_secret, domain)
+
+    def _publish_tool_clients(self) -> None:
+        """Publish this adapter's client into the profile-qualified binding
+        registry so Feishu doc/drive tools work in DM/gateway sessions where no
+        comment-thread client is injected.
+
+        Called only after a connection fully succeeds (initial connect and
+        supervisor-owned WS-thread replacement both funnel through the same
+        connect methods). The registry allocates the generation from a
+        per-profile process-wide counter, so a reconnect or replacement
+        adapter supersedes the previous binding, and a stale adapter's
+        compare-and-remove teardown can never erase a newer binding. The
+        profile key is captured here (not re-derived at teardown) because
+        disconnect() may run under a different contextvar scope than
+        connect().
+        """
+        from tools.feishu_client_binding import active_profile_key, publish
+
+        self._tool_binding_profile_key = active_profile_key()
+        self._tool_binding_generation = publish(
+            self._client, self._tool_binding_profile_key
+        )
+
+    def _unpublish_tool_clients(self) -> None:
+        """Remove this adapter's binding (compare-and-remove by generation)."""
+        if self._tool_binding_profile_key is None:
+            return
+
+        from tools.feishu_client_binding import unpublish
+
+        unpublish(self._tool_binding_generation, self._tool_binding_profile_key)
+        self._tool_binding_profile_key = None
 
     async def _feishu_send_with_retry(
         self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],

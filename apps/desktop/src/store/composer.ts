@@ -284,10 +284,16 @@ const draftKey = (scope: string | null | undefined) => scope?.trim() || freshDra
 /** Inline "Restored your unsent message" notice for the fresh draft (see
  *  `adoptGoneSessionDraft`). `null` = nothing to show. */
 export interface RestoredDraftNotice {
-  /** The dead stored-session key the text came from. */
+  /** Gone-session: the dead key the text came from. Interrupt: the session
+   *  whose submitted prompt was put back. */
   fromKey: string
   /** The text as restored — Undo only applies while the draft still equals it. */
   text: string
+  /** `gone` (default) restored into the fresh draft. `interrupt` reseeded the
+   *  live session composer after a turn ended interrupted. */
+  kind?: 'gone' | 'interrupt'
+  /** Session keys the interrupt restore wrote. Undo clears each of them. */
+  sessionKeys?: string[]
 }
 
 export const $restoredDraftNotice = atom<RestoredDraftNotice | null>(null)
@@ -661,6 +667,14 @@ export function undoRestoredDraft(liveText: string): boolean {
 
   if (!notice || liveText !== notice.text) {
     return false
+  }
+
+  if (notice.kind === 'interrupt') {
+    for (const key of notice.sessionKeys ?? [notice.fromKey]) {
+      clearSessionDraft(key)
+    }
+
+    return true
   }
 
   const current = draftsBySession.get(freshDraftScope())

@@ -7,6 +7,7 @@ import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
 import { triggerHaptic } from '@/lib/haptics'
+import { restoreInterruptedSubmittedPrompt } from '@/lib/interrupted-prompt'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
@@ -376,6 +377,17 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       typeof payload?.status === 'string' ? payload.status : undefined,
       payload?.response_reused === true
     )
+
+    // The composer was cleared on send. An interrupted turn (Stop, or
+    // "Operation interrupted: waiting for model response") never hands that
+    // prompt back — reseed it unless the user already started another draft.
+    if (payload?.status === 'interrupted') {
+      const state = sessionStateByRuntimeIdRef.current.get(sessionId)
+      void restoreInterruptedSubmittedPrompt(
+        [sessionId, state?.storedSessionId ?? ''],
+        state?.messages ?? []
+      )
+    }
 
     // Onboarding's first build: between turns is the only moment Setup may
     // put a check-in into that session (no-op everywhere else).

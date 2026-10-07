@@ -361,6 +361,24 @@ describe('session drafts', () => {
     expect(takeSessionDraft(null).text).toBe('from the dead session')
   })
 
+  it('undo of an interrupt restore clears that session draft and leaves the fresh chat alone', () => {
+    stashSessionDraft('runtime-session', 'please draft the long note', [])
+    stashSessionDraft(null, 'unrelated fresh draft', [])
+    $restoredDraftNotice.set({
+      fromKey: 'runtime-session',
+      kind: 'interrupt',
+      sessionKeys: ['runtime-session'],
+      text: 'please draft the long note'
+    })
+
+    expect(undoRestoredDraft('please draft the long note')).toBe(true)
+    expect(takeSessionDraft('runtime-session').text).toBe('')
+    expect(takeSessionDraft(null).text).toBe('unrelated fresh draft')
+    expect($restoredDraftNotice.get()).toBeNull()
+
+    clearSessionDraft(null)
+  })
+
   it('migrates a tip-keyed draft onto the post-compression tip', () => {
     const tipBefore = '20260720_062637_ad96b3'
     const tipAfter = '20260720_071049_a28905'

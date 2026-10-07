@@ -5,11 +5,14 @@ import type { GatewayEvent } from '@hermes/shared'
 // Its interrupted message.complete carries that persisted partial. Contract:
 // the screen shows exactly what the session saved — extend-only, never
 // shortened or rewritten.
-import { act, cleanup } from '@testing-library/react'
+import { act, cleanup, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { onComposerDraftRequests } from '@/app/chat/composer/focus'
 import { finalizeUserInterruptedMessages } from '@/app/session/hooks/use-prompt-actions/rewind'
 import { chatMessageText } from '@/lib/chat-messages'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { $restoredDraftNotice, clearSessionDraft } from '@/store/composer'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 import { STREAM_DELTA_FLUSH_MS } from './utils'
@@ -131,5 +134,110 @@ describe('Stop: the screen shows the partial the session saves (#121594)', () =>
     emit({ payload: { status: 'interrupted', text: 'Let me check.' }, session_id: SID, type: 'message.complete' })
 
     expect(assistantTexts()).toEqual(['Let me check.'])
+  })
+})
+
+describe('interrupted turn restores the submitted prompt (#126649)', () => {
+  const prompt = 'please draft the long note'
+
+  afterEach(() => {
+    cleanup()
+    $restoredDraftNotice.set(null)
+    clearSessionDraft(SID)
+    vi.restoreAllMocks()
+  })
+
+  const mount = () => {
+    const harness = renderMessageStream(SID)
+    harness.states.set(SID, {
+      ...createClientSessionState(),
+      messages: [{ id: 'user-1', role: 'user', parts: [{ type: 'text', text: prompt }] }]
+    })
+
+    return harness
+  }
+
+  const complete = (harness: MessageStreamHarness, status: string) =>
+    act(() => {
+      harness.handleEvent({
+        payload: { status, text: 'Operation interrupted: waiting for model response (61s elapsed).' },
+        session_id: SID,
+        type: 'message.complete'
+      })
+    })
+
+  it('reseeds an empty composer and publishes an undoable notice', async () => {
+    const harness = mount()
+    let written: string | null = null
+
+    const off = onComposerDraftRequests(
+      { getIds: () => [SID], isActive: () => true },
+      {
+        read: () => '',
+        write: text => {
+          written = text
+
+          return true
+        }
+      }
+    )
+
+    await complete(harness, 'interrupted')
+
+    await waitFor(() => expect(written).toBe(prompt))
+    expect($restoredDraftNotice.get()).toMatchObject({ fromKey: SID, kind: 'interrupt', text: prompt })
+    off()
+  })
+
+  it('does not clobber a draft the user already started', async () => {
+    const harness = mount()
+    let writes = 0
+
+    const off = onComposerDraftRequests(
+      { getIds: () => [SID], isActive: () => true },
+      {
+        read: () => 'already typing',
+        write: () => {
+          writes += 1
+
+          return true
+        }
+      }
+    )
+
+    await complete(harness, 'interrupted')
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 80))
+    })
+
+    expect(writes).toBe(0)
+    expect($restoredDraftNotice.get()).toBeNull()
+    off()
+  })
+
+  it('leaves the composer alone when the turn completes normally', async () => {
+    const harness = mount()
+    let writes = 0
+
+    const off = onComposerDraftRequests(
+      { getIds: () => [SID], isActive: () => true },
+      {
+        read: () => '',
+        write: () => {
+          writes += 1
+
+          return true
+        }
+      }
+    )
+
+    await complete(harness, 'complete')
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 80))
+    })
+
+    expect(writes).toBe(0)
+    expect($restoredDraftNotice.get()).toBeNull()
+    off()
   })
 })

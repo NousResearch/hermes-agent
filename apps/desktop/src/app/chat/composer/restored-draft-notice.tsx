@@ -7,6 +7,9 @@ import { $restoredDraftNotice, dismissRestoredDraftNotice, undoRestoredDraft } f
 interface RestoredDraftNoticeProps {
   /** The composer is showing the fresh draft (no session scope). */
   freshDraft: boolean
+  /** Runtime and stored ids this composer answers for. An interrupt restore
+   *  shows here when one of them owns the notice. */
+  sessionKeys?: Array<string | null | undefined>
   /** Clear the editor after Undo emptied the fresh draft. */
   onUndone: () => void
   /** Latest live editor text — Undo only applies while it is still what was restored. */
@@ -14,17 +17,26 @@ interface RestoredDraftNoticeProps {
 }
 
 /**
- * "Restored your unsent message" strip above the fresh draft's input
- * (#111868). Offers, never hijacks: no focus move, no navigation, no toast —
- * the text is simply in the composer with a way to put it back. Renders
- * nothing outside the fresh draft, so opening another session hides it
- * without consuming the Undo.
+ * "Restored your unsent message" strip above the input (#111868, #126649).
+ * Offers, never hijacks: no navigation, no toast — the text is in the
+ * composer with a way to take it back. A gone-session restore shows on the
+ * fresh draft; an interrupted-turn restore shows on the session that owns
+ * it. Opening a different session hides the strip without consuming Undo.
  */
-export function RestoredDraftNotice({ freshDraft, onUndone, readLiveText }: RestoredDraftNoticeProps) {
+export function RestoredDraftNotice({
+  freshDraft,
+  onUndone,
+  readLiveText,
+  sessionKeys = []
+}: RestoredDraftNoticeProps) {
   const notice = useStore($restoredDraftNotice)
   const { t } = useI18n()
+  const keys = sessionKeys.map(key => key?.trim()).filter((key): key is string => Boolean(key))
+  const interruptHere =
+    notice?.kind === 'interrupt' && keys.some(key => (notice.sessionKeys ?? [notice.fromKey]).includes(key))
+  const goneHere = notice?.kind !== 'interrupt' && freshDraft
 
-  if (!notice || !freshDraft) {
+  if (!notice || (!interruptHere && !goneHere)) {
     return null
   }
 

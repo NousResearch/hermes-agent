@@ -29,6 +29,7 @@ inworld = ProviderProfile(
     signup_url="https://platform.inworld.ai/",
     base_url="https://api.inworld.ai/v1",
     auth_type="api_key",
+    api_mode="chat_completions",
     default_aux_model="",
     fallback_models=(),
 )

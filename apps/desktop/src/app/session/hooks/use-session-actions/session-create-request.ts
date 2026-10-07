@@ -13,8 +13,8 @@ import {
   $currentFastMode,
   $currentModel,
   $currentProvider,
-  $currentReasoningEffort,
   $currentServiceTier,
+  explicitEffortPick,
   getCurrentModelSource
 } from '@/store/session'
 import type { SessionCreateResponse } from '@/types/hermes'
@@ -88,7 +88,8 @@ export async function createGatewaySession(
 // mode one backend serves every profile, so an omitted profile silently lands the
 // chat on the launch (default) profile — the "rubberbands back to default" bug.
 // A no-op for single-profile/local-pooled users (a backend resolves its own launch
-// profile to None). Effort/fast still ride as per-session overrides. Model and
+// profile to None). Effort/fast still ride as per-session overrides (effort only
+// when it differs from the profile default: explicitEffortPick). Model and
 // provider only ride when the composer source is 'manual' — a default-sourced
 // value is a mirror of Settings → Model and must not pin the new chat.
 export async function desktopSessionCreateParams(
@@ -109,7 +110,7 @@ export async function desktopSessionCreateParams(
   const isManualSelection = getCurrentModelSource() === 'manual'
 
   const selection = {
-    effort: $currentReasoningEffort.get().trim(),
+    effort: explicitEffortPick(),
     fast: $currentFastMode.get(),
     serviceTier: $currentServiceTier.get().trim(),
     model: isManualSelection ? $currentModel.get().trim() : '',

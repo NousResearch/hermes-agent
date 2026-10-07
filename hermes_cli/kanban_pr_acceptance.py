@@ -61,6 +61,23 @@ class _GateAuthError(RuntimeError):
     an infrastructure blip to retry."""
 
 
+# Every key gh reads its login from (gh.io plus GitHub Enterprise: a GHE
+# profile authenticates with the enterprise token vars and GH_HOST instead of
+# GH_TOKEN). Re-added from the target profile's own secret scope in _gh_env.
+_GH_LOGIN_KEYS = (
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "GH_HOST",
+    "GH_CONFIG_DIR",
+)
+# Keys that by themselves prove the child can authenticate. GH_HOST is excluded
+# on purpose: a host name with no token is no login, and treating it as one
+# would reopen the ambient fall-through the fail-closed pin below closes.
+_GH_AUTH_KEYS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
+
+
 def _gh_env(profile_home: str | None) -> dict[str, str] | None:
     """Child env for ``gh``: the card's profile identity when one is resolvable.
 
@@ -69,9 +86,10 @@ def _gh_env(profile_home: str | None) -> dict[str, str] | None:
     happened to call it (#122689). gh needs only its own login, so the env keeps
     the provider scrub — ``served_profile_child_env(inherit_credentials=False)``,
     its "caller re-adds the few keys the child needs" contract — and re-adds
-    exactly ``GH_TOKEN``/``GITHUB_TOKEN``/``GH_CONFIG_DIR`` from the target
-    profile's own secret scope instead of overlaying the whole scope (#134669:
-    the gh child never needs the assignee's provider keys or adapter secrets).
+    exactly gh's own login keys (``_GH_LOGIN_KEYS``: the token vars plus
+    ``GH_HOST``/``GH_CONFIG_DIR``) from the target profile's own secret scope
+    instead of overlaying the whole scope (#134669: the gh child never needs
+    the assignee's provider keys or adapter secrets).
     ``None`` keeps the ambient env — unassigned cards behave exactly as before.
     """
     if not profile_home:
@@ -86,10 +104,10 @@ def _gh_env(profile_home: str | None) -> dict[str, str] | None:
         base.pop("GH_CONFIG_DIR", None)
     env = served_profile_child_env(base=base, target_home=profile_home, inherit_credentials=False)
     scope = build_profile_secret_scope(Path(profile_home))
-    for key in ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR"):
+    for key in _GH_LOGIN_KEYS:
         if scope.get(key):
             env[key] = scope[key]
-    if routed and not (env.keys() & {"GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR"}):
+    if routed and not (env.keys() & {*_GH_AUTH_KEYS, "GH_CONFIG_DIR"}):
         # HOME/XDG_CONFIG_HOME are still the launch process's: without a login of its own the
         # child would fall through to ~/.config/gh/hosts.yml — the ambient login. Pin gh's config
         # to a profile-owned dir so it fails "not logged in" (exit 4 -> auth) instead.

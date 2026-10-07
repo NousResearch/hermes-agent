@@ -1,7 +1,7 @@
 name: klipper-print-watch
 repo: https://github.com/TakeshiTGAL/hermes-plugin-klipper-print-watch
-sha: a84dc7cd22cdeaee405dd89100358b2061033be7
-description: "Built on the Moonraker HTTP API. Approved pause/resume/cancel. Cron reports klippy_shutdown, complete, error, paused, cancelled, stalled. Disclosure — one MOONRAKER_URL; agent can call tools; no allowlist (guests can ask); every move asks; always adds a dead command_allowlist line; no motion in cron, yolo, approvals off, single-query, unattended, isolation host, or missing helper; host has no CLI; approval waits up to approvals.timeout (300s); cron: 1 agent turn per run (288/day at */5); unreachable told once; stores states, file, progress, time, failure code, <=20 stills; no key or name; no daily cap; no child process; vision off, else 1 ctx.llm call; control <=60s; state is not motion proof; private modules fail closed; tests/ not loaded; uninstall leaves cron; not tried on hardware."
+sha: a970970b9d27f8e1b5000e6770748b3c4d68a86b
+description: "Built on the Moonraker HTTP API. Cron reports klippy_shutdown, complete, error, paused (after printing), cancelled, stalled. Disclosure — one MOONRAKER_URL; agent can call tools; no own allowlist (gateway users can ask/approve); each pause/resume/cancel asks (always adds a dead allowlist line); no motion in cron, yolo, approvals off, single-query, unattended, isolation host, missing helper; no CLI in host; approval waits approvals.timeout (300s); cron >=1 model turn/run (288/day at */5); outages told per cause, daily; stores states, file, progress, time, error code, <=20 stills, not key/name; no daily cap; no child process; vision off, else 1 ctx.llm call; control <=60s; state isn't motion proof; private modules fail closed; tests/ not loaded; uninstall leaves cron; not tried on hardware."
 maintainer: TakeshiTGAL
 tier: community
 category: tools

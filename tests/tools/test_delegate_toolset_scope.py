@@ -21,6 +21,35 @@ class TestToolsetIntersection:
         assert "memory" not in child
         assert "terminal" in child
 
+    def test_mcp_server_named_like_a_blocked_toolset_reaches_the_child(self):
+        """An MCP server configured as ``memory`` is the user's server, not Hermes' MEMORY.md tool: whether the
+        child inherits or narrows its toolsets, it keeps the server's tools exactly when the parent has them
+        (not when the parent disabled ``memory``), never gains a tool the parent lacks, and never gets the built-in."""
+        import model_tools
+        from tools.delegate_tool_toolsets import _resolve_child_toolsets
+        from tools.registry import registry
+
+        registry.register(
+            name="mcp__memory__search_nodes", toolset="mcp-memory", handler=lambda args, **kw: "{}",
+            schema={"name": "mcp__memory__search_nodes", "description": "kg",
+                    "parameters": {"type": "object", "properties": {}}})
+        registry.register_toolset_alias("memory", "mcp-memory")
+        try:
+            for parent_disabled in ([], ["memory"]):
+                # Config lists an enabled MCP server by its bare name (tools_config._merge_mcp_servers).
+                parent = SimpleNamespace(enabled_toolsets=["hermes-cli", "memory"], disabled_toolsets=parent_disabled)
+                parent_tools = model_tools._select_tool_names(parent.enabled_toolsets, parent_disabled, quiet_mode=True)
+                assert ("mcp__memory__search_nodes" in parent_tools) == (not parent_disabled)
+                for requested in (None, ["web"]):
+                    enabled, disabled = _resolve_child_toolsets(parent, requested, "leaf")
+                    child_tools = model_tools._select_tool_names(enabled, disabled, quiet_mode=True)
+                    context = (parent_disabled, requested, enabled, disabled)
+                    assert child_tools <= parent_tools, (sorted(child_tools - parent_tools), context)
+                    assert ("mcp__memory__search_nodes" in child_tools) == (not parent_disabled), context
+                    assert "memory" not in child_tools, context
+        finally:
+            registry.deregister("mcp__memory__search_nodes")
+
 class TestEmitParentConsole:
     """Progress lines (e.g. ``✓ [N/M] …``) must route through the parent's
     configured ``_safe_print`` in headless stdio hosts (ACP, gateway) so

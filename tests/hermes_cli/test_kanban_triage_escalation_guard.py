@@ -348,3 +348,98 @@ def test_re_escalated_card_reports_its_round_trip(kanban_home: Path) -> None:
         payload = escalations[-1].payload
         assert payload["triage_round_trips"] == 1
         assert payload["recurrences"] == BLOCK_RECURRENCE_LIMIT + 1
+
+
+# ---------------------------------------------------------------------------
+# Field report: an already-decomposed root parked again (cable-span t_40f7472e)
+#
+# The production loop: a root that had ALREADY been decomposed once (it carries a
+# ``decomposed`` event) later blocked needs_input twice -> ``block_loop_detected`` ->
+# triage. ``decompose_triage_task`` returned None on every later tick because of the
+# ``decomposed`` event, so the fan-out path was never the loop. The auxiliary LLM
+# answered ``fanout=false`` instead, and ``_apply_single -> specify_triage_task``
+# wrote ``specified`` + ``promoted`` and moved the card to ``todo`` -- 17 times, about
+# every 3 minutes.
+# ---------------------------------------------------------------------------
+
+def _park_decomposed_root(conn) -> str:
+    """A root that fanned out once, then blocked needs_input to the breaker's limit."""
+    tid = kb.create_task(conn, title="already-decomposed root", triage=True)
+    child_ids = kbg.decompose_triage_task(
+        conn, tid, root_assignee="worker", children=_children(), author="decomposer",
+    )
+    assert isinstance(child_ids, list) and len(child_ids) == 2
+    assert [e for e in kb.list_events(conn, tid) if e.kind == "decomposed"]
+    # The children finish, the root wakes and runs again, then blocks.
+    for cid in child_ids:
+        _claim_running(conn, cid)
+        assert kb.complete_task(conn, cid, result="done")
+    kb.recompute_ready(conn)
+    _claim_running(conn, tid)
+    for _ in range(BLOCK_RECURRENCE_LIMIT + 1):
+        kb.block_task(conn, tid, reason="needs a human answer", kind="needs_input")
+        if kb.get_task(conn, tid).status == "triage":
+            break
+        assert kb.unblock_task(conn, tid)
+        _claim_running(conn, tid)
+    assert kb.get_task(conn, tid).status == "triage"
+    assert [e for e in kb.list_events(conn, tid) if e.kind == "block_loop_detected"]
+    return tid
+
+
+def _promotion_event_count(conn, tid: str) -> int:
+    return len([e for e in kb.list_events(conn, tid) if e.kind in {"specified", "promoted"}])
+
+
+_FANOUT_FALSE = (
+    '{"fanout": false, "title": "respecified root", "body": "rewritten by the aux LLM"}'
+)
+
+
+def test_already_decomposed_root_parked_again_is_not_respecified(kanban_home: Path) -> None:
+    with kbc.connect_closing() as conn:
+        tid = _park_decomposed_root(conn)
+        before = _promotion_event_count(conn, tid)
+
+        # Path 1: the specify sink the loop actually went through.
+        ok = kb.specify_triage_task(conn, tid, title="respecified root", body="rewritten")
+        assert not ok
+        assert "block_loop_detected" in ok.detail
+
+    # Path 2: the auto-decompose tick with the aux LLM answering fanout=false,
+    # repeated as the tick did in production.
+    aux = MagicMock(return_value=(_FANOUT_FALSE, ""))
+    with patch("hermes_cli.kanban_decompose._call_aux", aux):
+        for _ in range(3):
+            outcome = decomp.decompose_task(tid, author="decomposer")
+            assert not outcome.ok
+            assert "block_loop_detected" in outcome.reason
+
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "triage"
+        assert kb.get_task(conn, tid).title == "already-decomposed root"
+        assert _promotion_event_count(conn, tid) == before, (
+            "no new specified/promoted events may be written for a parked root"
+        )
+
+
+def test_already_decomposed_root_single_path_guard_holds_without_preflight(
+    kanban_home: Path,
+) -> None:
+    """Same incident, with the pre-aux preflight disabled: the in-txn guard inside
+    ``specify_triage_task`` alone must stop ``_apply_single`` (fanout=false)."""
+    with kbc.connect_closing() as conn:
+        tid = _park_decomposed_root(conn)
+        before = _promotion_event_count(conn, tid)
+
+    aux = MagicMock(return_value=(_FANOUT_FALSE, ""))
+    with patch("hermes_cli.kanban_decompose._call_aux", aux), \
+            patch("hermes_cli.kanban_decompose._promotion_refusal", return_value=None):
+        outcome = decomp.decompose_task(tid, author="decomposer")
+
+    assert aux.call_count == 1, "preflight disabled: the aux call happens"
+    assert not outcome.ok
+    assert "block_loop_detected" in outcome.reason
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "triage"
+        assert _promotion_event_count(conn, tid) == before

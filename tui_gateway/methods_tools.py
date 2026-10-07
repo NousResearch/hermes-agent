@@ -1973,8 +1973,13 @@ def _(rid, params: dict) -> dict:
     return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
 
 
-@method("shell.exec")
+@_scoped_rpc("shell.exec", 5034)
 def _(rid, params: dict) -> dict:
+    """Run a user command under the requested profile's runtime scope (home + secrets +
+    terminal), like every other profile-routed handler. ``build_subprocess_env`` resolves
+    skill-registered passthrough names through the bound secret scope; run unscoped, a
+    multiplexed backend raised ``UnscopedSecretError`` for every ``shell.exec`` once any
+    skill registered a passthrough variable (#134343)."""
     cmd = params.get("command", "")
     if not cmd:
         return _err(rid, 4004, "empty command")

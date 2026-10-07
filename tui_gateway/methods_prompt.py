@@ -555,7 +555,7 @@ def _reopen_if_finalized(db, session_id: str) -> None:
         db.reopen_session(session_id)
 
 
-def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
+def _persist_session_row_for_submit(rid, session, text=None, display_kind=None, *, managed_turn_key=None):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
     here), then the message itself (#111868: a freeze during the first build must leave a
     resumable transcript); the error reply is the only user-visible signal (desktop maps it to a toast)."""
@@ -575,7 +575,7 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
             with _session_db(session) as db:
                 if db is not None:
                     _reopen_if_finalized(db, str(session.get("session_key") or ""))
-            _persist_submit_user_row(session, text, display_kind)
+            _persist_submit_user_row(session, text, display_kind, managed_turn_key=managed_turn_key)
             return None
     except Exception as exc:
         failure = describe_storage_failure(exc)
@@ -613,6 +613,7 @@ def _run_after_agent_ready(
     # expires. See #63078.
     err = _wait_agent_for_prompt(session, rid, sid)
     if err:
+        session.pop("_managed_turn_key", None)
         # Terminal frame + retained snapshot (not a bare "error" event): the snapshot is
         # the only way resume shows this to a disconnected client.
         _emit_terminal_turn_error(
@@ -625,6 +626,7 @@ def _run_after_agent_ready(
         return
     with session["history_lock"]:
         if session.get("_turn_cancel_requested") or not session.get("running"):
+            session.pop("_managed_turn_key", None)
             session["running"] = False
             _clear_inflight_turn(session)
             # Without this emit the turn vanishes silently after {"status": "streaming"}.
@@ -642,6 +644,9 @@ _TRUNCATION_PARAMS = (
     "truncate_before_user_ordinal", "truncate_before_row_id", "truncate_before_message_id")
 
 
+_SUBMIT_BUSY_RETRY = object()
+
+
 def _lock_in_submit_turn(
     rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
@@ -650,6 +655,12 @@ def _lock_in_submit_turn(
     with _session_turn_admission(session) as admitted:
         if not admitted:
             return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
+        if session.get("running"):
+            # Another submit won after the idle probe. Never start a second worker;
+            # ordinary clients re-enter their existing busy queue/steer policy.
+            if params.get("managed_turn_key") is not None:
+                return _err(rid, 4009, "Managed turn cannot enter a busy session"), fields
+            return _SUBMIT_BUSY_RETRY, fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(
@@ -674,8 +685,53 @@ def _lock_in_submit_turn(
     return None, fields
 
 
+def _resolve_busy_prompt(rid, sid, session, text, params, *, internal_hosted_submit,
+                         managed_key, has_truncation, transport, turn_author, display_kind):
+    """Return a busy response, or None when the turn can safely claim the idle slot."""
+    while True:
+        with session["history_lock"]:
+            if not session.get("running"):
+                return None
+            if internal_hosted_submit:
+                return _err(rid, 4091, "hosted room member session is busy")
+            if managed_key is not None:
+                return _err(rid, 4009, "Managed turn cannot queue, steer or redirect a busy session")
+            busy_transport = transport or session.get("transport")
+        if has_truncation:
+            # Rewind must retry on the idle session; queuing would discard its requested history cut.
+            return _err(rid, 4009, "session busy")
+        response = _handle_busy_submit(
+            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")),
+            turn_author=turn_author, display_kind=display_kind)
+        if response is not None:
+            return response
+
+
+def _claim_idle_submit(rid, sid, session, text, params, *, internal_hosted_submit,
+                       managed_key, has_truncation, transport, turn_author, display_kind,
+                       requested_rebind_ids, hosted_task):
+    """Close the idle-probe/claim race without changing ordinary busy delivery."""
+    while True:
+        busy = _resolve_busy_prompt(
+            rid, sid, session, text, params, internal_hosted_submit=internal_hosted_submit,
+            managed_key=managed_key, has_truncation=has_truncation, transport=transport,
+            turn_author=turn_author, display_kind=display_kind)
+        if busy is not None:
+            return busy, {}
+        error, fields = _lock_in_submit_turn(
+            rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+        if error is not _SUBMIT_BUSY_RETRY:
+            return error, fields
+
+
 # Per-turn client surfaces that carry a model-bound note (session_notifications._surface_note).
 _CLIENT_SURFACES = frozenset({"hud", "voice-live"})
+
+
+@method("prompt.managed_turn.get")
+def _(rid, params: dict) -> dict:
+    from .managed_turn_admission import lookup_response
+    return lookup_response(rid, params)
 
 
 @method("prompt.submit")
@@ -693,7 +749,8 @@ def _(rid, params: dict) -> dict:
         if isinstance(title_preview, str) and title_preview.strip()
         else None
     )
-    if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
+    from .managed_turn_admission import voice_response
+    if (stopped := voice_response(rid, text, params)) is not None:
         return stopped
     if params.get("interrupted"):
         # Client-side barge-in: latch so this turn's model message carries the note.
@@ -702,6 +759,10 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    from .managed_turn_admission import preflight, duplicate_or_error
+    managed_key = params.get("managed_turn_key")
+    if (managed_error := preflight(rid, params, session, text, _TRUNCATION_PARAMS)) is not None:
+        return managed_error
     from tools.bot_relay import DeliveryAuthor
 
     # Only the relay handler can build a DeliveryAuthor. A dict here is a client claiming a sender.
@@ -736,6 +797,8 @@ def _(rid, params: dict) -> dict:
         # `/work fix it` sends nine literal chars.
         text = _expand_skill_invocation_for_replay(text, str(session.get("session_key") or ""))
     turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
+    if (managed_error := duplicate_or_error(rid, session, managed_key, turn_isolation)) is not None:
+        return managed_error
     if internal_hosted_submit and turn_isolation:
         return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
     # Re-bind to the current transport: streaming must stay on the active websocket even
@@ -751,32 +814,15 @@ def _(rid, params: dict) -> dict:
     # history_lock is released (a non-interruptible tool may hold it); if the old turn
     # finished between the two acquisitions, retry the claim rather than strand this
     # prompt in a queue whose drain already ran.
-    while True:
-        with session["history_lock"]:
-            if not session.get("running"):
-                break
-            if internal_hosted_submit:
-                return _err(rid, 4091, "hosted room member session is busy")
-            busy_transport = t or session.get("transport")
-        if has_truncation:
-            # A rewind/edit/restore/regenerate must land as a truncation, never as a
-            # steered correction or a plain follow-up queued to run after the live
-            # turn — either would silently drop the history cut the user asked for.
-            # Signal busy so the caller's own interrupt-then-retry loop (already
-            # built for exactly this race — see desktop's `runRewindSubmit`) waits
-            # for `running` to clear and resubmits with the truncation intact.
-            return _err(rid, 4009, "session busy")
-        busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
-            display_kind=display_kind)
-        if busy_response is not None:
-            return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
     requested_rebind_ids = (
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
-    err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+    err, survivor_fields = _claim_idle_submit(
+        rid, sid, session, text, params, internal_hosted_submit=internal_hosted_submit,
+        managed_key=managed_key, has_truncation=has_truncation, transport=t,
+        turn_author=turn_author, display_kind=display_kind,
+        requested_rebind_ids=requested_rebind_ids, hosted_task=hosted_task)
     if err is not None:
         return err
     if turn_isolation:
@@ -813,8 +859,9 @@ def _(rid, params: dict) -> dict:
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
-    if (err := _persist_session_row_for_submit(rid, session, text, display_kind)) is not None:
-        return err
+    from .managed_turn_admission import persist_submit
+    if (persist_error := persist_submit(rid, session, text, display_kind, managed_key, survivor_fields)) is not None:
+        return persist_error
     # Capture before starting the worker: it consumes the staging dict and may finish before the RPC returns.
     staged_user = session.get("_submit_user_row") or {}
     if isinstance(staged_user.get("_row_id"), int):

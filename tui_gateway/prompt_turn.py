@@ -1161,7 +1161,9 @@ def _run_prompt_submit(
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
-        st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None,
+        managed_turn_key = session.pop("_managed_turn_key", None)
+        st.marker_key = _record_turn_marker(session, text,
+            auto_continue=terminal_callback is None and managed_turn_key is None,
             notification_category=(display_metadata or {}).get("notification_category"))
         goal_followup = None
         try:

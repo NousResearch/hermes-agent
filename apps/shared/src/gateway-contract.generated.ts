@@ -2682,6 +2682,7 @@ export interface PromptSubmitParams {
   session_id: string
   profile?: string | null
   text?: unknown
+  managed_turn_key?: string | null
   display_kind?: string | null
   interrupted?: boolean | null
   queued?: boolean | null
@@ -2701,11 +2702,21 @@ export interface PromptSubmitResult {
   status?: PromptSubmitStatus | null
   voice_stopped?: boolean | null
   user_row_id?: number | null
+  managed_turn_key?: string | null
   survivor_user_row_ids?: (number | null)[] | null
   survivor_row_id_map?: Record<string, number | null> | null
   turn_isolation?: boolean | null
 }
 export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected'
+export interface ManagedTurnLookupParams {
+  session_id: string
+  profile?: string | null
+  managed_turn_key: string
+}
+export interface ManagedTurnLookupResult {
+  found: boolean
+  user_row_id?: number | null
+}
 export interface ClipboardPasteParams {
   session_id: string
   profile?: string | null
@@ -5279,6 +5290,8 @@ export interface RpcMethods {
   'prompt.background': { params: SideAgentParams; result: TaskIdResult }
   /** Side question over a snapshot of the live conversation; the answer arrives as btw.complete. */
   'prompt.btw': { params: SideAgentParams; result: TaskIdResult }
+  /** Read-only admission lookup for an opt-in managed turn; absence is not permission to resubmit. */
+  'prompt.managed_turn.get': { params: ManagedTurnLookupParams; result: ManagedTurnLookupResult }
   /** Send a user turn to a live session; busy sessions queue / steer / redirect instead of refusing. */
   'prompt.submit': { params: PromptSubmitParams; result: PromptSubmitResult }
   /** Re-read ~/.hermes/.env (CLI /reload parity); built agents keep their pool until /new. */
@@ -5626,6 +5639,7 @@ export const RPC_METHODS = [
   'projects.update',
   'prompt.background',
   'prompt.btw',
+  'prompt.managed_turn.get',
   'prompt.submit',
   'reload.env',
   'reload.mcp',

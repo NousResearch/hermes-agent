@@ -112,6 +112,34 @@ def turn_env(monkeypatch, tmp_path, marker_home):
 # ── Marker module ──────────────────────────────────────────────────────
 
 
+def test_managed_turn_marker_disables_crash_replay_without_changing_regular_turns(
+    monkeypatch, turn_env, marker_home
+):
+    observed = []
+    def record(home, key, prompt, **kwargs):
+        observed.append(kwargs.get("auto_continue"))
+        record_turn_start(home, key, prompt, **kwargs)
+    monkeypatch.setattr(server, "record_turn_start", record)
+    agent = types.SimpleNamespace(session_id="session-key", clear_interrupt=lambda: None,
+                                  run_conversation=lambda *a, **kw: {"final_response": "done"})
+    managed = _session(agent=agent, running=True, _managed_turn_key="a" * 32)
+    server._run_prompt_submit("managed", "sid-managed", managed, "managed prompt")
+    regular_agent = types.SimpleNamespace(session_id="session-key-regular", clear_interrupt=lambda: None,
+                                          run_conversation=lambda *a, **kw: {"final_response": "done"})
+    regular = _session(agent=regular_agent, running=True)
+    regular["session_key"] = "session-key-regular"
+    server._run_prompt_submit("regular", "sid-regular", regular, "regular prompt")
+    assert observed == [False, True]
+
+
+def test_managed_crash_marker_never_auto_continues_on_resume(schedule_env, marker_home):
+    record_turn_start(marker_home, "session-key", "managed prompt", auto_continue=False)
+    result = server._maybe_schedule_auto_continue("sid", _session(), "session-key")
+    assert result is None
+    assert not schedule_env
+    assert read_turn_marker(marker_home, "session-key")["auto_continue"] is False
+
+
 def test_marker_roundtrip(tmp_path):
     record_turn_start(tmp_path, "abc", "fix the bug", attempts=1)
 

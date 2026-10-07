@@ -8,10 +8,15 @@ per native run — until attribute delegation through the chain blew the
 recursion limit in long-lived gateways, before AIAgent construction.
 """
 
+import json
+import os
+import subprocess
 import sys
+from pathlib import Path
 
 import agent.thread_scoped_output as thread_output
-from agent.process_bootstrap import _SafeWriter, _install_safe_stdio
+from agent.process_bootstrap import _install_safe_stdio
+from agent.stdio_wrappers import _SafeWriter
 from agent.thread_scoped_output import _ThreadRoutingStream, thread_scoped_silence
 
 # A stable state is one routing proxy, optionally over a safe writer; anything
@@ -56,3 +61,34 @@ def test_interleaved_stdio_installers_keep_wrapper_depth_bounded():
         thread_output._installed.update(installed)
         thread_output._routing_states.clear()
         thread_output._routing_states.update(routing_states)
+
+
+def test_silence_path_never_pulls_the_bootstrap_chain():
+    """``_ensure_installed`` must not import agent.process_bootstrap — even lazily.
+
+    A function-level ``from agent.process_bootstrap import ...`` inside
+    ``_ensure_installed`` made this hot per-thread stdio path trigger the
+    module-scope ``hermes_bootstrap`` import on first call in a fresh process:
+    import-time dependency activation, real-HERMES_HOME filesystem I/O and
+    sys.path mutation at an arbitrary runtime moment (and an import-lock
+    deadlock risk under threads). Import-order-dependent, hence the subprocess.
+    """
+    repo_root = Path(thread_output.__file__).resolve().parent.parent
+    probe = (
+        "import json, sys\n"
+        "import agent.thread_scoped_output as t\n"
+        "t._ensure_installed('stdout', sys.__stdout__ or sys.stdout)\n"
+        "print(json.dumps({'hb': 'hermes_bootstrap' in sys.modules,"
+        " 'pb': 'agent.process_bootstrap' in sys.modules}))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        cwd=str(repo_root),
+        env=dict(os.environ, PYTHONPATH=str(repo_root)),
+        check=True,
+        timeout=120,
+    )
+    flags = json.loads(result.stdout.strip().splitlines()[-1])
+    assert flags == {"hb": False, "pb": False}

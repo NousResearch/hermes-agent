@@ -15,6 +15,8 @@ import sys
 import threading
 from typing import Iterator, TextIO
 
+from agent.stdio_wrappers import _unwrap_stdio_stream
+
 __all__ = ["thread_scoped_silence"]
 
 _install_lock = threading.Lock()
@@ -103,10 +105,11 @@ def _ensure_installed(attr: str, passthrough: TextIO) -> "_ThreadRoutingStream":
         # Unwrap sibling stdio wrappers (a _SafeWriter shell installed by
         # _install_safe_stdio) down to the innermost actual stream: wrapping the
         # shell grew an alternating _SafeWriter/_ThreadRoutingStream chain that
-        # blew the recursion limit in long-lived gateways.
-        from agent.process_bootstrap import _unwrap_stdio_stream
-
-        inner, buried_routing = _unwrap_stdio_stream(current)
+        # blew the recursion limit in long-lived gateways. Never import
+        # agent.process_bootstrap here — even lazily: it would drag the
+        # hermes_bootstrap chain (import-time dependency activation, real-home
+        # I/O) into this hot per-thread stdio path.
+        inner, buried_routing = _unwrap_stdio_stream(current, _ThreadRoutingStream)
         if buried_routing is not None:
             # A routing proxy already sits inside the chain; adopt it instead of
             # stacking a second router over the shell.

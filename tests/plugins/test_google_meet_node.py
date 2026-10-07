@@ -62,6 +62,44 @@ def test_registry_add_get_roundtrip_persists(tmp_path):
     assert "added_at" in entry
 
 
+def _assert_registry_owner_only(tmp_path):
+    import stat
+
+    from plugins.google_meet.node.registry import NodeRegistry
+
+    p = tmp_path / "nodes.json"
+    p.write_text('{"nodes": {}}', encoding="utf-8")
+    p.chmod(0o644)
+    NodeRegistry(path=p).add("mac", "ws://mac.local:18789", "deadbeef")
+    # The registry holds bearer tokens for every approved node.
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+
+
+@pytest.mark.linux_only
+def test_registry_saves_nodes_json_owner_only_linux(tmp_path):
+    _assert_registry_owner_only(tmp_path)
+
+
+@pytest.mark.macos_only
+def test_registry_saves_nodes_json_owner_only_macos(tmp_path):
+    _assert_registry_owner_only(tmp_path)
+
+
+def test_validate_request_accepts_and_rejects_token():
+    from plugins.google_meet.node import protocol
+
+    good = protocol.make_request("ping", "tok-abc", {})
+    assert protocol.validate_request(good, "tok-abc") == (True, "")
+    bad = protocol.make_request("ping", "tok-xyz", {})
+    ok, reason = protocol.validate_request(bad, "tok-abc")
+    assert not ok and reason == "token mismatch"
+    # Non-ASCII attacker input must fail closed, not raise.
+    for token in ("tok-é", "tok-\ud800"):
+        weird = protocol.decode(json.dumps(protocol.make_request("ping", token, {})))
+        ok, reason = protocol.validate_request(weird, "tok-abc")
+        assert not ok and reason == "token mismatch"
+
+
 # ---------------------------------------------------------------------------
 # server.py — token + dispatch
 # ---------------------------------------------------------------------------
@@ -183,5 +221,3 @@ def test_cli_approve_list_remove(capsys):
     rc = args.func(args)
     assert rc == 0
     assert NodeRegistry().get("mac") is None
-
-

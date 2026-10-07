@@ -557,6 +557,38 @@ def _extra_csv_set(config, key: str, env_name: str) -> Set[str]:
     return _csv_set(_extra_or_secret(config.extra, key, env_name, "", blank_is_unset=False))
 
 
+# Bundled link previews (MSC4095): a sender may attach its own previews to an event. An EMPTY list
+# is an explicit "no previews for this event" that clients honoring bundled previews (Sable,
+# Beeper) render as no cards, without the reader's global or the room's preview settings changing.
+# ``com.beeper.linkpreviews`` is the unstable name older clients still read.
+_LINK_PREVIEW_OPT_OUT_KEYS = ("m.url_previews", "com.beeper.linkpreviews")
+_TRUE_WORDS = frozenset({"true", "1", "yes", "on", "all"})
+_FALSE_WORDS = frozenset({"", "false", "0", "no", "off", "none"})
+
+
+def _parse_link_preview_opt_out(raw: Any) -> tuple[bool, Set[str]]:
+    """``disable_link_previews`` → ``(all_rooms, room_ids)``: true opts out every room, a room-ID
+    list/CSV only those rooms, unset/false none."""
+    if raw is None or isinstance(raw, bool):
+        return bool(raw), set()
+    if isinstance(raw, str) and raw.strip().lower() in _TRUE_WORDS:
+        return True, set()
+    if isinstance(raw, str) and raw.strip().lower() in _FALSE_WORDS:
+        return False, set()
+    return False, _csv_set(raw)
+
+
+def _link_previews_disabled(opt_out: tuple[bool, Set[str]], room_id: Any) -> bool:
+    all_rooms, rooms = opt_out
+    return all_rooms or str(room_id) in rooms
+
+
+def _apply_link_preview_opt_out(msg_content: Dict[str, Any]) -> None:
+    """Mark a text event as carrying no link previews (see ``_LINK_PREVIEW_OPT_OUT_KEYS``)."""
+    for key in _LINK_PREVIEW_OPT_OUT_KEYS:
+        msg_content[key] = []
+
+
 def _recovery_key_output_path() -> Optional[Path]:
     """MATRIX_RECOVERY_KEY_OUTPUT_FILE via the profile-scoped reader: a bare os.getenv under
     multiplex resolves the default profile's path, writing/finding the wrong profile's file."""
@@ -860,6 +892,9 @@ class MatrixAdapter(BasePlatformAdapter):
         self._free_rooms: Set[str] = _extra_csv_set(config, "free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS")
         # If non-empty, bot ONLY responds in these rooms (whitelist); DMs exempt.
         self._allowed_rooms: Set[str] = _extra_csv_set(config, "allowed_rooms", "MATRIX_ALLOWED_ROOMS")
+        # Rooms whose outbound text carries an empty bundled-preview list (no preview cards).
+        self._link_preview_opt_out = _parse_link_preview_opt_out(_extra_or_secret(
+            config.extra, "disable_link_previews", "MATRIX_DISABLE_LINK_PREVIEWS", None))
         self._allow_room_mentions: bool = _env_truthy("MATRIX_ALLOW_ROOM_MENTIONS", "false")
         # Extra-first: the YAML bridge seeds these into extra and skips the env write under a
         # multiplexed secondary scope, where os.environ holds the DEFAULT profile's flags.
@@ -1389,6 +1424,8 @@ class MatrixAdapter(BasePlatformAdapter):
         for chunk in self.truncate_message(
                 self.format_message(content), self.max_message_length, len_fn=self.message_len_fn):
             msg_content = self._build_text_message_content(chunk)
+            if _link_previews_disabled(self._link_preview_opt_out, chat_id):
+                _apply_link_preview_opt_out(msg_content)
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
@@ -1474,6 +1511,10 @@ class MatrixAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         new_content = self._build_text_message_content(formatted)
         msg_content: Dict[str, Any] = {"msgtype": "m.text", "body": f"* {formatted}", "m.new_content": new_content}
+        if _link_previews_disabled(self._link_preview_opt_out, chat_id):
+            # Clients render the replacement's previews, so the opt-out must ride in m.new_content too.
+            _apply_link_preview_opt_out(new_content)
+            _apply_link_preview_opt_out(msg_content)
         if "m.mentions" in new_content:
             msg_content["m.mentions"] = new_content["m.mentions"]
         if "formatted_body" in new_content:
@@ -3134,7 +3175,11 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                     data = await resp.json()
                     return {"success": True, "platform": "matrix", "chat_id": chat_id,
                             "message_id": data.get("event_id")}
+            opt_out = _parse_link_preview_opt_out(
+                _extra_or_secret(extra, "disable_link_previews", "MATRIX_DISABLE_LINK_PREVIEWS", None))
             for payload in _standalone_payloads(message):
+                if _link_previews_disabled(opt_out, chat_id):
+                    _apply_link_preview_opt_out(payload)
                 try:
                     result = await asyncio.wait_for(_do_send(payload), timeout=30)
                 except asyncio.TimeoutError:
@@ -3234,6 +3279,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),
     ("allowed_rooms", "MATRIX_ALLOWED_ROOMS", "csv"), ("ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "csv"),
     ("max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", "str"),
+    ("disable_link_previews", "MATRIX_DISABLE_LINK_PREVIEWS", "csv"),
 )
 
 

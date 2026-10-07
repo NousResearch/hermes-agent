@@ -331,6 +331,7 @@ class CLIChatTurnMixin:
             reset_current_session_key = None  # type: ignore[assignment]
             _approval_session_token = None
         agent_message = turn.voice_prefix + message if turn.voice_prefix else message
+        self.agent._voice_turn_pending = bool(turn.voice_prefix)  # auxiliary.voice_chat route
         # One-shot /model and /reload-skills notes; _prepend_note_to_message also handles
         # multimodal content-part lists (string concat raised TypeError with an image).
         for _note_attr in ("_pending_model_switch_note", "_pending_skills_reload_note"):

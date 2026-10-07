@@ -15,7 +15,10 @@ manual import list. A tool that is a whole package (`tools/connectors/`) registe
 is a library by construction, and the package needs an `__init__.py` or discovery skips it with a
 warning (setuptools would drop it from the wheel). The registry handles schema collection, dispatch (`handle_function_call()`),
 availability (`check_fn`, TTL-cached process-wide), and error wrapping. **All handlers return a JSON
-string.**
+string**, except a tool that hands the model pixels: it may return the multimodal envelope
+`{"_multimodal": True, "content": [text, image_url…], "text_summary": str}` (`registry._normalize_handler_result`
+accepts exactly that shape). Its image path goes through `vision_tools._native_tool_result_images` — never a
+private vision check.
 
 ## Adding a core tool (2 files) — only when the user is explicitly contributing a core tool
 

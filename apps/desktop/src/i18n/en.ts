@@ -1,6 +1,8 @@
 import { billingRiskEn as billingRiskCopy } from './billing-risk-copy'
 import { enSettings } from './en-settings'
 import { enAppTour, enHandoffTour } from './en_app_tour'
+import { enAuxTasks } from './en_aux_tasks'
+import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalogInstall } from './en_catalog_install'
 import { enModelMenu } from './en_model_menu'
@@ -512,14 +514,8 @@ export const en: Translations = {
 
   ...enNotices,
 
-  billingBlock: {
-    titleNous: 'Out of Nous credits',
-    titleProvider: provider => `Out of credits — ${provider}`,
-    fallbackMessage: 'Your account is out of credits. Add credits to keep going.',
-    openBilling: 'Open billing',
-    addCredits: 'Add credits',
-    dismiss: 'Dismiss'
-  },
+  ...enBilling,
+
   sendDiagnostics: {
     title: 'Send diagnostics to Nous',
     privacyNotice:
@@ -1767,6 +1763,9 @@ export const en: Translations = {
     next: 'Next:',
     overdueSince: 'Overdue since:',
     noRuns: 'No runs yet',
+    // Queued trigger feedback in Run History: the backend accepted the trigger
+    // but has not materialized the run session yet (#70826).
+    queuedRun: 'Queued run',
     manage: 'Manage',
     showRuns: 'Show runs',
     hideRuns: 'Hide runs',

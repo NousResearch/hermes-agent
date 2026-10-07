@@ -847,6 +847,9 @@ gateway:
     db_fts_corrupt: "⚠️ Thuairiscigh bunachar sonraí na seisiún earráid truaillithe atá teoranta don innéacs cuardaigh (FTS5); níl damáiste ar na táblaí teachtaireachtaí. Seans nach sábhálfar teachtaireachtaí go dtí go ndeiseofar é: rith `hermes {profile_arg}doctor --fix`, ansin atosaigh an gateway. Ná rith uirlisí athshlánaithe agus ná hathchóirigh cúltaca mura ndearbhaíonn `hermes {profile_arg}doctor` damáiste."
     db_then_restart: "{action} Ansin `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Níl bunachar sonraí na seisiún ar fáil — seans nach sábhálfar teachtaireachtaí agus beidh /resume folamh. Cúis: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ Níl stór cron {store} inscríofa ({error}) ó {since}. Táthar ag scipeáil jabanna sceidealaithe go dtí go nglacann sé le scríobh arís. Réiteach: {fix}."
+    recovered: "✅ Tá stór cron {store} inscríofa arís; {skipped} rith scipeáilte, gach jab ag teacht suas uair amháin."
   whoami:
     scope_dm: "DM"
     scope_group: "grúpa/cainéal"
@@ -3674,7 +3677,7 @@ tips:
   t197: "Gabhann sábháil trajectóirí (--save-trajectories) rianta iomlána úsáide uirlisí le haghaidh oiliúna samhlacha."
   t198: "Trí chineál breiseáin: ginearálta (uirlisí/crúcaí), soláthraithe cuimhne, agus innill chomhthéacs."
   t199: "Suiteálann hermes plugins install owner/repo breiseáin go díreach ó GitHub."
-  t200: "Soláthraithe cuimhne seachtracha: OpenViking cuachta; Honcho, Hindsight, Mem0 agus tuilleadh trí hermes plugins install."
+  t200: "Soláthraithe cuimhne seachtracha: Honcho, Hindsight, Mem0, OpenViking agus tuilleadh trí hermes plugins install."
   t201: "I measc crúcaí breiseán tá pre/post_tool_call, pre/post_llm_call, agus transform_terminal_output le haghaidh canónú aschuir."
   t202: "Laghdaíonn taisceadh leideanna (Anthropic) costais trí réimíreanna taiscthe leid an chórais a athúsáid."
   t203: "Gineann an gníomhaire teidil seisiún go huathoibríoch i snáithe cúlra — gan aon tionchar ar aga freagartha."

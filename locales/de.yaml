@@ -847,6 +847,9 @@ gateway:
     db_fts_corrupt: "⚠️ Die Sitzungsdatenbank hat einen Beschädigungsfehler gemeldet, der auf den Suchindex (FTS5) beschränkt ist; die Nachrichtentabellen sind nicht beschädigt. Nachrichten werden bis zur Reparatur möglicherweise nicht gespeichert: Führen Sie `hermes {profile_arg}doctor --fix` aus und starten Sie dann das Gateway neu. Verwenden Sie keine Wiederherstellungstools und stellen Sie kein Backup wieder her, sofern `hermes {profile_arg}doctor` keinen Schaden bestätigt."
     db_then_restart: "{action} Danach `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Sitzungsdatenbank nicht verfügbar — Nachrichten werden möglicherweise nicht gespeichert und /resume bleibt leer. Ursache: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ Cron-Speicher {store} ist seit {since} nicht beschreibbar ({error}). Geplante Jobs werden übersprungen, bis er wieder Schreibzugriffe annimmt. Lösung: {fix}."
+    recovered: "✅ Cron-Speicher {store} ist wieder beschreibbar; {skipped} übersprungene Ausführung(en), jeder Job wird einmal nachgeholt."
   whoami:
     scope_dm: "Direktnachricht"
     scope_group: "Gruppe/Kanal"
@@ -3674,7 +3677,7 @@ tips:
   t197: "Das Speichern von Trajektorien (--save-trajectories) erfasst vollständige Tool-Nutzungsprotokolle für das Modelltraining."
   t198: "Drei Plugin-Typen: allgemein (Tools/Hooks), Memory-Anbieter und Kontext-Engines."
   t199: "hermes plugins install owner/repo installiert Plugins direkt von GitHub."
-  t200: "Externe Memory-Anbieter: OpenViking ist mitgeliefert; Honcho, Hindsight, Mem0 und weitere über hermes plugins install."
+  t200: "Externe Memory-Anbieter: Honcho, Hindsight, Mem0, OpenViking und weitere über hermes plugins install."
   t201: "Plugin-Hooks umfassen pre/post_tool_call, pre/post_llm_call und transform_terminal_output zur Kanonisierung von Ausgaben."
   t202: "Prompt-Caching (Anthropic) senkt die Kosten, indem zwischengespeicherte Präfixe des System-Prompts wiederverwendet werden."
   t203: "Der Agent erzeugt Sitzungstitel automatisch in einem Hintergrund-Thread — ohne Auswirkung auf die Latenz."

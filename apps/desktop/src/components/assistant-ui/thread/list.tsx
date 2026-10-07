@@ -23,17 +23,19 @@ import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
 import {
+  COMPOSER_CLEARANCE_SLOT,
   getThreadScrollPosition,
   onScrollToBottomRequest,
   onThreadEditClose,
   onThreadEditOpen,
+  onThreadPageScrollRequest,
   planThreadScrollRestore,
   publishThreadAtBottom,
+  readThreadScrollResizeMetrics,
   resetPublishedThreadScroll,
   saveThreadScrollPosition,
   shouldReapplyFrozenThreadScrollOffset,
   THREAD_SCROLL_BOTTOM,
-  type ThreadScrollRestoreResizeMetrics,
   type ThreadScrollState,
   threadScrollStateFromMetrics,
   threadScrollStorageKey,
@@ -45,6 +47,7 @@ import { MessageRenderBoundary } from '../message-render-boundary'
 import { PendingApprovalStack } from '../tool/approval'
 
 import { responseMessageRole, ResponseMessages } from './response-group'
+import { holdSessionSwitching } from './session-switching'
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
 import { useMessagesBelow } from './use-messages-below'
 import { useStickyPromptClip } from './use-sticky-prompt-clip'
@@ -88,8 +91,8 @@ const RENDER_BUDGET = 600
 // over ALL of them — measured as the 4-zone collapse in the long-session
 // matrix (worst-second 8fps while 1-2 zones held 50+). Sharing the budget
 // keeps "screens of scrollback" constant instead of "turns per pane": a pane
-// a quarter the height gets a quarter the page, floored at a quarter budget
-// (MIN_VISIBLE_GROUPS still floors the turn count regardless of weight).
+// gets its proportional share of the page (MIN_VISIBLE_GROUPS still floors the
+// turn count regardless of weight).
 // Panes that already backfilled keep their mounted content when the count
 // changes — the share only caps where NEW backfills stop.
 const $mountedTranscriptPanes = atom(0)
@@ -118,9 +121,7 @@ const FIRST_PAINT_BUDGET = 20
 export const HIDDEN_TRANSCRIPT_RENDER_BUDGET = 40
 
 export const transcriptPaneBudget = (mountedPanes: number, hidden: boolean): number =>
-  hidden
-    ? HIDDEN_TRANSCRIPT_RENDER_BUDGET
-    : Math.max(Math.ceil(RENDER_BUDGET / Math.max(1, mountedPanes)), RENDER_BUDGET / 4)
+  hidden ? HIDDEN_TRANSCRIPT_RENDER_BUDGET : Math.ceil(RENDER_BUDGET / Math.max(1, mountedPanes))
 
 // "Show earlier" raises renderBudget ABOVE paneBudget (one pane page per click).
 // The render-phase cap must only snap a hot-hidden pane down to its retention
@@ -163,7 +164,37 @@ export const transcriptBackfillFrameCount = (
 // streamed content normally.
 const SCROLL_TARGET_EPSILON_PX = 0.5
 
+// True while the user holds a non-collapsed text selection inside the
+// transcript. use-stick-to-bottom only pauses for a selection while the mouse
+// button is still down — a selection that persists after mouse-up must also
+// pin the viewport, or streaming growth yanks it out from under the user
+// (#115464). A collapsed caret (or a selection outside the transcript, e.g.
+// in the composer) never pins.
+export function hasTranscriptTextSelection(scrollElement?: Element | null): boolean {
+  if (typeof document === 'undefined') {
+    return false
+  }
+
+  const selection = document.getSelection()
+
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return false
+  }
+
+  if (!scrollElement) {
+    return true
+  }
+
+  const { anchorNode, focusNode } = selection
+
+  return Boolean((anchorNode && scrollElement.contains(anchorNode)) || (focusNode && scrollElement.contains(focusNode)))
+}
+
 export const resolveThreadScrollTarget: GetTargetScrollTop = (targetScrollTop, { scrollElement }) => {
+  if (hasTranscriptTextSelection(scrollElement)) {
+    return scrollElement.scrollTop
+  }
+
   const currentScrollTop = scrollElement.scrollTop
   const remaining = targetScrollTop - currentScrollTop
 
@@ -236,6 +267,9 @@ interface ThreadMessageListProps {
   loadingIndicator?: ReactNode
   sessionId?: string | null
   sessionKey?: string | null
+  /** A routed session is still loading into this surface (the thread spinner
+   *  is up). Holds `data-session-switching` for that phase. */
+  sessionLoading?: boolean
   scrollProfile?: string
 }
 
@@ -435,7 +469,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   loadingIndicator,
   sessionId = null,
   scrollProfile,
-  sessionKey
+  sessionKey,
+  sessionLoading = false
 }) => {
   // TWO signatures, deliberately split. The STRUCTURAL one (ids/roles/count)
   // changes only when messages are added/removed/swapped — it keys the error
@@ -471,6 +506,20 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     targetScrollTop: resolveThreadScrollTarget
   })
 
+  // #115464: explicit snaps go through the same selection pin as the resize
+  // follow above — without this a snap still flips isAtBottom and kicks an
+  // animation while the user is selecting transcript text.
+  const scrollToBottomUnlessSelecting = useCallback(
+    (...args: Parameters<typeof scrollToBottom>) => {
+      if (hasTranscriptTextSelection(scrollRef.current)) {
+        return undefined
+      }
+
+      return scrollToBottom(...args)
+    },
+    [scrollRef, scrollToBottom]
+  )
+
   const { olderAvailable, expandWindow, isHistorical, returnToLatest } = useTranscriptWindow()
 
   useEffect(() => {
@@ -490,7 +539,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   // Cut the budget during RENDER, not in the post-commit layout effect. An
   // effect-time cut is too late: React would first build the whole tree with
-  // the full budget (up to 300 cost units of markdown + syntax highlighting),
+  // the full budget (up to 600 cost units of markdown + syntax highlighting),
   // commit it, and only then re-render at the small budget. The render-phase
   // state adjustment restarts this component immediately — before any child
   // renders — so the heavy commit never happens.
@@ -547,6 +596,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const windowCommitRef = useRef<string | null>(null)
   const jumpRestoreRef = useRef<(() => void) | null>(null)
   const isRunning = useAuiState(s => s.thread.isRunning)
+  // Read by the resize-pin callback so a turn boundary doesn't rebuild its
+  // scroll listener and ResizeObserver.
+  const isRunningRef = useRef(isRunning)
+  isRunningRef.current = isRunning
+  const clearanceRef = useRef<HTMLDivElement>(null)
   // Session the settle loop last armed for, so a re-arm within the same load
   // is distinguishable from a switch to a different transcript.
   const settleKeyRef = useRef(sessionKey)
@@ -695,15 +749,17 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(
     () =>
       onScrollToBottomRequest(() => {
-        if (isHistorical) {returnToLatest?.()}
+        if (isHistorical) {
+          returnToLatest?.()
+        }
 
         if (jumpRestoreRef.current) {
           jumpRestoreRef.current()
         } else {
-          void scrollToBottom()
+          void scrollToBottomUnlessSelecting()
         }
       }, scrollSessionId),
-    [scrollToBottom, scrollSessionId, isHistorical, returnToLatest]
+    [scrollToBottomUnlessSelecting, scrollSessionId, isHistorical, returnToLatest]
   )
 
   // Waking from display: hidden (HUD mode hides the main window; OS hide does
@@ -719,9 +775,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     () =>
       subscribeToThreadForeground(
         () => isAtBottom,
-        () => void scrollToBottom()
+        () => void scrollToBottomUnlessSelecting()
       ),
-    [isAtBottom, scrollToBottom]
+    [isAtBottom, scrollToBottomUnlessSelecting]
   )
 
   const endEditHold = useCallback(() => {
@@ -751,7 +807,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     const el = scrollRef.current
 
     if (el && shouldSnapOnRunStart(el.scrollHeight - el.scrollTop - el.clientHeight)) {
-      scrollToBottom()
+      scrollToBottomUnlessSelecting()
     }
   })
 
@@ -792,12 +848,49 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       return
     }
 
+    // use-stick-to-bottom follows a content resize on the next animation frame,
+    // so a busy streamed turn can grow the content before that callback runs:
+    // the viewport paints at the stale scrollTop, visibly drifting up before
+    // the re-pin (#118482). The RO leg closes that frame, synchronously before
+    // paint.
+    const resizeMetrics = () => readThreadScrollResizeMetrics(el, clearanceRef.current)
+
+    // ponytail: previous-metrics precision is load-bearing — the predicate must
+    // see the frame BEFORE the growth, so a scroll event (which also writes it)
+    // can't leave a stale gap that makes a mid-stream resize look like growth.
+    let previousResizeMetrics = resizeMetrics()
+
     const update = () => {
+      previousResizeMetrics = resizeMetrics()
+      liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+    }
+
+    const onResize = () => {
+      const nextResizeMetrics = resizeMetrics()
+
+      // Same transcript-only metric as the restore loop: a composer-only resize
+      // (every keystroke) grows the clearance spacer, not the rows, so it is
+      // distinguishable from streamed content. The pre-growth metrics hold the
+      // reader's position, so a reader who scrolled up is never yanked back
+      // (#108941); use-stick-to-bottom stays the single scroll owner otherwise.
+      // An open inline edit holds the viewport (beginEditHold), so its growing
+      // bubble is never followed.
+      if (
+        isRunningRef.current &&
+        !el.hasAttribute('data-editing') &&
+        shouldReapplyFrozenThreadScrollOffset(THREAD_SCROLL_BOTTOM, true, previousResizeMetrics, nextResizeMetrics) &&
+        threadScrollStateFromMetrics({ ...previousResizeMetrics, scrollTop: el.scrollTop }).kind === 'bottom' &&
+        !hasTranscriptTextSelection(el)
+      ) {
+        el.scrollTop = threadScrollTargetTop(THREAD_SCROLL_BOTTOM, nextResizeMetrics)
+      }
+
+      previousResizeMetrics = nextResizeMetrics
       liveScrollStateRef.current = threadScrollStateFromMetrics(el)
     }
 
     el.addEventListener('scroll', update, { passive: true })
-    const observer = new ResizeObserver(update)
+    const observer = new ResizeObserver(onResize)
     observer.observe(content)
 
     return () => {
@@ -942,6 +1035,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     applyRestoreRef.current()
     loadSettledRef.current = false
+    // The rows are in and about to be glued to their target: theme CSS may
+    // hide this phase (data-session-switching) so the jump never paints.
+    const releaseSwitching = holdSessionSwitching(el)
 
     // An anchor captured for the OUTGOING transcript must not be applied to
     // this one — a switch owns the position outright. The empty→non-empty
@@ -977,10 +1073,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // the old 90-frame ceiling was for slow async image loads. Cap at 15
       // frames to minimize the settle-loop racing markdown paint on every switch.
       if (stableFrames >= 2 || ++frame > 15) {
+        releaseSwitching()
+
         if (target.kind === 'bottom') {
           // Hand back to use-stick-to-bottom locked, so late async growth
           // (images, highlight) keeps following the bottom.
-          void scrollToBottom('instant')
+          void scrollToBottomUnlessSelecting('instant')
           loadSettledRef.current = true
         } else if (clamped) {
           // Content hasn't finished arriving (the backfill transition is still
@@ -1012,15 +1110,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // restored target through those resizes until input or a live run takes over.
     // Bottom needs the same protection: the library follows on the next frame,
     // but a switch in this frame would otherwise persist the temporary gap.
-    const restoreResizeMetrics = (): ThreadScrollRestoreResizeMetrics => {
-      const clearance = contentRef.current?.querySelector('[data-slot="aui_composer-clearance"]')
-
-      return {
-        clearanceHeight: clearance instanceof HTMLElement ? clearance.clientHeight : 0,
-        clientHeight: el.clientHeight,
-        scrollHeight: el.scrollHeight
-      }
-    }
+    const restoreResizeMetrics = () => readThreadScrollResizeMetrics(el, clearanceRef.current)
 
     let lastRestoreMetrics = restoreResizeMetrics()
 
@@ -1048,6 +1138,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       applyRestoreRef.current = null
       resizeObserver.disconnect()
       cancelAnimationFrame(rafId)
+      releaseSwitching()
 
       if (loadSettledRef.current) {
         return
@@ -1064,6 +1155,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     const onWheel = (event: WheelEvent) => {
       resizeObserver.disconnect()
+
+      // A wheel/trackpad scroll-up is explicit reading intent. Break the
+      // bottom-follow synchronously, before a same-frame content resize can
+      // ask use-stick-to-bottom to re-pin while its delayed scroll handler
+      // still considers the thread locked.
+      if (event.deltaY < 0) {
+        stopScroll()
+      }
 
       if (event.deltaY !== 0) {
         cancelRestore()
@@ -1101,7 +1200,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         resizeObserver.observe(contentRef.current)
       }
 
-      void scrollToBottom('instant')
+      void scrollToBottomUnlessSelecting('instant')
     }
 
     el.addEventListener('wheel', onWheel, { passive: true })
@@ -1119,9 +1218,29 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       el.removeEventListener('pointerdown', cancelRestore)
       el.removeEventListener('keydown', cancelRestore)
       cancelAnimationFrame(rafId)
+      releaseSwitching()
       record()
     }
-  }, [contentRef, hasGroups, paneVisible, scrollRef, scrollStorageKey, scrollToBottom, sessionKey, stopScroll])
+  }, [
+    contentRef,
+    hasGroups,
+    paneVisible,
+    scrollRef,
+    scrollStorageKey,
+    scrollToBottomUnlessSelecting,
+    sessionKey,
+    stopScroll
+  ])
+
+  // The load phase of a switch: the route names a session whose transcript
+  // has not arrived. The restore loop above takes over the marker when it does.
+  useLayoutEffect(() => {
+    if (!sessionLoading || !paneVisible) {
+      return
+    }
+
+    return holdSessionSwitching(scrollRef.current)
+  }, [paneVisible, scrollRef, sessionLoading])
 
   // A thread can mount with a run already active, without a runStart event.
   useEffect(() => {
@@ -1228,6 +1347,52 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       stopScroll()
     }
   })
+
+  // Page the focused transcript explicitly. Browser-default PageUp/PageDown
+  // targets whichever ancestor happens to own focus, which is unreliable in
+  // the nested desktop layout. Keep the movement here with the thread's sole
+  // scroll owner, and key the request so split/kept-alive threads stay put.
+  useEffect(
+    () =>
+      onThreadPageScrollRequest(direction => {
+        const el = scrollRef.current
+
+        if (!el) {
+          return
+        }
+
+        // A no-op PageDown at the bottom must not escape sticky follow: the
+        // browser will clamp the write and emit no scroll event to re-lock it.
+        if (direction > 0 && threadScrollStateFromMetrics(el).kind === 'bottom') {
+          return
+        }
+
+        cancelRestoreRef.current?.()
+        stopScroll()
+
+        // At the clamped top there will be no native scroll event to trigger
+        // the existing automatic "Show earlier" path. Treat PageUp there like
+        // an upward wheel notch before moving the viewport.
+        if (
+          direction < 0 &&
+          shouldAutoShowEarlier({
+            action: resolveShowEarlierAction(hiddenCount, olderAvailable),
+            isAtBottom,
+            loadSettled: loadSettledRef.current,
+            restorePending: restoreFromBottomRef.current != null,
+            scrollTop: el.scrollTop,
+            wheelDeltaY: direction
+          })
+        ) {
+          showEarlier()
+
+          return
+        }
+
+        el.scrollTop += direction * el.clientHeight
+      }, sessionKey ?? null),
+    [hiddenCount, isAtBottom, olderAvailable, scrollRef, sessionKey, showEarlier, stopScroll]
+  )
 
   // Scroll/wheel at the top edge pages older turns through the same showEarlier
   // path as the button. Wheel is required because browsers emit no `scroll`
@@ -1428,7 +1593,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
             <div
               aria-hidden="true"
               className="shrink-0"
-              data-slot="aui_composer-clearance"
+              data-slot={COMPOSER_CLEARANCE_SLOT}
+              ref={clearanceRef}
               style={{ height: 'var(--thread-last-message-clearance)' }}
             />
           )}

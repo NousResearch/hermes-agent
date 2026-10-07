@@ -3,9 +3,7 @@
 The identity is created in exactly one place, at boot (``hermes_cli.free_tier_bootstrap``), and only
 while ``HERMES_GUEST_ONBOARDING=1`` (see ``guest_enabled``). The bootstrap mints an anonymous Nous
 account (``POST /api/anonymous/create``); its ``anon_`` credential is later exchanged for short-lived
-JWTs (``POST /api/anonymous/token``). The result is persisted as the singleton ``providers.nous``; it
-becomes ``active_provider`` only when the bootstrap's inventory found nothing else usable, so an
-install with its own key keeps that key for inference and uses the identity for connectors only. In
+JWTs (``POST /api/anonymous/token``). The result is persisted as the singleton ``providers.nous``. In
 the resolver ladder (``resolve_provider``) an existing free-tier identity sits directly above the
 implicit AWS Bedrock chain (NS-829): any explicit provider (env key, ``model.provider``, OpenRouter
 pool, a logged-in ``active_provider``) beats it, and the ladder never creates one.
@@ -52,6 +50,11 @@ ANON_SECRET_ENV = "HERMES_ANON_API_SECRET"
 # tier did not exist. ``guest_enabled`` is the only reader. Not a user preference: never written to
 # config.yaml or .env, never shown in setup. Deleted at GA together with this comment.
 GUEST_ONBOARDING_ENV = "HERMES_GUEST_ONBOARDING"
+# Preview cohort for the free tier's connector set, sent once on account creation so the account
+# service can record it on the account. Exactly "true" or "false" is sent as that boolean; anything
+# else (unset included) omits the field and the service applies its default. Self-reported and
+# baked into desktop bundles in plain text: the service must treat it as a preference, never proof.
+PREVIEW_FULL_CONNECTORS_ENV = "HERMES_PREVIEW_FULL_CONNECTORS"
 GUEST_MINT_TIMEOUT_SECONDS = 5.0
 # Copy shared by every surface that names the free tier (R-USR-1): never guest / anonymous / account.
 FREE_TIER_LABEL = "Nous · free tier"
@@ -85,6 +88,8 @@ def _anon_err(message: str, code: str, *, retry_after: Optional[float] = None) -
 #   503 ``temporarily_disabled``  the ops breaker is tripped (transient, no hint)
 #   429 ``temporarily_unavailable`` + Retry-After   per-address / per-credential limits
 #   428 ``pow_required`` / ``pow_invalid`` / ``pow_replayed``   proof-of-work enforced (not implemented here)
+#   428 ``challenge_required`` + ``challenges[]``   a browser challenge first (``anon_challenge``)
+#   403 ``signin_required`` / ``access_denied``     this client is refused without an account
 #   404 ``unknown_token``         the credential was reaped or claimed (re-mint)
 #   403 ``account_locked``        the account is locked (dead; never re-mint from it)
 #   401                           an outstanding JWT whose account is gone (re-mint)
@@ -96,8 +101,11 @@ ANON_ACCOUNT_LOCKED = "anon_account_locked"    # dead, and no replacement is min
 ANON_CREDENTIAL_DEAD = "anon_credential_dead"  # reaped or claimed: replaced silently, once
 ANON_UNREACHABLE = "anon_unreachable"          # timeout, DNS, refused connection
 ANON_SERVER_ERROR = "anon_server_error"        # 5xx, non-JSON, malformed success body
+ANON_CHALLENGE_REQUIRED = "anon_challenge_required"  # a browser check is still pending (``anon_challenge``)
+ANON_SIGNIN_REQUIRED = "anon_signin_required"  # refused without an account, or a 428 this version can't run
 # Codes a later attempt cannot fix (for this process / this version).
-ANON_TERMINAL_CODES = frozenset({ANON_GATE_CLOSED, ANON_POW_REQUIRED, ANON_ACCOUNT_LOCKED})
+ANON_TERMINAL_CODES = frozenset({
+    ANON_GATE_CLOSED, ANON_POW_REQUIRED, ANON_ACCOUNT_LOCKED, ANON_SIGNIN_REQUIRED})
 # Codes that mean the account service itself is not answering: a sign-in (which goes through the
 # same service) cannot help either, so surfaces offer "try again" / "another provider" only.
 ANON_UNREACHABLE_CODES = frozenset({ANON_UNREACHABLE, ANON_SERVER_ERROR})
@@ -112,6 +120,8 @@ ANON_FAILURE_COPY = {
                        "Signing in is free and skips the wait.",
     ANON_POW_REQUIRED: "The Nous server asked for a proof of work, but that isn't implemented in your "
                        "Agent yet. Sign in with a Nous account to continue.",
+    ANON_CHALLENGE_REQUIRED: "Finish the quick check in your browser, then try again.",
+    ANON_SIGNIN_REQUIRED: "Free guest access isn't available here. Sign in with a Nous account to continue.",
     ANON_ACCOUNT_LOCKED: f"This session can't continue without signing in. {_SIGNIN_IS_FREE}",
     ANON_CREDENTIAL_DEAD: "Your session ended. A new one starts on its own.",
     ANON_UNREACHABLE: "The Nous service couldn't be reached. Check your internet connection and try again.",
@@ -191,7 +201,7 @@ def has_guest() -> bool:
     return is_guest_state(current_nous_state())
 
 
-def guest_carries_inference() -> bool:
+def has_free_tier_account() -> bool:
     """True when the profile's Nous identity is the free tier and the free tier is on.
 
     Profile-level: use for status, picker and notice surfaces. Routing decisions (which model a
@@ -199,6 +209,11 @@ def guest_carries_inference() -> bool:
     credential-pool entry can pick a paid Nous key while the profile singleton is still a guest.
     """
     return guest_enabled() and has_guest()
+
+
+def free_tier_route() -> bool:
+    from hermes_cli.auth import resolve_provider
+    return has_free_tier_account() and resolve_provider("auto") == "nous"
 
 
 WELCOME_HOSTS = frozenset({"welcome-api.nousresearch.com"})
@@ -252,12 +267,18 @@ def route_is_welcome_host(base_url: Any) -> bool:
     return host in welcome_hosts()
 
 
+def on_free_model(agent: Any, base_url: Any) -> bool:
+    """The request went to the free tier's host on a free-tier credential."""
+    return route_is_welcome_host(base_url) and is_anonymous_agent(agent)
+
+
 def anon_secret() -> str:
     return (os.environ.get(ANON_SECRET_ENV) or "").strip()
 
 
 def _anon_headers() -> Dict[str, str]:
-    headers = {"content-type": "application/json"}
+    from hermes_cli.anon_challenge import user_agent
+    headers = {"content-type": "application/json", "user-agent": user_agent()}
     if secret := anon_secret():
         headers[ANON_SECRET_HEADER] = secret
     return headers
@@ -277,9 +298,13 @@ _NAS_REFUSALS: Dict[tuple, tuple] = {
     (429, None): (AuthError, ANON_RATE_LIMITED),
     (503, "temporarily_disabled"): (AuthError, ANON_GATE_PAUSED),
 }
+# An endpoint-specific verdict: builds the error from the refusal's JSON body.
+_Verdict = Callable[[Dict[str, Any]], AuthError]
 
 
-def _raise_for_anon_status(response: httpx.Response, *, action: str) -> Dict[str, Any]:
+def _raise_for_anon_status(
+    response: httpx.Response, *, action: str, overrides: Optional[Dict[tuple, _Verdict]] = None,
+) -> Dict[str, Any]:
     try:
         payload = response.json()
     except ValueError:
@@ -292,6 +317,11 @@ def _raise_for_anon_status(response: httpx.Response, *, action: str) -> Dict[str
         return payload
     if error.startswith("pow_"):
         error = "pow_"  # pow_required / pow_invalid / pow_replayed are one verdict
+    # An endpoint's own verdicts (same keys as ``_NAS_REFUSALS``) win over the table.
+    if overrides:
+        build = overrides.get((status, error)) or overrides.get((status, None))
+        if build:
+            raise build(payload)
     cls, code = (_NAS_REFUSALS.get((status, error)) or _NAS_REFUSALS.get((status, None))
                  or ((AuthError, ANON_POW_REQUIRED) if error == "pow_" else (AuthError, ANON_SERVER_ERROR)))
     if code == ANON_SERVER_ERROR:
@@ -301,9 +331,17 @@ def _raise_for_anon_status(response: httpx.Response, *, action: str) -> Dict[str
               retryable=code not in ANON_TERMINAL_CODES)
 
 
+def mint_request_body() -> Dict[str, Any]:
+    """The ``/api/anonymous/create`` body: ``{"preview_full_connectors": bool}`` when the env var is
+    exactly ``true`` / ``false``, else ``{}``."""
+    raw = (os.environ.get(PREVIEW_FULL_CONNECTORS_ENV) or "").strip()
+    return {"preview_full_connectors": raw == "true"} if raw in ("true", "false") else {}
+
+
 def mint_guest(client: httpx.Client, portal_base_url: str) -> Dict[str, Any]:
     """``POST /api/anonymous/create`` -> ``{user_id, org_id, token, idle_ttl_days}``. Token shown once."""
-    response = client.post(f"{portal_base_url.rstrip('/')}/api/anonymous/create", headers=_anon_headers(), json={})
+    response = client.post(
+        f"{portal_base_url.rstrip('/')}/api/anonymous/create", headers=_anon_headers(), json=mint_request_body())
     payload = _raise_for_anon_status(response, action="sign-up")
     token = payload.get("token")
     if not isinstance(token, str) or not token.startswith("anon_"):
@@ -312,17 +350,41 @@ def mint_guest(client: httpx.Client, portal_base_url: str) -> Dict[str, Any]:
     return payload
 
 
-def exchange_anon_jwt(client: httpx.Client, portal_base_url: str, anon_token: str) -> Dict[str, Any]:
+def exchange_anon_jwt(
+    client: httpx.Client, portal_base_url: str, anon_token: str, *, auth_state: Dict[str, Any],
+) -> Dict[str, Any]:
     """``POST /api/anonymous/token {token}`` -> ``{access_token, expires_in, inference_base_url, ...}``.
 
-    Raises :class:`AnonCredentialDead` on 404 ``unknown_token`` / 401 (reaped or claimed).
+    Raises :class:`AnonCredentialDead` on 404 ``unknown_token`` / 401 (reaped or claimed), and
+    :class:`~hermes_cli.anon_challenge.AnonChallengeRequired` (carrying what the status poll needs:
+    portal, credential, and the *auth_state* whose ``tls`` block the mint used) on a browser challenge.
     """
+    from hermes_cli import anon_challenge
     response = client.post(
-        f"{portal_base_url.rstrip('/')}/api/anonymous/token", headers=_anon_headers(), json={"token": anon_token})
-    payload = _raise_for_anon_status(response, action="token exchange")
+        f"{portal_base_url.rstrip('/')}/api/anonymous/token", headers=_anon_headers(),
+        json={"token": anon_token, "client": anon_challenge.client_info()})
+
+    def challenge(body: Dict[str, Any]) -> AuthError:
+        return anon_challenge.challenge_error(
+            body, portal_base_url=portal_base_url, anon_token=anon_token, auth_state=auth_state)
+
+    def signin(body: Dict[str, Any]) -> AuthError:
+        # Refused without an account, or a 428 this version has no primitive for: either way the
+        # honest way forward is a sign-in, in the service's own words when it sent some.
+        return anon_challenge.signin_required_error(body.get("message"))
+
+    def proof_of_work(_body: Dict[str, Any]) -> AuthError:
+        # The PoW verdict, kept out of the 428 sign-in catch-all below.
+        return _anon_err(ANON_FAILURE_COPY[ANON_POW_REQUIRED], ANON_POW_REQUIRED)
+
+    # The challenge gate sits on the token exchange only; every other endpoint keeps the table.
+    payload = _raise_for_anon_status(response, action="token exchange", overrides={
+        (428, "challenge_required"): challenge, (428, "pow_"): proof_of_work, (428, None): signin,
+        (403, "signin_required"): signin, (403, "access_denied"): signin})
     if not isinstance(payload.get("access_token"), str) or not payload["access_token"]:
         logger.info("Nous free tier token exchange returned no token")
         raise _anon_err(ANON_FAILURE_COPY[ANON_SERVER_ERROR], ANON_SERVER_ERROR)
+    anon_challenge.note_optional_challenges(payload, portal_base_url)
     return payload
 
 
@@ -370,16 +432,10 @@ def _shared_identity_key(state: Any) -> Optional[str]:
     return state.get("anon_token") if is_guest_state(state) else state.get("refresh_token")
 
 
-def _mint_locked(
-    client: httpx.Client, portal: str, auth_store: Dict[str, Any], *, carries_inference: bool = True,
-) -> Dict[str, Any]:
+def _mint_locked(client: httpx.Client, portal: str, auth_store: Dict[str, Any]) -> Dict[str, Any]:
     """Mint under the caller's locks. The identity is persisted as soon as ``create`` succeeds, BEFORE
     the exchange: a 429 or timeout on the exchange must not lose a credential NAS still honours (the
-    next attempt exchanges the stored one instead of minting again).
-
-    ``carries_inference`` decides whether the new identity also becomes ``active_provider``. The
-    bootstrap passes False when its inventory found another usable provider: the identity exists for
-    connectors, the user's own provider keeps carrying inference (NS-845 Q1.3)."""
+    next attempt exchanges the stored one instead of minting again)."""
     from hermes_cli.auth import _store_provider_state, _save_auth_store
     from hermes_cli.auth_nous import _write_shared_nous_state
     minted = mint_guest(client, portal)
@@ -390,7 +446,7 @@ def _mint_locked(
         "user_id": minted.get("user_id"), "org_id": minted.get("org_id"),
         "idle_ttl_days": minted.get("idle_ttl_days"),
     }
-    _store_provider_state(auth_store, "nous", state, set_active=carries_inference)
+    _store_provider_state(auth_store, "nous", state, set_active=False)
     _save_auth_store(auth_store)
     _write_shared_nous_state(state)
     logger.info("Nous free tier ready (identity minted)")
@@ -495,14 +551,12 @@ def _note_mint_failure(err: AuthError) -> MintFailure:
     return failure
 
 
-def _reconcile_and_provision(*, timeout_seconds: float, carries_inference: bool = True) -> Optional[Dict[str, Any]]:
+def _reconcile_and_provision(*, timeout_seconds: float) -> Optional[Dict[str, Any]]:
     """The lifecycle body, run under profile lock THEN shared lock (the documented order).
 
     1. The shared store is the identity of record for this Hermes root. If it holds an identity
        that differs from the profile's, the profile adopts it (a stale guest never outlives a
-       sibling profile's sign-in, and never overwrites it). An adopted free-tier identity claims
-       ``active_provider`` under the same rule as a mint; an adopted ACCOUNT always does (the user
-       signed in somewhere on this machine).
+       sibling profile's sign-in, and never overwrites it).
     2. Otherwise the profile's own identity stands.
     3. Nothing anywhere: mint, persisting the credential before exchanging it.
     """
@@ -519,9 +573,7 @@ def _reconcile_and_provision(*, timeout_seconds: float, carries_inference: bool 
             shared = _read_shared_nous_state()
             if shared and _shared_identity_key(shared) != _shared_identity_key(profile_state):
                 state = dict(shared)
-                _store_provider_state(
-                    auth_store, "nous", state,
-                    set_active=carries_inference or not is_guest_state(state))
+                _store_provider_state(auth_store, "nous", state, set_active=not is_guest_state(state))
                 _save_auth_store(auth_store)
                 logger.debug("Nous identity adopted from the shared store")
                 return state
@@ -531,12 +583,11 @@ def _reconcile_and_provision(*, timeout_seconds: float, carries_inference: bool 
                 return profile_state
             verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=None)
             with _nous_http_client(timeout_seconds, verify) as client:
-                return _mint_locked(client, portal, auth_store, carries_inference=carries_inference)
+                return _mint_locked(client, portal, auth_store)
 
 
 def ensure_portal_identity(
-    *, explicit: bool, timeout_seconds: float = GUEST_MINT_TIMEOUT_SECONDS,
-    carries_inference: bool = True, force: bool = False,
+    *, explicit: bool, timeout_seconds: float = GUEST_MINT_TIMEOUT_SECONDS, force: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Make sure this profile has a Nous identity (guest or account); mint a guest only if the shared
     store has none. Returns the ``providers.nous`` state, or None (disabled / failed once already).
@@ -548,9 +599,7 @@ def ensure_portal_identity(
     of reading status, resolving a provider or fetching a connector bearer (NS-845 Q1.2).
 
     Order: ``guest_enabled`` gate -> reconcile with the shared store -> mint. Locks are taken profile
-    first, then shared, matching every other Nous path. ``carries_inference=False`` leaves
-    ``active_provider`` alone (the identity is for connectors; another provider does inference).
-    Blocking, bounded by ``timeout_seconds``; the bootstrap puts it on its own thread.
+    first, then shared, matching every other Nous path. Blocking, bounded by ``timeout_seconds``; the bootstrap puts it on its own thread.
 
     A failed mint is memoised with a cooldown (``MintFailure``): until it passes, and for a
     terminal code forever, this returns None without touching the portal. ``force=True`` is the
@@ -566,8 +615,7 @@ def ensure_portal_identity(
     if failure and not force and not current_nous_state() and time.monotonic() < failure.not_before:
         return None  # in cooldown (or terminal) for this profile; do not hammer the portal
     try:
-        state = _reconcile_and_provision(
-            timeout_seconds=timeout_seconds, carries_inference=carries_inference)
+        state = _reconcile_and_provision(timeout_seconds=timeout_seconds)
     except Exception as exc:
         err = classify_mint_exception(exc)
         noted = _note_mint_failure(err)
@@ -592,7 +640,8 @@ def refresh_guest_state(state: Dict[str, Any], client: httpx.Client) -> None:
     if not isinstance(anon_token, str) or not anon_token:
         raise AnonCredentialDead(ANON_FAILURE_COPY[ANON_CREDENTIAL_DEAD], code=ANON_CREDENTIAL_DEAD)
     from hermes_cli.auth import _nous_portal_base_url
-    apply_exchange_to_state(state, exchange_anon_jwt(client, _nous_portal_base_url(state), anon_token))
+    apply_exchange_to_state(state, exchange_anon_jwt(
+        client, _nous_portal_base_url(state), anon_token, auth_state=state))
 
 
 def clear_dead_guest(reason: str, *, dead_token: Optional[str] = None) -> None:
@@ -646,6 +695,9 @@ _WELCOME_ROUTE_REFUSALS = (
     ("anonymous accounts must use", "anon_on_paid_host"),
     ("serves anonymous hermes agent accounts only", "named_on_welcome_host"),
     ("anonymous accounts are not accepted", "tier_disabled"),
+    # The gateway's answer to an expired or unreadable bearer: the credential, not the tier. A
+    # retry that waited out a long rate limit outlives the 15-minute free-tier JWT and lands here.
+    ("invalid jwt", "session_expired"),
 )
 _WELCOME_ROUTE_COPY = {
     # Only reachable when the route heal (``turn_recovery._recover_welcome_tier``) could not move
@@ -655,6 +707,9 @@ _WELCOME_ROUTE_COPY = {
     "named_on_welcome_host": "This Nous account needs to reconnect. {model_hint}",
     "tier_disabled": "Using Hermes without signing in is switched off right now. "
                      "Sign in to keep chatting, it's free. {signin}",
+    # Only reachable when re-exchanging the free credential failed (``turn_recovery._recover_welcome_tier``).
+    "session_expired": "Hermes couldn't renew its connection to the free model. "
+                       "Send your message again, or sign in to keep chatting, it's free. {signin}",
 }
 # The sign-in door, phrased for a chat surface (slash command) and for a terminal.
 _SIGNIN_CHAT = "To sign in: /login."
@@ -725,6 +780,7 @@ def welcome_route_refusal(status: Any, message: Any, base_url: Any = None) -> Op
     ``"anon_on_paid_host"``: a free-tier JWT reached the paid host. ``"named_on_welcome_host"``: an
     account or API key reached the free tier's host. ``"tier_disabled"``: the tier is dark
     (``WELCOME_MODE=off``). Each is deterministic for the request: retrying cannot help.
+    ``"session_expired"``: the 403 names the bearer (``invalid jwt``); a fresh credential heals it.
 
     The dark-tier 403 is keyed on the ROUTE, not the message: the gateway's permission error
     carries only its generic sentence (the detail stays in its logs), so any 403 answered by the
@@ -834,10 +890,12 @@ def guest_notice_pending() -> bool:
 
 
 def mark_guest_notice_shown() -> bool:
-    """Persist ``guest_notice_shown`` on the guest's ``providers.nous`` state (the active store).
+    """Persist ``guest_notice_shown`` on the guest's ``providers.nous`` state (whichever store holds it).
 
     Returns True when a flag was written; False when there is no guest to mark."""
-    from hermes_cli.auth import _provider_state_transaction, _save_auth_store, _store_section
+    from hermes_cli.auth import (
+        _auth_file_path, _load_auth_store, _provider_state_transaction, _same_path, _save_auth_store,
+        _store_section)
     with _provider_state_transaction("nous") as (auth_store, state, source_path):
         if not is_guest_state(state) or source_path is None:
             return False
@@ -845,8 +903,13 @@ def mark_guest_notice_shown() -> bool:
             return True
         state = dict(state)
         state[GUEST_NOTICE_FLAG] = True
-        _store_section(auth_store, "providers")["nous"] = state
-        _save_auth_store(auth_store)
+        if _same_path(source_path, _auth_file_path()):
+            _store_section(auth_store, "providers")["nous"] = state
+            _save_auth_store(auth_store)
+        else:
+            source_store = _load_auth_store(source_path)
+            _store_section(source_store, "providers")["nous"] = state
+            _save_auth_store(source_store, target_path=source_path)
     return True
 
 

@@ -36,7 +36,11 @@ def test_cli_owner_deferral_and_attempt_fence(tmp_path, monkeypatch, error):
         assert queue.read_pending(key)["status"] == expected
         queue.drain()
         delivery._deliver_to_bot_chat(job, "output", "")
-        assert run.call_count == 1
+        # The failed turn is never retried; a timeout additionally drains ONE short
+        # degraded-delivery marker (its own turn), and its timeout queues nothing more.
+        assert run.call_count == (2 if error else 1)
+        markers = [r for _, r in queue._records(queue._root()) if r.get("degraded")]
+        assert len(markers) == (1 if error else 0)
     finally:
         lease.release()
         db.close()

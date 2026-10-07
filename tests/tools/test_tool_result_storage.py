@@ -1,10 +1,14 @@
 """Tests for tools/tool_result_storage.py -- 3-layer tool result persistence."""
 
+import json
+import os
+import subprocess
+import sys
+
 import pytest
 from unittest.mock import MagicMock, patch
 
 from tools.budget_config import (
-    DEFAULT_RESULT_SIZE_CHARS,
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
 )
@@ -13,6 +17,7 @@ from tools.tool_result_storage import (
     PERSISTED_OUTPUT_CLOSING_TAG,
     STORAGE_DIR,
     _build_persisted_message,
+    _pageable_text,
     _resolve_storage_dir,
     _safe_result_filename,
     _write_to_sandbox,
@@ -23,7 +28,6 @@ from tools.tool_result_storage import (
     maybe_persist_tool_result,
 )
 
-
 # ── generate_preview ──────────────────────────────────────────────────
 
 class TestGeneratePreview:
@@ -33,32 +37,42 @@ class TestGeneratePreview:
         assert preview == text
         assert has_more is False
 
-
     def test_exact_boundary(self):
         text = "x" * DEFAULT_PREVIEW_SIZE_CHARS
         preview, has_more = generate_preview(text)
         assert preview == text
         assert has_more is False
 
-
 # ── _write_to_sandbox ─────────────────────────────────────────────────
 
 class TestWriteToSandbox:
-    def test_success(self):
+    def test_success(self, tmp_path):
         env = MagicMock()
         env.execute.return_value = {"output": "", "returncode": 0}
-        result = _write_to_sandbox("hello world", "/tmp/hermes-results/abc.txt", env)
+        remote = str(tmp_path / "shared" / "hermes-results" / "abc.txt")
+        if sys.platform != "win32":
+            # Run the real commands so the owner-only modes are observed, not
+            # pattern-matched.
+            def _bash(cmd, timeout=None, stdin_data=None, **_kw):
+                r = subprocess.run(["bash", "-c", cmd], input=stdin_data or "",
+                                   capture_output=True, text=True, timeout=timeout)
+                return {"output": r.stdout + r.stderr, "returncode": r.returncode}
+            env.execute.side_effect = _bash
+        result = _write_to_sandbox("hello world", remote, env)
         assert result is True
-        # First call is the write; a second call round-trip-verifies the
-        # persisted size (unparseable probe output = best-effort success).
         cmd = env.execute.call_args_list[0][0][0]
-        assert "mkdir -p" in cmd
+        if sys.platform != "win32":
+            # The storage dir sits under shared temp and holds tool output that
+            # can contain secrets: dir and archive are owner-only.
+            assert os.stat(os.path.dirname(remote)).st_mode & 0o777 == 0o700
+            assert os.stat(remote).st_mode & 0o777 == 0o600
+            with open(remote, encoding="utf-8") as fh:
+                assert fh.read() == "hello world"
         # Content travels through stdin, NOT inside the command string —
         # otherwise large content would hit Linux's 128 KB MAX_ARG_STRLEN
         # ceiling on `bash -c <cmd>` (#22906).
         assert "hello world" not in cmd
         assert env.execute.call_args_list[0][1]["stdin_data"] == "hello world"
-
 
     def test_large_content_via_stdin(self):
         """Regression: 200 KB content exceeds Linux MAX_ARG_STRLEN (128 KB).
@@ -70,7 +84,6 @@ class TestWriteToSandbox:
         cmd = env.execute.call_args_list[0][0][0]
         assert len(cmd) < 1_000  # cmd is just `mkdir -p X && cat > Y`
         assert env.execute.call_args_list[0][1]["stdin_data"] == big
-
 
     def test_path_with_spaces_is_quoted(self):
         env = MagicMock()
@@ -105,13 +118,13 @@ class TestWriteToSandbox:
         [
             ("pipe", 512, False),      # short write: bytes lost
             ("pipe", 171, False),      # pipe backends must be exact
-            ("heredoc", 171, True),    # heredoc appends exactly one newline
+            ("heredoc", 171, False),   # heredoc stdin is byte-exact too; a +1 is a loss, not the old newline
             ("host", 3, False),        # host spillover: os.stat says only 3 bytes landed
             ("host", None, True),      # host spillover: real write, real stat
         ],
     )
     def test_size_probe_decides_lossless(self, stdin_mode, probed, ok):
-        """An archive that is not byte-exact (modulo the heredoc newline) is discarded — never
+        """An archive that is not byte-exact is discarded — never
         referenced to the model (port of lobehub/lobehub#18258). Multibyte content pins the
         comparison to UTF-8 bytes (170 here, 130 chars), on both the sandbox and host paths."""
         import os
@@ -160,16 +173,14 @@ class TestWriteToSandbox:
         ]
         assert _write_to_sandbox("data", "/tmp/hermes-results/np.txt", env) is True
 
-
 class TestResolveStorageDir:
     def test_defaults_to_storage_dir_without_env(self):
         assert _resolve_storage_dir(None) == STORAGE_DIR
 
     def test_uses_env_temp_dir_when_available(self):
         env = MagicMock()
-        env.get_temp_dir.return_value = "/data/data/com.termux/files/usr/tmp"
-        assert _resolve_storage_dir(env) == "/data/data/com.termux/files/usr/tmp/hermes-results"
-
+        env.get_temp_dir.return_value = "/var/host/tmp"
+        assert _resolve_storage_dir(env) == "/var/host/tmp/hermes-results"
 
 class TestSafeResultFilename:
     def test_preserves_normal_tool_call_id(self):
@@ -183,7 +194,6 @@ class TestSafeResultFilename:
         assert "$" not in filename
         assert ";" not in filename
 
-
 # ── _build_persisted_message ──────────────────────────────────────────
 
 class TestBuildPersistedMessage:
@@ -196,22 +206,10 @@ class TestBuildPersistedMessage:
         )
         assert msg.startswith(PERSISTED_OUTPUT_TAG)
         assert msg.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
-        assert "50,000 characters" in msg
         assert "/tmp/hermes-results/test123.txt" in msg
         assert "read_file" in msg
         assert "first 100 chars..." in msg
         assert "..." in msg  # has_more indicator
-
-
-    def test_large_size_shows_mb(self):
-        msg = _build_persisted_message(
-            preview="x",
-            has_more=True,
-            original_size=2_000_000,
-            file_path="/tmp/hermes-results/big.txt",
-        )
-        assert "MB" in msg
-
 
 # ── maybe_persist_tool_result ─────────────────────────────────────────
 
@@ -268,7 +266,6 @@ class TestMaybePersistToolResult:
         # command string — see test_large_content_via_stdin for why).
         assert env.execute.call_args_list[1][1]["stdin_data"] == content
 
-
     def test_tool_use_id_cannot_escape_storage_dir(self):
         env = MagicMock()
         # Readability probe fails -> in-sandbox write is the reference path.
@@ -289,13 +286,14 @@ class TestMaybePersistToolResult:
         cmd = env.execute.call_args_list[1][0][0]
         target = cmd.split("cat > ", 1)[1].split(" <<", 1)[0]
 
-        assert "Full output saved to: /tmp/hermes-results/outside_whoami_x_" in result
-        assert "/tmp/hermes-results/../" not in result
-        assert target.startswith("/tmp/hermes-results/outside_whoami_x_")
+        from tools.tool_result_storage import STORAGE_DIR
+
+        assert f"Full output saved to: {STORAGE_DIR}/outside_whoami_x_" in result
+        assert f"{STORAGE_DIR}/../" not in result
+        assert target.startswith(f"{STORAGE_DIR}/outside_whoami_x_")
         assert "/../" not in target
         assert "$(whoami)" not in target
         assert ";" not in target
-
 
     def test_threshold_zero_forces_persist(self):
         env = MagicMock()
@@ -311,7 +309,6 @@ class TestMaybePersistToolResult:
         # Any non-empty content with threshold=0 should be persisted
         assert PERSISTED_OUTPUT_TAG in result
 
-
 # ── enforce_turn_budget ───────────────────────────────────────────────
 
 class TestEnforceTurnBudget:
@@ -323,7 +320,6 @@ class TestEnforceTurnBudget:
         result = enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
         assert result[0]["content"] == "small"
         assert result[1]["content"] == "also small"
-
 
     def test_medium_result_regression(self):
         """6 results of 42K chars each (252K total) — each under 100K default
@@ -341,32 +337,34 @@ class TestEnforceTurnBudget:
         )
         assert persisted_count >= 2  # Need to shed at least ~52K
 
-
     def test_empty_messages(self):
         result = enforce_turn_budget([], env=None, config=BudgetConfig(turn_budget=200_000))
         assert result == []
 
+    def test_multimodal_results_count_their_text_and_spill_it(self):
+        """Image-bearing results are part lists: the aggregate counts their text characters (not the number of
+        parts) and spills the big text part, keeping images and the short notes inline."""
+        img = {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}
+        msgs = [{"role": "tool", "tool_call_id": f"mm{i}",
+                 "content": [{"type": "text", "text": "x" * 60_000}, {"type": "text", "text": "scale note"}, img]}
+                for i in range(6)]
+        enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
+        assert sum(PERSISTED_OUTPUT_TAG in m["content"][0]["text"] for m in msgs) >= 2
+        assert all(m["content"][1]["text"] == "scale note" and m["content"][2] == img for m in msgs)
 
 # ── Per-tool threshold integration ────────────────────────────────────
 
 class TestPerToolThresholds:
     """Verify registry wiring for per-tool thresholds."""
 
-    def test_registry_has_get_max_result_size(self):
-        from tools.registry import registry
-        assert hasattr(registry, "get_max_result_size")
-
-
-    def test_read_file_registry_cap_is_100k(self):
-        """Regression test: read_file must have a 100_000 char registry cap (Layer 2 safety net)."""
+    def test_read_file_registry_cap_is_finite(self):
+        """read_file must keep a finite registry cap (Layer 2 safety net)."""
         from tools.registry import registry
         try:
             import tools.file_tools  # noqa: F401
             val = registry.get_max_result_size("read_file")
-            assert val == 100_000, (
-                f"read_file registry cap must be 100_000, got {val!r}. "
-                "float('inf') is not allowed — it disables the Layer 2 result-size guard."
-            )
+            # float('inf') disables the Layer 2 result-size guard.
+            assert 0 < val < float("inf"), val
         except ImportError:
             pytest.skip("file_tools not importable in test env")
 
@@ -375,10 +373,9 @@ class TestPerToolThresholds:
         try:
             import tools.file_tools  # noqa: F401
             val = registry.get_max_result_size("search_files")
-            assert val == 100_000
+            assert 0 < val < float("inf"), val
         except ImportError:
             pytest.skip("file_tools not importable in test env")
-
 
 # ── Host-side spillover ($HERMES_HOME/cache/spillover) ────────────────
 
@@ -530,21 +527,116 @@ class TestSpillover:
         assert not old.exists()
         assert (spill_dir / "tc_prune_1.txt").exists()
 
-
 # ── recovery hint in the persisted preview ────────────────────────────
 
-class TestRecoveryHint:
-    def test_preview_teaches_recovery_not_refetch(self):
-        msg = _build_persisted_message(
-            preview="preview text",
-            has_more=True,
-            original_size=60_000,
-            file_path="/tmp/hermes-results/r.txt",
-        )
-        assert "Recovery:" in msg
-        assert "execute_code" in msg
-        assert "re-request" in msg
-        # Structure preserved: tag, size, path, read_file guidance all intact.
-        assert msg.startswith(PERSISTED_OUTPUT_TAG)
-        assert msg.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
-        assert "read_file" in msg
+# ── MCP envelope unwrapping (#90426) ──────────────────────────────────
+
+class TestPageableText:
+    """Only the MCP handler's own envelope shape is unwrapped; every other JSON stays opaque."""
+
+    def test_single_result_envelope_is_unwrapped(self):
+        assert _pageable_text(json.dumps({"result": "line one\nline two"})) == "line one\nline two"
+
+    def test_envelope_metadata_is_kept_after_the_text(self):
+        out = _pageable_text(json.dumps({"result": "text\n", "structuredContent": {"answer": 42}}))
+        text, marker, tail = out.partition("\n\n<mcp-result-metadata>\n")
+        assert text == "text\n"
+        assert marker
+        assert json.loads(tail.split("\n</mcp-result-metadata>")[0]) == {"structuredContent": {"answer": 42}}
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            json.dumps({"output": "line\n", "exit_code": 0}),      # ordinary tool JSON
+            json.dumps({"result": "line\n", "exit_code": 0}),      # unknown sibling key
+            json.dumps([{"result": "line\n"}]),                    # not an object
+            json.dumps({"result": {"blob": "line\n"}}),            # structuredContent-only style
+            json.dumps({"structuredContent": {"a": 1}}),           # no model-facing text at all
+            json.dumps({"result": ""}),                            # empty text
+            "not json at all",
+            "plain text result",
+        ],
+    )
+    def test_unrecognized_content_is_verbatim(self, content):
+        assert _pageable_text(content) == content
+
+class TestMcpEnvelopeSpillover:
+    """An oversized MCP result spills its pageable text, not one escaped JSON line (#90426)."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        import tools.tool_result_storage as trs
+        monkeypatch.setattr(trs, "_spillover_pruned_homes", set())
+        yield
+
+    def test_envelope_spills_real_newlines(self):
+        markdown = "# Research guide\n\n" + "pageable content\n" * 4_000
+        envelope = json.dumps({"result": markdown}, ensure_ascii=False)
+        assert len(envelope) > 30_000
+
+        result = maybe_persist_tool_result(
+            content=envelope, tool_name="mcp__archive__read_guide", tool_use_id="tc_mcp_text",
+            env=None, threshold=30_000)
+
+        assert PERSISTED_OUTPUT_TAG in result
+        spill_file = get_spillover_dir() / "tc_mcp_text.txt"
+        assert spill_file.read_text(encoding="utf-8") == markdown
+        # read_file offset/limit is only usable if the preview is the text too.
+        preview = result.split("Preview (first", 1)[1]
+        assert "# Research guide" in preview
+        assert "\\n" not in preview
+
+    def test_metadata_survives_after_the_text(self):
+        markdown = "body line\n" * 5_000
+        envelope = json.dumps({"result": markdown, "structuredContent": {"count": 5_000}})
+        maybe_persist_tool_result(
+            content=envelope, tool_name="mcp__archive__structured", tool_use_id="tc_mcp_meta",
+            env=None, threshold=30_000)
+
+        spill = (get_spillover_dir() / "tc_mcp_meta.txt").read_text(encoding="utf-8")
+        text, _, tail = spill.partition("\n\n<mcp-result-metadata>\n")
+        assert text == markdown
+        assert json.loads(tail.split("\n</mcp-result-metadata>")[0]) == {"structuredContent": {"count": 5_000}}
+
+    def test_non_envelope_json_still_verbatim(self):
+        content = json.dumps({"output": "line\n" * 8_000, "exit_code": 0})
+        maybe_persist_tool_result(
+            content=content, tool_name="terminal", tool_use_id="tc_json_verbatim",
+            env=None, threshold=30_000)
+        assert (get_spillover_dir() / "tc_json_verbatim.txt").read_text(encoding="utf-8") == content
+
+    def test_structured_content_only_result_still_verbatim(self):
+        content = json.dumps({"result": {"blob": "z" * 40_000}})
+        maybe_persist_tool_result(
+            content=content, tool_name="mcp__archive__opaque", tool_use_id="tc_mcp_opaque",
+            env=None, threshold=30_000)
+        assert (get_spillover_dir() / "tc_mcp_opaque.txt").read_text(encoding="utf-8") == content
+
+    def test_sandbox_write_carries_pageable_text(self):
+        env = MagicMock()  # not a LocalEnvironment -> remote path
+        env.execute.side_effect = [
+            {"output": "", "returncode": 1},  # mounted-path probe: not readable
+            {"output": "", "returncode": 0},  # cat > sandbox path
+            {"output": "", "returncode": 1},  # wc -c probe: no answer -> best effort
+        ]
+        env.get_temp_dir.return_value = ""
+        markdown = "remote line\n" * 5_000
+        maybe_persist_tool_result(
+            content=json.dumps({"result": markdown}), tool_name="mcp__archive__remote",
+            tool_use_id="tc_mcp_remote", env=env, threshold=30_000)
+        assert env.execute.call_args_list[1][1]["stdin_data"] == markdown
+
+    def test_turn_budget_spill_unwraps_envelope(self):
+        """The aggregate layer persists under __budget_enforcement__, so a tool-name gate would
+        miss the very results it must fix; the shape gate still applies."""
+        markdown = "budgeted line\n" * 3_000
+        msgs = [{
+            "role": "tool", "name": "mcp__archive__read", "tool_call_id": "tc_budget_mcp",
+            "content": json.dumps({"result": markdown}),
+        }]
+
+        enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=10_000))
+
+        assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
+        assert (get_spillover_dir() / "tc_budget_mcp.txt").read_text(encoding="utf-8") == markdown

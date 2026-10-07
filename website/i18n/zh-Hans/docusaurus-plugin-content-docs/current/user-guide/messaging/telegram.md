@@ -1238,4 +1238,4 @@ HERMES_TELEGRAM_NOTIFICATIONS=all
 
 切勿公开分享你的机器人 token。如果泄露，请立即通过 BotFather 的 `/revoke` 命令撤销。
 
-更多详情，请参阅[安全文档](/user-guide/security)。你也可以使用 [DM 配对](/user-guide/messaging#dm-pairing-alternative-to-allowlists) 进行更动态的用户授权方式。
+更多详情，请参阅[安全文档](../security.md)。你也可以使用 [DM 配对](./index.md#dm-pairing-alternative-to-allowlists) 进行更动态的用户授权方式。

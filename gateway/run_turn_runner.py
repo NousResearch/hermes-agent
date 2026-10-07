@@ -19,11 +19,13 @@ from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import canonicalize_replay_history
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base_exec_approval import ea_default_reason_text
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -59,7 +61,8 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
 
 # Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
 # Slack click handler shows on a dead entry).
-_CLARIFY_EXPIRED_NOTICE = "⏳ This prompt expired — please send a new request."
+def _clarify_expired_notice() -> str:
+    return t("gateway.clarify.expired")
 
 
 class _ExecApprovalDeclined(RuntimeError):
@@ -146,7 +149,7 @@ class TurnRunner:
         if event_type == "_thinking" or tool_name == "_thinking":
             thinking_text = (preview if tool_name == "_thinking" else tool_name) if ctx._thinking_enabled else None
             if thinking_text:
-                ctx.progress_queue.put(f"💬 {thinking_text}")
+                ctx.progress_queue.put(t("gateway.progress.thinking_prefix", text=thinking_text))
             return
         # Native task cards consume the ID-bearing tool_start/tool_complete callbacks instead;
         # name-correlated text events would duplicate cards and mispair concurrent same-tool calls.
@@ -161,7 +164,7 @@ class TurnRunner:
             or event_type != "tool.started"
             # The adapter's send_clarify IS the user-facing rendering (interactive buttons or the
             # numbered-text fallback), so a progress bubble is pure duplication — and in verbose mode it
-            # dumps the raw tool-call args JSON ({"question": ..., "choices": [...]}) into the chat. Because
+            # dumps the raw tool-call args JSON into the chat. Because
             # the progress queue drains on a background task, that raw JSON typically lands right underneath
             # the rendered prompt (#52374).
             or tool_name == "clarify"
@@ -248,7 +251,7 @@ class TurnRunner:
         ):
             return None, None
         cmd_full = args["command"].rstrip()
-        header = "" if self._ctx.last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
+        header = "" if self._ctx.last_was_terminal_block[0] else t("gateway.progress.tool_head", emoji=emoji, tool=tool_name) + "\n"
         cap = self._preview_cap()
         lines = cmd_full.splitlines()
         cmd_short = lines[0] if lines else cmd_full
@@ -264,7 +267,7 @@ class TurnRunner:
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚙️")
         try:
-            adapter = self._runner._adapter_for_source(ctx.source)
+            adapter = self._runner._delivery_adapter_for(ctx.source)
         except Exception:
             adapter = None
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
@@ -280,15 +283,16 @@ class TurnRunner:
                 # for full detail and platform message-length limits handle the rest.
                 if pl > 0 and len(args_str) > pl:
                     args_str = args_str[:pl - 3] + "..."
-                code = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+                code = t("gateway.progress.tool_verbose", emoji=emoji, tool=tool_name, keys=list(args.keys()), args=args_str)
             elif code is None:
-                code = f"{emoji} {tool_name}: \"{preview}\"" if preview else f"{emoji} {tool_name}..."
+                code = (t("gateway.progress.tool_preview", emoji=emoji, tool=tool_name, preview=preview) if preview
+                        else t("gateway.progress.tool_pending", emoji=emoji, tool=tool_name))
             ctx.progress_queue.put(code)
             return None
         if code is not None:
             return code
         if not preview:
-            return f"{emoji} {tool_name}..."
+            return t("gateway.progress.tool_pending", emoji=emoji, tool=tool_name)
         from agent.display import get_tool_verb, prepare_tool_preview, tool_verb_connector, verb_drops_preview
         prepared = prepare_tool_preview(tool_name, args, fallback=preview, max_len=self._preview_cap())
         preview = adapter.format_tool_preview(prepared) if adapter is not None else prepared.text
@@ -296,7 +300,7 @@ class TurnRunner:
         # by prefixing the verb onto the computed preview, so the command/url/query is kept.
         verb = get_tool_verb(tool_name)
         if not verb:
-            return f"{emoji} {tool_name}: \"{preview}\""
+            return t("gateway.progress.tool_preview", emoji=emoji, tool=tool_name, preview=preview)
         return f"{emoji} {verb}" if verb_drops_preview(tool_name) else f"{emoji} {verb}{tool_verb_connector(tool_name)}{preview}"
 
     def _progress_emit(self, msg: str) -> None:
@@ -346,9 +350,12 @@ class TurnRunner:
             return [self.tasks[task_id] for task_id in self.task_order[-8:]]
 
         def fallback_text(self) -> str:
-            labels = {"in_progress": "running", "complete": "complete", "error": "error"}
-            lines = [f"- {t['title']} - {labels.get(t['status'], t['status'])}" for t in self.visible_tasks()]
-            return "Hermes is working\n" + "\n".join(lines)
+            labels = {"in_progress": t("gateway.progress.task_status_running"),
+                      "complete": t("gateway.progress.task_status_complete"),
+                      "error": t("gateway.progress.task_status_error")}
+            lines = [t("gateway.progress.task_line", title=task["title"], status=labels.get(task["status"], task["status"]))
+                     for task in self.visible_tasks()]
+            return t("gateway.progress.task_card_title") + "\n" + "\n".join(lines)
 
         def _upsert(self, call_id: str, title: str) -> Dict[str, str]:
             if call_id not in self.tasks:
@@ -425,7 +432,7 @@ class TurnRunner:
                 return
         if not st.native_failed:
             result = await st.adapter.send_native_task_card_progress(
-                chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title="Hermes is working",
+                chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title=t("gateway.progress.task_card_title"),
                 reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata, fallback_text=st.fallback_text(),
             )
             if getattr(result, "success", False):
@@ -704,7 +711,7 @@ class TurnRunner:
 
     async def send_progress_messages(self):
         ctx = self._ctx
-        adapter = self._runner._adapter_for_source(ctx.source) if ctx.progress_queue else None
+        adapter = self._runner._delivery_adapter_for(ctx.source) if ctx.progress_queue else None
         if not adapter:
             return
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
@@ -862,8 +869,8 @@ class TurnRunner:
                 "Gateway auto-title failure suppressed (not user-visible): %s: %s", task, exc,
             )
             session_id = getattr(agent, "session_id", None)
-            source = ctx.source
             runner = self._runner
+            source = runner._recover_discord_auto_thread_source(ctx.source, ctx.session_key)
             # Both lanes spend a rate-limited platform call per title, so they use the model's title
             # only (TitleCallback); renaming twice burns Discord's 2-per-10-min budget on a throwaway.
             # Relay Discord predicate is shape-only: whether the connector auto-threaded our reply is
@@ -921,17 +928,24 @@ class TurnRunner:
             scfg = StreamingConfig()
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
-        want_stream_deltas = not ctx.scheduled_heartbeat and (
-            scfg.enabled and scfg.transport != "off" if plat_streaming is None else bool(plat_streaming)
-        )
+        want_stream_deltas = not ctx.scheduled_heartbeat and scfg.enabled_for(plat_streaming)
         want_interim_messages = bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
-                adapter = self._runner._adapter_for_source(ctx.source)
+                adapter = self._runner._delivery_adapter_for(ctx.source)
                 if adapter:
+                    supports_incremental_stream = (
+                        getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                        or bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False))
+                    )
+                    consumer_stream_deltas = want_stream_deltas and supports_incremental_stream
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
-                        ctx.source, scfg, adapter, on_missing_cursor="raise",
+                        ctx.source, scfg, adapter,
+                        # A complete commentary message needs no edit cursor.  Keeping it on the
+                        # consumer records what reached non-editable platforms, so an interim
+                        # callback carrying the final answer participates in final-send dedup.
+                        on_missing_cursor="fallback" if want_interim_messages else "raise",
                     )
                     stream_consumer = GatewayStreamConsumer(
                         adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
@@ -946,11 +960,16 @@ class TurnRunner:
                     # #105341: a consumer created only for interim commentary (text streaming off)
                     # is never fed the final reply's deltas — mark it so the duplicate-risk
                     # diagnostic in ``_run_agent_mark_streamed_delivery`` stays silent.
-                    stream_consumer.stream_deltas_enabled = want_stream_deltas
+                    stream_consumer.stream_deltas_enabled = consumer_stream_deltas
             except Exception as err:
                 logger.debug("Could not set up stream consumer: %s", err)
         # Deltas tee to the stream consumer (when text streaming is on) and to streaming TTS.
-        delta_sinks = [sc for sc in ((stream_consumer if want_stream_deltas else None), stts) if sc is not None]
+        delta_sinks = [
+            sc for sc in (
+                stream_consumer if stream_consumer and stream_consumer.stream_deltas_enabled else None,
+                stts,
+            ) if sc is not None
+        ]
         stream_delta_cb = None
         if delta_sinks:
             def stream_delta_cb(text: Optional[str]) -> None:
@@ -1005,8 +1024,10 @@ class TurnRunner:
                 peek_sid = entry[3]
         dead = False
         if peek_sid is not None and ctx.session_id is not None and peek_sid != ctx.session_id:
+            # The cache is keyed by session_key, so the snapshot's row lives in that key's profile
+            # store; its id is no longer in the routing index once the self-heal moved the key on.
             with suppress(Exception):
-                dead = self._runner.session_store._is_session_ended_in_db(peek_sid)
+                dead = self._runner.session_store._is_session_ended_in_db(peek_sid, session_key=ctx.session_key)
         return peek_sid, dead
 
     def _current_message_count(self):
@@ -1228,8 +1249,7 @@ class TurnRunner:
 
     def _wire_turn_agent_callbacks(self, agent, turn_route, reasoning_config,
                                    stream_delta_cb, interim_assistant_cb, want_interim_messages):
-        """Per-message state — callbacks and reasoning config change every turn, so they aren't
-        baked into the cached agent."""
+        """Per-message state (callbacks, reasoning, voice route) — never baked into the cached agent."""
         ctx = self._ctx
         runner = self._runner
         agent._notification_config = ctx.user_config
@@ -1251,6 +1271,7 @@ class TurnRunner:
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+        agent._voice_turn_pending = ctx.voice_turn  # auxiliary.voice_chat route
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
@@ -1324,46 +1345,35 @@ class TurnRunner:
             logger.warning("%s boundary timed out or failed: %s", reason, err)
             return False
 
-    def _clarify_callback_sync(self, question: str, choices, multi_select: bool = False,
-                               questions=None) -> str:
-        """Present a clarify prompt and block on a response (clarify_tool's synchronous contract):
-        schedule send_clarify on the gateway loop, block on the primitive's threading.Event with a
-        timeout. Returns the response string, or a sentinel when none arrived.
-
-        ``questions`` (clarify_tool's batch form) is answered here, one card per question, because
-        this surface knows whether an answer arrived: the loop that would otherwise call this
-        callback once per question can only recognize "no answer" from the returned sentinel text,
-        and treated that text as the question's answer.
-        """
-        if questions:
-            return self._clarify_batch_sync(questions)
-        response, _answered = self._ask_clarify_question(question, choices, multi_select)
-        return response
-
-    def _clarify_batch_sync(self, questions) -> str:
-        """Answer a batch: one card per question, stop at the first the user never answers.
-        Returns the JSON shape clarify_tool's batch path reads. The stream/typing re-arm waits for
-        the last question — between two cards it only opens a bubble the next boundary closes."""
+    def _clarify_callback_sync(self, questions) -> dict:
+        """Answer the clarify tool's questions (clarify_tool's synchronous contract): one card per
+        question, stop at the first the user never answers. The stream/typing re-arm waits for the
+        last question — between two cards it only opens a bubble the next boundary closes."""
+        from gateway.run_turn_runner_clarify_delivery import UNDELIVERED, UNDELIVERED_DECLINED, UNDELIVERED_NO_SURFACE
+        from tools.clarify_gateway import CANCELLED, SKIPPED
         answers: Dict[str, Any] = {}
-        payload: Dict[str, Any] = {"answers": answers, "timed_out": False}
+        reply: Dict[str, Any] = {"answers": answers, "outcome": "submitted"}
         last = len(questions) - 1
         for index, entry in enumerate(questions):
+            question = f"{entry['question']}\n{t('gateway.clarify.skip_hint')}"
             raw, answered = self._ask_clarify_question(
-                entry.get("question", ""), entry.get("choices"), bool(entry.get("multi_select")),
-                rearm=index == last)
+                question, entry["choices"], bool(entry["multi_select"]), rearm=index == last)
+            if raw == CANCELLED:
+                reply["outcome"] = "cancelled"
+                break
             if not answered:
                 # The surface's own no-answer text ("could not be delivered", "did not respond
                 # within Nm") rides along as ``notice``: blank answers alone read as user
                 # inactivity, which is the misreport #112684 describes for an undelivered card.
-                payload.update(timed_out=True, notice=raw)
+                undelivered = raw in (UNDELIVERED, UNDELIVERED_DECLINED, UNDELIVERED_NO_SURFACE)
+                reply.update(outcome="undelivered" if undelivered else "timed_out", notice=raw)
                 break
-            answers[entry.get("qid") or f"q{index}"] = raw
-        return json.dumps(payload, ensure_ascii=False)
+            answers[entry["qid"]] = None if raw == SKIPPED else raw
+        return reply
 
     def _ask_clarify_question(self, question, choices, multi_select, rearm: bool = True) -> tuple[str, bool]:
         """One card: register, send, wait, then retire it (no answer) or re-arm (answer).
-        Returns ``(response, answered)``; the caller decides what "no answer" means — a sentinel
-        for a single question, the batch's ``timed_out`` flag."""
+        Returns ``(response, answered)``; the caller decides what "no answer" means."""
         from gateway.run_turn_runner_clarify_delivery import (
             UNDELIVERED_NO_SURFACE, _clarify_send_then_wait, text_fallback_coro)
         from tools import clarify_gateway as clarify_mod
@@ -1391,7 +1401,7 @@ class TurnRunner:
         )
         # Unlike approval, clarify passes reopen=True so the continuation re-opens a native stream
         # below the question; if the re-seed fails the consumer degrades to send() automatically.
-        self._close_native_stream_boundary("Clarify", "💬 等待你的选择...", reopen=True)
+        self._close_native_stream_boundary("Clarify", t("gateway.clarify.native_stream_placeholder"), reopen=True)
         # Pause typing: a "thinking..." status must not obscure the prompt or block an "Other" reply
         # on platforms that disable input while typing (Slack Assistant).
         with suppress(Exception):
@@ -1424,7 +1434,7 @@ class TurnRunner:
             retire = getattr(type(ctx._status_adapter), "retire_clarify_card", None)
             if callable(retire):
                 self._schedule(
-                    retire(ctx._status_adapter, clarify_id, _CLARIFY_EXPIRED_NOTICE),
+                    retire(ctx._status_adapter, clarify_id, _clarify_expired_notice()),
                     "Clarify card retire failed to schedule")
         elif rearm:
             # Reopen typing IMMEDIATELY, not on the LLM's first post-answer token (native streaming
@@ -1454,10 +1464,9 @@ class TurnRunner:
         # in approve/deny.
         adapter.pause_typing_for_chat(ctx._status_chat_id)
         self._close_native_stream_boundary("Approval")
-        # Redact credentials before display: Tirith's findings are already redacted, but the raw
-        # command string still leaks secrets. Both the button and plain-text paths use this value.
+        # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
-        desc = approval_data.get("description", "dangerous command")
+        desc = approval_data.get("description") or ea_default_reason_text()
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
@@ -1526,7 +1535,8 @@ class TurnRunner:
         # in Slack threads and reserved by Matrix clients.
         msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
         try:
-            # Mark as approval prompt so WeCom routes through the control lane.
+            # Mark as approval prompt: WeCom routes it through the control lane and Telegram pushes it
+            # in "important" mode (#132516). Never ``notify`` — A2A reads that as the turn-final reply.
             metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
@@ -1597,7 +1607,7 @@ class TurnRunner:
     def _resume_note_interactive(self) -> bool:
         """Interactive platforms report the restore and ask what next; event platforms (webhook,
         API server) continue the work — nobody is present to answer."""
-        return bool(getattr(self._runner._adapter_for_source(self._ctx.source), "interactive_resume", True))
+        return bool(getattr(self._runner._delivery_adapter_for(self._ctx.source), "interactive_resume", True))
 
     def _prepare_turn_message(self, agent_history):
         """Prepend recovery/notice guidance to ``ctx.message``.
@@ -1689,6 +1699,8 @@ class TurnRunner:
                 # Sent on every transport: a provider gating durable writes needs the bot flag in a DM too.
                 kwargs["turn_author"] = {"id": ctx.source.user_id or None, "name": ctx.source.user_name or None,
                                          "is_bot": bool(getattr(ctx.source, "is_bot", False))}
+            if ctx.title_user_message is not None:
+                kwargs["title_user_message"] = ctx.title_user_message
             if persist_user_message_override is not None:
                 kwargs["persist_user_message"] = persist_user_message_override
             elif observed_group_context:
@@ -1897,6 +1909,10 @@ class TurnRunner:
             model, runtime_kwargs = runner._resolve_session_agent_runtime(
                 source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
             )
+            # Stashed by _resolve_session_agent_runtime when the primary's credentials failed and a
+            # fallback was resolved before any agent exists (#74349); one-shot per turn.
+            pending_fallback_notice = getattr(runner, "_pre_agent_fallback_notice", None)
+            runner._pre_agent_fallback_notice = None
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
@@ -1905,11 +1921,14 @@ class TurnRunner:
             # Model/credential resolution failed before the turn began; the raw text (URLs, status
             # codes) belongs in the log, and the chat gets the commands that fix it.
             logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
+            from hermes_cli.auth import is_rate_limited_auth_error
+            if is_rate_limited_auth_error(exc.__cause__):
+                # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
+                from gateway.run import _gateway_provider_error_reply
+                return {"final_response": _gateway_provider_error_reply(str(exc)),
+                        "messages": [], "api_calls": 0, "tools": []}
             return {
-                "final_response": (
-                    "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
-                    "Use /login to sign in again, or /model to pick a different model. If it keeps "
-                    "failing, run `hermes doctor` on the host."),
+                "final_response": t("gateway.errors.no_credentials"),
                 "messages": [], "api_calls": 0, "tools": [],
             }
         pr = runner._provider_routing
@@ -1921,6 +1940,9 @@ class TurnRunner:
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
+        if pending_fallback_notice:
+            # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
+            agent._pending_fallback_notice = pending_fallback_notice
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)
@@ -1962,7 +1984,7 @@ class TurnRunner:
             final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
             final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
             if not final_response:
-                final_response = f"⚠️ {result['error']}" if result.get("error") else ""
+                final_response = t("gateway.shared.warn_passthrough", error=result["error"]) if result.get("error") else ""
             # NOTE: deliberately omits agent_persisted/last_reasoning/response_* — the caller
             # defaults agent_persisted differently when the key is absent.
             return {"final_response": final_response, **common}

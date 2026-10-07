@@ -6,6 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from agent.compression_marker import elide
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 
 logger = logging.getLogger(__name__)
@@ -49,8 +50,14 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     from agent.delegation_context import delegated_child_subprocess_env
     try:
+        bash = "bash"
+        if IS_WINDOWS:
+            # CreateProcess searches System32 before PATH and may pick WSL's
+            # launcher. Reuse the terminal's native Git Bash resolution.
+            from tools.environments.local import _find_bash
+            bash = _find_bash()
         completed = subprocess.run(
-            ["bash", "-c", command],
+            [bash, "-c", command],
             cwd=str(cwd) if cwd else None,
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
@@ -71,9 +78,11 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
             return f"[inline-shell timeout after {timeout}s: {command}]"
         return f"[inline-shell error: {exc}]"
     output = (completed.stdout or "").rstrip("\n") or (completed.stderr or "").rstrip("\n")
-    if len(output) > _INLINE_SHELL_MAX_OUTPUT:
-        output = output[:_INLINE_SHELL_MAX_OUTPUT] + "...[truncated]"
-    return output
+    if completed.returncode != 0 and not output:
+        # rc!=0 with no output at all is indistinguishable from a legit empty result; it is the
+        # "interpreter never ran the command" signature (WSL stub without a distro) — say so.
+        return f"[inline-shell exit {completed.returncode} with no output: {command}]"
+    return elide(output, _INLINE_SHELL_MAX_OUTPUT)
 
 
 def expand_inline_shell(content: str, skill_dir: Path | None, timeout: int) -> str:
@@ -84,6 +93,39 @@ def expand_inline_shell(content: str, skill_dir: Path | None, timeout: int) -> s
         cmd = match.group(1).strip()
         return run_inline_shell(cmd, skill_dir, timeout) if cmd else ""
     return _INLINE_SHELL_RE.sub(_replace, content)
+
+
+def _is_community_hub_skill(skill_dir: Path | None) -> bool:
+    """Whether *skill_dir* is a hub-installed skill the scan gate classifies as community trust.
+
+    The hub's INSTALL_POLICY blocks a community install on a caution/dangerous verdict — but
+    ``--force`` (or a pre-scanner install) puts that skill on disk anyway, and the inline-shell
+    DSL scans as high severity, so auto-executing it on view would re-arm exactly what the
+    gate refused (#63307). Provenance is the hub lock entry (trusted/builtin entries expand;
+    anything without one — bundled-synced, user-created, project/external — keeps the flag's
+    contract). A lock read failure skips the gate, like every other provenance consumer.
+    """
+    if skill_dir is None:
+        return False
+    try:
+        from tools.skills_tool import _skills_dir
+        from tools.skills_hub import HubLockFile
+        installed = HubLockFile().load().get("installed") or {}
+        for entry in installed.values():
+            if not (isinstance(entry, dict) and entry.get("trust_level") == "community"):
+                continue
+            rel = str(entry.get("install_path") or "")
+            if not rel:
+                continue
+            try:
+                if skill_dir.resolve() == (_skills_dir() / rel).resolve():
+                    return True
+            except (OSError, ValueError):
+                continue
+        return False
+    except Exception:
+        logger.debug("Could not read hub lock for inline-shell trust scoping", exc_info=True)
+        return False
 
 
 def preprocess_skill_content(
@@ -98,6 +140,6 @@ def preprocess_skill_content(
     cfg = skills_cfg if isinstance(skills_cfg, dict) else load_skills_config()
     if cfg.get("template_vars", True):
         content = substitute_template_vars(content, skill_dir, session_id)
-    if cfg.get("inline_shell", False):
+    if cfg.get("inline_shell", False) and not _is_community_hub_skill(skill_dir):
         content = expand_inline_shell(content, skill_dir, int(cfg.get("inline_shell_timeout", 10) or 10))
     return content

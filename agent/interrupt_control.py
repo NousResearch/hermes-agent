@@ -32,6 +32,25 @@ def interrupt_issuer(agent) -> Optional[str]:
     return str(reason).strip().replace(" ", "_")
 
 
+def interrupt_skip_wording(agent) -> str:
+    """Reason a tool call was skipped/cancelled, in words safe for tool output.
+
+    Derived from the RECORDED reason rather than the call site, so a system-initiated
+    abort reads as one instead of asserting a user message that never existed (#130207)."""
+    reason = getattr(agent, "_tool_interrupt_reason", None)
+    if not reason:
+        return "Turn interrupted"
+    if reason in USER_INTERRUPT_REASONS:
+        return reason.capitalize()
+    return f"Turn aborted — {str(reason).replace('_', ' ')}"
+
+
+def interrupted_during_api_call_reason(agent) -> str:
+    """Turn exit reason for an API call cut short by an interrupt (``turn_explainers`` matches the prefix)."""
+    issuer = interrupt_issuer(agent)
+    return f"interrupted_during_api_call({issuer})" if issuer else "interrupted_during_api_call"
+
+
 def _fence_cancel_before_commit(fence, *, when_in_flight: bool, failure_log: str) -> None:
     """Call ``type(fence).cancel_before_commit(fence)`` when ``commit_in_flight`` matches.
 
@@ -126,10 +145,13 @@ class InterruptControlMixin:
                 self._turn_liveness_abort_claim = require_generation
 
         # Tool cancellation attribution stays separate from _interrupt_message, which may carry the user's
-        # full next message.
+        # full next message. An explicit ``tool_reason`` wins on BOTH paths: a system producer that has to
+        # stop the turn SOFTLY (batch guards, watchdogs) previously had no way to label itself — passing a
+        # message made it look like "the user sent a new message", so the abort was attributed to the user
+        # and rendered as a user-stop placeholder (#130207).
         tool_interrupt_reason = (
             (tool_reason or _REASON_HARD_STOP) if hard_cancel
-            else (_REASON_NEW_MESSAGE if message else _REASON_USER_INTERRUPT)
+            else (tool_reason or (_REASON_NEW_MESSAGE if message else _REASON_USER_INTERRUPT))
         )
 
         def _publish_interrupt_state() -> None:

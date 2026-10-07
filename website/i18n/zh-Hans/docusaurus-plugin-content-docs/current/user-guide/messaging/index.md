@@ -8,7 +8,7 @@ description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Emai
 
 通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Email、Home Assistant、Mattermost、Matrix、DingTalk、Feishu/Lark、WeCom、Weixin、BlueBubbles（iMessage）、QQ、Yuanbao、Microsoft Teams、LINE、ntfy 或浏览器与 Hermes 对话。网关是一个单一后台进程，连接所有已配置的平台，管理会话，运行 cron 任务，并传递语音消息。
 
-完整的语音功能集——包括 CLI 麦克风模式、消息中的语音回复以及 Discord 语音频道对话——请参阅 [Voice Mode](/user-guide/features/voice-mode) 和 [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes)。
+完整的语音功能集——包括 CLI 麦克风模式、消息中的语音回复以及 Discord 语音频道对话——请参阅 [Voice Mode](../features/voice-mode.md) 和 [Use Voice Mode with Hermes](../../guides/use-voice-mode-with-hermes.md)。
 
 ## 平台对比
 
@@ -22,7 +22,7 @@ description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Emai
 | Signal | — | ✅ | ✅ | — | — | ✅ | ✅ |
 | SMS | — | — | — | — | — | — | — |
 | Email | — | ✅ | ✅ | ✅ | — | — | — |
-| Home Assistant | — | — | — | — | — | — | — |
+| Home Assistant（插件） | — | — | — | — | — | — | — |
 | Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
@@ -261,7 +261,7 @@ gateway:
 
 #### 查看你的权限
 
-在任意平台使用 `/whoami` 查看当前范围、你的层级（管理员 / 普通用户 / 无限制）以及你可以运行的斜杠命令。平台特定示例请参阅 [Telegram](/user-guide/messaging/telegram#slash-command-access-control) 和 [Discord](/user-guide/messaging/discord#slash-command-access-control) 页面。
+在任意平台使用 `/whoami` 查看当前范围、你的层级（管理员 / 普通用户 / 无限制）以及你可以运行的斜杠命令。平台特定示例请参阅 [Telegram](./telegram.md#slash-command-access-control) 和 [Discord](./discord.md#slash-command-access-control) 页面。
 
 ## 中断 Agent
 
@@ -434,7 +434,7 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 | Signal | `hermes-signal` | 完整工具，包括终端 |
 | SMS | `hermes-sms` | 完整工具，包括终端 |
 | Email | `hermes-email` | 完整工具，包括终端 |
-| Home Assistant | `hermes-homeassistant` | 完整工具 + HA 设备控制（ha_list_entities、ha_get_state、ha_call_service、ha_list_services） |
+| Home Assistant（插件） | `hermes-homeassistant` | 完整工具 + HA 设备控制（ha_list_entities、ha_get_state、ha_call_service、ha_list_services），由插件目录中的 `homeassistant` 插件提供 |
 | Mattermost | `hermes-mattermost` | 完整工具，包括终端 |
 | Matrix | `hermes-matrix` | 完整工具，包括终端 |
 | DingTalk | `hermes-dingtalk` | 完整工具，包括终端 |
@@ -552,7 +552,7 @@ display:
 - [Signal 配置](signal.md)
 - [SMS 配置（Twilio）](sms.md)
 - [Email 配置](email.md)
-- [Home Assistant 集成](homeassistant.md)
+- [Home Assistant 集成](homeassistant.md)（插件目录）
 - [Mattermost 配置](mattermost.md)
 - [Matrix 配置](matrix.md)
 - [DingTalk 配置](dingtalk.md)

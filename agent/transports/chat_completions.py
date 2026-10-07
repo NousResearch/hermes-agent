@@ -9,8 +9,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 from agent.reasoning_effort import (
-    KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, TOKENHUB_EFFORTS, clamp_effort,
-    clamp_reasoning_config, kimi_supported_efforts, requested_effort,
+    KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort,
+    clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
 from agent.message_metadata import MESSAGE_UID
 from agent.message_sanitization import normalize_finish_reason as _normalize_finish_reason
@@ -502,7 +502,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 else clamp_effort(_e, _supported, KIMI_K3_OVERRIDES if is_k3 else None)
             )
         if params.get("is_tokenhub", False) and not thinking_off:
-            api_kwargs["reasoning_effort"] = "high" if _e is None else clamp_effort(_e, TOKENHUB_EFFORTS)
+            api_kwargs["reasoning_effort"] = tokenhub_effort(_e)
 
         extra_body: dict[str, Any] = {}
         is_openrouter = params.get("is_openrouter", False)

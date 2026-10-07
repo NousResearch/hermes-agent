@@ -11,7 +11,7 @@ fallback and the ``/model`` picker serves the curated list. The doctor probe sta
 
 from typing import Any
 
-from agent.reasoning_effort import TOKENHUB_EFFORTS, clamp_effort, requested_effort
+from agent.reasoning_effort import requested_effort, tokenhub_effort
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -31,8 +31,7 @@ class TokenHubProfile(ProviderProfile):
         # reach here with ``default_reasoning_config`` filled in.
         if not reasoning_config or not isinstance(reasoning_config, dict) or reasoning_config.get("enabled") is False:
             return {}, {}
-        effort = requested_effort(reasoning_config)
-        return {}, {"reasoning_effort": "high" if effort is None else clamp_effort(effort, TOKENHUB_EFFORTS)}
+        return {}, {"reasoning_effort": tokenhub_effort(requested_effort(reasoning_config))}
 
 
 register_provider(TokenHubProfile(

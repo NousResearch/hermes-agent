@@ -14,6 +14,7 @@ and disable local-server detection for Ollama, llama.cpp and vLLM.
 from typing import Any
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
+from agent.reasoning_effort import generic_nested_reasoning
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -29,11 +30,7 @@ class LMStudioProfile(ProviderProfile):
         ``lmstudio_reasoning_options`` is the agent's cached probe of them. Auxiliary calls have no
         probe (``None``) and keep the generic nested ``reasoning`` they always sent."""
         if lmstudio_reasoning_options is None:
-            if not reasoning_config or not isinstance(reasoning_config, dict):
-                return {}, {}
-            if reasoning_config.get("enabled") is False:
-                return {"reasoning": {"enabled": False}}, {}
-            return {"reasoning": {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}}, {}
+            return generic_nested_reasoning(reasoning_config), {}
         if not supports_reasoning:
             return {}, {}
         effort = resolve_lmstudio_effort(reasoning_config, lmstudio_reasoning_options)

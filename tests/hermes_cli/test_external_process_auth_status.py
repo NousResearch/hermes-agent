@@ -80,6 +80,60 @@ def test_external_process_status_finds_user_local_cli_outside_backend_path(
     assert resolve_external_process_provider_credentials("copilot-acp")["command"] == str(cli)
 
 
+def test_external_process_status_resolves_relative_configured_path_from_cwd(
+    tmp_path, monkeypatch, _clean_copilot_env
+):
+    """An operator's relative command path keeps resolving against the launch cwd."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cli = bin_dir / ("copilot.exe" if os.name == "nt" else "copilot")
+    cli.write_text("", encoding="utf-8")
+    cli.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", str(tmp_path / "backend-bin"))
+    monkeypatch.setenv("HERMES_COPILOT_ACP_COMMAND", os.path.join(".", "bin", cli.name))
+
+    status = get_external_process_provider_status("copilot-acp")
+
+    assert status["configured"] is True
+    assert status["resolved_command"] == str(cli)
+    assert resolve_external_process_provider_credentials("copilot-acp")["command"] == str(cli)
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("preferred", ["claude-prefix", "user-local", "path", "explicit"])
+def test_external_process_claude_resolution_preserves_precedence(
+    tmp_path, monkeypatch, _clean_copilot_env, preferred
+):
+    """Generic discovery must retain Claude's extra prefixes and command precedence."""
+    candidates = {}
+    for name, directory in (
+        ("claude-prefix", tmp_path / ".claude" / "local"),
+        ("user-local", tmp_path / ".local" / "bin"),
+        ("path", tmp_path / "backend-bin"),
+        ("explicit", tmp_path / "configured-bin"),
+    ):
+        directory.mkdir(parents=True)
+        executable = directory / "claude"
+        executable.write_text("", encoding="utf-8")
+        executable.chmod(0o755)
+        candidates[name] = executable
+        if name == preferred:
+            break
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", str(tmp_path / "backend-bin"))
+    monkeypatch.setenv(
+        "HERMES_COPILOT_ACP_COMMAND",
+        str(candidates[preferred]) if preferred == "explicit" else "claude",
+    )
+
+    status = get_external_process_provider_status("copilot-acp")
+
+    assert status["configured"] is True
+    assert status["resolved_command"] == str(candidates[preferred])
+    assert resolve_external_process_provider_credentials("copilot-acp")["command"] == str(candidates[preferred])
+
+
 def test_external_process_status_rejects_wrong_auth_type():
     # A provider that exists but is not external_process must be refused —
     # the generic dispatcher relies on this guard.

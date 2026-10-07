@@ -2151,13 +2151,15 @@ def _external_process_spec(
                or str(getattr(profile, "process_command", "") or ""))
     raw_args = os.getenv(args_env_var, "").strip() if args_env_var else ""
     args = shlex.split(raw_args) if raw_args else list(getattr(profile, "process_args", ()) or [])
-    resolved = None
-    if command:
-        from hermes_platform.resolver import locate_command
-        from hermes_platform.resolver.known_dirs import user_local_bin
-
-        found = locate_command(command, known_dirs=user_local_bin()).command
-        resolved = found[0] if found else None
+    from hermes_platform.resolver import locate_command
+    from hermes_platform.resolver.known_dirs import user_local_bin
+    lookup = command
+    if os.sep in command or (os.altsep and os.altsep in command):
+        # An operator-configured relative path (./bin/copilot) means the launch cwd, as it did
+        # under shutil.which; anchor it so the resolver's absolute-only explicit check accepts it.
+        lookup = os.path.abspath(os.path.expandvars(os.path.expanduser(command)))
+    found = locate_command(lookup, known_dirs=user_local_bin()).command if command else ()
+    resolved = found[0] if found else None
     if command and not resolved:
         # A GUI/service launch (LaunchAgent, Desktop backend) has a bare PATH: probe Claude Code's
         # install prefixes as the Anthropic adapter does.

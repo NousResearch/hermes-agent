@@ -479,8 +479,8 @@ _GOAL_GATE_MESSAGES = {
             "Goal review handoff rejected: judge ruled the goal unachievable — {reason}. "
             "Record the block with kanban_block instead of requesting review."),
         "continue": (
-            "Goal review handoff rejected by judge: {reason}. Provide acceptance evidence "
-            "matching the card before requesting review.")}}
+            "Goal review handoff rejected by judge: {reason}. Identify the candidate and show "
+            "its verification evidence before requesting review.")}}
 
 
 def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
@@ -496,8 +496,12 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
         from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
         affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{tid}")
         try:
+            # Review handoff judges readiness for independent review, not the terminal goal;
+            # completion keeps the unchanged full-goal call.
+            scope = {"review_handoff": True} if tool_name == "kanban_request_review" else {}
             verdict, reason, _, _, transport_failed = judge_goal(
-                goal=f"{task.title}\n\n{task.body or ''}".strip(), last_response=evidence.strip())
+                goal=f"{task.title}\n\n{task.body or ''}".strip(), last_response=evidence.strip(),
+                **scope)
         finally:
             if affinity_token is not None:
                 reset_affinity_scope(affinity_token)

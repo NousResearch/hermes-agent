@@ -6,6 +6,7 @@ import logging
 import time
 
 from cron import store_health
+from cron.constants import is_recurring
 
 logger = logging.getLogger("cron.scheduler")
 
@@ -40,10 +41,6 @@ def tick(verbose=True, adapters=None, loop=None, sync=True, *, can_dispatch=None
         return _tick_admitted(verbose, adapters, loop, sync, can_dispatch=can_dispatch)
 
 
-def _is_recurring(job: dict) -> bool:
-    return (job.get("schedule") or {}).get("kind") in {"cron", "interval"}
-
-
 def _acquire_tick_lock_or_degrade(_sched):
     """The tick lock fd, or None when this tick must not run: another ticker holds the lock, or
     the store cannot be written (read-only/full/denied: the lock file cannot even be created), in
@@ -68,9 +65,9 @@ def _advance_or_drop_recurring(_sched, due_jobs: list) -> list:
         _sched.advance_next_runs([job["id"] for job in due_jobs])
         return due_jobs
     except OSError as exc:
-        skipped = [j for j in due_jobs if _is_recurring(j)]
+        skipped = [j for j in due_jobs if is_recurring(j)]
         store_health.note_unwritable(exc, f"skipped {len(skipped)} recurring job(s)", "advance", skipped)
-        return [j for j in due_jobs if not _is_recurring(j)]
+        return [j for j in due_jobs if not is_recurring(j)]
 
 
 def _tick_admitted(

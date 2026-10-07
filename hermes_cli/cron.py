@@ -176,14 +176,9 @@ _STATE_BADGES = {"paused": ("[paused]", Colors.YELLOW), "completed": ("[complete
 
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
-    from cron.jobs import effective_job_state, list_jobs
-    if (store_report := _store_unwritable_report()) is not None:
-        _print_store_unwritable(store_report, brief=True)  # before the read, which can fail too
-    try:
-        jobs = list_jobs(include_disabled=True)
-    except OSError:
-        if store_report is None:
-            raise
+    from cron.jobs import effective_job_state
+    _store_report, jobs = _probe_then_list_jobs(include_disabled=True, brief=True)
+    if jobs is None:
         return
     if not show_all:
         jobs = [
@@ -425,6 +420,22 @@ def _store_unwritable_report() -> Optional[dict]:
     return probe_report(_current_cron_store().cron_dir)
 
 
+def _probe_then_list_jobs(*, include_disabled: bool, brief: bool = False):
+    """``(store report or None, jobs or None)``. Probes and prints the unwritable-store warning
+    BEFORE reading jobs: loading re-secures the dir mode (masking a mode problem), and on an
+    unwritable store the read itself can fail (it creates cron/output). Jobs is ``None`` only
+    when that read failed on a store already reported unwritable."""
+    from cron.jobs import list_jobs
+    if (report := _store_unwritable_report()) is not None:
+        _print_store_unwritable(report, brief=brief)
+    try:
+        return report, list_jobs(include_disabled=include_disabled)
+    except OSError:
+        if report is None:
+            raise
+        return report, None
+
+
 def _print_store_unwritable(report: dict, *, brief: bool = False) -> None:
     if brief:  # `cron list`: one line
         print(color(f"⚠ Cron store {report['store']} is NOT writable ({report['error']}) — scheduled jobs "
@@ -500,21 +511,12 @@ def _print_ticker_health(pids: list, restart_command: str = "hermes gateway rest
 
 def cron_status():
     """Show cron execution status."""
-    from cron.jobs import list_jobs
     from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
     from hermes_cli.profiles import get_active_profile_name
     print()
 
-    # Probe before list_jobs (loading re-secures the dir mode) and print before it too: on an
-    # unwritable store the read itself can fail (it creates cron/output).
-    if (store_report := _store_unwritable_report()) is not None:
-        _print_store_unwritable(store_report)
-    try:
-        active_jobs = list_jobs(include_disabled=False)
-    except OSError:
-        if store_report is None:
-            raise
-        active_jobs = []
+    store_report, active_jobs = _probe_then_list_jobs(include_disabled=False)
+    active_jobs = active_jobs or []
     if store_report is not None:
         overdue = sum(1 for j in active_jobs if (_next_run_overdue_seconds(j.get("next_run_at")) or 0) > 0)
         print(color(f"  {overdue} due run(s) not fired", Colors.RED))

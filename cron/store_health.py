@@ -38,6 +38,12 @@ def describe_error(exc: OSError) -> str:
     return f"{code}: {text}" if code else text
 
 
+def _report_fields(store: str, error: str, since: Optional[float]) -> dict:
+    """The fields `cron status`, doctor and the home-channel notices print for an unwritable store."""
+    since_text = "unknown" if since is None else datetime.fromtimestamp(since).astimezone().isoformat(timespec="seconds")
+    return {"store": store, "error": error, "since": since_text, "fix": FIX_HINT.format(store=store)}
+
+
 @dataclass
 class StoreDegraded:
     store: str
@@ -55,9 +61,7 @@ class StoreDegraded:
         return len(self.skipped)
 
     def notice_fields(self) -> dict:
-        since = datetime.fromtimestamp(self.since).astimezone().isoformat(timespec="seconds")
-        return {"store": self.store, "error": self.error, "since": since, "skipped": self.skipped_runs,
-                "fix": FIX_HINT.format(store=self.store)}
+        return dict(_report_fields(self.store, self.error, self.since), skipped=self.skipped_runs)
 
 
 _DISPATCH_SITES = frozenset({"advance", "claim"})
@@ -232,13 +236,10 @@ def probe_report(cron_dir: Path) -> Optional[dict]:
     if error is None:
         return None
     try:
-        since = datetime.fromtimestamp((cron_dir / "jobs.json").stat().st_mtime).astimezone()
-        since_text = since.isoformat(timespec="seconds")
+        since = (cron_dir / "jobs.json").stat().st_mtime
     except OSError:
-        since_text = "unknown"
-    store = str(cron_dir)
-    return {"store": store, "error": describe_error(error), "since": since_text,
-            "fix": FIX_HINT.format(store=store)}
+        since = None
+    return _report_fields(str(cron_dir), describe_error(error), since)
 
 
 def free_bytes(path: Path) -> Optional[int]:

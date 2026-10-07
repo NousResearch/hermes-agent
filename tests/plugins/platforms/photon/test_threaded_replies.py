@@ -57,7 +57,7 @@ def _capture_sidecar(adapter: PhotonAdapter, message_id: str = "out-1") -> List[
 
 
 def _reply_event(inner: Dict[str, Any], *, message_id: str = "in-2", target_id: str = "out-0",
-                 direction: str = "outbound", target_text: str | None = "earlier answer") -> Dict[str, Any]:
+                 direction: str | None = "outbound", target_text: str | None = "earlier answer") -> Dict[str, Any]:
     return {
         "messageId": message_id,
         "space": {"id": DM, "type": "dm", "phone": PHONE},
@@ -139,6 +139,22 @@ async def test_reply_to_our_message_hydrates_quoted_text_from_sent_index(monkeyp
 
     assert handled[-1].text == "do B first"
     assert handled[-1].reply_to_message_id == "out-1"
+    assert handled[-1].reply_to_text == "the plan is A then B"
+    assert handled[-1].reply_to_is_own_message is True
+
+
+@pytest.mark.asyncio
+async def test_reply_after_restart_is_still_marked_own(monkeypatch):
+    """Cloud targets carry no direction; after a restart the index hit alone proves the bubble was ours."""
+    sender = _make_adapter(monkeypatch)
+    _capture_sidecar(sender, message_id="out-9")
+    await sender.send(DM, "the plan is A then B")
+
+    restarted = _make_adapter(monkeypatch)  # fresh in-memory _sent_message_ids
+    handled = _capture_handled(restarted, monkeypatch)
+    event = _reply_event({"type": "text", "text": "ok"}, target_id="out-9", direction=None, target_text=None)
+    await restarted._dispatch_inbound(event)
+
     assert handled[-1].reply_to_text == "the plan is A then B"
     assert handled[-1].reply_to_is_own_message is True
 

@@ -835,14 +835,16 @@ class PhotonAdapter(BasePlatformAdapter):
         if content.get("type") == "reply" and isinstance(content.get("content"), dict) \
                 and content["content"].get("type") not in (None, "unknown"):
             target_id = content.get("targetMessageId")
-            reply_ctx = {"reply_to_message_id": target_id,
-                         "reply_to_text": content.get("targetText") or None,
-                         "reply_to_is_own_message": content.get("targetDirection") == "outbound" or bool(
-                             target_id and target_id in self._sent_message_ids)}
-            if target_id and not reply_ctx["reply_to_text"]:
-                # spectrum often can't hydrate the target's text (e.g. our own sends, older
-                # bubbles): fall back to the local index of what we sent.
-                reply_ctx["reply_to_text"] = _lookup_sent_text(space_id, target_id)
+            target_text = content.get("targetText") or None
+            # spectrum often can't hydrate the target's text (e.g. our own sends, older
+            # bubbles): fall back to the local index of what we sent.
+            stored_text = _lookup_sent_text(space_id, target_id) if target_id and not target_text else None
+            # Cloud targets carry no direction and _sent_message_ids is in-memory, so after a
+            # restart an index hit is the only proof the target was ours (only our sends are indexed).
+            is_own = content.get("targetDirection") == "outbound" or bool(
+                target_id and target_id in self._sent_message_ids) or stored_text is not None
+            reply_ctx = {"reply_to_message_id": target_id, "reply_to_text": target_text or stored_text,
+                         "reply_to_is_own_message": is_own}
             content = content["content"]
         ctype = content.get("type")
 

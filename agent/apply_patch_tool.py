@@ -71,7 +71,7 @@ This is the only file-writing tool in this session. It replaces write_file and p
 *** Delete File: <path>
 *** End Patch
 
-Add File creates a new file. To replace an existing file completely, Delete File and then Add File it again in the same patch. Update File edits an existing file: include about 3 unchanged lines around each change so its location is unambiguous. One patch may touch several files."""
+Add File creates a file or replaces an existing one completely. Update File edits an existing file: include about 3 unchanged lines around each change so its location is unambiguous. One patch may touch several files."""
 
 # Auto mode: GPT-5 and later, served on a route that forwards OpenAI custom
 # tools to the model. OpenRouter forwards them on chat completions and OpenAI
@@ -258,7 +258,8 @@ def is_complete(text: str) -> bool:
 
 def internal_arguments(text: str) -> str:
     """The ``patch`` tool arguments for a completed apply_patch call."""
-    return json.dumps({"mode": "patch", "patch": text}, ensure_ascii=False)
+    # add_overwrites: Add File replaces an existing file, the semantics the model was trained on.
+    return json.dumps({"mode": "patch", "patch": text, "add_overwrites": True}, ensure_ascii=False)
 
 
 def normalize_response(response: Any) -> None:

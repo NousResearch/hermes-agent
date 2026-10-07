@@ -1049,25 +1049,28 @@ pkill caffeinate
 | `-t N` | auto-exit after `N` seconds                       |
 | `-w P` | exit when PID `P` exits                           |
 
-:::warning Lid-close still sleeps the Mac
-`caffeinate`, `pmset sleep 0` and the Battery setting "Prevent automatic
-sleeping on power adapter when the display is off" only block *idle* sleep.
-Closing a MacBook's lid still puts it to sleep, even on AC power, and the
-gateway stays offline until the lid opens. To keep a gateway reachable with
-the lid closed, use one of:
+:::warning Closing a MacBook's lid
+Idle-sleep settings don't stop lid-close sleep: `caffeinate -i` or `-d`,
+`pmset sleep 0`, and Battery → Options → "Prevent automatic sleeping when the
+display is off" all leave it in place, even on AC power. The gateway then stays
+offline until the lid opens. To keep a gateway reachable with the lid closed:
 
-- **Closed-display mode:** connect an external display, keyboard or mouse,
-  and power. macOS then keeps running with the lid closed.
-- **`sudo pmset -a disablesleep 1`:** blocks all sleep, including lid close.
-  Undo with `sudo pmset -a disablesleep 0`. It also applies on battery, so a
-  closed MacBook in a bag keeps running, heats up and drains.
-- **A keep-awake app with a closed-display mode** that toggles the same
-  setting for you, ideally only while on AC. Because `disablesleep` needs
-  root, these apps install a helper and ask for an administrator password.
+- **On AC power, `caffeinate -s`** also blocks lid-close sleep, without root
+  (`-dis` above includes it). It has no effect on battery, so an unplugged
+  MacBook still sleeps when closed.
+- **On battery as well, `sudo pmset -a disablesleep 1`** blocks all sleep. It
+  is an undocumented `pmset` setting; undo it with
+  `sudo pmset -a disablesleep 0`. A closed MacBook in a bag keeps running, heats
+  up and drains. Some keep-awake apps' closed-display modes toggle this setting
+  through an administrator-approved helper.
+- **Closed-display mode:** with an external display, an external keyboard and
+  mouse or trackpad, and power connected, macOS keeps running with the lid
+  closed.
 
-To check: `pmset -g | grep SleepDisabled` shows `SleepDisabled 1` while
-lid-close sleep is blocked, and `pmset -g log | grep "Clamshell Sleep"` lists
-every lid-close sleep.
+To check: `pmset -g assertions | grep PreventSystemSleep` lists an active
+`caffeinate -s`, `pmset -g | grep SleepDisabled` shows `SleepDisabled 1` while
+`disablesleep` is set, and `pmset -g log | grep "Clamshell Sleep"` lists recent
+lid-close sleeps.
 :::
 
 ### Linux — `systemd-inhibit` or `loginctl`

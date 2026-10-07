@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 
 import { ChatSessionList } from "@/components/ChatSessionList";
+import { Markdown } from "@/components/Markdown";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { api, type SessionMessage } from "@/lib/api";
 import { GatewayClient } from "@/lib/gatewayClient";
@@ -42,6 +43,7 @@ export default function ChatNative() {
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const scopeRef = useRef<string | null>(null);
+  const lastUserTextRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -98,7 +100,17 @@ export default function ChatNative() {
           source: "web",
           ...(profile ? { profile } : {}),
         });
-        if (!cancelled) setGwSessionId(res.session_id);
+        if (cancelled) return;
+        setGwSessionId(res.session_id);
+        // Pin the fresh session in the URL so a reload resumes it.
+        setSearchParams(
+          (prev) => {
+            const next = new URLSearchParams(prev);
+            next.set("resume", res.session_id);
+            return next;
+          },
+          { replace: true },
+        );
       })
       .catch((e: Error) => {
         if (!cancelled) setError(e.message || "gateway connect failed");
@@ -108,7 +120,7 @@ export default function ChatNative() {
       offDelta();
       offComplete();
     };
-  }, [gw, activeSessionId, profile]);
+  }, [gw, activeSessionId, profile, setSearchParams]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
@@ -131,6 +143,7 @@ export default function ChatNative() {
   const send = useCallback(
     (text: string) => {
       if (!gwSessionId || sending) return;
+      lastUserTextRef.current = text;
       const now = Date.now();
       const user: NativeMessage = {
         id: `user-${now}`,
@@ -164,6 +177,48 @@ export default function ChatNative() {
     [gw, gwSessionId, sending],
   );
 
+  const retry = useCallback(() => {
+    const text = lastUserTextRef.current;
+    if (!gwSessionId || sending || !text) return;
+    const pending: NativeMessage = {
+      id: `assistant-${Date.now()}`,
+      role: "assistant",
+      text: "",
+      pending: true,
+    };
+    setMessages((prev) => {
+      const last = prev.at(-1);
+      const base =
+        last && last.role === "assistant" ? prev.slice(0, -1) : prev;
+      return [...base, pending];
+    });
+    setSending(true);
+    setError(null);
+    gw.request("prompt.submit", { session_id: gwSessionId, text }).catch(
+      (e: Error) => {
+        setSending(false);
+        setError(e.message || "send failed");
+        setMessages((prev) => {
+          const last = prev.at(-1);
+          if (!last || last.role !== "assistant") return prev;
+          return [
+            ...prev.slice(0, -1),
+            { ...last, pending: false, error: e.message },
+          ];
+        });
+      },
+    );
+  }, [gw, gwSessionId, sending]);
+
+  const lastMessage = messages.at(-1);
+  const canRetry =
+    !sending &&
+    !!gwSessionId &&
+    !!lastUserTextRef.current &&
+    !!lastMessage &&
+    lastMessage.role === "assistant" &&
+    !lastMessage.pending;
+
   return (
     <div className="flex min-h-0 flex-1 gap-4">
       <div className="hidden w-64 shrink-0 overflow-hidden border-r border-current/10 pr-2 lg:block">
@@ -194,9 +249,26 @@ export default function ChatNative() {
               )}
               data-role={m.role}
             >
-              {m.text || (m.pending ? "…" : "")}
+              {m.role === "user" ? (
+                m.text
+              ) : m.text ? (
+                <Markdown content={m.text} streaming={!!m.pending} />
+              ) : (
+                m.pending && "…"
+              )}
             </div>
           ))}
+          {canRetry && (
+            <div className="mx-1 my-1">
+              <button
+                type="button"
+                onClick={retry}
+                className="rounded border border-current/20 px-2 py-1 text-xs text-text-secondary hover:text-midground"
+              >
+                Retry
+              </button>
+            </div>
+          )}
           <div ref={bottomRef} />
         </div>
         <ChatBar onSend={send} disabled={!gwSessionId || sending} profile={profile} />

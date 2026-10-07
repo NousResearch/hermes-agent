@@ -17,6 +17,10 @@ Environment knobs (all optional):
 * ``MCPE2E_401_CALLS=<path>`` — HTTP only: while the file holds a positive integer N,
   the next ``tools/call`` is answered ``401`` and N is decremented (the fault survives
   a server restart because the budget lives on disk).
+
+Without ``MCPE2E_RESOURCE_ONLY`` the server is also an MCP Apps server (``mcp.server.apps``):
+``view_probe`` renders in the ``ui://e2e/view.html`` view, and ``app_only_probe``
+(``visibility: ["app"]``) is callable by that view only.
 """
 
 from __future__ import annotations
@@ -91,16 +95,34 @@ IMAGE_FORMATS: dict[str, tuple[str, bytes | str]] = {
 
 def build_server():
     from mcp.server import MCPServer
+    from mcp.server.apps import Apps
     from mcp_types import ImageContent, TextContent, ToolAnnotations
 
     canary = os.environ.get("MCPE2E_CANARY", "NO-CANARY")
-    server = MCPServer(os.environ.get("MCPE2E_NAME", "e2e"))
+    name = os.environ.get("MCPE2E_NAME", "e2e")
 
     if os.environ.get("MCPE2E_RESOURCE_ONLY") == "1":
+        server = MCPServer(name)
+
         @server.resource("e2e://doc", name="doc", description="the only thing this server offers")
         def doc() -> str:
             return f"DOC:{canary}"
         return server
+
+    apps = Apps()
+
+    @apps.tool(resource_uri="ui://e2e/view.html")
+    def view_probe() -> str:
+        """A tool whose result an MCP App view renders."""
+        return f"VIEW:{canary}"
+
+    @apps.tool(resource_uri="ui://e2e/view.html", visibility=["app"])
+    def app_only_probe() -> str:
+        """Callable by the view only, never by the model."""
+        return f"APP:{canary}"
+
+    apps.add_html_resource("ui://e2e/view.html", "<!doctype html><title>e2e view</title>")
+    server = MCPServer(name, extensions=[apps])
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False))
     def ro_probe(nonce: str = "") -> str:

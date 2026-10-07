@@ -12,6 +12,7 @@ from . import (  # noqa: F401
     groups_bot_relay,
     i18n,
     liveness,
+    mcp_apps,
     profiles_vault_complete_foreign_subagents,
     projects_pets,
     prompt_voice,

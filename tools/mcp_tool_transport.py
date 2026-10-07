@@ -16,6 +16,7 @@ from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
 from tools.mcp_tool_common import _core
 from tools.mcp_tool_node_abi import node_abi_error
+from tools import mcp_app_host as _app_host
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_registration as _registration
@@ -167,8 +168,9 @@ class MCPServerTransportMixin:
         return caps is None or getattr(caps, "tools", None) is not None
 
     def _session_kwargs(self) -> dict:
-        """ClientSession kwargs: sampling, elicitation, notification + logging callbacks."""
-        kwargs = {}
+        """ClientSession kwargs: the MCP Apps extension, sampling, elicitation, notification +
+        logging callbacks."""
+        kwargs = {"extensions": _app_host.client_extensions()}
         for handler in (self._sampling, self._elicitation):
             if handler:
                 kwargs.update(handler.session_kwargs())

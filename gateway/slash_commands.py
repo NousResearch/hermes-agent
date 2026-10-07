@@ -426,6 +426,10 @@ class GatewaySlashCommandsMixin(
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        # Retire this session's restart-recovery marker whatever /stop finds: with nothing running
+        # (e.g. auto-resume skipped because the adapter was not ready) no interrupt below clears it.
+        with contextlib.suppress(Exception):
+            await self.async_session_store.clear_resume_pending(session_key)
 
         async def _stop(key: str, invalidation_reason: str) -> None:
             await self._interrupt_and_clear_session(

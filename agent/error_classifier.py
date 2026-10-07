@@ -1043,6 +1043,11 @@ def _status_404(c: _Ctx) -> Verdict:
     # so _by_error_code never sees it; a bare "Not Found" message has nothing to match.
     if c.code in _BILLING_ERROR_CODES:
         return _V_BILLING
+    # Structured routing metadata next, before prose matching: OpenRouter stamps
+    # the routing failure cause under error.metadata, which survives reworded
+    # headlines (#133850 review).
+    if _is_openrouter_policy_block(c.body, c.provider_slug):
+        return _V_POLICY_BLOCKED
     verdict = _first_match(c.msg, _404_RULES)
     if verdict is not None:
         return verdict
@@ -1323,6 +1328,34 @@ def _error_obj(body: Any) -> dict:
     """``body["error"]`` when it is a dict, else ``{}``."""
     err = body.get("error") if isinstance(body, dict) else None
     return err if isinstance(err, dict) else {}
+
+
+# OpenRouter's routing failure causes under error.metadata.ineligibility_reasons
+# (#133850 review): stable identifiers, unlike the human-readable headline.
+_OPENROUTER_POLICY_INELIGIBILITY_REASONS = frozenset({
+    "model-ignored-by-guardrail",
+    "zdr-violation-by-account",
+    "zdr-violation-by-guardrail",
+})
+
+
+def _is_openrouter_policy_block(body: Any, provider: str) -> bool:
+    """Whether OpenRouter's routing metadata says account policy excluded every endpoint."""
+    if provider != "openrouter":
+        return False
+    metadata = _error_obj(body).get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    if str(metadata.get("failed_routing_step") or "").strip().lower() == "filter by guardrails":
+        return True
+    reasons = metadata.get("ineligibility_reasons")
+    if not isinstance(reasons, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and str(item.get("reason") or "").strip().lower() in _OPENROUTER_POLICY_INELIGIBILITY_REASONS
+        for item in reasons
+    )
 
 
 def _json_dict(text: Any) -> Optional[dict]:

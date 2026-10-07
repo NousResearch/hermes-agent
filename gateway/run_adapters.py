@@ -1859,7 +1859,19 @@ class GatewayAdapterLifecycleMixin:
     def _adapter_credential_fingerprint(adapter: Any) -> Optional[str]:
         """Salted, log-safe hash of an adapter's credential; None when none is discoverable
         (conflict detection is then skipped)."""
-        # Many adapters (Discord) keep the token on `config`; without that fallback the check is skipped.
+        # Adapter-declared identity first: adapters whose credential is not a token-style
+        # attribute (email: a mailbox address) name their exclusive resource themselves;
+        # None or blank falls through to the probed names below (#134662).
+        declared = getattr(adapter, "credential_identity", None)
+        if (
+            callable(declared)
+            and isinstance(identity := declared(), str)
+            and identity.strip()
+        ):
+            import hashlib
+            return hashlib.sha256(
+                ("hermes-mux:" + identity.strip()).encode("utf-8")
+            ).hexdigest()[:16]        # Many adapters (Discord) keep the token on `config`; without that fallback the check is skipped.
         candidates = [
             (adapter, attr) for attr in (
                 "token", "bot_token", "_token", "api_token", "_bot_token",

@@ -497,6 +497,11 @@ class EmailAdapter(BasePlatformAdapter):
         self._thread_context: Dict[str, Dict[str, str]] = {}
         logger.info("[Email] Adapter initialized for %s", self._address)
 
+    def credential_identity(self) -> str:
+        """One adapter per mailbox: the address (not the password) is the exclusive resource
+        two profiles cannot both poll — the probed token-style names never see it (#134662)."""
+        return self._address
+
     def _trim_seen_uids(self) -> None:
         """Keep only the highest half of UIDs once over the cap (UIDs are monotonic; UNSEEN prevents re-delivery)."""
         if len(self._seen_uids) <= self._seen_uids_max:

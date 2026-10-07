@@ -1933,6 +1933,15 @@ class BasePlatformAdapter(ABC):
         else:
             store.pop(str(chat_id), None)
 
+    def credential_identity(self) -> Optional[str]:
+        """Identity of the exclusive credential resource this adapter holds, for the
+        multiplexer's duplicate-credential guard. ``None`` (the default) when the guard's
+        probed attribute names (token, app-style ids, ``config.token``) already see the
+        credential or the adapter holds none; adapters whose credential is none of those
+        (email: a mailbox) must override, or a duplicated resource is double-polled with
+        no refusal and no doctor finding (#134662)."""
+        return None
+
     # Can wake a fresh turn AFTER a turn ends (detached-subagent completions); False for stateless
     # adapters (API server). Propagated to ``HERMES_SESSION_ASYNC_DELIVERY`` so tools never promise
     # a delivery they can't keep.

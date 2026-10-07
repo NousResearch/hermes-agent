@@ -1788,27 +1788,26 @@ class SessionSessionsMixin:
         exclude_active_write_guards: bool = False,
         include_compression_chain: bool = False,
     ) -> bool:
-        """Delete a session and its messages; delegate children cascade, branch children of other
-        lineage rows are orphaned (a branch forked under the deleted row is removed with it).
-        *expected_delete_ids*: proceed only if parent + delegate cascade still equals that
-        set (re-walked inside the transaction on purpose: export-before-delete fails closed).
-        Optional expected ids fence delegate drift; expected display snapshots fence transcript
-        drift. Both checks run inside the same write transaction as deletion.
+        """Delete a session and its messages; delegate children cascade, branch/compression children
+        are orphaned. Optional expected ids fence delegate drift; expected display snapshots fence
+        transcript drift. Both checks run inside the same write transaction as deletion.
         With ``exclude_active_write_guards``, raises :class:`SessionActiveWriteGuardError` if the row
         is protected by an active turn lease or compression lock.
 
-        The whole **compression lineage** of *session_id* is deleted with it: every ancestor and
-        descendant linked by a compression-continuation edge (parent ended
-        ``end_reason='compression'``, child is not a branch / delegate / tool row — the same edge
-        ``get_compression_tip`` and ``list_sessions_rich`` use to project roots forward to their
-        tips). Deleting only the visible tip orphans the compressed ancestors, which then resurface
-        in session pickers on the next refresh as a "deleted session resurrected"; deleting any
-        member removes the whole logical conversation. The walk widens at every row it reaches,
-        so a fork-sibling continuation of a removed ancestor dies too, and the tree hanging under
-        *session_id* — branch children forked from the deleted row and their own continuations —
-        is removed with it. Branch children of lineage rows other than the deleted one are
-        excluded by the edge and stay behind as accessible orphans.
-        """
+        With ``include_compression_chain=True`` the whole compression chain the session belongs to
+        is deleted with it (root and every continuation) — the dashboard delete endpoints use this
+        variant because their list rows carry chain-*tip* ids; deleting only that physical row
+        would leave the rest of the chain to resurface on the next list (#57543). Default False so
+        callers that operate on a single physical session keep the historic contract. Routing
+        through :meth:`delete_sessions` keeps the chain-aware guard/counting semantics in one
+        place; its return value counts the *requested* ids that existed, so ``> 0`` is exactly
+        "the session was found"."""
+        if include_compression_chain:
+            return self.delete_sessions(
+                [session_id], sessions_dir=sessions_dir,
+                exclude_active_write_guards=exclude_active_write_guards,
+                include_compression_chain=True,
+            ) > 0
         removed_ids: list[str] = []
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
         def _do(conn):
@@ -1830,18 +1829,14 @@ class SessionSessionsMixin:
                 for covered_id, expected in expected_display_messages.items()
             ):
                 return False
-            # Expand to the whole compression lineage so neither the old root nor a sibling
-            # continuation row can resurface after the deleted row is gone.
-            kill_ids = _compression_lineage_ids(conn, [session_id])
-            kill_ph = _session_ids_placeholders(kill_ids)
-            removed_ids.extend(_delete_delegate_children(conn, kill_ids))
-            conn.execute(  # orphan remaining children (branches) of doomed rows so FK is satisfied
-                f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({kill_ph})",
-                kill_ids,
+            removed_ids.extend(_delete_delegate_children(conn, [session_id]))
+            conn.execute(  # orphan remaining children (branches) so FK is satisfied
+                "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
             )
-            conn.execute(f"DELETE FROM messages WHERE session_id IN ({kill_ph})", kill_ids)
-            conn.execute(f"DELETE FROM sessions WHERE id IN ({kill_ph})", kill_ids)
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
+            removed_ids.append(session_id)
             return True
         deleted = self._execute_write(_do)
         for sid in removed_ids:
@@ -1886,11 +1881,18 @@ class SessionSessionsMixin:
         include_compression_chain: bool = False,
     ) -> int:
         """Bulk delete with :meth:`delete_session` semantics per row, in ONE transaction. Unknown ids
-        are skipped (UI selection can race another tab's delete). With ``exclude_active_write_guards``,
-        rows protected by an active turn lease or compression lock are skipped and, when given, appended
-        to ``skipped_ids`` so callers can tell the user. Returns the number of *requested* rows deleted;
-        the compression-lineage expansion is applied on top of those seeds, so the count stays the
-        caller-visible number."""
+        are skipped (UI selection can race another tab's delete). With ``exclude_active_write_guards``, rows
+        protected by an active turn lease or compression lock are skipped and, when given, appended
+        to ``skipped_ids`` so callers can tell the user. Returns the number deleted.
+
+        With ``include_compression_chain=True``, each selected id is expanded to its full
+        compression chain (root + every continuation, including stale sibling continuations)
+        via :func:`_compression_lineage_ids` (a superset of :meth:`_expand_compression_lineage`
+        that also removes branch trees forked under the selected rows) — the dashboard rows
+        carry chain-tip ids, so without the expansion a "deleted" conversation resurfaces as the
+        previous chain link on the next list reload (#57543). The returned count still reflects the
+        *requested* rows, not the expanded chain links, so the caller's toast matches the user's
+        selection."""
         unique_ids = list({sid for sid in session_ids or () if isinstance(sid, str) and sid})
         if not unique_ids:
             return 0
@@ -1933,8 +1935,10 @@ class SessionSessionsMixin:
                     skipped_ids.extend(sorted(active_ids))
                 if not existing:
                     return 0
-            kill_ids = _compression_lineage_ids(conn, existing)
-            kill_set = set(kill_ids)
+            # Kill-set expansion, gated so the default stays chain-blind (upstream's pin). The walk
+            # is the two-frontier lineage walk (:func:`_compression_lineage_ids`) — a superset of
+            # the guard-attribution walk :meth:`_expand_compression_lineage` (#53684).
+            kill_ids = _compression_lineage_ids(conn, existing) if include_compression_chain else list(existing)
             removed_ids.extend(_delete_delegate_children(conn, kill_ids))
             for chunk in _id_chunks(kill_ids):
                 ph = _session_ids_placeholders(chunk)
@@ -1945,8 +1949,10 @@ class SessionSessionsMixin:
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.extend(kill_ids)
-            # Only the rows the caller asked for count; lineage expansion is a side effect.
-            return len(kill_set & set(existing))
+            # Count the ids the CALLER asked for, not the expanded chain links —
+            # the dashboard toast should say "3 deleted" when the user selected
+            # 3 rows, however many physical links those rows had.
+            return len(existing)
         count = self._execute_write(_do)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)

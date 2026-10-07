@@ -54,7 +54,7 @@ class TestCompressionLineageDelete:
     def test_deleting_the_tip_removes_the_whole_lineage(self, db: SessionDB):
         root, mid, tip = _seed_compression_lineage(db)
 
-        assert db.delete_session(tip) is True
+        assert db.delete_session(tip, include_compression_chain=True) is True
 
         remaining = _session_ids(db)
         assert tip not in remaining
@@ -64,21 +64,21 @@ class TestCompressionLineageDelete:
     def test_deleting_the_root_removes_the_whole_lineage(self, db: SessionDB):
         _seed_compression_lineage(db)
 
-        assert db.delete_session("root-sid") is True
+        assert db.delete_session("root-sid", include_compression_chain=True) is True
 
         assert _session_ids(db) == set()
 
     def test_deleting_a_middle_node_removes_the_whole_lineage(self, db: SessionDB):
         _seed_compression_lineage(db)
 
-        assert db.delete_session("mid-sid") is True
+        assert db.delete_session("mid-sid", include_compression_chain=True) is True
 
         assert _session_ids(db) == set()
 
     def test_messages_of_every_lineage_member_are_deleted(self, db: SessionDB):
         _seed_compression_lineage(db)
 
-        db.delete_session("tip-sid")
+        db.delete_session("tip-sid", include_compression_chain=True)
 
         for sid in ("root-sid", "mid-sid", "tip-sid"):
             n = db._conn.execute(
@@ -96,7 +96,7 @@ class TestCompressionLineageDelete:
         )
         db._conn.commit()
 
-        assert db.delete_session("tip-sid") is True
+        assert db.delete_session("tip-sid", include_compression_chain=True) is True
 
         remaining = _session_ids(db)
         assert "branch-sid" in remaining, "a branch must be orphaned, not deleted"
@@ -116,7 +116,7 @@ class TestCompressionLineageDelete:
         )
         db._conn.commit()
 
-        assert db.delete_session("tip-sid") is True
+        assert db.delete_session("tip-sid", include_compression_chain=True) is True
 
         assert "delegate-sid" not in _session_ids(db)
 
@@ -124,7 +124,7 @@ class TestCompressionLineageDelete:
         root, mid, tip = _seed_compression_lineage(db)
         db.create_session("other-sid", source="test")
 
-        assert db.delete_session("other-sid") is True
+        assert db.delete_session("other-sid", include_compression_chain=True) is True
 
         assert _session_ids(db) == {root, mid, tip}
 
@@ -137,7 +137,7 @@ class TestCompressionLineageDelete:
         db.append_message("fork-sid", "user", "hello fork-sid")
         db.append_message("fork-sid", "assistant", "answer fork-sid")
 
-        assert db.delete_session(tip) is True
+        assert db.delete_session(tip, include_compression_chain=True) is True
 
         remaining = _session_ids(db)
         assert "fork-sid" not in remaining, "a fork-sibling continuation must not survive the deleted tip"
@@ -157,7 +157,7 @@ class TestCompressionLineageDelete:
         db.create_session("branch-cont-sid", parent_session_id="branch-sid", source="test")
         _mark_compression_parent(db, "branch-sid")
 
-        assert db.delete_session(tip) is True
+        assert db.delete_session(tip, include_compression_chain=True) is True
 
         remaining = _session_ids(db)
         assert "branch-sid" not in remaining, "a branch forked under the deleted row must not survive it"
@@ -168,7 +168,7 @@ class TestCompressionLineageDelete:
         _seed_compression_lineage(db)
         db.create_session("solo-sid", source="test")
 
-        assert db.delete_sessions(["tip-sid", "solo-sid"]) == 2
+        assert db.delete_sessions(["tip-sid", "solo-sid"], include_compression_chain=True) == 2
 
         assert _session_ids(db) == set()
 
@@ -176,6 +176,6 @@ class TestCompressionLineageDelete:
         _seed_compression_lineage(db)
 
         # Unknown ids are skipped; the tip's lineage still dies in full.
-        assert db.delete_sessions(["tip-sid", "does-not-exist"]) == 1
+        assert db.delete_sessions(["tip-sid", "does-not-exist"], include_compression_chain=True) == 1
 
         assert _session_ids(db) == set()

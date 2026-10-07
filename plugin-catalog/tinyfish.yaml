@@ -1,0 +1,22 @@
+name: tinyfish
+repo: https://github.com/tinyfish-io/tinyfish-web-agent-integrations
+sha: e868225fb706abed7aa2ca27d03bc66e4df8865e
+subdir: hermes
+description: "First-party TinyFish plugin: free Search and Fetch as a web provider, plus credit-gated remote Browser sessions and the tinyfish_agent web agent. Disclosure — sends search queries, URLs and agent goals to the TinyFish API (*.tinyfish.ai) with your TINYFISH_API_KEY; Browser and tinyfish_agent calls spend TinyFish credits and ask for approval via pre_tool_call first."
+maintainer: tinyfish-io
+title: TinyFish
+version: "0.2.1"
+tier: community
+category: web
+requires_hermes: ">=0.19"
+docs_url: https://docs.tinyfish.ai
+capabilities:
+  provides_tools:
+  - tinyfish_agent
+  provides_hooks:
+  - pre_tool_call
+  - pre_llm_call
+  - on_session_finalize
+  provides_middleware: []
+  requires_env:
+  - TINYFISH_API_KEY

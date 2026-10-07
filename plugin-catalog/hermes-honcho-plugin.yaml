@@ -1,0 +1,26 @@
+name: hermes-honcho-plugin
+title: Honcho Memory
+repo: https://github.com/outpoints/hermes-honcho-plugin
+sha: fedf40af3be606f92c841bfa9f13dcdd877af8d6
+description: "Desktop workbench for the Honcho memory behind the focused chat: read the newest conclusions, trace their premises, search messages, ask scoped questions, and add confirmed corrections or source files. Uses each profile's existing Honcho provider configuration. Disclosure: reads and confirmed writes go to the Honcho server that profile already uses; Ask runs a reasoning call that may incur Honcho usage. No telemetry and no credentials leave Hermes."
+maintainer: outpoints
+tier: community
+category: desktop
+version: "0.4.0"
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/outpoints/hermes-honcho-plugin
+image: https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/fedf40af3be606f92c841bfa9f13dcdd877af8d6/docs/catalog/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/fedf40af3be606f92c841bfa9f13dcdd877af8d6/docs/catalog/gallery-memory.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/fedf40af3be606f92c841bfa9f13dcdd877af8d6/docs/catalog/gallery-ask.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/fedf40af3be606f92c841bfa9f13dcdd877af8d6/docs/catalog/gallery-correct.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/fedf40af3be606f92c841bfa9f13dcdd877af8d6/docs/catalog/gallery-pane.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/fedf40af3be606f92c841bfa9f13dcdd877af8d6/docs/catalog/gallery-messages.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/fedf40af3be606f92c841bfa9f13dcdd877af8d6/docs/catalog/gallery-status.png
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

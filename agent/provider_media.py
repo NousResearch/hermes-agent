@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import datetime
+import re
 import uuid
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -39,7 +40,12 @@ def cache_dir(kind: str) -> Path:
 def cache_path(kind: str, prefix: str, extension: str) -> Path:
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     short = uuid.uuid4().hex[:8]
-    return cache_dir(kind) / f"{prefix}_{ts}_{short}.{extension}"
+    # Model ids contain "/" (e.g. "openrouter/google/gemini-2.5-flash-image") and are
+    # passed straight through as prefix, which would nest the filename under a
+    # subdirectory that cache_dir never creates. Flatten path separators so any
+    # provider/model id yields a single safe filename.
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", prefix).strip("._-") or "image"
+    return cache_dir(kind) / f"{safe}_{ts}_{short}.{extension}"
 
 
 def save_bytes(kind: str, raw: bytes, *, prefix: str, extension: str) -> Path:

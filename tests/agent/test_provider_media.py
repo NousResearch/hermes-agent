@@ -162,3 +162,35 @@ def test_save_url_trusted_origin_skips_private_check_on_first_hop_only(monkeypat
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_cache_path_flattens_path_separators_in_prefix(monkeypatch, tmp_path):
+    """Provider/model ids are passed straight through as ``prefix`` and routinely
+    contain ``/`` (e.g. ``openrouter/google/gemini-2.5-flash-image``). The slash
+    must not survive into the filename: ``cache_dir`` creates only one level, so a
+    nested name raised ``FileNotFoundError`` and every custom OpenAI-compatible
+    image endpoint returned ``io_error`` despite a successful API call."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    path = provider_media.cache_path("generated/images", "openrouter/google/gemini-2.5-flash-image", "png")
+
+    assert path.parent == provider_media.cache_dir("generated/images")
+    assert path.parent.is_dir()
+    assert "/" not in path.name
+    assert path.name.startswith("openrouter_google_gemini-2.5-flash-image_")
+    assert path.suffix == ".png"
+
+
+def test_save_b64_image_with_slashed_prefix_writes_file(monkeypatch, tmp_path):
+    """End-to-end guard: a prefixed save with slashes must actually land on disk."""
+    import base64
+
+    from agent.image_gen_provider import save_b64_image
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 32).decode()
+
+    path = save_b64_image(png, prefix="openai_openrouter/google/gemini-2.5-flash-image")
+
+    assert path.exists()
+    assert path.read_bytes().startswith(b"\x89PNG")

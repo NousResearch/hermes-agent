@@ -86,8 +86,8 @@ def build_models_payload(
     in process caches (normal picker opens, while a background worker warms cold endpoints).
     ``non_blocking_catalogs``: provider catalogs come from the disk cache only — a degraded provider
     cannot stall the response (GUI picker opens). ``fast_custom_probe`` overrides the
-    custom-endpoint discovery budget ``for_picker`` otherwise implies (1.5s vs 5s) — ``None`` keeps
-    the coupling, ``False`` retains the full 5s budget (#103843)."""
+    custom-endpoint discovery budget ``for_picker`` otherwise implies (1.5s vs 15s) — ``None`` keeps
+    the coupling, ``False`` retains the full budget (#103843)."""
     from hermes_cli.model_switch import list_authenticated_providers
 
     rows = list_authenticated_providers(
@@ -237,7 +237,8 @@ def build_model_options_payload(
     these are human-facing pickers, and hiding a temporarily exhausted pool makes providers vanish
     mid-session even though another model under the same provider may still work (same contract
     as ``/model`` and the aux pickers, #66584 / #66624). Visibility only: ``fast_custom_probe=False``
-    keeps the live probe of the current custom endpoint on its full 5s discovery budget."""
+    keeps the live probe of the current custom endpoint on its full discovery budget
+    (CUSTOM_ENDPOINT_PROBE_TIMEOUT)."""
     refresh = bool(refresh)
     payload = build_models_payload(
         ctx, explicit_only=bool(explicit_only), include_unconfigured=bool(include_unconfigured),

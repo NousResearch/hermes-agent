@@ -197,3 +197,41 @@ class TestRuntimeTransitionObserver:
         entries = _read_audit_log(_isolated_home)
         assert len(entries) == 1
         assert entries[0]["source"] == "cli-config-set"
+
+    def test_subsequent_silent_transition_back_to_previously_written_mode_is_audited(
+        self, _isolated_home, caplog
+    ):
+        """Consume/clear write marker: observe manual -> write smart (audited) ->
+        silent flip to manual (audited) -> silent flip back to smart (audited)."""
+        import tools.approval as approval
+
+        _write_config(_isolated_home, "approvals:\n  mode: manual\n")
+        assert approval._get_approval_mode() == "manual"
+
+        # Explicit write: audited via cli-config-set; observer marker consumed
+        set_config_value("approvals.mode", "smart")
+        assert approval._get_approval_mode() == "smart"
+
+        # First silent flip: smart -> manual
+        _write_config(_isolated_home, "approvals:\n  mode: manual\n")
+        with caplog.at_level("WARNING", logger="tools.approval"):
+            assert approval._get_approval_mode() == "manual"
+
+        # Second silent flip: manual -> smart (previously suppressed by sticky marker)
+        _write_config(_isolated_home, "approvals:\n  mode: smart\n")
+        with caplog.at_level("WARNING", logger="tools.approval"):
+            assert approval._get_approval_mode() == "smart"
+
+        entries = _read_audit_log(_isolated_home)
+        assert len(entries) == 3
+        assert entries[0]["source"] == "cli-config-set"
+        assert entries[0]["old_mode"] == "manual"
+        assert entries[0]["new_mode"] == "smart"
+
+        assert entries[1]["source"] == "effective-mode-observer"
+        assert entries[1]["old_mode"] == "smart"
+        assert entries[1]["new_mode"] == "manual"
+
+        assert entries[2]["source"] == "effective-mode-observer"
+        assert entries[2]["old_mode"] == "manual"
+        assert entries[2]["new_mode"] == "smart"

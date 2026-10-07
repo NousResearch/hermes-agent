@@ -3018,13 +3018,14 @@ def _observe_approval_mode_transition(mode: str) -> None:
         _LAST_OBSERVED_APPROVAL_MODE[path] = mode
     if prev is not None and prev != mode:
         try:
-            from hermes_cli.approval_audit import last_written_mode
+            from hermes_cli.approval_audit import consume_written_mode
 
             # This process just persisted this exact mode via the write
             # path (CLI /approvals, hermes config set, TUI toggle) — it was
-            # already audited there. Only SILENT transitions need the
-            # observer's warning + audit line.
-            if last_written_mode(path) == mode:
+            # already audited there. Consume the marker on the matching
+            # observation so future silent transitions back to this mode
+            # are not suppressed (#84547).
+            if consume_written_mode(path, mode):
                 return
         except Exception:
             pass

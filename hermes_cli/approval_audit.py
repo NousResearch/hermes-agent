@@ -41,6 +41,19 @@ def last_written_mode(path: str):
         return _LAST_WRITTEN_MODE.get(path)
 
 
+def consume_written_mode(path: str, mode: str) -> bool:
+    """If the last mode written for ``path`` matches ``mode``, clear it and return True.
+
+    Consumes the write marker on the first matching observation so that
+    subsequent silent transitions back to that same mode are not suppressed.
+    """
+    with _write_lock:
+        if _LAST_WRITTEN_MODE.get(path) == mode:
+            _LAST_WRITTEN_MODE.pop(path, None)
+            return True
+        return False
+
+
 def _resolve_log_path() -> Path:
     """``$HERMES_HOME/logs/approvals.log``."""
     from hermes_constants import get_hermes_home

@@ -253,6 +253,78 @@ def test_a_new_deferral_episode_records_again(board):
     assert kb.get_task(conn, tid).status == "running"
 
 
+# ---------------------------------------------------------------------------
+# The SAME class at the sibling site (#123822): the ``respawn_guarded`` append in
+# ``_dispatch_lane_task``. A held card here is ``ready`` with no run involved at all, and the guard
+# reason (``active_pr`` until the PR closes, ``blocker_auth`` until the quota returns) persists for
+# hours — so an ungated append writes ~1 row/minute for the whole hold.
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def every_assignee_spawnable(monkeypatch):
+    """Resolve every assignee, so a card reaches the GUARD and not ``skipped_nonspawnable``."""
+    import hermes_cli.profiles as profmod
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+
+
+def _ready_card_with_pr_comment(conn, pr: int = 7) -> str:
+    """A ``ready`` card a real guard will hold: a fresh comment linking an open PR (``active_pr``)."""
+    tid = kb.create_task(conn, title="guarded", assignee="worker")
+    kb.add_comment(
+        conn, tid, author="worker",
+        body=f"Opened https://github.com/example/repo/pull/{pr} for review.",
+    )
+    return tid
+
+
+def test_a_persistently_guarded_ready_card_records_once_not_once_per_tick(
+    board, every_assignee_spawnable,
+):
+    """#123822 class, sibling path: the guard branch mutates no state, so the card keeps matching
+    the dispatch selection.
+
+    N ticks for ONE held ``ready`` card must leave ONE ``respawn_guarded`` row — the daemon ticks
+    every 60 s and ``gc_events`` skips non-terminal cards, so an ungated append grows the log
+    ~1 row/minute for the whole hold.
+    """
+    conn = board
+    tid = _ready_card_with_pr_comment(conn)
+    assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+    for _ in range(5):
+        res = kbd.dispatch_once(conn)
+        assert dict(res.respawn_guarded).get(tid) == "active_pr"
+
+    events = [e for e in kb.list_events(conn, tid) if e.kind == "respawn_guarded"]
+    assert len(events) == 1, f"one held episode records once, got {len(events)}"
+    assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_a_changed_guard_reason_records_again(board, every_assignee_spawnable):
+    """The gate is a STATE CHANGE, not a blanket one-shot: new information still records.
+
+    A quota wall that supersedes the ``active_pr`` hold is a different reason, and dropping it
+    would trade log growth for a silent record loss.
+    """
+    conn = board
+    tid = _ready_card_with_pr_comment(conn)
+    assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+    kbd.dispatch_once(conn)
+    kbd.dispatch_once(conn)
+
+    # ``blocker_auth`` is checked ahead of ``active_pr``: a stamped quota error is now the reason.
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("429 Too Many Requests: rate limit exceeded", tid),
+        )
+    assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
+    assert dict(kbd.dispatch_once(conn).respawn_guarded).get(tid) == "blocker_auth"
+
+    reasons = [e.payload.get("reason") for e in kb.list_events(conn, tid)
+               if e.kind == "respawn_guarded"]
+    assert reasons == ["active_pr", "blocker_auth"], f"a changed reason must record, got {reasons}"
+
+
 def test_recovery_reconciliation_needs_a_disowned_premise(board):
     """History a worker recorded is never rewritten; only a proven-infrastructure abandonment
     is reconciled, and the reconciliation attributes nothing to the worker."""

@@ -2230,6 +2230,28 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _lane_skip_recorded(
+    conn: sqlite3.Connection, task_id: str, kind: str, payload: dict,
+) -> bool:
+    """True when the newest event on the card is already this held-skip record.
+
+    The dispatcher's skip branches — a non-spawnable assignee, a respawn guard — mutate no
+    state, so the card keeps matching the dispatch selection and would append an identical
+    event on every tick: ~1 row/minute for a hold that lasts hours (``active_pr`` until the PR
+    closes, ``blocker_auth`` until the quota returns), and ``gc_events`` skips non-terminal
+    cards, so nothing ever collects them. One row per held EPISODE is what the record needs:
+    an event of another kind landing in between (a claim, a reclaim, a comment, a reassignment)
+    is a changed situation, and a changed payload (e.g. a new guard reason) is new information,
+    so both record again.
+    """
+    last = conn.execute(
+        "SELECT kind, payload FROM task_events WHERE task_id = ? "
+        "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,)).fetchone()
+    if last is None or last["kind"] != kind:
+        return False
+    return last["payload"] == _kb._json_or_null(payload)
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2264,11 +2286,8 @@ def _dispatch_lane_task(
         # and not one row per foreign home per tick on a shared board (#101015).
         if not dry_run:
             with _kb.write_txn(conn):
-                last = conn.execute(
-                    "SELECT kind, payload FROM task_events WHERE task_id = ? "
-                    "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,)).fetchone()
-                if (last is None or last["kind"] != "skipped_nonspawnable"
-                        or last["payload"] != _kb._json_or_null({"assignee": assignee})):
+                if not _lane_skip_recorded(
+                        conn, task_id, "skipped_nonspawnable", {"assignee": assignee}):
                     _kb._append_event(conn, task_id, "skipped_nonspawnable", {"assignee": assignee})
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
@@ -2288,9 +2307,16 @@ def _dispatch_lane_task(
         # the operator's intent ("default") was perfectly clear (#27145). Mutating the row (not just the
         # in-memory view) keeps diagnostics and the board state consistent: the task is now legitimately
         # owned by ``kanban.default_assignee``, not "unassigned but secretly routed".
+        # Record the hold ONCE PER EPISODE: this branch mutates no state, so the card keeps
+        # matching the dispatch selection and would otherwise append an identical row on every
+        # tick (#123822 class — the daemon ticks every 60s and ``gc_events`` skips non-terminal
+        # cards). A new guard reason, or any intervening event, is a new episode and records.
         if not dry_run:
             with _kb.write_txn(conn):
-                _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+                if not _lane_skip_recorded(
+                        conn, task_id, "respawn_guarded", {"reason": guard_reason}):
+                    _kb._append_event(
+                        conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
 
     def _count_spawn(name: str) -> None:

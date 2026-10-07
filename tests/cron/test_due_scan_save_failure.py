@@ -312,7 +312,6 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
     monkeypatch.setattr(cron_cli, "_active_cron_provider_name", lambda: "chronos")
     monkeypatch.setattr(scheduler, "_should_yield_tick_to_fresh_gateway", lambda: None)
     monkeypatch.setattr(scheduler, "_sweep_mcp_orphans", lambda: None)
-
     def read_only_lock(_path):
         raise OSError(errno.EROFS, "Read-only file system")
 
@@ -352,8 +351,11 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
         os.chmod(target, 0o600)
 
     sent = []
+    gate = asyncio.Event()
+    gate.set()
 
     async def send(platform, home, transport, message, failure_fmt):
+        await gate.wait()  # cleared below to hold a delivery open while the store flips
         sent.append((home.chat_id, message))
         return True
 
@@ -361,12 +363,14 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
     runner = SimpleNamespace(_send_home_channel_message=send, _served_profile_homes={"p": cron_store},
                              _served_home_channel_transports=lambda: iter([("p", "telegram", None, home, object())]))
     monkeypatch.setattr("hermes_constants.get_routing_process_hermes_home", lambda: cron_store / "launch")
-    monkeypatch.setattr(cron_store_notices, "NOTICE_REPEAT_SECONDS", 0.05)
+    # Zero repeat window: the deferred "recovered" is due on the loop's next pass, after every
+    # transition already queued, so the flap cases below are decided by event order, not timing.
+    monkeypatch.setattr(cron_store_notices, "NOTICE_REPEAT_SECONDS", 0)
     loop = asyncio.new_event_loop()
 
-    async def drain():  # past the repeat window, then until every notice send has finished
-        await asyncio.sleep(0.2)
-        await asyncio.gather(*(asyncio.all_tasks() - {asyncio.current_task()}), return_exceptions=True)
+    async def drain():  # until no timer or notice send is left
+        while loop._scheduled or len(asyncio.all_tasks()) > 1:
+            await asyncio.sleep(0)
 
     settle = lambda: loop.run_until_complete(drain())
     try:
@@ -386,12 +390,24 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
         store_health.note_unwritable(enospc, "x", "scan", [_due_job()])  # already writable when the loop runs:
         save_jobs([_due_job()])  # nothing announced, so no lone "recovered" either
         settle()
+        spin = lambda: [loop.run_until_complete(asyncio.sleep(0)) for _ in range(5)]
+        gate.clear()  # the 3rd notice ("unwritable") is slow to deliver ...
+        store_health.note_unwritable(enospc, "x", "scan", [_due_job()])
+        spin()
+        save_jobs([_due_job()])  # ... "recovered" fires and queues behind it ...
+        spin()
+        store_health.note_unwritable(enospc, "x", "scan", [_due_job()])  # ... and the store fails again
+        gate.set()
+        settle()  # in order: the outage notice lands, the stale "recovered" is dropped, no duplicate
+        assert [m[0] for _, m in sent][-1] == "⚠"  # store still down: the outage notice is the last word
+        save_jobs([_due_job()])
+        settle()  # 4th notice: recovered
         install_cron_store_notices(SimpleNamespace(), loop)  # a send that raises is logged, not lost
         store_health.note_unwritable(enospc, "x", "scan", [_due_job()])
         settle()
     finally:
         loop.close()
-    assert len(sent) == 2 and {chat for chat, _ in sent} == {"c1"}
+    assert [m[0] for _, m in sent] == ["⚠", "✅", "⚠", "✅"] and {chat for chat, _ in sent} == {"c1"}
     assert str(cron_dir) in sent[0][1] and "ENOSPC: No space left on device" in sent[0][1] and "since " in sent[0][1]
     assert f"fix permissions on {cron_dir}" in sent[0][1]
     assert "writable again; 1 skipped run(s), catching up once per job" in sent[1][1]

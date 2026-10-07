@@ -31,16 +31,28 @@ def install_cron_store_notices(runner, loop: asyncio.AbstractEventLoop) -> None:
     # Loop-only state (mutated in loop callbacks, never on the ticker thread).
     announced: set[str] = set()  # stores whose current outage got an "unwritable" notice
     pending: dict[str, asyncio.TimerHandle] = {}  # store -> its deferred "recovered" notice
+    sending: dict[str, asyncio.Lock] = {}  # store -> serializes its notices, in transition order
+
+    async def deliver(event, record) -> None:
+        async with sending.setdefault(record.store, asyncio.Lock()):
+            # Re-check at delivery: a send can wait on profile loading or its transport, and the
+            # store may have flipped meanwhile; a stale notice must never be the last word.
+            if (degraded_record(Path(record.store)) is None) != (event == "recovered"):
+                if event == "unwritable":
+                    announced.discard(record.store)  # never announced: no "recovered" owed either
+                return  # a dropped "recovered" leaves the outage announced: its notice still stands
+            if event == "recovered":
+                announced.discard(record.store)
+            await send_cron_store_notice(runner, event, record)
 
     def send(event, record) -> None:
-        task = loop.create_task(send_cron_store_notice(runner, event, record))
+        task = loop.create_task(deliver(event, record))
         task.add_done_callback(lambda done: _log_notice_failure(done, event, record.store))
 
     def send_recovered(record) -> None:
         pending.pop(record.store, None)
-        if degraded_record(Path(record.store)) is None:  # else it degraded again: outage goes on
-            announced.discard(record.store)
-            send("recovered", record)
+        if record.store in announced and degraded_record(Path(record.store)) is None:
+            send("recovered", record)  # else it degraded again (outage goes on) or was never told
 
     def on_loop(event, record) -> None:
         store = record.store
@@ -79,7 +91,6 @@ async def send_cron_store_notice(runner, event: str, record) -> None:
 
     fields = record.notice_fields()
     key = "gateway.cron_store.unwritable" if event == "unwritable" else "gateway.cron_store.recovered"
-    message = t(key, **fields)
     store_home = hermes_home_key(Path(record.store).parent)
     served_homes = runner._served_profile_homes or {}
     logger.info("Broadcasting cron store %s notice for %s", event, record.store)
@@ -90,6 +101,7 @@ async def send_cron_store_notice(runner, event: str, record) -> None:
         # The opt-out is the owning profile's; the launch profile needs no extra scope.
         scope = _async_profile_runtime_scope(Path(served_home)) if served_home else contextlib.nullcontext()
         async with scope:
+            message = t(key, **fields)  # inside the owning profile's scope: its display.language
             await present_notification(
                 lambda: runner._send_home_channel_message(
                     platform, home, transport, message, "Cron store notice failed for %s:%s: %s"),

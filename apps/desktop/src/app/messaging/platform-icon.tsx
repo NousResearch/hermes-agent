@@ -65,6 +65,7 @@ const PLATFORM_ICONS: Record<string, PlatformIconSpec> = {
   signal: { Icon: SiSignal, color: '#3A76F0', kind: 'brand' },
   whatsapp: { Icon: SiWhatsapp, color: '#25D366', kind: 'brand' },
   bluebubbles: { Icon: SiApple, color: '#0BD318', kind: 'brand' },
+  buzz: { Icon: MessageSquareText, color: '#64748B', kind: 'generic' },
   photon: { Icon: PhotonIcon, color: '#6366F1', kind: 'brand' },
   homeassistant: { Icon: SiHomeassistant, color: '#18BCF2', kind: 'brand' },
   email: { Icon: SiGmail, color: '#EA4335', kind: 'brand' },

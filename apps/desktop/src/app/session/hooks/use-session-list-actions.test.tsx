@@ -710,6 +710,7 @@ describe('refreshSessions identity + loading hygiene', () => {
 describe('refreshSessions batches slices into one request', () => {
   it('routes a registered plugin source into messaging instead of recents', async () => {
     const messaging = [
+      row('buzz-run', { source: 'buzz', title: 'Buzz chat' }),
       row('raft-run', { source: 'raft', title: 'Raft chat' }),
       row('custom-run', { source: 'custom_platform', title: 'Custom chat' })
     ]
@@ -724,10 +725,10 @@ describe('refreshSessions batches slices into one request', () => {
 
     expect(listSidebarSessions).toHaveBeenCalledWith(
       expect.objectContaining({
-        recentsExclude: expect.arrayContaining(['raft'])
+        recentsExclude: expect.arrayContaining(['buzz', 'raft'])
       })
     )
-    expect($messagingSessions.get().map(s => s.id)).toEqual(['raft-run'])
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['buzz-run', 'raft-run'])
   })
 
   it('forwards the active profile scope + section limits to the batched call', async () => {

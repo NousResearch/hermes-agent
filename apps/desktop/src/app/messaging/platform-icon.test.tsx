@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { PlatformAvatar } from './platform-icon'
 
 const PLUGIN_BACKED_PLATFORMS = [
+  { id: 'buzz', name: 'Buzz' },
   { id: 'google_chat', name: 'Google Chat' },
   { id: 'irc', name: 'IRC' },
   { id: 'line', name: 'LINE' },

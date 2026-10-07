@@ -736,12 +736,10 @@ def _slash_args(cmd: str) -> str:
 
 
 def _ensure_skill_commands() -> dict:
-    global _skill_commands
-    if _skill_commands is None:
-        from agent.skill_commands import scan_skill_commands
-
-        _skill_commands = scan_skill_commands()
-    return _skill_commands
+    if _skill_commands is not None:
+        return _skill_commands
+    from agent.skill_commands import get_interactive_skill_commands
+    return get_interactive_skill_commands()
 
 
 def get_skill_commands() -> dict:
@@ -973,27 +971,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         set_save_login_prompt_callback(self._vault_save_login_callback)
         set_code_prompt_callback(self._vault_code_callback)
         self._tool_callbacks_installed = True
-
-    def _ensure_tirith_security(self) -> None:
-        """Check tirith availability once before tools can run terminal commands."""
-        if self._tirith_security_checked:
-            return
-        self._tirith_security_checked = True
-        try:
-            from tools.tirith_security import ensure_installed, is_platform_supported, missing_is_expected
-
-            if (
-                ensure_installed(log_failures=False) is None and is_platform_supported()
-                and (self.config.get("security", {}) or {}).get("tirith_enabled", True)
-            ):
-                # First launch after install downloads tirith in the background;
-                # warning then would report a fault that resolves itself.
-                if missing_is_expected():
-                    logger.info("tirith not ready (downloading or lazy installs off); pattern matching only")
-                else:
-                    _cprint(f"  {_DIM}{_t('cli.startup.tirith_unavailable')}{_RST}")
-        except Exception as exc:
-            logger.debug("tirith availability check failed: %s", exc)
 
     def _show_security_advisories(self):
         """Startup banner for unacked security advisories, on stderr (piped stdout stays clean); 24h rate-limited."""
@@ -1328,7 +1305,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         """``/<skill> ...``; stacked ``/skill-a /skill-b do XYZ`` loads every leading skill (up to 5)."""
         from agent.skill_commands import build_stacked_skill_invocation_message, split_stacked_skill_commands
 
-        extra_keys, user_instruction = split_stacked_skill_commands(rest)
+        # Interactive surface: stacked tokens resolve against the interactive
+        # map so plugin skills stack in the CLI like native skills.
+        extra_keys, user_instruction = split_stacked_skill_commands(rest, interactive=True)
         if extra_keys:
             stacked_result = build_stacked_skill_invocation_message(
                 [base_cmd, *extra_keys], user_instruction, task_id=self.session_id,

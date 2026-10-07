@@ -384,6 +384,36 @@ class TestDesktopSurface:
             "remote import outside the SDK (desktop/plugin.js:4)",
         ]
 
+    def test_root_layout_plugin_js_is_linted_like_desktop_plugin_js(self, tmp_path):
+        """The Desktop installer takes a repo-root ``plugin.js`` as the entry (ahead of
+        ``desktop/plugin.js``) and publishes the root beside it, so admission lints that layout too:
+        the entry, the root JS shipped next to it, and a ``desktop/`` tree that rides along."""
+        d = tmp_path / "root-desk"
+        (d / "desktop").mkdir(parents=True)
+        (d / "sidecar").mkdir()
+        (d / "plugin.yaml").write_text(yaml.safe_dump(dict(BASE_MANIFEST, name="root-desk")), encoding="utf-8")
+        (d / "plugin.js").write_text(
+            "import { definePlugin } from '@hermes/plugin-sdk'\n"
+            "document.querySelectorAll('[data-slot=\"dialog-overlay\"]').forEach(el => el.remove())\n",
+            encoding="utf-8")
+        (d / "helper.js").write_text("const s = document.createElement('script')\n", encoding="utf-8")
+        (d / "desktop" / "plugin.js").write_text("eval(payload)\n", encoding="utf-8")
+        (d / "sidecar" / "worker.js").write_text("const m = await import('jszip')\n", encoding="utf-8")
+        assert desktop_surface_hits(d) == [
+            "dynamic code evaluation (desktop/plugin.js:1)",
+            "script injection (helper.js:1)",
+            "app DOM reach (plugin.js:2)",
+        ]
+        report = validate_plugin_dir(d)
+        failed = {name: detail for name, ok, detail in report.checks if not ok}
+        assert "app DOM reach (plugin.js:2)" in failed["desktop surface"]
+
+        (d / "plugin.js").write_text("import { definePlugin } from '@hermes/plugin-sdk'\n", encoding="utf-8")
+        (d / "helper.js").unlink()
+        (d / "desktop" / "plugin.js").unlink()
+        report = validate_plugin_dir(d)
+        assert ("desktop surface", True, "stays inside the plugin SDK surface") in report.checks
+
 
 def test_runtime_rebind_of_hermes_core_fails_admission(tmp_path):
     """A plugin that replaces Hermes core in place fails ``no core override``: through a module

@@ -6,11 +6,14 @@ import hashlib
 import json
 import threading
 import time
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from agent import memory_provider
 from agent.memory_manager import MemoryManager, build_memory_context_block
 from agent.memory_provider import (
     MAX_MEMORY_OBSERVATION_BYTES,
@@ -1211,6 +1214,184 @@ def test_negative_huge_integer_is_rejected_without_abs(monkeypatch):
     negative_huge = -(1 << (4 * MAX_MEMORY_OBSERVATION_BYTES + 1))
     with pytest.raises(ValueError, match="payload is too large"):
         _freeze_memory_observation_payload(negative_huge)
+
+
+def test_str_subclass_cannot_lie_about_length_before_serialization(monkeypatch):
+    """An overridden ``__len__`` cannot make oversized text reach the JSON encoder."""
+    class LyingString(str):
+        def __len__(self):
+            return 1
+
+    payload = LyingString("x" * (MAX_MEMORY_OBSERVATION_BYTES * 128))
+    serialized = []
+    original_dumps = json.dumps
+
+    def track_dumps(value, *args, **kwargs):
+        if value is payload:
+            serialized.append(True)
+        return original_dumps(value, *args, **kwargs)
+
+    monkeypatch.setattr(memory_provider.json, "dumps", track_dumps)
+    with pytest.raises(ValueError):
+        _freeze_memory_observation_payload(payload)
+
+    assert serialized == []
+
+
+@pytest.mark.parametrize("field_name", ["source_kind", "schema", "provider_name"])
+def test_str_subclass_cannot_bypass_observation_field_bound(monkeypatch, field_name):
+    """Metadata length checks use the underlying str size before envelope encoding."""
+    class LyingString(str):
+        def __len__(self):
+            return 1
+
+    oversized = LyingString("x" * 256)
+    observation = MemoryObservation(
+        source_kind=oversized if field_name == "source_kind" else "recall",
+        schema=oversized if field_name == "schema" else "fixture.recall",
+        version=1,
+        payload={},
+    )
+    provider = StructuredMemoryProvider(
+        name=oversized if field_name == "provider_name" else "builtin",
+        result=MemoryPrefetchResult(observations=(observation,)),
+    )
+    manager = MemoryManager()
+    manager.add_provider(provider)
+    serialized_envelopes = []
+    original_dumps = json.dumps
+
+    def track_dumps(value, *args, **kwargs):
+        if isinstance(value, dict) and "source_kind" in value and "version" in value:
+            serialized_envelopes.append(True)
+        return original_dumps(value, *args, **kwargs)
+
+    monkeypatch.setattr(memory_provider.json, "dumps", track_dumps)
+    result = manager.prefetch_all_result("question")
+
+    assert result.observations == ()
+    assert serialized_envelopes == []
+
+
+def test_mapping_observation_conversion_does_not_expand_untrusted_fields():
+    class NoIterationMapping(Mapping):
+        def __init__(self, values):
+            self._fields = values
+
+        def __getitem__(self, key):
+            return self._fields[key]
+
+        def __iter__(self):
+            raise AssertionError("observation mapping must not be expanded")
+
+        def __len__(self):
+            return 1_000_000
+
+    candidate: Any = NoIterationMapping(
+        {
+            "source_kind": "recall",
+            "schema": "fixture.recall",
+            "version": 1,
+            "payload": {"available": True},
+        }
+    )
+    provider = StructuredMemoryProvider(
+        name="builtin",
+        result=MemoryPrefetchResult(observations=(candidate,)),
+    )
+    manager = MemoryManager()
+    manager.add_provider(provider)
+
+    result = manager.prefetch_all_result("question")
+
+    assert result.observations == (
+        MemoryObservation(
+            source_kind="recall",
+            schema="fixture.recall",
+            version=1,
+            provider="builtin",
+            payload={"available": True},
+        ),
+    )
+
+
+def test_oversized_observation_version_is_rejected_before_envelope_encoding(
+    monkeypatch,
+):
+    """A huge positive schema version is rejected before serializing its envelope."""
+    oversized_version = 1 << (4 * MAX_MEMORY_OBSERVATION_BYTES + 2)
+    provider = StructuredMemoryProvider(
+        name="builtin",
+        result=MemoryPrefetchResult(
+            context="usable context",
+            observations=(
+                MemoryObservation(
+                    source_kind="fixture_context",
+                    schema="fixture.context",
+                    version=oversized_version,
+                    payload={"available": True},
+                ),
+            ),
+        ),
+    )
+    manager = MemoryManager()
+    manager.add_provider(provider)
+    serialized_envelopes = []
+    original_dumps = json.dumps
+
+    def track_dumps(value, *args, **kwargs):
+        if isinstance(value, dict) and value.get("version") == oversized_version:
+            serialized_envelopes.append(True)
+        return original_dumps(value, *args, **kwargs)
+
+    monkeypatch.setattr("agent.memory_manager.json.dumps", track_dumps)
+    result = manager.prefetch_all_result("question")
+
+    assert result.context == "usable context"
+    assert result.observations == ()
+    assert serialized_envelopes == []
+
+
+def test_lying_int_subclass_version_is_rejected_before_serialization(monkeypatch):
+    """An overridden ``bit_length`` cannot send a huge version to the encoder."""
+
+    class LyingInt(int):
+        def bit_length(self):
+            return 1
+
+    oversized_version = LyingInt(1 << (4 * MAX_MEMORY_OBSERVATION_BYTES + 2))
+    provider = StructuredMemoryProvider(
+        name="builtin",
+        result=MemoryPrefetchResult(
+            context="usable context",
+            observations=(
+                MemoryObservation(
+                    source_kind="fixture_context",
+                    schema="fixture.context",
+                    version=oversized_version,
+                    payload={"available": True},
+                ),
+            ),
+        ),
+    )
+    manager = MemoryManager()
+    manager.add_provider(provider)
+    serialized_versions = []
+    original_dumps = json.dumps
+
+    def track_dumps(value, *args, **kwargs):
+        if value is oversized_version or (
+            isinstance(value, dict) and value.get("version") is oversized_version
+        ):
+            serialized_versions.append(value)
+        return original_dumps(value, *args, **kwargs)
+
+    monkeypatch.setattr("agent.memory_manager.json.dumps", track_dumps)
+    result = manager.prefetch_all_result("question")
+
+    assert result.context == "usable context"
+    assert result.observations == ()
+    assert serialized_versions == []
 
 
 def test_ordered_valid_observations_unaffected_by_shared_operation_budget(

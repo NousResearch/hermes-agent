@@ -150,6 +150,74 @@ def _serving_profile(profile: Optional[str]) -> str:
     return _cron_profile_home(profile)[0] if profile else _cron_default_profile()
 
 
+# #draft-read: a NEW Desktop chat is born in this process (session.create) but gets its
+# state.db row only on the first prompt (methods_session._create_session: lazy rows keep
+# every launch/"New agent" draft out of the sidebar). The Desktop, however, reads
+# /timeline and /messages the moment create answers — so BOTH raced the row and answered
+# 404 "Session not found". The client reads any 404 as "route missing"
+# (apps/desktop/src/lib/gateway-rpc.ts::isMissingRestEndpoint, whose own comment admits
+# the rule is only sound for routes without path params), then burns its cross-connection
+# probe budget and holds the first prompt — measured 10-38 s of dead air, and 42 ms from
+# the second 404 to prompt.submit (desktop.log vs gui.log). Only the FIRST message of a
+# new chat is affected; once the row exists every read is a normal 200.
+#
+# So: recognize this process's own registered-but-unpersisted draft and answer an EMPTY
+# PAGE instead of a 404. Deliberately narrow — an unknown id, a store we cannot read, a
+# backlog scan failure, or another profile's draft all fall through to the original 404;
+# a wrong empty page would be worse than the 404 it replaces.
+def _live_draft_stored_id(session_id: str, profile: Optional[str]) -> Optional[str]:
+    """The stored session_key of THIS process's unpersisted draft, or None.
+
+    Keyed on the stored id, not the runtime id: the Desktop reads /timeline and /messages
+    by STORED id (``20260930_104013_a03380`` — 20 chars), which is what a runtime-id shape
+    test can never match. session.create reserves that key up front and the draft carries
+    it, so the mapping is exact."""
+    if not re.fullmatch(r"\d{8}_\d{6}_[0-9a-f]{6}", session_id or ""):
+        return None
+    try:
+        from tui_gateway import server as _gateway_server
+    except Exception:  # pragma: no cover  # health: allow BLE001 -- importing the gateway must never break a read-only endpoint
+        return None
+    for session in list(_gateway_server._sessions.values()):
+        if not isinstance(session, dict) or session.get("_finalized") or session.get("_closing"):
+            continue
+        if str(session.get("session_key") or "") != session_id:
+            continue
+        # profile_home None = the launch profile, i.e. the serving one. A genuinely
+        # profile-scoped draft is admitted only when the read names that same profile.
+        home = session.get("profile_home")
+        if home and profile and str(home) != str(_cron_profile_home(profile)[1]):
+            continue
+        return session_id
+    return None
+
+
+def _unpersisted_draft_readable(db, session_id: str, profile: Optional[str]) -> bool:
+    """True when *session_id* is a live draft root with no row in *db* yet.
+
+    The store check is what keeps this honest: once the first prompt writes the row, the
+    same stored id must fall through to the real read (and to messages accumulated since).
+    ``bg_*`` backlog ids are excluded — they carry no ``YYYYMMDD_HHMMSS`` prefix, so prefix
+    resolution would miss a one-second window of a session id seen only as a runtime id."""
+    if session_id.startswith("bg_"):
+        return False
+    if _live_draft_stored_id(session_id, profile) is None:
+        return False
+    return not _session_row_exists(db, session_id)
+
+
+def _session_row_exists(db, session_id: str) -> bool:
+    """Best-effort row/prefix existence check; None-safe on read-only handles and on a
+    store that cannot resolve (a corrupt store must never be read as "row-less draft")."""
+    try:
+        row = db._read_one("SELECT 1 FROM sessions WHERE id = ?", (session_id,))
+        if row is not None:
+            return True
+        return db.resolve_session_id(session_id) is not None
+    except Exception:  # health: allow BLE001 -- a store problem must fall through to the original 404, never paint an empty page
+        return True
+
+
 def _resolve_session_id(db, session_id: str) -> Optional[str]:
     """Resolve *session_id*; a corrupt store (prefix scan raises "malformed") is
     reported as 503 with the actual problem instead of a misleading 404."""
@@ -728,9 +796,13 @@ async def get_session_messages(
     if order not in (None, "oldest", "latest"):
         raise HTTPException(status_code=400, detail="order must be one of: oldest, latest")
 
+    draft_page = False
+
     def _read(db):
+        nonlocal draft_page
         sid = _resolve_session_id(db, session_id)
         if not sid:
+            draft_page = _unpersisted_draft_readable(db, session_id, profile)
             return None
         sid = db.resolve_resume_session_id(sid)
         # Always page (an omitted limit used to load whole transcripts). Explicit
@@ -750,6 +822,15 @@ async def get_session_messages(
 
     result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
     if result is None:
+        if draft_page:
+            # Unpersisted draft: empty transcript page, never a 404 (#draft-read). Shape
+            # matches a real page's (pagination echoed) so the Desktop's order-echo guard
+            # (`pageHonorsLatestOrder`) adopts it as the tail instead of re-paging.
+            return {
+                "session_id": session_id, "profile": _serving_profile(profile), "messages": [],
+                "pagination": {"limit": limit if limit is not None else 500, "offset": offset,
+                               "order": order or ("latest" if limit is None else "oldest"),
+                               "returned": 0}}
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     sid, _limit, messages = result
     projected_messages = await asyncio.to_thread(
@@ -795,13 +876,32 @@ async def get_session_timeline(
     from hermes_state_timeline import get_session_timeline as read_timeline
 
     owner = _serving_profile(profile)
+    draft_page = False
 
     def _read(db):
-        sid = _timeline_session_id(db, session_id, owner)
+        nonlocal draft_page
+        try:
+            sid = _timeline_session_id(db, session_id, owner)
+        except HTTPException as exc:
+            # _timeline_session_id 404s on an id this store does not own — but an
+            # unpersisted draft has no row at all, which is expected, not an error.
+            if exc.status_code != 404:
+                raise
+            draft_page = _unpersisted_draft_readable(db, session_id, profile)
+            if not draft_page:
+                raise
+            return None
         return {"session_id": sid, "profile": owner,
                 **read_timeline(db, sid, limit=limit, after_row_id=after_row_id)}
 
-    return await asyncio.to_thread(_with_db, profile, _read, read_only=True)
+    result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
+    if result is None:
+        # An unpersisted draft has no rows to read: empty page, never a 404 (#draft-read).
+        return {"session_id": session_id, "profile": owner,
+                "entries": [], "pagination": {"limit": limit, "after_row_id": after_row_id,
+                                              "returned": 0, "total": 0, "has_more": False,
+                                              "next_cursor": None}}
+    return result
 
 
 @manage_router.get("/api/sessions/{session_id}/messages/around")

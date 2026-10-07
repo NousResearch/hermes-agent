@@ -44,6 +44,10 @@ class ConversationState:
 
     model_override: Optional[dict[str, Any]] = None  # /model per-session override
     one_turn_restore: Optional[dict[str, Any]] = None  # /model --once snapshot
+    # True when model_override currently holds an identity RESTORED from last_served (ambient
+    # resume) rather than one the user explicitly picked with /model — so it is never re-persisted
+    # as an explicit override and its unavailability degrades loudly instead of silently.
+    restored_from_served: bool = False
     reasoning_override: Optional[dict[str, Any]] = None  # /reasoning override
     service_tier_override: Any = _UNSET_TIER  # /fast: "priority" or None; _UNSET_TIER = absent
     last_resolved_model: str = ""  # last successfully-resolved non-empty model

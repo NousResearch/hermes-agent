@@ -713,12 +713,14 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
   const runEdit = useCallback(
     async (edited: AppendMessage, answeredFor?: ChatMessage[]): Promise<void> => {
       const planning = readMessages()
+      const runtimeAtPlan = runtimeIdRef.current
       const confirmDeep = () => confirm(deepCutConfirmRequest(t.assistant.thread))
       const forceDeep = answeredFor !== undefined && answeredFor === planning
       const planned = await planConfirmedEdit(planning, edited, forceDeep ? async () => true : confirmDeep)
       const forced = planned && forceDeep ? { ...planned, confirmDeepTruncate: true } : planned
 
-      if (!forced) {
+      // A confirm is a wait of user length: an answer given after a runtime rebind is not for this one.
+      if (!forced || runtimeIdRef.current !== runtimeAtPlan) {
         return
       }
 

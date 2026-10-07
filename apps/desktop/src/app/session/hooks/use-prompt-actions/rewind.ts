@@ -740,6 +740,10 @@ export async function planConfirmedEdit(
   return plan && confirmIfDeepCut(messages, plan, plan.sourceIndex, confirmDeep)
 }
 
+/** Visible user turns after *index*: what a cut there archives, and what a deep confirm covered. */
+export const laterVisibleUserTurns = (messages: ChatMessage[], index: number) =>
+  messages.filter((m, i) => i > index && isVisibleUserMessage(m)).length
+
 /**
  * After an awaited confirm, an edit plan still holds when the same turn is the target in the
  * current transcript. Streaming replaces the array on every delta, so identity is not the test:
@@ -753,16 +757,13 @@ export function revalidateEditPlan<P extends EditPlan>(
 ): P | null {
   const fresh = planEdit(current, edited)
 
-  const laterUsers = (messages: ChatMessage[], index: number) =>
-    messages.filter((m, i) => i > index && isVisibleUserMessage(m)).length
-
   // A new later user turn landed during the confirm: the user never answered for archiving it.
   if (
     !fresh ||
     fresh.truncateMessageId !== plan.truncateMessageId ||
     fresh.truncateRowId !== plan.truncateRowId ||
     fresh.truncateOrdinal !== plan.truncateOrdinal ||
-    laterUsers(current, fresh.sourceIndex) !== laterUsers(planned, plan.sourceIndex)
+    laterVisibleUserTurns(current, fresh.sourceIndex) !== laterVisibleUserTurns(planned, plan.sourceIndex)
   ) {
     return null
   }

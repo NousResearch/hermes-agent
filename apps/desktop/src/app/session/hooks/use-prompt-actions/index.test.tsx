@@ -6309,6 +6309,138 @@ describe('usePromptActions deep edit confirmed while output streams (#133716)', 
   })
 })
 
+describe('usePromptActions deep-edit consent scope (#133716)', () => {
+  afterEach(() => {
+    cleanup()
+    clearNotifications()
+    setMessages([])
+    $busy.set(false)
+    dropSessionState(RUNTIME_SESSION_ID)
+    dropSessionState('other-runtime')
+  })
+
+  it('a stale-target retry whose refresh shows a new later turn does not reuse the deep confirm', async () => {
+    const seed = [
+      { id: 'u1', parts: [textPart('first')], role: 'user', rowId: 11, timestamp: 0 },
+      { id: 'a1', parts: [textPart('reply')], role: 'assistant', timestamp: 1 },
+      { id: 'u2', parts: [textPart('second')], role: 'user', rowId: 13, timestamp: 2 }
+    ]
+
+    const fresh = [
+      { ...seed[0], rowId: 21 },
+      seed[1],
+      { ...seed[2], rowId: 23 },
+      { id: 'u3', parts: [textPart('arrived after consent')], role: 'user', rowId: 25, timestamp: 3 }
+    ]
+
+    setMessages(seed as never)
+    const submits: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submits.push(params ?? {})
+
+        if (submits.length === 1) {
+          throw new JsonRpcGatewayError('target user message is no longer in session history', { code: 4018 })
+        }
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | undefined
+
+    await actRender(
+      <Harness
+        onReady={h => {
+          handle = h
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumeStoredSession={async () => {
+          setMessages(fresh as never)
+        }}
+        seedMessages={seed}
+        storedSessionId="stored"
+      />
+    )
+
+    const stopConfirming = $confirmRequest.listen(request => {
+      if (request) {
+        settleConfirm(true)
+      }
+    })
+
+    await handle!.editMessage({
+      content: [{ text: 'edited first', type: 'text' }],
+      parentId: null,
+      role: 'user',
+      sourceId: 'u1'
+    } as never)
+    stopConfirming()
+
+    expect(submits).toHaveLength(2)
+    expect(submits[1]).toMatchObject({ truncate_before_row_id: 21 })
+    expect(submits[1]).not.toHaveProperty('confirm_deep_truncate')
+  })
+
+  it('a deep-edit confirm answered after a session switch sends nothing and leaves the new session idle', async () => {
+    const seed = [
+      { id: 'u1', parts: [textPart('first')], role: 'user', rowId: 11, timestamp: 0 },
+      { id: 'u2', parts: [textPart('second')], role: 'user', rowId: 13, timestamp: 1 }
+    ]
+
+    const other = [{ id: 'other-user', parts: [textPart('other chat')], role: 'user', rowId: 99, timestamp: 2 }]
+
+    publishSessionState(RUNTIME_SESSION_ID, createClientSessionState('stored', seed as never))
+    publishSessionState('other-runtime', createClientSessionState('other-stored', other as never))
+    setMessages(seed as never)
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    const submits: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submits.push(params ?? {})
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | undefined
+
+    await actRender(
+      <Harness
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => {
+          handle = h
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={seed}
+      />
+    )
+
+    const stopConfirming = $confirmRequest.listen(request => {
+      if (request) {
+        activeSessionIdRef.current = 'other-runtime'
+        setMessages(other as never)
+        settleConfirm(true)
+      }
+    })
+
+    await handle!.editMessage({
+      content: [{ text: 'edited first', type: 'text' }],
+      parentId: null,
+      role: 'user',
+      sourceId: 'u1'
+    } as never)
+    stopConfirming()
+
+    expect(submits).toEqual([])
+    expect($busy.get()).toBe(false)
+  })
+})
+
 describe('usePromptActions live-owner refusal (#106217)', () => {
   afterEach(() => {
     cleanup()

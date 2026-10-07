@@ -77,25 +77,40 @@ async def run_pre_send_hook(
     return "send", text if rewrite is None else rewrite
 
 
+def _arg(args: tuple, kwargs: dict, index: int, name: str) -> Any:
+    """``send``'s argument by keyword or by its position in ``(chat_id, content, reply_to, metadata)``."""
+    if name in kwargs:
+        return kwargs[name]
+    return args[index] if len(args) > index else None
+
+
 def guard_send(send: Callable[..., Any], dropped_result: Callable[[], Any]) -> Callable[..., Any]:
     """Wrap an adapter class's ``send`` so :data:`PRE_SEND_HOOK` runs once per outbound message."""
     if getattr(send, "__pre_send_guarded__", False):
         return send
 
     @functools.wraps(send)
-    async def guarded_send(self, chat_id, content, reply_to=None, metadata=None, *args, **kwargs):
+    async def guarded_send(self, *args, **kwargs):
+        content = _arg(args, kwargs, 1, "content")
+        metadata = _arg(args, kwargs, 3, "metadata")
         kind = _kind(metadata)
         if _IN_GUARDED_SEND.get() or kind is None or not isinstance(content, str):
-            return await send(self, chat_id, content, *args, reply_to=reply_to, metadata=metadata, **kwargs)
+            return await send(self, *args, **kwargs)
+        chat_id = _arg(args, kwargs, 0, "chat_id")
         platform = getattr(getattr(self, "platform", None), "value", None) or getattr(self, "name", "") or ""
         action, value = await run_pre_send_hook(
-            str(platform), chat_id, content, reply_to=reply_to, metadata=metadata, kind=kind)
+            str(platform), chat_id, content, reply_to=_arg(args, kwargs, 2, "reply_to"), metadata=metadata,
+            kind=kind)
         if action == "drop":
             logger.info("[%s] %s dropped a %s send to %s: %s", platform, PRE_SEND_HOOK, kind, chat_id, value)
             return dropped_result()
+        if "content" in kwargs:
+            kwargs["content"] = value
+        else:
+            args = args[:1] + (value,) + args[2:]
         token = _IN_GUARDED_SEND.set(True)
         try:
-            return await send(self, chat_id, value, *args, reply_to=reply_to, metadata=metadata, **kwargs)
+            return await send(self, *args, **kwargs)
         finally:
             _IN_GUARDED_SEND.reset(token)
 

@@ -126,3 +126,16 @@ async def test_a_raising_hook_fails_open():
     adapter = _Adapter()
     result = await adapter.send("c1", "hello")
     assert result.success and adapter.wire == ["hello"]
+
+
+@pytest.mark.asyncio
+async def test_keyword_only_send_signatures_are_rewritten_too():
+    class _KwAdapter(_Adapter):
+        async def send(self, **kwargs):
+            self.wire.append(kwargs["content"])
+            return SendResult(success=True, message_id="1")
+
+    _register(lambda text, **_: {"action": "rewrite", "text": text + "?"})
+    adapter = _KwAdapter()
+    await adapter.send(chat_id="c1", content="hello", metadata=None)
+    assert adapter.wire == ["hello?"]

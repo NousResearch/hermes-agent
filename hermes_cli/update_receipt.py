@@ -528,6 +528,11 @@ def record_stop_reason(reason: str) -> None:
     _record("fact", f"update stop {reason}", "stop_class", reason)
 
 
+#: git could not write a file it needs (``index.lock``'s directory, a tracked file): an OS permission
+#: error, not a lock another git holds. SSH's ``Permission denied (publickey)`` is an auth failure.
+_GIT_FILE_PERMISSION = re.compile(r"Permission denied(?! *\()|\bEACCES\b")
+
+
 def git_error_stop_class(exc: BaseException) -> Optional[str]:
     """The closed stop token for a git ``CalledProcessError`` that is about to end the run, or None.
 
@@ -538,9 +543,16 @@ def git_error_stop_class(exc: BaseException) -> Optional[str]:
     output = exc.stderr or exc.output or ""
     output = output.decode("utf-8", "replace") if isinstance(output, bytes) else str(output)
     argv = [str(part) for part in exc.cmd] if isinstance(exc.cmd, (list, tuple)) else str(exc.cmd or "").split()
+    return git_output_stop_class(output, argv, exc.returncode)
+
+
+def git_output_stop_class(output: str, argv: list[str], returncode: Optional[int] = None) -> Optional[str]:
+    """:func:`git_error_stop_class` for a git call that returned instead of raising (``_git_run``)."""
     if "index.lock" in output and "File exists" in output:
         return "git_index_locked"  # another git (or a killed one, #132089) holds the index lock
-    if exc.returncode == 124 and "timed out after" in output:
+    if _GIT_FILE_PERMISSION.search(output):
+        return "permission_denied"  # git may not write a file it needs (index.lock's dir, a tracked file)
+    if returncode == 124 and "timed out after" in output:
         return "git_timeout"  # update_cmd._git_run's own timeout text
     if "No space left on device" in output:
         return "disk_full"
@@ -551,6 +563,30 @@ def git_error_stop_class(exc: BaseException) -> Optional[str]:
     return None
 
 
+def _started_by_handoff_partner() -> bool:
+    """True when the update marker names the Desktop hand-off this process runs under.
+
+    For an exit before the receipt opens, where this process may NOT hold the lock: at the
+    update-lock refusal the marker belongs to whichever update holds it, so "a pid other than
+    ours" (update_cmd._record_update_initiator, which runs under the lock) would call every
+    refusal Desktop-started. The claim is ours only when it names us as its delegate (the posix and
+    Windows hand-offs write that line before the update runs) or names our hand-off partner on
+    line 1 or the delegate line (``HERMES_UPDATE_HANDOFF_PID``, the Tauri updater; our parent, a
+    launcher between the hand-off and us). The marker is read raw: no liveness probe and no
+    cleanup (those are lock policy, not a metrics side effect).
+    """
+    from hermes_cli.update_lock import _handoff_pid, _parse_marker, update_marker_path
+
+    marker = _parse_marker(update_marker_path().read_bytes())
+    if marker.started_at is None:
+        return False
+    pid = os.getpid()
+    if marker.delegate_pid == pid:
+        return True
+    partners = {_handoff_pid(), os.getppid()} - {None, 0, 1, pid}
+    return bool(partners & {marker.pid, marker.delegate_pid})
+
+
 def record_stop_without_receipt(reason: str, outcome: str) -> None:
     """Count an exit that fires before this run's receipt opens, in shared metrics only.
 
@@ -558,7 +594,8 @@ def record_stop_without_receipt(reason: str, outcome: str) -> None:
     ``latest.json`` and the running record belong to the update holding the lock (opening one
     would replace its pointer and reconcile its archive), and the Git-operation refusal runs before
     the receipt, plan and snapshot by design. The row is derived from the same fields a final
-    receipt carries (``outcome`` is ``refused`` or ``failed``). Never raises.
+    receipt carries (``outcome`` is ``refused`` or ``failed``), including the initiator, so a
+    Desktop-started refusal reads ``kind=desktop`` like the same run's receipt would. Never raises.
     """
     with suppress(Exception):
         now = _utc_now_iso()
@@ -567,6 +604,9 @@ def record_stop_without_receipt(reason: str, outcome: str) -> None:
             "outcome": "refused" if outcome == "refused" else "failed",
             "stop_class": reason, "pre_update": {}, "stages": [], "steps": [], "fleet": [],
         }
+        with suppress(Exception):  # no marker, or an unreadable one: the CLI default
+            if _started_by_handoff_partner():
+                data["initiator"] = "desktop"
         from hermes_cli.observability.shared_metrics_update import record_update_receipt
 
         record_update_receipt(data)
@@ -733,26 +773,73 @@ def _metric_receipt(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _consent_reader_importable() -> bool:
+    """Whether this interpreter can load the config reader the recorder's consent gate uses.
+
+    False in the bare ``-I -S`` bootstrap interpreter that finalizes an update whose dependency
+    preparation failed (update_completion._settle_after_commit): it has the new tree but no
+    third-party packages, so ``hermes_cli.config`` dies on ``ruamel``. Only asked of an interpreter
+    that runs the new tree (never the pre-pull one, which must import nothing); the recorder's
+    pre-gate imports the same module next, so a working interpreter loads nothing extra."""
+    try:
+        import hermes_cli.config  # noqa: F401
+    except ImportError:  # ruamel and every other third-party package are missing here
+        return False
+    return True
+
+
+def _bare_collection_enabled() -> Optional[bool]:
+    """Consent as far as an interpreter without the config reader can tell: the loaded module's
+    answer if one is loaded, False when the profile has no config.yaml (the shipped default is off),
+    else None (unknowable here; the next normal start decides)."""
+    enabled = _collection_enabled_now()
+    if enabled is not None:
+        return enabled
+    from hermes_constants import get_hermes_home
+
+    try:
+        (get_hermes_home() / "config.yaml").stat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    return None
+
+
+def _park_metric_receipt(data: dict[str, Any], enabled: Optional[bool]) -> None:
+    """Keep the bounded fields for the next Hermes start (stdlib only): ``report_pending_updates``
+    records them when collection is on, ``begin_process`` purges them when it is off. Collection
+    known off: park nothing and purge what an earlier run parked."""
+    from hermes_constants import get_hermes_home
+    from hermes_cli.runtime_state import _atomic_bytes
+
+    pending = get_hermes_home() / "telemetry" / "shared_metrics" / "pending_updates"  # = PENDING_DIRNAME
+    if enabled is False:
+        import shutil
+
+        shutil.rmtree(pending, ignore_errors=True)  # opted out: nothing parked may be counted later
+        return
+    pending.mkdir(parents=True, exist_ok=True)
+    _atomic_bytes(pending / f"{data.get('update_id')}.json", json.dumps(_metric_receipt(data), default=str).encode())
+
+
 def _publish_shared_metrics(data: dict[str, Any]) -> None:
-    """hermes.update.run/stage from this FINAL receipt; must never fail or slow the update."""
+    """hermes.update.run/stage from this FINAL receipt; must never fail or slow the update.
+
+    Rows are emitted only by an interpreter that can read consent with the real config reader.
+    Any other interpreter parks the bounded fields instead, and the next normal start applies the
+    collection gate (records them, or purges them when collection is off)."""
     with suppress(Exception):
         pre, post = data.get("pre_update") or {}, data.get("post_update") or {}
         if data.get("pid") == os.getpid() and not (pre.get("sha") and pre.get("sha") == post.get("sha")):
             # This interpreter began the run before the checkout swap: importing now would load
-            # pulled code into it. Park the bounded fields (stdlib + loaded modules only); the next
-            # Hermes start records them.
-            from hermes_constants import get_hermes_home
-            from hermes_cli.runtime_state import _atomic_bytes
-
-            pending = get_hermes_home() / "telemetry" / "shared_metrics" / "pending_updates"  # = PENDING_DIRNAME
-            enabled = _collection_enabled_now()
-            if enabled is False:
-                import shutil
-
-                shutil.rmtree(pending, ignore_errors=True)  # opted out: nothing parked may be counted later
-            elif enabled:
-                pending.mkdir(parents=True, exist_ok=True)
-                _atomic_bytes(pending / f"{data.get('update_id')}.json", json.dumps(_metric_receipt(data), default=str).encode())
+            # pulled code into it. Consent comes from the config module it already has loaded.
+            _park_metric_receipt(data, _collection_enabled_now())
+            return
+        if not _consent_reader_importable():
+            # The bare bootstrap interpreter (dependency preparation failed): no config reader, so
+            # it can neither read consent nor emit. Park, unless consent is knowably off.
+            _park_metric_receipt(data, _bare_collection_enabled())
             return
         from hermes_cli.observability.shared_metrics_update import record_update_receipt
 

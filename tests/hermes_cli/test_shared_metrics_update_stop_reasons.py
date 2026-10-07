@@ -5,6 +5,8 @@ receipt opens still count once; a run that committed and owes work never reads `
 from __future__ import annotations
 
 import json
+import os
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -119,3 +121,134 @@ def test_exits_before_the_receipt_opens_count_once_and_leave_the_holders_receipt
         ("lock_held", "refused", "none"), ("git_in_progress", "failed", "other")]
     assert all(contract.counter_dimensions_are_valid(contract.UPDATE_RUN_METRIC, r) for r in rows.runs())
     assert (rows.home / "logs/update_receipts/latest.json").read_bytes() == holders
+
+
+def _marker(home, *lines: str) -> None:
+    (home / ".hermes-update-in-progress").parent.mkdir(parents=True, exist_ok=True)
+    (home / ".hermes-update-in-progress").write_text("".join(f"{line}\n" for line in lines))
+
+
+def test_an_exit_before_the_receipt_reads_desktop_only_under_its_own_hand_off(rows, monkeypatch):
+    """Invariant: a pre-receipt exit carries the initiator its receipt would: ``desktop`` when the
+    marker names this process as the hand-off's delegate or names its hand-off partner, ``cli`` when
+    the marker belongs to some other update (a terminal `hermes update` refused by a Desktop run)."""
+    import os
+
+    from hermes_cli.update_cmd_common import _record_stop
+
+    monkeypatch.delenv("HERMES_UPDATE_HANDOFF_PID", raising=False)
+    pid, other = os.getpid(), 999_999
+    _marker(rows.home, other, 1, "ct:1.000", f"delegate:{pid} ct:2.000")  # the posix/Windows hand-off
+    _record_stop("lock_held", without_receipt="refused")
+    monkeypatch.setenv("HERMES_UPDATE_HANDOFF_PID", str(other))  # the Tauri updater's claim
+    _marker(rows.home, other, 1, "ct:1.000")
+    _record_stop("git_in_progress", without_receipt="failed")
+    monkeypatch.delenv("HERMES_UPDATE_HANDOFF_PID")  # a CLI run refused by someone else's update
+    _record_stop("lock_held", without_receipt="refused")
+    (rows.home / ".hermes-update-in-progress").unlink()
+    _record_stop("managed_install", without_receipt="refused")
+
+    assert [(r["failure_class"], r["kind"]) for r in rows.runs()] == [
+        ("lock_held", "desktop"), ("git_in_progress", "desktop"), ("lock_held", "cli"), ("managed_install", "cli")]
+
+
+@pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="POSIX permissions; root ignores them")
+def test_a_checkout_move_names_a_held_index_lock_apart_from_a_permission_error(rows, tmp_path, monkeypatch):
+    """Invariant: the fast-forward's git error goes through the shared classifier: an index.lock that
+    exists is ``git_index_locked``; git refused permission to create one is ``permission_denied``."""
+    import subprocess
+
+    from hermes_cli import update_cmd, update_cmd_git
+
+    monkeypatch.setattr(update_cmd, "_git_run", update_cmd_git._git_run)  # the real git runner, no main import
+    repo = tmp_path / "repo"
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    cmd = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    git = lambda *a: subprocess.run([*cmd, *a], check=True, capture_output=True, text=True).stdout.strip()  # noqa: E731
+    repo.mkdir()
+    git("init", "-q")
+    (repo / "a").write_text("a")
+    git("add", "a")
+    git("commit", "-qm", "one")
+    old = git("rev-parse", "HEAD")
+    (repo / "a").write_text("b")
+    git("commit", "-qam", "two")
+    new = git("rev-parse", "HEAD")
+    git("reset", "-q", "--hard", old)
+
+    def move() -> str:
+        update_receipt.begin_update_receipt()
+        with pytest.raises(SystemExit):
+            update_cmd._move_checkout_to(cmd, "main", "origin/main", new, old)
+        path = update_receipt.finalize_pending_update_receipt(1, "sys.exit(1)")
+        return json.loads(path.read_text(encoding="utf-8"))["stop_class"]
+
+    (repo / ".git/index.lock").write_text("")
+    held = move()
+    (repo / ".git/index.lock").unlink()
+    index_dir = tmp_path / "readonly-index"
+    index_dir.mkdir()
+    (index_dir / "index").write_bytes((repo / ".git/index").read_bytes())
+    monkeypatch.setenv("GIT_INDEX_FILE", str(index_dir / "index"))
+    index_dir.chmod(0o555)
+    try:
+        denied = move()
+    finally:
+        index_dir.chmod(0o755)
+    assert (held, denied) == ("git_index_locked", "permission_denied")
+    assert git("rev-parse", "HEAD") == old
+
+
+@pytest.mark.parametrize("consent", ["on", "off"])
+def test_the_bare_bootstrap_interpreter_parks_and_the_next_start_applies_the_gate(rows, consent, monkeypatch):
+    """Invariant: a run finalized by the ``-I -S`` bootstrap interpreter (dependency preparation
+    failed; no ruamel, so it cannot read consent) never emits and never drops the run: it parks only
+    the bounded fields, and the next normal start applies the collection gate: counted once while
+    collection is on, purged unrecorded while it is off."""
+    import subprocess
+    from pathlib import Path
+
+    from hermes_cli.observability import shared_metrics_process as process_metrics
+
+    saved: list[tuple[str, dict]] = []
+    monkeypatch.setattr(relay_shared_metrics, "record_process_marks_saved",
+                        lambda marks: saved.extend(marks) or len(marks), raising=False)
+    monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly",
+                        lambda: {"telemetry": {"shared_metrics": {"enabled": consent == "on"}}})
+    monkeypatch.setattr(process_metrics, "_STATE", {})
+    monkeypatch.setattr(process_metrics, "_report_dead_markers", lambda home, own: update_metrics.report_pending_updates())
+
+    home = rows.home
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(f"telemetry:\n  shared_metrics:\n    enabled: {str(consent == 'on').lower()}\n")
+    pending = update_metrics.pending_updates_dir(home)
+    pending.mkdir(parents=True)
+    (pending / "earlier.json").write_text("{}")
+    receipt = {
+        "schema": 1, "pid": 0, "update_id": "0123456789abcdef0123456789abcdef", "outcome": "success",
+        "started_at": "2026-10-07T10:00:00+00:00", "finished_at": "2026-10-07T10:01:00+00:00", "exit_code": 0,
+        "argv": ["hermes", "update", "/home/alice/private"], "pre_update": {"sha": "a" * 40},
+        "stages": [{"name": "apply", "outcome": "success", "mode": "git"}, {"name": "deps", "outcome": "failed"}],
+    }
+    tree = Path(update_receipt.__file__).resolve().parents[1]
+    script = ("import json, sys; sys.path.insert(0, sys.argv[1]); from hermes_cli import update_receipt as r; "
+              "assert 'ruamel' not in sys.modules; r._publish_shared_metrics(json.loads(sys.argv[2]))")
+    subprocess.run([sys.executable, "-I", "-S", "-c", script, str(tree), json.dumps(receipt)], check=True,
+                   env={"HERMES_HOME": str(home), "HOME": str(home.parent), "PATH": os.environ.get("PATH", "")})
+    parked = sorted(path.name for path in pending.glob("*.json"))
+    assert parked == ["0123456789abcdef0123456789abcdef.json", "earlier.json"]  # nothing emitted, nothing lost
+    assert "alice" not in (pending / parked[0]).read_text()
+    assert rows.runs() == [] and not list(home.rglob("metrics.sqlite3"))
+
+    monkeypatch.setattr(process_metrics.threading, "Thread", lambda target, args, **kw: SimpleNamespace(
+        start=lambda: target(*args)))
+    monkeypatch.setattr(process_metrics.atexit, "register", lambda *a: None)
+    monkeypatch.setattr(process_metrics.sys, "excepthook", process_metrics.sys.excepthook)
+    process_metrics.begin_process("cli")  # the next normal start
+    runs = [d for m, d in saved if m == contract.UPDATE_RUN_MARK]
+    if consent == "off":
+        assert runs == [] and not pending.exists()
+    else:
+        assert [(r["outcome"], r["failed_stage"], r["apply_mode"]) for r in runs] == [("success", "none", "git")]
+        assert list(pending.glob("*.json")) == []

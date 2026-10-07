@@ -508,6 +508,7 @@ UPDATE_STOP_CLASSES = frozenset({
     "not_git_checkout",       # the install is not a git checkout (non-Windows)
     "old_version_handoff",    # an older updater's hand-off to this version could not finish
     "parked_branch_blocked",  # the checkout is parked on another branch that is unsafe to switch
+    "permission_denied",      # (see above): git could not write a file it needs (e.g. index.lock's directory)
     "stash_restore_rejected",  # re-applied local changes broke Hermes; the update stopped
     "syntax_rollback",        # the pulled code failed the syntax check and was rolled back
     "target_syntax_error",    # the target failed the syntax check before anything moved

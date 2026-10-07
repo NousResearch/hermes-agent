@@ -463,6 +463,13 @@ def load_hermes_dotenv(
     # profile — see the multiplex guard below.
     from hermes_constants import get_process_hermes_home
     home_path = Path(hermes_home) if hermes_home else get_process_hermes_home()
+    # A Kanban dispatcher deliberately pins the child to one exact worktree.
+    # Capture that trusted triple before the profile .env is loaded with
+    # override=True; otherwise a persisted TERMINAL_CWD replaces the worktree
+    # before cli_config_load gets a chance to validate and preserve it.
+    from hermes_cli.cli_config_load import _dispatcher_pinned_kanban_cwd
+
+    kanban_workspace = _dispatcher_pinned_kanban_cwd()
 
     # Multiplex gateway: while a routed profile-home override is active, copying that profile's .env
     # into os.environ would expose its credentials to sibling turns and every spawned child. The launch
@@ -554,6 +561,8 @@ def load_hermes_dotenv(
     # cron standalone runs) call load_hermes_dotenv() repeatedly and used to flip the effective backend back
     # to the stale .env value mid-session (#29186, #67323).
     _reapply_terminal_config_bridge(home_path)
+    if kanban_workspace is not None:
+        os.environ["TERMINAL_CWD"] = kanban_workspace
 
     return loaded
 

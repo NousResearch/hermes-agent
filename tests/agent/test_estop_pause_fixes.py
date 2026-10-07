@@ -184,6 +184,10 @@ def test_is_allowed_composes_over_every_active_hold_in_both_orders(tmp_path, mon
     assert estop.is_allowed(OPERATOR, "lane-a") is False, "no hold may grant what another denies"
     assert estop.is_allowed(PEER, "lane-a") is False, "no hold may grant what another denies"
 
+    _write(profile / "ESTOP", permissive)  # both hold the SAME identity: the conjunction is met
+    _write(root / "ESTOP", permissive)
+    assert estop.is_allowed(OPERATOR, "lane-a") is True, "served only when EVERY hold admits"
+
 
 def test_is_allowed_denies_by_intersection_when_a_hold_is_corrupt(tmp_path, monkeypatch):
     """F-002: an unreadable hold admits nobody — it cannot be skipped as if it were absent."""
@@ -261,6 +265,24 @@ def test_reengage_preserves_a_standing_allowlist_and_deadman(hermes_home):
     assert estop.is_allowed(OPERATOR, "primary-lane") is False
 
 
+def test_reengage_drops_a_deadline_that_has_already_passed(hermes_home):
+    """F-004: preserving a re-arm's fields must not preserve a DEAD deadman.
+
+    A deadline already in the past cannot hold, so a re-arm that supplies nothing must arm
+    an INDEFINITE pause — never one that lifts itself the instant it is written.
+    """
+    _write(hermes_home / "ESTOP", {
+        "generation": "a" * 32, "reason": "stale", "expires_at": _stamp(-60),
+        "allow": {"user_ids": [OPERATOR]}})
+
+    estop.engage(reason="re-arm")
+
+    assert estop.is_engaged() is True, "a re-arm must produce a hold that actually holds"
+    state = estop.get_state()
+    assert state.get("expires_at") is None, "an already-dead deadline is not preserved"
+    assert state["allow"] == {"user_ids": [OPERATOR]}, "the live allowlist is still kept"
+
+
 def test_cli_no_flag_rearm_preserves_the_standing_sentinel(hermes_home, capsys):
     """F-004: `hermes pause` with no flags must not strip what the first arm set."""
     from hermes_cli.subcommands.pause import cmd_pause
@@ -305,6 +327,7 @@ def test_inband_pause_rearm_preserves_the_standing_sentinel(hermes_home):
     assert after["reason"] == "second window"
     assert after["allow"] == before["allow"], "the in-band re-arm must KEEP the allowlist"
     assert after["expires_at"] == before["expires_at"], "the in-band re-arm must KEEP the deadman"
+    assert estop.is_allowed(OPERATOR, "primary-lane") is True, "the operator is still served"
 
 
 # --------------------------------------------------------------- P2 (ttl must not raise)

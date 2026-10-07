@@ -1023,7 +1023,8 @@ class SshConnection {
       try {
         const probe: any = await runSsh(buildExecArgs(this, 'uname -s', this._connectTimeoutMs), {
           timeoutMs: timeoutMs ?? this._execTimeoutMs,
-          spawnFn: this._spawnFn
+          spawnFn: this._spawnFn,
+          command: this.sshBinary
         })
 
         if (probe.code !== 255) {

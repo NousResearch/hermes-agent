@@ -115,3 +115,22 @@ def test_distinct_email_mailboxes_are_not_a_finding(homes, monkeypatch):
 
     assert gm.duplicate_credential_findings() == []
     assert not gm.build_migration_plan().blocked
+
+
+def test_case_variants_of_one_mailbox_are_one_finding(homes, monkeypatch):
+    """Mail domains (and in practice local parts) are case-insensitive, so
+    User@Example.Com and user@example.com are one inbox: the probe must collide
+    them exactly like the byte-identical pair, or doctor/status miss the
+    duplicate the runtime guard refuses (#134662)."""
+    default, worker = homes
+    for name in (
+        "EMAIL_ADDRESS",
+        "EMAIL_PASSWORD",
+        "EMAIL_IMAP_HOST",
+        "EMAIL_SMTP_HOST",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    (default / ".env").write_text(_email_env("User@Example.Com"), encoding="utf-8")
+    (worker / ".env").write_text(_email_env("user@example.com"), encoding="utf-8")
+
+    assert len(gm.duplicate_credential_findings()) == 1

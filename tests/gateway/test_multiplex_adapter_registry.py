@@ -193,6 +193,33 @@ class TestCredentialFingerprint:
         assert fp1 is not None and fp1 == fp2
         assert "user@example.com" not in fp1
 
+    def test_real_email_adapter_identity_is_case_insensitive(self):
+        """User@X.com and user@x.com are one inbox — mail providers treat the domain
+        (and in practice the local part) as case-insensitive — so their fingerprints
+        must collide or two profiles double-poll the same mailbox (#134662)."""
+        import os
+        import uuid
+        from unittest.mock import patch
+
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        def _fp(address: str):
+            with patch.dict(
+                os.environ,
+                {
+                    "EMAIL_ADDRESS": address,
+                    "EMAIL_PASSWORD": uuid.uuid4().hex,
+                    "EMAIL_IMAP_HOST": "imap.example.com",
+                    "EMAIL_SMTP_HOST": "smtp.example.com",
+                },
+            ):
+                return GatewayRunner._adapter_credential_fingerprint(
+                    EmailAdapter(PlatformConfig(enabled=True))
+                )
+
+        assert _fp("User@Example.Com") == _fp("user@example.com")
+
 
 class TestProfileMessageHandler:
     @pytest.mark.asyncio

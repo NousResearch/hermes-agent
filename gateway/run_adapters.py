@@ -1871,7 +1871,8 @@ class GatewayAdapterLifecycleMixin:
             import hashlib
             return hashlib.sha256(
                 ("hermes-mux:" + identity.strip()).encode("utf-8")
-            ).hexdigest()[:16]        # Many adapters (Discord) keep the token on `config`; without that fallback the check is skipped.
+            ).hexdigest()[:16]
+        # Many adapters (Discord) keep the token on `config`; without that fallback the check is skipped.
         candidates = [
             (adapter, attr) for attr in (
                 "token", "bot_token", "_token", "api_token", "_bot_token",

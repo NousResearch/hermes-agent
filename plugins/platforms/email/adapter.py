@@ -499,8 +499,11 @@ class EmailAdapter(BasePlatformAdapter):
 
     def credential_identity(self) -> str:
         """One adapter per mailbox: the address (not the password) is the exclusive resource
-        two profiles cannot both poll — the probed token-style names never see it (#134662)."""
-        return self._address
+        two profiles cannot both poll — the probed token-style names never see it (#134662).
+        Case-insensitive: mail providers treat the domain (and in practice the
+        local part) as case-insensitive, so User@X.com and user@x.com are one
+        inbox and must collide, not double-poll."""
+        return self._address.strip().lower()
 
     def _trim_seen_uids(self) -> None:
         """Keep only the highest half of UIDs once over the cap (UIDs are monotonic; UNSEEN prevents re-delivery)."""

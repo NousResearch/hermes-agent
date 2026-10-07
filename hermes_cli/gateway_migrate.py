@@ -467,7 +467,7 @@ def _credential_probe(platform_config) -> SimpleNamespace:
         _project_secret=extra.get("project_secret"), config=platform_config,
         # Email's exclusive resource is the mailbox address carried in ``extra``; none of the
         # probed names can see it, so the probe declares the identity the adapter declares (#134662).
-        credential_identity=lambda: extra.get("address") or None,
+        credential_identity=lambda: (extra.get("address") or "").strip().lower() or None,
     )
 
 

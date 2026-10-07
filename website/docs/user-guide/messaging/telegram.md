@@ -1243,6 +1243,23 @@ gateway:
 
 Use `/whoami` to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run.
 
+### Admin-only approval buttons
+
+`allow_admin_from` gates typed commands such as `/approve`, but by default any allowed user can still tap **Approve** or **Deny** on a dangerous-command prompt. To restrict the buttons to admins too, turn on `require_admin_for_exec_approval` (off by default; the same toggle Discord uses):
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        allow_admin_from:
+          - "123456789"
+        require_admin_for_exec_approval: true
+```
+
+- Only users listed in `allow_admin_from` can resolve an approval button. Anyone else gets the standard "not authorized" notice, and the prompt stays pending for an admin.
+- With the toggle on and `allow_admin_from` empty, nobody can use the buttons (fails closed, with a warning in the gateway log).
+
 ## Interactive Model Picker
 
 When you send `/model` with no arguments in a Telegram chat, Hermes shows an interactive inline keyboard for switching models:

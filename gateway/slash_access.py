@@ -11,8 +11,11 @@ site in ``gateway/run.py`` via the live registry; never affects plain chat.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable, FrozenSet, Iterable, Optional
+
+logger = logging.getLogger(__name__)
 
 # Read-only floor every allowed user keeps under gating, so a non-admin can still discover what
 # they can do. ``user_allowed_commands`` only adds to this set, never restricts it.
@@ -156,3 +159,36 @@ def policy_for_runner_source(runner: Any, source: Any) -> SlashAccessPolicy:
         if config is None:
             return _FAIL_CLOSED_POLICY
     return policy_for_source(config, source)
+
+
+def resolve_exec_approval_admin_gate(config_extra: Any) -> tuple[bool, set]:
+    """Resolve the exec-approval button admin gate from a platform's ``extra``; returns
+    ``(require_admin, admin_user_ids)``. Default OFF (any admitted user may resolve an approval
+    button). When ``require_admin_for_exec_approval`` is true only ``allow_admin_from`` ids may;
+    on with no admins -> ``(True, set())`` (fail closed — the caller logs it).
+    """
+    extra = config_extra if isinstance(config_extra, dict) else {}
+    raw_toggle = extra.get("require_admin_for_exec_approval", False)
+    require_admin = str(raw_toggle).strip().lower() in {"true", "1", "yes"}
+    if not require_admin:
+        return (False, set())
+    return (True, set(_coerce_id_list(extra.get("allow_admin_from"))))
+
+
+def exec_approval_tap_allowed(config_extra: Any, user_id: Any, platform: str) -> bool:
+    """Whether *user_id* may resolve an exec-approval button under the admin gate above (call after
+    the platform's own admission check). Logs when the gate is on with no admins configured."""
+    require_admin, admin_ids = resolve_exec_approval_admin_gate(config_extra)
+    if not require_admin:
+        return True
+    uid = str(user_id or "").strip()
+    if uid and uid in admin_ids:
+        return True
+    if not admin_ids:
+        logger.warning(
+            "[%s] require_admin_for_exec_approval is enabled but no admins are configured "
+            "(allow_admin_from is empty) — exec approval buttons are disabled for everyone. Add admin "
+            "user IDs under the %s platform's allow_admin_from, or disable the toggle.",
+            platform, platform.lower(),
+        )
+    return False

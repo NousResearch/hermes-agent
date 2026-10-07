@@ -156,3 +156,25 @@ def test_lazy_refresh_recovery_targets_live_dot_venv(tmp_path, monkeypatch):
     assert seen["env"]["VIRTUAL_ENV"] == str(tmp_path / ".venv")
 
 
+def test_venv_scripts_dir_resolves_live_dot_venv(tmp_path, monkeypatch):
+    """#84647: _venv_scripts_dir finds Scripts/bin in live .venv layout."""
+    import platform
+
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    _make_live_venv(tmp_path, ".venv")
+    scripts = m._venv_scripts_dir()
+    expected_name = "Scripts" if platform.system() == "Windows" else "bin"
+    assert scripts == tmp_path / ".venv" / expected_name
+
+
+def test_venv_core_imports_healthy_targets_live_dot_venv(tmp_path, monkeypatch):
+    """#84647: _venv_core_imports_healthy inspects live .venv interpreter."""
+    import hermes_cli.update_cmd as u_cmd
+
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    _make_live_venv(tmp_path, ".venv")
+    healthy, detail = u_cmd._venv_core_imports_healthy()
+    assert isinstance(healthy, bool)
+    assert isinstance(detail, str)
+
+

@@ -7941,9 +7941,13 @@ def _recover_core_update_marker_locked() -> None:
 
         uv_bin = ensure_uv()
         if uv_bin:
+            try:
+                live_venv = _default_live_venv(PROJECT_ROOT)
+            except Exception:
+                live_venv = PROJECT_ROOT / "venv"
             uv_env = {
                 **os.environ,
-                "VIRTUAL_ENV": str(_default_live_venv(PROJECT_ROOT)),
+                "VIRTUAL_ENV": str(live_venv),
             }
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
@@ -8082,10 +8086,14 @@ def _is_windows() -> bool:
 
 def _venv_scripts_dir() -> Path | None:
     """Return the venv Scripts directory if we're running inside the project venv."""
-    from hermes_cli.managed_uv import _default_live_venv
     from hermes_constants import venv_bin_dir
 
-    venv_dir = _default_live_venv(PROJECT_ROOT)
+    try:
+        from hermes_cli.managed_uv import _default_live_venv
+
+        venv_dir = _default_live_venv(PROJECT_ROOT)
+    except Exception:
+        venv_dir = PROJECT_ROOT / "venv"
     if not venv_dir.is_dir():
         return None
     scripts = venv_bin_dir(venv_dir, windows=_is_windows())

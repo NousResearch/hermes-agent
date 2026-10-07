@@ -2853,9 +2853,12 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     Returns ``(healthy, detail)``. Never raises; unknown states report
     healthy so a probe failure can't force needless reinstalls.
     """
-    from hermes_cli.managed_uv import _default_live_venv
+    try:
+        from hermes_cli.managed_uv import _default_live_venv
 
-    venv_dir = _default_live_venv(_m().PROJECT_ROOT)
+        venv_dir = _default_live_venv(_m().PROJECT_ROOT)
+    except Exception:
+        venv_dir = _m().PROJECT_ROOT / "venv"
     venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
     if not venv_python.exists():
         # No venv interpreter at all. In a dev checkout that's normal (the

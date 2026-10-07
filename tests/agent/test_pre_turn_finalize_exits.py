@@ -33,7 +33,7 @@ def _board(tmp_path, monkeypatch, review=False):
     return kb, conn, tid, task.current_run_id
 
 
-@pytest.mark.parametrize("tool,outcome", [("complete", "completed"), ("block", "blocked"), ("request_review", "review_requested"), ("request_changes", "changes_requested")])
+@pytest.mark.parametrize("tool,outcome", [("complete", "completed"), ("block", "blocked"), ("schedule", "scheduled"), ("request_review", "review_requested"), ("request_changes", "changes_requested")])
 @pytest.mark.parametrize("enabled", [True, False])
 def test_settled_handoff_never_reenters_work(tmp_path, monkeypatch, tool, outcome, enabled):
     agent = _e2e_agent(tmp_path, monkeypatch)

@@ -85,7 +85,7 @@ def worker_handoff_is_settled() -> bool:
             ).fetchone()
             return bool(
                 row and row[0] == task_id and row[1] == lock and row[2] is not None
-                and row[3] in {"completed", "blocked", "review_requested", "changes_requested"}
+                and row[3] in {"completed", "blocked", "scheduled", "review_requested", "changes_requested"}
             )
     except (OSError, ValueError, sqlite3.Error):
         return False

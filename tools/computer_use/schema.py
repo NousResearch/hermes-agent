@@ -32,6 +32,7 @@ _PROPERTIES: Dict[str, Any] = {
             "list_apps",
             "list_windows",
             "focus_app",
+            "launch",
         ],
         "description": (
             "Which action to perform. `capture` is free (no side effects). All other actions "
@@ -56,7 +57,7 @@ _PROPERTIES: Dict[str, Any] = {
             "Optional. Limit capture/action to one app (name e.g. 'Safari', or bundle ID). Omitted "
             "= frontmost window. app='screen' = composited full-screen grab (image only, no "
             "clickable elements); app='desktop' = the OS desktop/shell surface (wallpaper, icons, "
-            "taskbar) with its elements."
+            "taskbar) with its elements. For action='launch', specifies the application name, bundle ID, AUMID, or launch path."
         ),
     },
     "pid": {
@@ -69,8 +70,19 @@ _PROPERTIES: Dict[str, Any] = {
     "window_id": {
         "type": "integer",
         "description": (
-            "Optional exact native window target for action='capture'. Pair with pid when an "
+            "Optional exact native window target for action='capture'. On Windows, this can be "
+            "the Win32 HWND directly (without requiring pid). On Linux/macOS, pair with pid when an "
             "external cua-driver list_windows lookup has already identified the window."
+        ),
+    },
+    "strategy": {
+        "type": "string",
+        "enum": ["auto", "a11y", "event"],
+        "description": (
+            "Targeting strategy. `auto` (default) attempts semantic accessibility targeting first "
+            "and falls back to coordinates. `a11y` strictly enforces accessibility-first targeting "
+            "(element or element_token) and fails closed if only coordinates are provided. `event` "
+            "forces direct low-level coordinate/event dispatch without accessibility resolution."
         ),
     },
     "element": {
@@ -189,14 +201,17 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
     "name": "computer_use",
     "description": (
         "Drive the desktop via cua-driver — screenshots, mouse, keyboard, scroll, drag — on macOS, "
-        "Windows, and Linux. Input is background-FIRST, not background-only: the default delivery "
-        "routes to the target window without stealing the user's cursor or focus (works even on "
-        "hidden/minimized windows), and when a result's `verdict` says to escalate you climb — "
-        "pixel coordinates, or delivery_mode='foreground' (briefly fronts the window; separate "
-        "approval). Each result carries a `verdict` with the next step; follow it — never repeat "
-        "confirmed input, and re-capture to verify an unverifiable one before retrying. Workflow: "
-        "action='capture' (mode='som' gives numbered element overlays), then click by `element` "
-        "index; re-capture after state-changing actions (or pass capture_after=true). Image "
+        "Windows, and Linux. Follow the core loop: observe once, act once, verify. Input is "
+        "background-FIRST, not background-only: the default delivery routes to the target window "
+        "without stealing the user's cursor or focus (works even on hidden/minimized windows), and "
+        "when a result's `verdict` says to escalate you climb — pixel coordinates, or "
+        "delivery_mode='foreground' (briefly fronts the window; separate approval). Use "
+        "strategy='a11y' for strict accessibility targeting, strategy='event' for raw coordinate "
+        "fallback, or strategy='auto' (default). Native window binding by window_id alone (Win32 HWND) "
+        "is supported on Windows. Each result carries a `verdict` with the next step; follow it — "
+        "never repeat confirmed input, and re-capture to verify an unverifiable one before retrying. "
+        "Workflow: action='capture' (mode='som' gives numbered element overlays), then click by "
+        "`element` index; re-capture after state-changing actions (or pass capture_after=true). Image "
         "captures include a shareable `screenshot_path`; deliver it via the platform's MEDIA "
         "syntax when the user asks to see it — not for captures used only for control."
     ),

@@ -169,6 +169,11 @@ class ComputerUseBackend(ABC):
     @abstractmethod
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult: ...  # route input to `app` (name / bundle ID)
 
+    def launch_app(self, app: str, **kwargs) -> ActionResult:
+        """Launch an application. Optional compatibility hook: backends that do not implement
+        launch return an unsupported ActionResult."""
+        return ActionResult(ok=False, action="launch", error=f"launch_app is not supported by {self.__class__.__name__}")
+
     @abstractmethod
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult: ...  # e.g. AXPopUpButton selection
 

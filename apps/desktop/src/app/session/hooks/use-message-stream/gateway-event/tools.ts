@@ -3,6 +3,16 @@ import { reportFirstBuildToolComplete } from '@/components/onboarding-chat/first
 import { toolCallOwnerMessageId } from '@/lib/chat-messages'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
+import {
+  $computerUseBySession,
+  clearComputerUseState,
+  extractComputerUseArgs,
+  extractToolErrorMessage,
+  setComputerUseCompleted,
+  setComputerUseDrafting,
+  setComputerUseError,
+  setComputerUseRunning
+} from '@/store/computer-use'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-status'
 import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
@@ -16,6 +26,28 @@ import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/s
 import { SUBAGENT_EVENT_TYPES, toTodoPayload } from '../utils'
 
 import type { GatewayEventContext } from './types'
+
+function shouldUpdateComputerUseState(
+  eventType: string,
+  payloadName: unknown,
+  phase: string | undefined,
+  toolId: string | undefined,
+  currentToolId: string | undefined
+): boolean {
+  if (eventType === 'tool.start') {
+    return payloadName === 'computer_use'
+  }
+  if (eventType !== 'tool.progress') {
+    return false
+  }
+  if (phase !== 'running' && phase !== 'drafting') {
+    return false
+  }
+  if (payloadName && payloadName !== 'computer_use') {
+    return false
+  }
+  return !toolId || !currentToolId || toolId === currentToolId
+}
 
 /** tool.generating / tool.start / tool.complete / subagent.*. */
 export function handleToolEvent(ctx: GatewayEventContext): boolean {
@@ -46,6 +78,10 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
 
     setSessionDraftingTool(sessionId, typeof payload?.name === 'string' ? payload.name : '')
 
+    if (payload?.name === 'computer_use') {
+      setComputerUseDrafting(sessionId)
+    }
+
     if (isActiveEvent) {
       setPetActivity({ reasoning: false, toolRunning: true })
     }
@@ -53,13 +89,40 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  if (event.type === 'tool.start') {
+  const eventType = event.type as string
+
+  if (eventType === 'tool.start' || eventType === 'tool.progress') {
     if (!sessionId) {
       return true
     }
 
     flushQueuedDeltas(sessionId)
     upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type, occurredAt)
+
+    const currentCU = $computerUseBySession.get()[sessionId]
+
+    const toolId =
+      typeof payload?.tool_id === 'string'
+        ? payload.tool_id
+        : typeof payload?.id === 'string'
+          ? payload.id
+          : undefined
+
+    if (payload?.name && payload.name !== 'computer_use' && currentCU?.phase === 'drafting') {
+      clearComputerUseState(sessionId)
+    }
+
+    const isComputerUseEvent = shouldUpdateComputerUseState(
+      eventType,
+      payload?.name,
+      currentCU?.phase,
+      toolId,
+      currentCU?.toolId
+    )
+
+    if (isComputerUseEvent) {
+      setComputerUseRunning(sessionId, extractComputerUseArgs(payload), eventType === 'tool.progress')
+    }
 
     if (isActiveEvent) {
       setPetActivity({ reasoning: false, toolRunning: true })
@@ -93,6 +156,34 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
         if (status === 'success' && previewTarget && isPreviewableTarget(previewTarget)) {
           const record = pendingProduction ? reofferPreviewArtifact : recordPreviewArtifact
           record(sessionId, previewTarget, state?.cwd ?? '', storedSessionIdForRuntimeId(sessionId) ?? sessionId)
+        }
+      }
+
+      const currentCU = $computerUseBySession.get()[sessionId]
+
+      const toolId =
+        typeof payload?.tool_id === 'string'
+          ? payload.tool_id
+          : typeof payload?.id === 'string'
+            ? payload.id
+            : undefined
+
+      const matchesCurrentCall = !toolId || !currentCU?.toolId || toolId === currentCU.toolId
+
+      const isComputerUseComplete =
+        matchesCurrentCall &&
+        (payload?.name === 'computer_use' ||
+          (!payload?.name && currentCU?.phase === 'running'))
+
+      if (isComputerUseComplete) {
+        const errorMessage = extractToolErrorMessage(payload)
+
+        if (errorMessage) {
+          setComputerUseError(sessionId, errorMessage)
+        } else {
+          setComputerUseCompleted(sessionId, {
+            durationSeconds: typeof payload?.duration_s === 'number' ? payload.duration_s : undefined
+          })
         }
       }
 

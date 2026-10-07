@@ -34,6 +34,7 @@ class FakeBackend(ComputerUseBackend):
     def key(self, keys, **kw): return ActionResult(ok=True, action="key")
     def list_apps(self): return [{"backend": TAG, "file": __file__}]
     def focus_app(self, app, raise_window=False): return ActionResult(ok=True, action="focus_app")
+    def launch_app(self, app=None, **kw): return ActionResult(ok=True, action="launch")
     def set_value(self, value, element=None): return ActionResult(ok=True, action="set_value")
 
 class FakeProvider(ComputerUseProvider):
@@ -60,6 +61,13 @@ def _list_apps(session_id: str = "s1") -> list:
     out = json.loads(handle_computer_use({"action": "list_apps"}, session_id=session_id))
     assert "apps" in out, out
     return out["apps"]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_hermes_bin_dir(monkeypatch):
+    from tools.environments import local as env_local
+    monkeypatch.setattr(env_local, "_HERMES_BIN_DIR", None)
+    monkeypatch.setattr(env_local, "_HERMES_BIN_DIR_IS_PAYLOAD", False)
 
 
 @pytest.fixture(autouse=True)

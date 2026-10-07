@@ -12,6 +12,13 @@ from tools.computer_use import cua_backend_driver
 
 
 @pytest.fixture(autouse=True)
+def _isolate_hermes_bin_dir(monkeypatch):
+    from tools.environments import local as env_local
+    monkeypatch.setattr(env_local, "_HERMES_BIN_DIR", None)
+    monkeypatch.setattr(env_local, "_HERMES_BIN_DIR_IS_PAYLOAD", False)
+
+
+@pytest.fixture(autouse=True)
 def _reset_computer_use_state():
     from tools.computer_use.tool import reset_backend_for_tests
 

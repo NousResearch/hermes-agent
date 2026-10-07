@@ -1,0 +1,27 @@
+manifest_version: 1
+
+name: fintable
+description: Access connected bank accounts, balances, transactions, and investment holdings with Fintable.
+source: https://fintable.io/ai
+
+transport:
+  type: http
+  url: https://fintable.io/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - fintable
+  hosts:
+    - fintable.io
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with Fintable
+  (or run `hermes mcp login fintable`). Sign in to your Fintable account,
+  approve access, then restart the session so tools load.
+
+  Fintable's MCP authorization grants read and write access, subject to
+  your Workspace permissions. Review the tools enabled for your session
+  with `hermes mcp configure fintable`.

@@ -158,6 +158,30 @@ test('in-tree desktop products rebuild after build exists without replacing prep
   }
 }, 30000)
 
+test('a stamp-only change reuses the renderer bytes and rebakes only main/preload; a source change recompiles', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  const input = fixture()
+  expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+  const renderer = () => files(input.out).filter(([name]) => !/electron-|preload|hermes-build\.json/.test(name))
+  const before = renderer()
+  put(input.stamp, JSON.stringify({ ...JSON.parse(readFileSync(input.stamp, 'utf8')), commit: 'c'.repeat(40) }))
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(false)
+  expect((await buildDesktop(input)).reusedRenderer).toBe(true)
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
+  expect(renderer()).toEqual(before)
+  const run = () => JSON.parse(execFileSync(process.execPath, [join(input.out, 'electron-main.mjs')], { cwd: tmpdir(), encoding: 'utf8' }))
+  expect(run().stamp.commit).toBe('c'.repeat(40))
+  // A tampered output is never reused: the receipt's output hash no longer matches.
+  put(join(input.out, 'index.html'), '<html>tampered</html>')
+  put(input.stamp, JSON.stringify({ ...JSON.parse(readFileSync(input.stamp, 'utf8')), commit: 'd'.repeat(40) }))
+  expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+  expect(readFileSync(join(input.out, 'index.html'), 'utf8')).not.toContain('tampered')
+  put(join(input.source, 'apps/desktop/src/index.js'), 'document.getElementById("app").textContent = "changed source"')
+  expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+  expect(files(join(input.out, 'assets')).map(([, b]) => Buffer.from(b, 'base64').toString()).join('')).toContain('changed source')
+}, 60000)
+
 test('the mid-compile guard ignores the build clock but still fails on a real provenance change', async () => {
   const { buildDesktop } = await import('../scripts/build/desktop.mjs')
   const { buildInputs, recordProduct } = await import('../scripts/build/freshness.mjs')

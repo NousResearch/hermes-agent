@@ -85,3 +85,10 @@ def test_goal_guidance_injected_only_when_tool_present():
     with_tool = _tool_guidance_block(SimpleNamespace(valid_tool_names={"goal", "terminal"}, _kanban_worker_guidance=None)) or ""
     without = _tool_guidance_block(SimpleNamespace(valid_tool_names={"terminal"}, _kanban_worker_guidance=None)) or ""
     assert GOAL_TOOL_GUIDANCE in with_tool and GOAL_TOOL_GUIDANCE not in without
+
+
+def test_agent_tool_setting_is_strict_bool(monkeypatch):
+    import hermes_cli.goals as g
+    for raw, want in (({"goals": {"agent_tool": True}}, True), ({"goals": {"agent_tool": "false"}}, False), ({}, False)):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda raw=raw: raw)
+        assert g.agent_goal_tool_enabled() is want

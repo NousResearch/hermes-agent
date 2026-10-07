@@ -271,8 +271,14 @@ DRAFT_CONTRACT_SYSTEM_PROMPT = (
 
 
 def agent_goal_tool_enabled() -> bool:
-    """``goals.agent_tool``: expose the ``goal`` tool so the model declares/closes its own goal."""
-    return bool(_goals_setting("agent_tool", False))
+    """``goals.agent_tool``: expose the ``goal`` tool so the model declares/closes its own goal.
+    Strict ``is True`` so a stray string like ``"false"`` cannot switch it on; fails closed."""
+    try:
+        from hermes_cli.config import load_config
+
+        return (load_config().get("goals") or {}).get("agent_tool") is True
+    except Exception:
+        return False
 
 
 # ── Completion contract ───────────────────────────────────────────────

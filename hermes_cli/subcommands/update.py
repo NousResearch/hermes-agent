@@ -31,6 +31,10 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "Read-only; kind is gateway / backend (Desktop serve) / hermes:<subcommand> / python, so a "
             "scheduled update can stop exactly those PIDs instead of looping. Always [] off Windows.")
     update_parser.add_argument(
+        "--list-autostashes", action="store_true", default=False,
+        help="List Hermes update autostashes with their saved paths, retained receipt reason, and manual "
+            "inspect/apply/drop commands, then exit. Read-only: never applies or removes a stash.")
+    update_parser.add_argument(
         "--no-backup", action="store_true", default=False,
         help="Skip ALL pre-update backups for this run (both the quick state snapshot and the full zip; overrides updates.pre_update_backup)",
     )

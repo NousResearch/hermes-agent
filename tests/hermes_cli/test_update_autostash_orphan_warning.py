@@ -51,7 +51,9 @@ def test_old_autostash_is_surfaced(tmp_path, capsys):
     assert count == 1
     assert "leftover update autostash" in out
     assert name in out
+    assert "hermes update --list-autostashes" in out
     assert "git stash apply" in out
+    assert "never restored" not in " ".join(out.split())
     # Never a GC: the entry must still exist.
     listed = _git(tmp_path, "stash", "list").stdout
     assert name in listed

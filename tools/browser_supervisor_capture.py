@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-from typing import TYPE_CHECKING, Any, Dict, Optional
+import inspect
+import math
+import threading
+import time
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 
 if TYPE_CHECKING:
     from tools.browser_supervisor import CDPSupervisor, _SupervisorRegistry
@@ -50,9 +54,22 @@ class CapturedCDP:
                                   "(supervisor reconnected, stopped or was replaced); capture again")
 
     async def _send(self, method: str, params: Optional[Dict[str, Any]],
-                    session_id: Optional[str], timeout: float) -> Dict[str, Any]:
+                    session_id: Optional[str], timeout: Optional[float],
+                    deadline: Optional[float], before_send: Optional[Callable[[], None]]) -> Dict[str, Any]:
         # ``_cdp`` reaches its send without awaiting, so this check and the send run in one
         # loop step: a reconnect cannot swap the socket in between.
+        if not self.is_valid():
+            raise self._invalid()
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("Captured CDP dispatch deadline expired")
+        if before_send is not None:
+            outcome = before_send()
+            if outcome is not None:
+                if inspect.iscoroutine(outcome):
+                    outcome.close()
+                raise TypeError("before_send must return None synchronously")
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("Captured CDP dispatch deadline expired")
         if not self.is_valid():
             raise self._invalid()
         try:
@@ -65,7 +82,8 @@ class CapturedCDP:
             raise
 
     def call(self, method: str, params: Optional[Dict[str, Any]] = None, *,
-             session_id: Optional[str] = None, timeout: float = 10.0) -> Dict[str, Any]:
+             session_id: Optional[str] = None, timeout: Optional[float] = 10.0,
+             before_send: Optional[Callable[[], None]] = None) -> Dict[str, Any]:
         """Send ``method`` on the captured connection and return the raw CDP reply
         (``{"id", "result"}``). ``session_id=None`` targets the browser endpoint;
         pass ``page_session_id`` (or a session you attached) for page domains.
@@ -73,7 +91,27 @@ class CapturedCDP:
         Raises ``CapturedCDPInvalid`` when the connection is gone, ``TimeoutError`` when no
         reply arrives in ``timeout`` seconds, ``RuntimeError`` for a CDP error reply.
         Blocks the calling thread; never call it from the supervisor's own loop.
+
+        A finite timeout also fences send admission while this call waits in the
+        supervisor queue. ``timeout=None`` deliberately retains a reply until
+        the connection closes: use it only in a consumer-owned worker when a
+        late reply (for example an attachment session ID) must not be lost.
+        Keep the consumer's own wait/issuance deadline finite and retain cleanup
+        responsibility after it expires.
+
+        ``before_send`` is a trusted synchronous nonblocking validation callback
+        run on the supervisor loop immediately before CDP dispatch. It may raise
+        to refuse a cancelled/expired operation. It must not call a blocking
+        capture/CDP API. This is not origin or target-ownership authorization.
         """
+        if timeout is not None:
+            if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                    or not math.isfinite(timeout) or timeout <= 0
+                    or timeout > threading.TIMEOUT_MAX - 1.0):
+                raise ValueError("Captured CDP timeout must be positive and finite, or None")
+        if before_send is not None and not callable(before_send):
+            raise TypeError("before_send must be callable")
+        deadline = None if timeout is None else time.monotonic() + timeout
         try:
             running = asyncio.get_running_loop()
         except RuntimeError:
@@ -84,11 +122,11 @@ class CapturedCDP:
             raise self._invalid()
         from agent.async_utils import safe_schedule_threadsafe
 
-        fut = safe_schedule_threadsafe(self._send(method, params, session_id, timeout), self._loop)
+        fut = safe_schedule_threadsafe(self._send(method, params, session_id, timeout, deadline, before_send), self._loop)
         if fut is None:
             raise self._invalid()
         try:
-            return fut.result(timeout=timeout + 1.0)
+            return fut.result(timeout=None if timeout is None else timeout + 1.0)
         except concurrent.futures.TimeoutError:
             fut.cancel()
             raise TimeoutError(f"CDP {method} got no reply within {timeout}s") from None

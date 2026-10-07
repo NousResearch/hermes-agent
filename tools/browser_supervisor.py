@@ -449,7 +449,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         await self._install_dialog_bridge(sid)
 
     async def _cdp(self, method: str, params: Optional[Dict[str, Any]] = None, *,
-                   session_id: Optional[str] = None, timeout: float = 10.0) -> Dict[str, Any]:
+                   session_id: Optional[str] = None, timeout: Optional[float] = 10.0) -> Dict[str, Any]:
         """Send a CDP command and await its response."""
         if self._ws is None:
             raise RuntimeError("supervisor WebSocket is not connected")

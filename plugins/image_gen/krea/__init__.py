@@ -111,7 +111,7 @@ def fallback_to_fal_enabled() -> bool:
 
 
 def _fallback_eligible(failure: HttpFailure) -> bool:
-    """Only failures that prove Krea created no job: the request never left this host, or the
+    """Only failures that prove Krea created no job: no server accepted the request, or the
     gateway answered 429, which it documents as "no job was created". A dropped connection,
     a timeout or a 5xx may have happened after Krea accepted the job."""
     return failure.kind == "unreachable" or (failure.kind == "http" and failure.status == 429)

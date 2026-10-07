@@ -272,7 +272,8 @@ def record_token_usage(usage: Any, *, model: str, provider: str, base_url: Optio
 
 
 def _never_connected(exc: Exception) -> bool:
-    """True when no connection was ever established, so the request body never left this host."""
+    """True when the last connection attempt never connected, so no server accepted the request body
+    (a redirect hop may have answered earlier, but a redirect accepts nothing)."""
     from urllib3.exceptions import MaxRetryError, NameResolutionError, NewConnectionError
 
     cause = exc.args[0] if exc.args else None

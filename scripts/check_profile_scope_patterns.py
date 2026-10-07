@@ -6,7 +6,7 @@ One Hermes process may serve many profiles (multiplex gateway, Desktop/dashboard
 ``scripts/ci/profile_scope_patterns.json`` is a call-site shape that turned out to be
 profile-sensitive at least once — a child env built from ``os.environ``, a raw ``os.getenv`` of a
 platform credential, an RPC decorator that binds the home but not the secret scope, a bare PID
-liveness check. The invariant itself is in the root ``AGENTS.md`` (§ Code Shape Rules).
+liveness check. The invariant itself is in the root ``AGENTS.md`` (§ Rules that apply everywhere).
 
 Advisory by construction: it prints ``file:line  <id>/<class>  why`` for every hit and ALWAYS
 exits 0, because most patterns have legitimate sites (a standalone ``hermes -p x`` process where
@@ -149,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         print("profile-scope patterns: 0 findings")
         return 0
     print(f"profile-scope patterns: {len(findings)} finding(s) — ADVISORY, read each against its scope hint "
-          f"(root AGENTS.md § Code Shape Rules; scripts/ci/profile_scope_patterns.json)")
+          f"(root AGENTS.md § Rules that apply everywhere; scripts/ci/profile_scope_patterns.json)")
     for f in findings:
         print(f"{f.path}:{f.line}  {f.pattern_id}/{f.pattern_class}  {f.why}")
         print(f"    | {f.text}")

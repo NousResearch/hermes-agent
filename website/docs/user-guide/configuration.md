@@ -1099,12 +1099,12 @@ Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
 | `nous` / `openrouter` / etc. | not set | Force that provider, use its auth |
 | any | set | Use the custom endpoint directly (provider ignored) |
 
-### Stream progress timeout (Responses routes)
+### Stream progress timeout
 
-When the summary runs over a Responses stream (the `openai-codex` provider, or any route the auxiliary client drives through the Responses API), two timeouts apply, and they are independent:
+When the summary streams (compression always streams over chat-completions and Responses routes, e.g. `openai-codex` or a custom OpenAI-compatible endpoint), two timeouts apply, and they are independent:
 
 - `auxiliary.compression.timeout` — the overall request budget (default 120s).
-- `auxiliary.compression.no_progress_timeout` — how long the stream may go without a **substantive** event (a text/reasoning delta or a completed output item) before the attempt aborts with `Codex auxiliary Responses stream stalled: no new output for Ns`. Default **60s** when unset. Keepalive and lifecycle frames (`response.in_progress`, pings) do not count as progress; every substantive event re-arms the window, so a slow but progressing summary is never cut off by it.
+- `auxiliary.compression.no_progress_timeout` — how long the stream may go without a **substantive** event (a text/reasoning delta or a completed output item) before the attempt aborts (`... stream stalled: no new output for Ns`) and the normal retry / fallback chain takes over. Default **60s** when unset. On a chat-completions stream the window starts at the first token. Before it, a remote endpoint gets the main loop's stale patience (the provider's `providers.<id>.stale_timeout_seconds` when set, else 180s raised for large prompts and to 600s for reasoning models such as o3 or DeepSeek R1; capped at `timeout`), so a model thinking silently is not cut. On a local endpoint (localhost, LAN, Tailscale) a silent prefill is bounded only by `timeout`. The same rule applies to every streamed auxiliary task, including MoA reference calls. Keepalive and lifecycle frames (`response.in_progress`, pings) do not count as progress; every substantive event re-arms the window, so a slow but progressing summary is never cut off by it.
 
 Raising `timeout` alone does **not** widen the progress window — a request configured for 600s still aborts after a 60s gap. Set `no_progress_timeout` to change that gap; the effective window is capped at `timeout`, and the host's hard deadline / cancellation still win. The host's own inactivity budget is the outer cap here: in-agent compaction gives up on a silent summariser after `compression.context_timeout_seconds` (default 120s, floored at the effective `auxiliary.compression.timeout`, itself at least 300s) and gateway hygiene after `compression.hygiene_timeout_seconds` (default 30s), so a `no_progress_timeout` larger than the applicable host budget is silently cut short by it. The key is per task (`auxiliary.<task>.no_progress_timeout`), so widening it for compression does not change other auxiliary tasks. A value that is not a positive number is ignored with a warning in the log and the 60s default applies.
 
@@ -1236,6 +1236,8 @@ agent:
 `agent.budget_warning_ratio` is off by default for ordinary and delegated conversations. When set to a value strictly between `0` and `1` alongside a finite `max_turns`, Hermes appends one model-visible checkpoint notice to the latest tool result after the threshold is reached. The notice rearms each conversation turn and uses each agent's own iteration budget. It only appends to a current tool-result tail, never an older turn, and does not add a synthetic user/system message or change the existing exhaustion grace call. Dispatcher-owned Kanban workers receive a completion checkpoint at 90% by default (an explicit ratio changes that threshold), while their tools are still available. The checkpoint asks for verified completion or a durable progress comment, not premature success.
 
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](./features/fallback-providers.md) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
+
+A rate limit that names its reset (`Retry-After` or a `retry_after` body field) is waited out, capped at 600 s per retry. The live status line shows the wait and, when the provider names it, when the limit resets. One exception: on the free Nous tier (no sign-in), a session someone is watching (the Desktop app, the TUI, the `hermes` terminal chat, an ACP editor) does not sit through a cooldown longer than 60 s, because the free tier's pause covers the whole service and a retry before the reset only meets the same refusal. The turn ends at once and says when the limit lifts; a configured fallback runs first. Unattended runs (`hermes chat -q`, cron, messaging platforms, delegated subagents) keep waiting.
 
 `agent.auto_recovery_cycles` is the safety net *after* both the retries and the fallback chain are spent. When the failure is a transient outage (HTTP 5xx, an `overloaded`/529 response, a connect or read timeout) and no answer text has reached you yet, Hermes does not end the turn with "API failed after N retries" — it waits and tries again, up to this many cycles (default `5`), with a jittered 15/30/60/60/60 s schedule. A provider `Retry-After` header wins over the schedule (honoured up to 120 s). Every surface shows the same line while it waits — `⏳ Provider temporarily unavailable — retrying automatically in 30s (cycle 2/5); press Esc to stop` on the CLI/TUI/Desktop, a status bubble on messaging platforms (`send /stop to cancel`), a `hermes.status` SSE event on the API server, and a log line for cron jobs. Pressing Esc (or `/stop`) cancels the wait immediately. Fallback still comes first: with a fallback chain configured, exhaustion moves to the next provider as before, and the ladder only engages once the chain has nothing left. Authentication, billing, request-format, entitlement, content-policy and account-policy errors never enter the ladder. Set `0` to disable it.
 
@@ -1565,8 +1567,8 @@ auxiliary:
   # Context compression timeout (separate from compression.* config)
   compression:
     timeout: 120               # seconds — compression summarizes long conversations, needs more time
-    # no_progress_timeout: 60   # Responses-stream routes (openai-codex) only: seconds a summary stream
-    #                           # may go without a substantive event before the attempt fails fast
+    # no_progress_timeout: 60   # seconds a streamed summary may go without a substantive chunk
+    #                           # before the attempt fails fast into retry/fallback
     # fallback_chain:           # Optional — providers to try on rate-limit / connectivity failure
     #   - provider: nous
     #     model: deepseek/deepseek-chat
@@ -2433,6 +2435,7 @@ stt:
   echo_transcripts: true       # Post raw transcripts back to the chat as 🎙️ "..." (default: true)
   provider: "local"            # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra" | ...
   language: "en"               # GLOBAL language hint for every provider (per-provider language wins); set "" for auto-detect
+  streaming: false             # live partial text while you speak (openai, xai, elevenlabs); see Voice Mode > Live transcription
   cloud_trim_silence: true     # trim long pauses with ffmpeg before uploading to a cloud provider (default: true)
   cloud_trim_threshold_db: -40 # audio quieter than this counts as silence
   cloud_trim_keep_ms: 300      # how much of each pause survives the trim (keeps natural pacing)
@@ -2453,6 +2456,9 @@ stt:
     language: ""               # per-provider override of stt.language
     timeout: 60                # seconds per transcription request; raise for self-hosted model cold starts
     max_retries: 1             # SDK transport retries (connection errors, 408/409/429/5xx); 0 = single attempt
+  xai:
+    model: "grok-voice-transcribe-2.0"  # or grok-voice-transcribe-1.0; sent on every request
+    language: ""               # per-provider override of stt.language
   # model: "whisper-1"         # Legacy fallback key still respected
 ```
 
@@ -2470,6 +2476,8 @@ Provider behavior:
 
 Cloud providers (groq, openai, mistral, xai, elevenlabs, deepinfra) get a **pre-upload silence trim** by default when `ffmpeg` is installed: long pauses in a voice note are collapsed client-side before the file uploads, keeping `cloud_trim_keep_ms` of each pause so natural pacing survives. Shorter audio means faster uploads, lower per-audio-minute billing, and fewer silence hallucinations from the remote model. Clips shorter than 12 seconds skip the trim entirely (savings can't matter there, and several providers bill a per-request minimum anyway). The trim is best-effort — if ffmpeg is missing, the trim fails, the clip is mostly silence, or trimming would save less than ~10%, the original file is uploaded untouched. Set `stt.cloud_trim_silence: false` to always upload the original (e.g. when transcribing music or ambient audio through a cloud provider). Command-type and plugin providers never get trimmed audio.
 
+Recordings over the provider's per-request upload limit (25 MB for OpenAI/Groq/DeepInfra, 500 MB for Mistral and xAI, about 5 GB for ElevenLabs, plus per-model length limits for OpenAI's `gpt-4o-transcribe` family and `whisper-1`) are re-encoded to compact AAC and, if still too large, split at pauses and transcribed piece by piece. See [Long recordings and upload limits](features/voice-mode.md#long-recordings-and-upload-limits).
+
 An explicitly selected `stt.provider` is honored strictly — if it's unavailable, transcription errors with guidance to run `hermes tools` rather than switching providers. Only when no provider has ever been selected does Hermes auto-detect in this order: `local` → `groq` → `openai`.
 
 Groq and OpenAI model overrides are environment-driven:
@@ -2477,6 +2485,7 @@ Groq and OpenAI model overrides are environment-driven:
 ```bash
 STT_GROQ_MODEL=whisper-large-v3-turbo
 STT_OPENAI_MODEL=whisper-1
+STT_XAI_MODEL=grok-voice-transcribe-2.0
 GROQ_BASE_URL=https://api.groq.com/openai/v1
 STT_OPENAI_BASE_URL=https://api.openai.com/v1
 ```
@@ -2743,7 +2752,7 @@ web:
 | **Perplexity** | `PERPLEXITY_API_KEY` | ✔ | ✔ (query-relevant snippets) |
 | **Exa** | `EXA_API_KEY` (optional — keyless free tier) | ✔ | ✔ |
 
-**Backend selection:** The runtime always uses the stored `web.backend` selection (set via `hermes tools`; `nous` routes through the managed Tool Gateway). Only if no web backend has ever been selected is one auto-detected from available API keys: if only `SEARXNG_URL` is set, SearXNG is used; if only `EXA_API_KEY` is set, Exa; if only `TAVILY_API_KEY` is set, Tavily; if only `PERPLEXITY_API_KEY` is set, Perplexity; if only `PARALLEL_API_KEY` is set, Parallel; if only `KEENABLE_API_KEY` is set, Keenable. With **no selection and no credentials at all**, requests rotate round-robin across the keyless free-tier ring (Exa / Parallel / Firecrawl / Keenable) with automatic next-in-line failover on rate limits — see the [Web Search guide](./features/web-search.md) for details. Once a selection exists, adding a key to `.env` does not change the route. Selecting Tavily, Firecrawl, or Keenable in `hermes tools` also works without a key.
+**Backend selection:** The runtime always uses the stored `web.backend` selection (set via `hermes tools`; `nous` routes through the managed Tool Gateway). Only if no web backend has ever been selected is one auto-detected from available API keys: if only `SEARXNG_URL` is set, SearXNG is used; if only `EXA_API_KEY` is set, Exa; if only `TAVILY_API_KEY` is set, Tavily; if only `PERPLEXITY_API_KEY` is set, Perplexity; if only `PARALLEL_API_KEY` is set, Parallel; if only `KEENABLE_API_KEY` is set, Keenable. With **no selection and no credentials at all**, requests rotate round-robin across the keyless free-tier ring (Exa / Parallel / Firecrawl / Keenable) with automatic next-in-line failover on rate limits (and, for search, on vendor refusals) — see the [Web Search guide](./features/web-search.md) for details. Once a selection exists, adding a key to `.env` does not change the route. Selecting Tavily, Firecrawl, or Keenable in `hermes tools` also works without a key.
 
 **SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](./features/web-search.md) for Docker setup instructions.
 
@@ -2820,15 +2829,11 @@ discord:
 
 ## Security
 
-Pre-execution security scanning and secret redaction:
+Secret redaction and the website blocklist:
 
 ```yaml
 security:
   redact_secrets: true           # Redact API key patterns in tool output and logs (on by default)
-  tirith_enabled: true           # Enable Tirith security scanning for terminal commands
-  tirith_path: "tirith"          # Path to tirith binary (default: "tirith" in $PATH)
-  tirith_timeout: 5              # Seconds to wait for tirith scan before timing out
-  tirith_fail_open: true         # Allow command execution if tirith is unavailable
   website_blocklist:             # See Website Blocklist section below
     enabled: false
     domains: []
@@ -2836,10 +2841,8 @@ security:
 ```
 
 - `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development. Reading a secret-bearing file (`.env`-style files, shell rc/profile files, the Hermes `config.yaml` under `HERMES_HOME` and its `backups/config/` copies) with `read_file`, `search_files` or a terminal `cat`/`grep` also masks credential-shaped assignments (`SOME_API_TOKEN: …`) with a non-reusable `«redacted-secret»` marker, whatever the value looks like; ordinary source and project config files keep only the vendor-prefix patterns so fixtures such as `MAX_TOKENS: 100` are never mangled.
-- `tirith_enabled` — when `true`, terminal commands are scanned by [Tirith](https://github.com/sheeki03/tirith) before execution to detect potentially dangerous operations.
-- `tirith_path` — path to the tirith binary. Set this if tirith is installed in a non-standard location.
-- `tirith_timeout` — maximum seconds to wait for a tirith scan. Commands proceed if the scan times out.
-- `tirith_fail_open` — when `true` (default), commands are allowed to execute if tirith is unavailable or fails. Set to `false` to block commands when tirith cannot verify them.
+
+Earlier releases also had `tirith_*` keys for a bundled command scanner; it was removed and upgrading drops those keys. Content-level command checks are described in [Content-Level Command Checks](security.md#content-level-command-checks).
 
 ## Website Blocklist
 

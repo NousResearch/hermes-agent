@@ -25,8 +25,8 @@ logger = logging.getLogger("agent.conversation_loop")
 def _agent_session_source(agent: Any) -> str:
     """The surface the agent's own row create would stamp (``_ensure_db_session``), so an
     accounting guard that wins the row-creation race never mints an anonymous session."""
-    from run_agent import _session_source_for_agent  # late: run_agent imports this module
-    return _session_source_for_agent(getattr(agent, "platform", None))
+    from agent.session_source import session_source_for
+    return session_source_for(getattr(agent, "platform", None))
 
 
 @dataclass

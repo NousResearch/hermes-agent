@@ -10,12 +10,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 import asyncio
-import concurrent.futures
+import concurrent.futures  # noqa: F401 -- kept public after the plugin-injection move
 import dataclasses
 import json
 import os
 import re
-import shutil
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -26,6 +25,8 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
+from gateway.run_inbound_media import rehome_inbound_media
+from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
     unauthorized_owner_hint,
@@ -43,45 +44,6 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
-
-
-def rehome_inbound_media(event: MessageEvent) -> None:
-    """Move adapter-cached attachments into the ACTIVE profile's ``cache/`` and repoint the event.
-
-    Adapters download and cache an attachment BEFORE the gateway routes the event to a profile, so
-    on a multiplexed gateway the file lands under the launch home while the routed turn's sandbox
-    mounts (``get_cache_directory_mounts``) and vision's ``_media_cache_roots`` resolve the routed
-    profile's ``cache/`` — the agent is handed a mounted, empty directory (#101134). Runs inside the
-    routed scope at the shared preprocessing choke point (every adapter, every media kind); a no-op
-    when the active home is the launch home, and idempotent (a moved entry is no longer under it).
-    """
-    if not event.media_urls:
-        return
-    from hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
-    active, launch = Path(get_hermes_home()), Path(get_routing_process_hermes_home())
-    if hermes_home_key(active) == hermes_home_key(launch):
-        return
-    from tools.credential_files import to_agent_visible_cache_path
-    rewritten = list(event.media_urls)
-    for i, raw in enumerate(event.media_urls):
-        src = Path(raw)
-        try:
-            rel = src.relative_to(launch / "cache")
-        except ValueError:
-            continue
-        dest = active / "cache" / rel
-        try:
-            if not src.is_file():
-                continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src), str(dest))
-        except OSError:
-            logger.warning("Could not move inbound attachment %s into the routed profile's cache", raw, exc_info=True)
-            continue
-        rewritten[i] = str(dest)
-        if event.text and raw in event.text:  # note an adapter already baked in (observed/replied media)
-            event.text = event.text.replace(raw, to_agent_visible_cache_path(str(dest)))
-    event.media_urls = rewritten
 
 
 def discord_triggering_note(message_id: Any) -> str:
@@ -105,7 +67,7 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text[len(prefix):] if message_text.startswith(prefix) else message_text
 
 
-class GatewayInboundMixin:
+class GatewayInboundMixin(GatewayPluginInjectionMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     async def _hm_pre_gateway_dispatch_hook(
@@ -1212,7 +1174,7 @@ class GatewayInboundMixin:
             _plat = source.platform.value if source.platform else None
             user_instruction = event.get_command_args().strip()
             # Stacked slash-skill invocations: `/skill-a /skill-b do XYZ` loads every leading skill
-            # (up to 5), not just the first. Mirrors CLI.
+            # (up to 5), not just the first. Mirrors CLI. Native split: plugin skills are interactive-only.
             try:
                 from agent.skill_commands import (
                     build_stacked_skill_invocation_message as _build_stacked,
@@ -1397,6 +1359,11 @@ class GatewayInboundMixin:
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
+            if not is_internal:  # fail-open plugin consume, inside the claimed slot (#129958)
+                from gateway.run_inbound_consumer import run_post_admission_hook
+                _consumed, _consumer_reply = await run_post_admission_hook(self, event, source, _quick_key)
+                if _consumed:
+                    return _consumer_reply
             try:
                 _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             except TurnLeaseTimeoutError as exc:
@@ -1840,117 +1807,6 @@ class GatewayInboundMixin:
             for attr in ("_gateway_active_turn_session_key", "_gateway_active_turn_token"):
                 with suppress(AttributeError):
                     delattr(event, attr)
-
-    def _install_plugin_message_injector(self) -> None:
-        """Publish this live gateway's plugin message scheduler process-wide."""
-        from hermes_cli.plugins import publish_gateway_message_host
-
-        publish_gateway_message_host(self, self._schedule_plugin_message_injection)
-
-    def _clear_plugin_message_injector(self) -> None:
-        """Remove this runner's scheduler without clobbering a newer owner."""
-        from hermes_cli.plugins import clear_published_gateway_message_host
-
-        clear_published_gateway_message_host(self)
-
-    def _schedule_plugin_message_injection(
-        self, *, session_key: str, content: str, plugin_id: str
-    ) -> bool:
-        """Schedule a plugin-triggered turn on the live gateway loop (thread-safe)."""
-        from gateway.run import safe_schedule_threadsafe
-        loop = getattr(self, "_gateway_loop", None)
-        if not getattr(self, "_running", False) or loop is None or loop.is_closed():
-            return False
-
-        coro = self._dispatch_plugin_message_injection(
-            session_key=session_key, content=content, plugin_id=plugin_id,
-        )
-        try:
-            current_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            current_loop = None
-
-        if current_loop is loop:
-            try:
-                future = loop.create_task(coro)
-            except Exception:
-                coro.close()
-                logger.warning("Plugin message injection scheduling failed", exc_info=True)
-                return False
-            self._background_tasks.add(future)
-            future.add_done_callback(self._background_tasks.discard)
-        else:
-            future = safe_schedule_threadsafe(
-                coro, loop, logger=logger, log_message="Plugin message injection scheduling failed",
-                log_level=logging.WARNING,
-            )
-            if future is None:
-                return False
-
-        def _log_result(completed) -> None:
-            try:
-                if completed.result():
-                    return
-                what, exc = "was not routed", None
-            except (asyncio.CancelledError, concurrent.futures.CancelledError):
-                return
-            except Exception as err:
-                what, exc = "failed", err
-            logger.warning(
-                "Plugin message injection %s: plugin=%s session=%s", what, plugin_id, session_key, exc_info=exc,
-            )
-
-        future.add_done_callback(_log_result)
-        return True
-
-    async def _dispatch_plugin_message_injection(
-        self, *, session_key: str, content: str, plugin_id: str
-    ) -> bool:
-        """Route a plugin-triggered turn through the session's live adapter."""
-        def _accepting() -> bool:
-            return getattr(self, "_running", False) and not getattr(self, "_draining", False)
-
-        if not _accepting():
-            return False
-        entry = await self.async_session_store.lookup_by_session_key(session_key)
-        if entry is None or entry.origin is None or not _accepting():
-            return False
-
-        from gateway.session_identity import replace_source
-        source = replace_source(self._restored_source(entry))
-        try:
-            authorized = self._is_user_authorized_for_source(source, allow_adapter_delegation=False)
-        except Exception:
-            logger.warning(
-                "Plugin message injection authorization check failed: plugin=%s session=%s",
-                plugin_id, session_key, exc_info=True,
-            )
-            return False
-        if not authorized:
-            logger.warning(
-                "Plugin message injection denied by current gateway authorization: "
-                "plugin=%s session=%s", plugin_id, session_key,
-            )
-            return False
-
-        adapter = self._delivery_adapter_for(source)
-        if adapter is None:
-            return False
-
-        await adapter.handle_message(MessageEvent(
-            text=content, message_type=MessageType.TEXT, source=source, internal=True,
-            allow_gateway_control=False,
-            metadata={
-                "hermes_plugin_id": plugin_id, "hermes_plugin_injection": True,
-                "gateway_session_key": session_key, "gateway_session_id": entry.session_id,
-                "gateway_session_strict": True,
-            },
-        ))
-        logger.info(
-            "Plugin message injection dispatched: plugin=%s session=%s session_id=%s",
-            plugin_id, session_key, entry.session_id,
-        )
-        return True
 
     def _decide_image_input_mode(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,

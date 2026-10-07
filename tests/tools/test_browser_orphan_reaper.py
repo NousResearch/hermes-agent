@@ -523,3 +523,97 @@ class TestPeriodicOrphanReap:
             bt._cleanup_running = orig_running
 
         assert len(reap_calls) > 1, "startup-only reap would give exactly 1"
+
+
+def _fake_managed_proc(pid, ppid, *, exe="", marker=True, age=900.0):
+    """A psutil-style process record for Hermes-managed Chromium.
+
+    ``marker=False`` yields an unmanaged browser (no profile marker, foreign exe)."""
+    from types import SimpleNamespace
+    cmdline = [exe or "/chromium-1208/chrome"]
+    if marker:
+        cmdline.append("--user-data-dir=/tmp/agent-browser-chrome-<uuid>")
+    return SimpleNamespace(pid=pid, info={
+        "pid": pid, "name": "chrome", "ppid": ppid, "exe": exe,
+        "cmdline": cmdline,
+        "create_time": time.time() - age,
+    })
+
+
+class TestUntetheredManagedChromiumReap:
+    """Process-ownership sweep for managed Chromium whose daemon died with its socket
+    dir already gone — the socket-dir scan's early return made those trees immortal
+    (observed: 62 orphan roots / 558 chrome.exe / ~34 GB RSS over 4 days on Windows,
+    with ``agent-browser session list`` reporting no active sessions)."""
+
+    def _sweep(self, procs, *, live_ppid=None, start_time=123456, kill_calls):
+        from tools.browser_tool_lifecycle import _reap_untethered_managed_chromium
+        with patch("psutil.process_iter", return_value=procs), \
+             patch("psutil.pid_exists", side_effect=lambda p: p == live_ppid), \
+             patch("gateway.status.get_process_start_time", return_value=start_time), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=lambda pid, expected: kill_calls.append((pid, expected))):
+            return _reap_untethered_managed_chromium()
+
+    def test_untethered_tree_root_is_reaped_with_start_fingerprint(self):
+        kill_calls = []
+        root = _fake_managed_proc(101, 555)          # daemon PID 555 is long gone
+        child = _fake_managed_proc(102, 101)         # renderer under the root
+        reaped = self._sweep([root, child], live_ppid=None, kill_calls=kill_calls)
+        # Only the root is signalled — the tree-kill takes renderers/GPU with it —
+        # and it carries the start-time fingerprint so a recycled PID is refused.
+        assert kill_calls == [(101, 123456)]
+        assert reaped == 1
+
+    def test_live_daemon_children_are_spared(self):
+        kill_calls = []
+        root = _fake_managed_proc(201, 777)  # daemon 777 still owns the tree
+        reaped = self._sweep([root], live_ppid=777, kill_calls=kill_calls)
+        assert kill_calls == []
+        assert reaped == 0
+
+    def test_posix_reparented_to_init_is_reaped(self):
+        """After a POSIX daemon death Chromium is re-parented to init (ppid 1), so
+        owner-liveness alone would spare it forever — the same leak as on Windows."""
+        kill_calls = []
+        root = _fake_managed_proc(301, 1, exe="/chromium-1208/chrome", marker=False)
+        with patch("hermes_cli.browser_runtime.chromium_executable",
+                   return_value="/chromium-1208/chrome.exe"):
+            reaped = self._sweep([root], live_ppid=None, kill_calls=kill_calls)
+        assert kill_calls == [(301, 123456)]
+        assert reaped == 1
+
+    def test_young_tree_within_grace_is_spared(self):
+        kill_calls = []
+        root = _fake_managed_proc(401, 555, age=60.0)  # under the 600s grace
+        reaped = self._sweep([root], live_ppid=None, kill_calls=kill_calls)
+        assert kill_calls == []
+        assert reaped == 0
+
+    def test_unmanaged_browser_is_untouched(self):
+        kill_calls = []
+        stranger = _fake_managed_proc(
+            501, 555, exe="/usr/bin/google-chrome", marker=False)
+        reaped = self._sweep([stranger], live_ppid=None, kill_calls=kill_calls)
+        assert kill_calls == []
+        assert reaped == 0
+
+    def test_missing_start_fingerprint_refuses_the_pid(self):
+        kill_calls = []
+        root = _fake_managed_proc(601, 555)
+        reaped = self._sweep([root], live_ppid=None, start_time=None,
+                             kill_calls=kill_calls)
+        assert kill_calls == []
+        assert reaped == 0
+
+    def test_sweep_runs_even_when_no_socket_dirs_remain(self, fake_tmpdir):
+        """The leak is only reachable once every socket dir is gone, so the sweep must
+        run before the socket-dir scan's early return."""
+        from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
+
+        sweep_calls = []
+        with patch("tools.browser_tool_lifecycle._reap_untethered_managed_chromium",
+                   side_effect=lambda: sweep_calls.append(1) or 0):
+            _reap_orphaned_browser_sessions()
+
+        assert sweep_calls == [1]

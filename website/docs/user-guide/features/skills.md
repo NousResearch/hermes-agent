@@ -482,7 +482,7 @@ hermes skills trust ~/myproject # or explicitly
 hermes skills untrust           # revoke
 ```
 
-Trust covers every project skill directory listed above, including `.github/skills/` — a repo that already ships GitHub Copilot skills there loads them once trusted. Trusted roots are stored in `skills.trusted_project_dirs` in `~/.hermes/config.yaml`. Set `skills.project_discovery: false` to turn the feature off entirely (no scanning, no notices).
+Trust covers every project skill directory listed above, including `.github/skills/` — a repo that already ships GitHub Copilot skills there loads them once trusted. Other GitHub Copilot repo artifacts are not skills: `.github/copilot-instructions.md` and `.github/instructions/*.instructions.md` load as [project context](context-files.md#github-copilot-instructions), while `.github/prompts/*.prompt.md`, `.github/agents/*.agent.md`, `.github/hooks/` and MCP configs are not read. Trusted roots are stored in `skills.trusted_project_dirs` in `~/.hermes/config.yaml`. Set `skills.project_discovery: false` to turn the feature off entirely (no scanning, no notices).
 
 ### Precedence
 

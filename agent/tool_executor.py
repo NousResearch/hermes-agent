@@ -331,7 +331,8 @@ def _append_skipped_tool_results(
     stop_on_flush_failure: bool = True,
 ) -> bool:
     """Append one ``tool`` result per unstarted call so the assistant tool-call turn never
-    lacks matching results (role alternation). ``content`` is formatted with ``{name}``;
+    lacks matching results (role alternation). ``{name}`` in ``content`` is substituted with
+    ``str.replace``, never ``str.format`` (a recorded reason may contain braces);
     ``hook_error_type`` also emits the terminal ``post_tool_call`` (status=cancelled) per
     call with ``hook_id`` overriding the hook's id; ``flush_stage`` flushes after each
     append and returns False on the first failed flush when ``stop_on_flush_failure``."""

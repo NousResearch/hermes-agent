@@ -87,6 +87,19 @@ def _write_sidecar_fixture(tmp_path: Path, *, sdk_available: bool) -> Path:
         "export function imessage() { return {}; }\nimessage.config = () => ({});\n",
         encoding="utf-8",
     )
+    # The pinned provider exports its typed errors from the same grpc module.
+    # Keep the synthetic install complete when index.mjs imports that contract.
+    grpc_package = sidecar / "node_modules" / "@photon-ai" / "advanced-imessage"
+    grpc_package.mkdir(parents=True)
+    (grpc_package / "package.json").write_text(
+        json.dumps({"type": "module", "exports": {"./grpc": "./grpc.js"}}),
+        encoding="utf-8",
+    )
+    (grpc_package / "grpc.js").write_text(
+        "export class NotFoundError extends Error {}\n"
+        "export const ErrorCode = {messageNotFound: 'messageNotFound'};\n",
+        encoding="utf-8",
+    )
     return sidecar
 
 

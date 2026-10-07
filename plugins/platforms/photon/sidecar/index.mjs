@@ -308,6 +308,8 @@ let Spectrum,
   spectrumTyping,
   spectrumPoll,
   spectrumReply,
+  IMessageNotFoundError,
+  IMessageErrorCode,
   imessageEffect;
 try {
   ({
@@ -322,6 +324,9 @@ try {
     reply: spectrumReply,
   } = await import("spectrum-ts"));
   ({ imessage, effect: imessageEffect } = await import("spectrum-ts/providers/imessage"));
+  // Use the pinned provider's actual error class, not message/name matching.
+  ({ NotFoundError: IMessageNotFoundError, ErrorCode: IMessageErrorCode } =
+    await import("@photon-ai/advanced-imessage/grpc"));
 } catch (e) {
   console.error(
     "photon-sidecar: spectrum-ts is not installed. Run `npm install` " +
@@ -375,26 +380,52 @@ function rememberKnownSpace(id, space) {
   lruSet(knownSpaces, id, space, MAX_KNOWN_SPACES);
 }
 
-// Send `builder` as a native threaded reply to `replyToId` when given and
-// resolvable; otherwise (or if the target can't be found) a normal send, so a
-// stale anchor never loses the message.
-async function sendMaybeThreaded(space, builder, replyToId) {
+// Resolve a reply target once per request (attachment and caption share it).
+// Lookup failure precedes delivery, so an unthreaded send is safe. After a
+// send attempt, recover only from a typed target refusal or SDK-skipped content.
+async function sendMaybeThreaded(space, builder, replyToId, replyState = {}) {
   if (!replyToId || typeof replyToId !== "string" || !spectrumReply) {
     return await space.send(builder);
   }
-  let target;
-  try {
-    target = knownMessages.get(replyToId) ?? (await space.getMessage(replyToId));
-  } catch (e) {
-    target = undefined;
+  if (!replyState.resolved) {
+    try {
+      replyState.target = knownMessages.get(replyToId) ?? (await space.getMessage(replyToId));
+    } catch (e) {
+      replyState.target = undefined;
+    }
+    replyState.resolved = true;
   }
+  const target = replyState.target;
   if (!target) {
     console.error(
       `photon-sidecar: reply target ${replyToId} not found; sending unthreaded`
     );
     return await space.send(builder);
   }
-  return await space.send(spectrumReply(builder, target));
+  let result;
+  try {
+    result = await space.send(spectrumReply(builder, target));
+  } catch (e) {
+    // advanced-imessage 2.1.0 maps a server NOT_FOUND (gRPC 5) plus
+    // error-code=messageNotFound into this typed refusal. On a reply send
+    // the only message reference is the reply target. Generic errors, 5xx,
+    // timeouts and connection loss cannot establish non-delivery.
+    if (!(e instanceof IMessageNotFoundError) ||
+        e.grpcCode !== 5 || e.code !== IMessageErrorCode.messageNotFound || e.retryable !== false) {
+      throw e;
+    }
+    knownMessages.delete(replyToId);
+    replyState.target = undefined;
+    return await space.send(builder);
+  }
+  // spectrum-ts 12.7.0 buildSpace skips UnsupportedError and resolves
+  // undefined. A single text/media builder was not sent; don't report success
+  // with a null message id, and don't leave its caption in a rejected thread.
+  if (result === undefined) {
+    replyState.target = undefined;
+    return await space.send(builder);
+  }
+  return result;
 }
 
 function rememberKnownMessage(message) {
@@ -1140,13 +1171,14 @@ const server = http.createServer(async (req, res) => {
           ? voice(path, Object.keys(opts).length ? opts : undefined)
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
-      const result = await sendMaybeThreaded(space, builder, replyToId);
+      const replyState = {};
+      const result = await sendMaybeThreaded(space, builder, replyToId, replyState);
 
       // iMessage delivers the caption as a separate bubble; send it
-      // after the media so the attachment renders first.
+      // after the media, with the same resolved target as the attachment.
       if (caption && typeof caption === "string") {
         try {
-          await space.send(spectrumText(caption));
+          await sendMaybeThreaded(space, spectrumText(caption), replyToId, replyState);
         } catch (e) {
           console.error(
             "photon-sidecar: attachment sent but caption failed: " +

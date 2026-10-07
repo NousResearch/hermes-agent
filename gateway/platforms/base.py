@@ -95,12 +95,6 @@ _HISTORY_MEDIA_LOOKUP_MAX_WORKERS = 2
 _HISTORY_MEDIA_LOOKUP_ADMISSION = threading.BoundedSemaphore(_HISTORY_MEDIA_LOOKUP_MAX_WORKERS)
 
 
-def _platform_name(platform) -> str:
-    """Normalize a Platform enum / raw string into a lowercase name."""
-    value = getattr(platform, "value", platform)
-    return str(value or "").lower()
-
-
 def _or_default(thunk, default, exc=(TypeError, ValueError)):
     """``thunk()``, or ``default`` when it raises one of ``exc`` (numeric config/env coercion)."""
     try:
@@ -111,72 +105,6 @@ def _or_default(thunk, default, exc=(TypeError, ValueError)):
 
 DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS = 0.35
 DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS = 1.0
-
-
-def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
-    """Platform-aware thread metadata for adapter sends. Telegram DM topics route with
-    ``message_thread_id`` + a reply anchor; anchorless synthetic/resumed sends fall back to
-    ``direct_messages_topic_id`` when supported."""
-    thread_id = getattr(source, "thread_id", None)
-    platform = _platform_name(getattr(source, "platform", None))
-    metadata = {"thread_id": thread_id} if thread_id is not None else {}
-    # Slack workspace identity is routing state: carry it so a multi-workspace Socket Mode
-    # gateway never falls back to its primary WebClient.
-    scope_id = getattr(source, "scope_id", None) if platform == "slack" else None
-    if scope_id:
-        metadata["slack_team_id"] = str(scope_id)
-    if not metadata:
-        return None
-    if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
-        metadata["telegram_dm_topic_reply_fallback"] = True
-        if str(thread_id) not in {"", "1"}:
-            metadata["direct_messages_topic_id"] = str(thread_id)
-        anchor = reply_to_message_id or getattr(source, "message_id", None)
-        if anchor is not None:
-            metadata["telegram_reply_to_message_id"] = str(anchor)
-    # Routed profile (multiplex / profile_routes): outbound prune paths must not assume the
-    # adapter's static profile stamp.
-    profile = str(getattr(source, "profile", None) or "").strip()
-    if profile:
-        metadata["hermes_profile"] = profile
-    return metadata
-
-
-def _thread_metadata_for_event(event) -> dict | None:
-    """``_thread_metadata_for_source`` for an event, anchored on its reply id."""
-    return _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
-
-
-def _mark_notify_metadata(metadata: dict | None) -> dict:
-    """Clone metadata and mark a user-visible reply as notify-worthy."""
-    notify_metadata = dict(metadata) if metadata else {}
-    notify_metadata["notify"] = True
-    return notify_metadata
-
-
-def _reply_anchor_for_event(event) -> str | None:
-    """Return reply_to id for platforms that need reply semantics."""
-    override = getattr(event, "reply_anchor_override", None)
-    if override is not None:
-        return override  # the turn was redirected onto another message (#115001)
-    source = getattr(event, "source", None)
-    platform = _platform_name(getattr(source, "platform", None))
-    thread_id = getattr(source, "thread_id", None)
-    raw_message = getattr(event, "raw_message", None)
-    if (platform == "slack" and isinstance(raw_message, dict)
-            and raw_message.get("_hermes_no_thread_response")):
-        # Slack reaction handoff = new top-level message; a message_id anchor would make
-        # _resolve_thread_ts() reply in a nonexistent thread.
-        return None
-    if platform == "telegram" and thread_id:
-        # Forum topics route by topic metadata (no reply); DM-topic lanes reply to the triggering
-        # message — replying to the topic seed/anchor can render outside the active lane.
-        if getattr(source, "chat_type", None) != "dm":
-            return None
-        return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
-    if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
-        return getattr(event, "reply_to_message_id", None)
-    return getattr(event, "message_id", None)
 
 
 _MEDIA_KIND_KEYS = frozenset({"audio", "video", "file", "image"})
@@ -425,6 +353,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.base_send_metadata import (  # noqa: F401 -- re-exported
+    _mark_notify_metadata, _platform_name, _reply_anchor_for_event, _thread_metadata_for_event,
+    _thread_metadata_for_source)
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
@@ -1916,6 +1847,14 @@ _strip_media_directives = _strip_media_tag_directives
 
 class BasePlatformAdapter(ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Run the ``pre_send_message`` plugin hook in front of every concrete ``send``."""
+        super().__init_subclass__(**kwargs)
+        send = cls.__dict__.get("send")
+        if callable(send) and not getattr(send, "__isabstractmethod__", False):
+            from gateway.platforms.base_pre_send import guard_send
+            cls.send = guard_send(send, lambda: SendResult(success=True, raw_response={"pre_send": "dropped"}))
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
     # fenced terminal command; plain-text platforms get the preview).

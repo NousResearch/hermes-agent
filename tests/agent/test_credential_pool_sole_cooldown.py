@@ -120,6 +120,34 @@ def test_sole_credential_reset_inside_the_bench_is_still_honoured(tmp_path, monk
     assert pool.select() is None
 
 
+def test_sole_credential_reset_without_status_stamp_is_still_clamped(tmp_path, monkeypatch):
+    """A stale row with an absolute reset but no status stamp must not bench the
+    sole credential for the whole window.
+
+    ``_exhausted_until`` previously needed ``last_status_at`` to build the TTL
+    bench; without it the provider reset stood unclamped — the #119163 symptom
+    on a legacy row. The clamp now measures the bench from now.
+    """
+    from agent.credential_pool import (
+        EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS,
+        _exhausted_until,
+    )
+
+    stale = _entry(
+        429,
+        age_seconds=90,
+        error_reason="GoUsageLimitError",
+        failure_reason="rate_limit",
+        reset_at=time.time() + 15 * 24 * 60 * 60,
+    )
+    stale.pop("last_status_at")
+    pool = _load(tmp_path, monkeypatch, [stale])
+    (entry,) = pool.entries()
+    until = _exhausted_until(entry, sole_credential=True)
+    assert until is not None
+    assert until <= time.time() + EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS + 5
+
+
 def test_sole_credential_billing_429_keeps_provider_reset(tmp_path, monkeypatch):
     """Control: a confirmed billing limit keeps its provider reset.
 

@@ -508,15 +508,8 @@ def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) 
     ``last_error_reset_at`` is capped at the TTL bench, so a subscription-period
     429 (monthly/weekly window) cannot bench it for the whole window (#119163).
     Confirmed billing and pools with siblings keep the provider-stated reset.
-
-    A persisted absolute ``last_error_reset_at`` is honoured while it stays
-    inside the TTL bench. On a lone credential it may not: a subscription-period
-    429 (monthly/weekly window) writes a reset days out, and with nothing to
-    rotate to the sole-credential short cooldown is the branch that must apply
-    (#119163) — one probe per bench against a single key is cheap, a whole
-    billing period of silence is not. Confirmed billing keeps the provider's
-    reset (a 60s retry on a spent account just re-fails), as does a pool with
-    siblings.
+    When the status stamp is missing (stale row), the bench is measured from now
+    rather than letting the provider reset stand unclamped.
     """
     if entry.last_status != STATUS_EXHAUSTED:
         return None
@@ -524,11 +517,15 @@ def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) 
     bench_until = _ttl_bench_until(entry, sole_credential=sole_credential)
     if reset_at is None:
         return bench_until
-    if (
-        bench_until is not None
-        and sole_credential
-        and not _is_billing_failure(entry.last_error_code, entry.failure_reason)
-    ):
+    if sole_credential and not _is_billing_failure(entry.last_error_code, entry.failure_reason):
+        if bench_until is None:
+            # No status stamp (stale persisted row): bench from now so a missing
+            # stamp cannot resurrect the whole-window provider reset (#119163).
+            bench_until = time.time() + _exhausted_ttl(
+                entry.last_error_code,
+                sole_credential=True,
+                failure_reason=entry.failure_reason,
+            )
         return min(reset_at, bench_until)
     return reset_at
 

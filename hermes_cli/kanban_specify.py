@@ -187,14 +187,19 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
         return "", ""
 
 
-def _escalation_refusal(task_id: str) -> Optional[kb.TriageEscalationRefusal]:
-    """The block-loop breaker's park for ``task_id``, or None.
+def _escalation_refusal(
+    task_id: str, author: Optional[str] = None,
+) -> Optional[kb.TriageEscalationRefusal | kb.DecomposeRefusal]:
+    """The refusal that keeps ``task_id`` in ``triage``, or None.
 
-    Checked BEFORE the aux call: a card parked for a human stays parked whatever the
-    specifier would have said, so the LLM round-trip is pure waste.
+    Checked BEFORE the aux call: a card parked for a human — or one whose RECORD already
+    decides the work — stays put whatever the specifier would have said, so the LLM
+    round-trip is pure waste. The record refusal is RECORDED here: this pre-aux check returns
+    before ``specify_triage_task`` runs, so no other leg would record it.
     """
     with kbc.connect_closing() as conn:
-        return kb.triage_escalation_refusal(conn, task_id)
+        with kb.write_txn(conn):
+            return kb.decompose_refusal_guard(conn, task_id, author=author)
 
 
 def specify_task(
@@ -210,7 +215,8 @@ def specify_task(
     if task is None:
         return SpecifyOutcome(task_id, False, reason)
 
-    refusal = _escalation_refusal(task_id)
+    audit_author = author or _profile_author()
+    refusal = _escalation_refusal(task_id, audit_author)
     if refusal is not None:
         return SpecifyOutcome(task_id, False, refusal.detail)
 
@@ -240,7 +246,7 @@ def specify_task(
             task_id,
             title=new_title,
             body=new_body,
-            author=author or _profile_author(),
+            author=audit_author,
         )
     if not ok:
         # A refused promotion carries the refusal (triage escalation names the event

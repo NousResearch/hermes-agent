@@ -30,6 +30,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_graph as kbg
 from hermes_cli import kanban_decompose as decomp
+from hermes_cli import kanban_specify as specify
 from hermes_cli.kanban_db import BLOCK_RECURRENCE_LIMIT
 
 # The contract string the kernel writes and the operator greps for. Spelled out on purpose
@@ -263,6 +264,7 @@ def test_a_superseded_or_do_not_implement_note_refuses(kanban_home: Path, note: 
     [
         "branch `wt/t_d0520071-lane-scoped-lockdown` @ 3ce158d8",
         "the fix lives on `fix/t_9cb7f0b9-decompose-record-guard`",
+        "the work rides `hermes-agent/t_9cb7f0b9-decompose-record-guard`",
         "https://github.com/NousResearch/hermes-agent/pull/123456 is open",
     ],
 )
@@ -414,7 +416,7 @@ def test_a_marker_from_long_ago_does_not_refuse_a_settled_card(kanban_home: Path
     """The scan is bounded to the tail: a stale branch mention is not the card's state."""
     with kbc.connect_closing() as conn:
         tid = _triage_card(conn)
-        _comment(conn, tid, "First attempt ran on `fix/t_00000000-old-approach`.")
+        _comment(conn, tid, f"First attempt ran on `fix/{tid}-old-approach`.")
         for i in range(6):
             _comment(conn, tid, f"progress note {i}", author="worker")
         child_ids = kbg.decompose_triage_task(
@@ -462,3 +464,156 @@ def test_the_record_predicate_is_a_first_class_kernel_guard(kanban_home: Path) -
         assert refusal is not None
         assert refusal.causes == ["superseded", "approved", "live_artifact"]
         assert refusal.task_id == decided
+
+
+# ---------------------------------------------------------------------------------------
+# F1 — the branch-name SUPERSET, and its false-positive bound
+# ---------------------------------------------------------------------------------------
+
+def test_a_project_slug_branch_refuses(kanban_home: Path) -> None:
+    """``projects_db.branch_name_for`` mints ``<project.slug>/<task_id>``.
+
+    None of the six prefixes the old marker enumerated covers a USER-CHOSEN project slug,
+    so a project-linked card with live work was fanned out. The stable discriminator is the
+    card-id segment, whichever namespace precedes it.
+    """
+    with kbc.connect_closing() as conn:
+        tid = _triage_card(conn)
+        _comment(
+            conn, tid,
+            "STATUS\n\nthe work rides `hermes-agent/t_9cb7f0b9-decompose-record-guard`\n",
+        )
+
+    outcome, aux = _decompose_without_llm(tid)
+
+    assert aux.call_count == 0
+    assert not outcome.ok
+    with kbc.connect_closing() as conn:
+        assert _refusals(conn, tid)[0].payload["causes"] == ["live_artifact"]
+
+
+def test_a_bare_card_id_mention_does_not_refuse(kanban_home: Path) -> None:
+    """The marker is a BRANCH reference: a bare id in prose is not a live artifact.
+
+    The superset must not swallow every ``t_<id>`` token — a slash-prefixed one is a branch,
+    a bare one is a citation, and a card mentioning a sibling id must still fan out.
+    """
+    with kbc.connect_closing() as conn:
+        tid = _triage_card(conn)
+        _comment(conn, tid, "context: t_9cb7f0b9 is the sibling card; nothing built yet.")
+        assert kb.decompose_refusal(conn, tid) is None, "a bare id is not a branch marker"
+        child_ids = kbg.decompose_triage_task(
+            conn, tid, root_assignee="orchestrator", children=_children(), author="decomposer",
+        )
+        assert isinstance(child_ids, list) and len(child_ids) == 2
+        assert not _refusals(conn, tid)
+
+
+# ---------------------------------------------------------------------------------------
+# F2 — a durable decision is found beyond the perishable tail window
+# ---------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "note,cause",
+    [
+        ("VERDICT: the CODE HALF IS APPROVED at `3ce158d8`.", "approved"),
+        ("SUPERSEDED — no work performed; the successor carries it.", "superseded"),
+    ],
+)
+def test_a_durable_verdict_is_found_beyond_the_tail_window(
+    kanban_home: Path, note: str, cause: str,
+) -> None:
+    """A decision does not expire: it is read over the WHOLE thread, not the newest five.
+
+    The old flat ``LIMIT 5`` hid the verdict behind any five later comments, so a decided
+    card decomposed freely — the exact defect this guard exists to stop.
+    """
+    with kbc.connect_closing() as conn:
+        tid = _triage_card(conn)
+        _comment(conn, tid, f"NOTE\n\n{note}\n")
+        for i in range(6):
+            _comment(conn, tid, f"progress note {i}", author="worker")
+
+    outcome, aux = _decompose_without_llm(tid)
+
+    assert aux.call_count == 0, "a decided card must not reach the LLM"
+    assert not outcome.ok
+    with kbc.connect_closing() as conn:
+        assert _refusals(conn, tid)[0].payload["causes"] == [cause]
+
+
+# ---------------------------------------------------------------------------------------
+# F3 — the SPECIFY path is guarded too (the record guard was decompose-only)
+# ---------------------------------------------------------------------------------------
+
+def test_specify_triage_task_refuses_a_decided_card(kanban_home: Path) -> None:
+    """The kernel verb returns the RECORD refusal, recorded, and a falsy — not a bare False."""
+    with kbc.connect_closing() as conn:
+        tid = _triage_card(conn)
+        _comment(conn, tid, INCIDENT_APPROVAL_COMMENT)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        before_body = task.body
+
+        refusal = kb.specify_triage_task(
+            conn, tid, title="new title", body="new body", author="specifier",
+        )
+
+        assert not refusal, "a decided card must not be promoted"
+        assert not isinstance(refusal, bool), "the refusal must carry the record reason"
+        assert isinstance(refusal, kb.DecomposeRefusal)
+        assert "approved" in refusal.causes
+        assert _status(conn, tid) == "triage"
+        after = kb.get_task(conn, tid)
+        assert after is not None
+        assert after.body == before_body, "the pinned body must be untouched"
+        assert not _events(conn, tid, "specified")
+        assert not _events(conn, tid, "promoted")
+        assert len(_refusals(conn, tid)) == 1, "the refusal is recorded by the kernel verb"
+
+
+def test_specify_task_refuses_before_the_aux_call(kanban_home: Path) -> None:
+    """The pre-aux check refuses AND records, so the LLM round-trip is never spent."""
+    with kbc.connect_closing() as conn:
+        tid = _triage_card(conn)
+        _comment(conn, tid, INCIDENT_APPROVAL_COMMENT)
+
+    aux = MagicMock(return_value=('{"title": "invented", "body": "invented"}', ""))
+    with patch("hermes_cli.kanban_specify._call_aux", aux):
+        outcome = specify.specify_task(tid, author="specifier")
+
+    assert aux.call_count == 0, "the pre-check must refuse before the aux round trip"
+    assert outcome.ok is False
+    assert "refused auto-decomposition" in outcome.reason, (
+        "the reason must be the RECORD refusal, not the specified-race message"
+    )
+    with kbc.connect_closing() as conn:
+        assert _status(conn, tid) == "triage"
+        assert len(_refusals(conn, tid)) == 1, "only the pre-aux leg runs, and it records"
+
+
+def test_the_escalation_park_still_refuses_the_specify_path(kanban_home: Path) -> None:
+    """No regression: the breaker's park refuses the kernel verb AND the specify verb."""
+    with kbc.connect_closing() as conn:
+        tid = _park_in_triage(conn)
+        refusal = kb.specify_triage_task(conn, tid, title="t", body="b", author="specifier")
+        assert not refusal
+        assert isinstance(refusal, kb.TriageEscalationRefusal), "the park, not a record refusal"
+        assert _status(conn, tid) == "triage"
+        assert not _refusals(conn, tid), "an escalation park records no decompose refusal"
+
+    aux = MagicMock(return_value=(None, "aux client unavailable"))
+    with patch("hermes_cli.kanban_specify._call_aux", aux):
+        outcome = specify.specify_task(tid)
+    assert outcome.ok is False
+    assert aux.call_count == 0
+
+
+def test_an_ordinary_triage_card_still_specifies_and_promotes(kanban_home: Path) -> None:
+    """No over-refusal: the specifier path still promotes a plain triage card."""
+    with kbc.connect_closing() as conn:
+        tid = _triage_card(conn, title="vague idea")
+        ok = kb.specify_triage_task(conn, tid, title="sharp idea", body="do it", author="specifier")
+        assert ok is True
+        assert _status(conn, tid) in {"todo", "ready"}, "promoted out of triage"
+        assert not _refusals(conn, tid)

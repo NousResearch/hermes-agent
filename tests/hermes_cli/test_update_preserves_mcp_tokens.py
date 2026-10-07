@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 import shutil
+import sys
 import textwrap
 import zipfile
 from pathlib import Path
@@ -265,28 +267,64 @@ def test_update_via_zip_without_tokens_is_normal(tmp_path: Path, monkeypatch) ->
 
 
 # ---------------------------------------------------------------------------
+def test_verify_warns_when_token_file_same_size_different_mtime(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    """A token file rewritten with identical length but rotated mtime must surface a warning (#84843)."""
+    hermes_home = tmp_path / "home"
+    _seed_hermes_home_tokens(hermes_home)
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: str(hermes_home))
+
+    before = update_cmd._snapshot_mcp_tokens()
+    target = hermes_home / "mcp-tokens" / "notion.json"
+    old_stat = target.stat()
+
+    # Rewrite with same byte length but advanced mtime
+    target.write_bytes(b"x" * old_stat.st_size)
+    os.utime(target, (old_stat.st_atime, old_stat.st_mtime + 10.0))
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.update_cmd"):
+        update_cmd._verify_mcp_tokens_preserved(before)
+
+    assert any("#84843" in r.message and "changed" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
 # Wiring contract
 # ---------------------------------------------------------------------------
 
 
-def test_cmd_update_impl_wires_mcp_token_preservation() -> None:
-    """AST contract: the update pipeline snapshots tokens pre-update and
-    verifies them post-update on both the git and ZIP paths (#84843)."""
-    import ast
+def test_cmd_update_impl_wires_mcp_token_preservation(tmp_path: Path, monkeypatch) -> None:
+    """Behavioral contract: the update pipeline snapshots tokens pre-update and
+    forwards the baseline to _update_via_zip (#84843)."""
+    fake_baseline = {"notion.json": (100, 200)}
+    snapshot_called = []
+    zip_called_with = []
 
-    src = textwrap.dedent(inspect.getsource(update_cmd._cmd_update_impl))
-    tree = ast.parse(src)
-    calls = [
-        node.func.id if isinstance(node.func, ast.Name) else node.func.attr
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-    ]
-    assert "_snapshot_mcp_tokens" in calls, "pre-update snapshot missing"
-    assert calls.count("_verify_mcp_tokens_preserved") == 1, (
-        "post-update verification must run once on the git path"
+    monkeypatch.setattr(
+        update_cmd,
+        "_snapshot_mcp_tokens",
+        lambda: snapshot_called.append(True) or fake_baseline,
     )
-    zip_calls = [c for c in calls if c == "_update_via_zip"]
-    assert len(zip_calls) == 2, (
-        "both ZIP call sites (main + Windows git-failure fallback) must "
-        f"forward the baseline; found {zip_calls}"
+    monkeypatch.setattr(
+        update_cmd,
+        "_update_via_zip",
+        lambda args, mcp_tokens_before=None: zip_called_with.append(mcp_tokens_before),
     )
+
+    fake_root = tmp_path / "install"
+    fake_root.mkdir()
+    # No .git directory so on win32 it branches to use_zip_update
+    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", fake_root)
+    monkeypatch.setattr(update_cmd._m(), "_run_pre_update_backup", lambda args: None)
+    monkeypatch.setattr(update_cmd._m(), "_pause_windows_gateways_for_update", lambda: None)
+    monkeypatch.setattr(update_cmd._m(), "_resume_windows_gateways_after_update", lambda r: None)
+    monkeypatch.setattr(update_cmd._m(), "_is_windows", lambda: False)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    args = type("Args", (), {"force_venv": True})()
+    update_cmd._cmd_update_impl(args, gateway_mode=False)
+
+    assert snapshot_called == [True], "pre-update snapshot must be captured"
+    assert zip_called_with == [fake_baseline], "baseline must be forwarded to _update_via_zip"
+

@@ -1202,9 +1202,12 @@ def _verify_mcp_tokens_preserved(before: Optional[dict] = None) -> None:
             missing = [name for name in before if not (tokens_dir / name).exists()]
             changed = [
                 name
-                for name, (size, _mtime) in before.items()
+                for name, (size, mtime_ns) in before.items()
                 if (tokens_dir / name).exists()
-                and (tokens_dir / name).stat().st_size != size
+                and (
+                    (tokens_dir / name).stat().st_size != size
+                    or (tokens_dir / name).stat().st_mtime_ns != mtime_ns
+                )
             ]
             if missing or changed:
                 logger.warning(

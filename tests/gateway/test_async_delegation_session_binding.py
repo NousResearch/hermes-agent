@@ -265,7 +265,9 @@ async def test_pending_pin_respects_concurrent_boundary(tmp_path, boundary):
     "tip_row_missing", "tip_row_ended", "route_row_error", "route_row_missing",
     "route_tip_error", "route_tip_none",
 ])
-async def test_compression_uncertainty_keeps_durable_completion_retryable(tmp_path, monkeypatch, phase, fault):
+async def test_compression_uncertainty_keeps_durable_completion_retryable(
+    tmp_path, monkeypatch, phase, fault, request, private_db_probe_cleanup,
+):
     """Uncertain lineage never consumes the result or mutates its route; replay recovers."""
     from types import SimpleNamespace
     from typing import Any, cast
@@ -278,6 +280,8 @@ async def test_compression_uncertainty_keeps_durable_completion_retryable(tmp_pa
     with _profile_runtime_scope(tmp_path):
         runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
         store = runner.session_store
+        request.addfinalizer(runner.close_all_session_db_handles)
+        request.addfinalizer(store.close_all_db_handles)
         entry = store.get_or_create_session(SessionSource(
             platform=Platform.TELEGRAM, chat_id="compression-owner", chat_type="dm",
         ))
@@ -384,7 +388,9 @@ async def test_compression_uncertainty_keeps_durable_completion_retryable(tmp_pa
     "parent_boundary", "child_ended", "child_boundary", "intermediate_boundary",
     "compression", "compression_foreign", "idle",
 ])
-async def test_delegate_completion_preserves_real_route_ownership(tmp_path, case, delivery):
+async def test_delegate_completion_preserves_real_route_ownership(
+    tmp_path, case, delivery, request, private_db_probe_cleanup,
+):
     """Real durable admission and route resolution agree before any destructive switch."""
     import json
     import sqlite3
@@ -400,6 +406,8 @@ async def test_delegate_completion_preserves_real_route_ownership(tmp_path, case
     with _profile_runtime_scope(tmp_path):
         runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
         store = runner.session_store
+        request.addfinalizer(runner.close_all_session_db_handles)
+        request.addfinalizer(store.close_all_db_handles)
         source = SessionSource(platform=Platform.TELEGRAM, chat_id="owner-chat", chat_type="dm")
         entry = store.get_or_create_session(source)
         db = store._db

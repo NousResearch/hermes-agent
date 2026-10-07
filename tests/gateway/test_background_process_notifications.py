@@ -839,7 +839,7 @@ async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
     ("batch_boundary_first", "all"), ("batch_boundary_last", "all"),
 ])
 async def test_profile_scoped_child_noise_and_handoff_admission(
-    monkeypatch, tmp_path, request, surface_a, owner, path, mode,
+    monkeypatch, tmp_path, request, surface_a, owner, path, mode, private_db_probe_cleanup,
 ):
     """Recovered A→B→A consumers use real policy and live ownership, not the stale child pin."""
     from typing import cast

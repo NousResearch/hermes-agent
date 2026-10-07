@@ -133,6 +133,106 @@ def _cache_mcp_audio_block(block) -> str:
         cap_what="audio resource")
 
 
+# ---------------------------------------------------------------------------
+# MCP ImageContent → auxiliary vision summary (MEDIA pixel bridge)
+# ---------------------------------------------------------------------------
+# When an auxiliary vision model is configured, each MCP ``ImageContent`` block
+# that lands in the image cache is also described in text so a text-only main
+# model can "see" it. The original ``MEDIA:`` tag is preserved — dual-track.
+
+import asyncio  # noqa: E402
+import json as _json  # noqa: E402
+import os as _os  # noqa: E402
+from collections import OrderedDict  # noqa: E402
+
+# Session-scoped dedupe cache: MCP image cache filenames are content hashes,
+# so the same image re-returned by a tool is never re-analyzed within one
+# process lifetime. Bounded LRU — a long-lived gateway process that sees many
+# unique images must not grow this monotonically forever.
+_MCP_IMAGE_SUMMARY_CACHE_MAX = 512
+_MCP_IMAGE_SUMMARY_CACHE: "OrderedDict[str, str]" = OrderedDict()
+
+
+async def _summarize_mcp_image(image_tag: str) -> str:
+    """Best-effort auxiliary-vision text summary for a ``MEDIA:<path>`` tag.
+
+    Fail-open contract (a single bad block must never kill the tool result):
+    - Returns "" on ANY failure/timeout/misconfiguration; the caller keeps
+      the MEDIA: tag and falls through to remaining blocks.
+    - Only fires when ``auxiliary.vision`` is configured AND
+      ``auxiliary.vision.summarize_mcp_images`` is not explicitly false.
+    - Per-image timeout (``auxiliary.vision.mcp_summary_timeout``, default
+      20s) so a slow vision backend never wedges the MCP tool result.
+    """
+    try:
+        if not image_tag.startswith("MEDIA:"):
+            return ""
+        image_path = image_tag[len("MEDIA:"):]
+        if not image_path or not _os.path.isfile(image_path):
+            return ""
+
+        cached = _MCP_IMAGE_SUMMARY_CACHE.get(image_path)
+        if cached is not None:
+            _MCP_IMAGE_SUMMARY_CACHE.move_to_end(image_path)
+            return cached
+
+        from hermes_cli.config import cfg_get, load_config
+
+        cfg = load_config()
+        vision_cfg = cfg_get(cfg, "auxiliary", "vision", default={}) or {}
+        if not vision_cfg:
+            # No auxiliary vision configured — the bridge is a no-op.
+            return ""
+        if vision_cfg.get("summarize_mcp_images", True) is False:
+            return ""
+        summary_timeout = float(vision_cfg.get("mcp_summary_timeout", 20.0))
+
+        from tools.vision_tools import vision_analyze_tool
+
+        prompt = (
+            "Describe this image in detail: objects, layout, visible text, "
+            "colors, and anything else notable. This description is injected "
+            "into a text-only model's context as a substitute for the image."
+        )
+        # Mirror the built-in vision_analyze tool's model resolution so the
+        # bridge uses the same configured auxiliary vision model — without it
+        # the aux router falls back to provider=auto and fails when no cloud
+        # vision is set up.
+        vision_model = str(
+            vision_cfg.get("model")
+            or _os.getenv("AUXILIARY_VISION_MODEL", "")
+            or ""
+        ).strip() or None
+        result_json = await asyncio.wait_for(
+            vision_analyze_tool(
+                image_url=image_path,
+                user_prompt=prompt,
+                model=vision_model,
+            ),
+            timeout=summary_timeout,
+        )
+        try:
+            parsed = _json.loads(result_json)
+        except (TypeError, ValueError):
+            parsed = {}
+        analysis = (parsed or {}).get("analysis") or ""
+        if not parsed.get("success") or not analysis.strip():
+            logger.debug("MCP image summary unavailable for %s", image_path)
+            return ""
+
+        summary = f"[图片内容摘要] {analysis.strip()}"
+        _MCP_IMAGE_SUMMARY_CACHE[image_path] = summary
+        if len(_MCP_IMAGE_SUMMARY_CACHE) > _MCP_IMAGE_SUMMARY_CACHE_MAX:
+            _MCP_IMAGE_SUMMARY_CACHE.popitem(last=False)
+        return summary
+    except asyncio.TimeoutError:
+        logger.debug("MCP image summary timed out for %s", image_tag)
+        return ""
+    except Exception as exc:
+        logger.debug("MCP image summary skipped (%s): %s", image_tag, exc)
+        return ""
+
+
 def _mcp_resource_filename(uri: str, mime_type: str) -> str:
     """Safe display filename from the URI's last path segment, used only as a name hint:
     ``cache_document_from_bytes`` re-sanitizes and prefixes it, so remote path components

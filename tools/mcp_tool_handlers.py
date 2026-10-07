@@ -20,7 +20,7 @@ from tools import mcp_tool_loop as _loop
 from tools.mcp_tool_content import (
     _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block,
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
-    _truncate_mcp_text_result)
+    _summarize_mcp_image, _truncate_mcp_text_result)
 from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -437,10 +437,12 @@ def _error_result_text(result) -> str:
     return "".join(str(t) for t in texts if t)
 
 
-def _render_content_blocks(result, server_name: str) -> Tuple[str, int]:
+async def _render_content_blocks(result, server_name: str) -> Tuple[str, int]:
     """Text passes through; image/audio blocks are cached (MEDIA: tags); resource blocks are
     materialized rather than silently dropped; unsupported blocks become an inline drop notice
-    (kimi-code#3227). Returns ``(text, usable_parts)`` — the count of REAL rendered blocks
+    (kimi-code#3227). Image blocks additionally get a best-effort auxiliary-vision text summary
+    (``_summarize_mcp_image``) so text-only main models can "see" the image. Returns
+    ``(text, usable_parts)`` — the count of REAL rendered blocks
     (whitespace-only text and drop notices excluded) that the structuredContent arbitration uses."""
     parts: List[str] = []
     usable_parts = 0
@@ -460,6 +462,14 @@ def _render_content_blocks(result, server_name: str) -> Tuple[str, int]:
         if rendered:
             parts.append(rendered)
             usable_parts += 1
+            if rendered.startswith("MEDIA:"):
+                # MEDIA pixel bridge: when an auxiliary vision model is
+                # configured, append a text summary so pure-text providers
+                # can "see" the image. Fail-open — the MEDIA: tag above
+                # always survives even if summarization fails.
+                summary = await _summarize_mcp_image(rendered)
+                if summary:
+                    parts.append(summary)
             continue
         block_type = getattr(block, "type", None) or type(block).__name__
         if block_type in {"text", "resource", "audio", "image"}:  # benign empty render
@@ -514,8 +524,8 @@ def _content_dual_emits_structured(result, structured) -> bool:
     return False
 
 
-def _render_call_tool_result(result, server_name: str) -> str:
-    """Pure: ``CallToolResult`` -> handler JSON. ``content`` and ``structuredContent`` are both
+async def _render_call_tool_result(result, server_name: str) -> str:
+    """Async: ``CallToolResult`` -> handler JSON. ``content`` and ``structuredContent`` are both
     forwarded, except that a ``structuredContent`` whose JSON also sits verbatim in a text block
     (the spec's backwards-compat dual-emit; compared as parsed JSON) is dropped, because that copy
     would reach the model twice (kimi-code#3234). Any other usable text — a status line, a prose
@@ -527,7 +537,7 @@ def _render_call_tool_result(result, server_name: str) -> str:
     (structuredContent-only servers); ``_meta`` minus reserved keys is always surfaced."""
     if mcp_field(result, "is_error", "isError", False):
         return tool_error(_sanitize_error(_truncate_mcp_text_result(_error_result_text(result) or "MCP tool returned an error")))
-    text_result, usable_parts = _render_content_blocks(result, server_name)
+    text_result, usable_parts = await _render_content_blocks(result, server_name)
     structured = _capped_structured_content(result)
     meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
     # A str here is the over-cap truncation stand-in (wire structuredContent is always an object): next to
@@ -577,7 +587,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     server._pending_call_context = None
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
-            return _render_call_tool_result(result, server_name)
+            return await _render_call_tool_result(result, server_name)
 
         def _on_failure(exc):
             _core._bump_server_error(server_name)

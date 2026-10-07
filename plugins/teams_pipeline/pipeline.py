@@ -338,7 +338,7 @@ class TeamsMeetingPipeline:
             raise TeamsPipelineRetryableError("Recording fallback requires ffmpeg for audio extraction, but ffmpeg was not found.")
         audio_path = recording_path.with_suffix(".wav")
         proc = await asyncio.create_subprocess_exec(
-            ffmpeg, "-y", "-i", str(recording_path), str(audio_path), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            ffmpeg, "-y", "-i", str(recording_path), str(audio_path), stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         _stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
             raise TeamsPipelineRetryableError(f"ffmpeg audio extraction failed: {stderr.decode('utf-8', errors='replace').strip()}")
@@ -496,11 +496,3 @@ def _render_summary_markdown(payload: TeamsMeetingSummaryPayload) -> str:
         lines += ["", f"## {heading}", body or ("No summary available." if heading == "Summary" else "- None")]
     lines += ["", f"Confidence: {payload.confidence or 'unknown'}", payload.confidence_notes or ""]
     return "\n".join(lines).strip()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

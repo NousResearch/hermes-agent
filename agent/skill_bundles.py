@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_constants import get_hermes_home
 from agent.skill_commands import command_snapshot, diff_command_snapshots, resolve_slash_key, slugify_skill_name as _slugify
@@ -49,7 +49,7 @@ def _max_mtime(files: List[Path]) -> float:
 def _load_bundle_file(path: Path) -> Optional[Dict[str, Any]]:
     """Parse one bundle YAML; ``None`` (logged) on any error so a broken bundle can't break discovery."""
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
     except OSError as exc:
         logger.warning("Could not read bundle %s: %s", path, exc)
         return None
@@ -204,11 +204,3 @@ def delete_bundle(name: str) -> Path:
 def get_bundle(name: str) -> Optional[Dict[str, Any]]:
     """Look up a bundle by name (slug-normalized)."""
     return get_skill_bundles().get(f"/{_slugify(name)}")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import re  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

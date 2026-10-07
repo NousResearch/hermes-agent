@@ -91,16 +91,25 @@ def _service_label(profile: ProfileGateway) -> str:
 
 
 def _guard_service_domain(plan: MigrationPlan, profile: ProfileGateway) -> Optional[str]:
-    """Different manager or scope than the default gateway (system vs user systemd, launchd vs systemd,
-    or any service when the default is detached: the auto path never elects a secondary's manager).
-    Two units on one profile is an ambiguous topology the unattended path does not resolve either."""
+    """Different manager or scope than the one the fleet converges on (system vs user systemd, launchd vs
+    systemd). The reference is the default's own unit when it has one, else the manager
+    ``target_service_kind()`` elects from the secondaries: a default that never had a gateway unit is not a
+    service domain of its own, and refusing every secondary against it left the common upgrade fleet (N
+    launchd profiles, unit-less default, #118097) printing blockers instead of folding. Two managers
+    among the secondaries still refuse — the ones not elected differ from the target. Two units on one
+    profile is an ambiguous topology the unattended path does not resolve either."""
     if len(profile.services) > 1:
         return (f"Profile '{profile.name}' has more than one installed service ({profile.service_label()}): "
                 f"an ambiguous service topology is not folded automatically.")
-    if set(profile.services) == set(plan.default.services):
+    target = plan.target_service_kind()
+    reference = plan.default.services or ([target] if target is not None else [])
+    if set(profile.services) == set(reference):
         return None
-    return (f"Profile '{profile.name}' runs under {_service_label(profile)} while the default gateway "
-            f"runs under {_service_label(plan.default)}: a different service domain is not folded automatically.")
+    from hermes_cli.gateway_migrate import _service_label as _kind_label
+    against = (f"the default gateway runs under {_service_label(plan.default)}" if plan.default.services
+               else f"the fleet converges on {_kind_label(target)}")
+    return (f"Profile '{profile.name}' runs under {_service_label(profile)} while {against}: "
+            f"a different service domain is not folded automatically.")
 
 
 def _guard_unix_user(plan: MigrationPlan, profile: ProfileGateway) -> Optional[str]:

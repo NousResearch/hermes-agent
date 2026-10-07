@@ -10,7 +10,7 @@ import pytest
 
 from hermes_cli.update_cmd_fleet import _warn_incomplete_gateway_fleet_restart
 
-pytestmark = pytest.mark.linux_only
+pytestmark = pytest.mark.platforms("linux")
 
 
 def test_launchd_labels_get_launchctl_hint(capsys):

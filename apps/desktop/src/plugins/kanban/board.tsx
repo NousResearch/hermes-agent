@@ -1,8 +1,9 @@
 /**
  * The Kanban board page — mounted at `/kanban` (a ROUTES_AREA contribution) in
- * the workspace pane. The desktop port of the dashboard board: one compact
- * header row (count, filter kebab, search, settings, new task — the board
- * SWITCHER lives in the titlebar, see board-switcher.tsx), columns in
+ * the workspace pane or a split route tile. The desktop port of the dashboard
+ * board: one compact header row (count, board switcher, filter kebab, search,
+ * settings, new task — on the full page the switcher is projected into the
+ * page header instead, see WorkspacePageHeaderControl), columns in
  * BOARD_COLUMNS order, drag-to-move (optimistic, workflow-checked),
  * primary-modifier-click multi-select with a floating bulk bar, right-click
  * actions, and the detail drawer. Dispatch nudges ride every write (see api.ts).
@@ -18,7 +19,6 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
-  Contribute,
   Dialog,
   DialogContent,
   DialogFooter,
@@ -49,7 +49,7 @@ import {
   useQuery,
   useQueryClient,
   useValue,
-  WORKSPACE_PAGE_HEADER_AREA
+  WorkspacePageHeaderControl
 } from '@hermes/plugin-sdk'
 import {
   type CSSProperties,
@@ -67,7 +67,8 @@ import {
   $introDismissed,
   $lanesByProfile,
   boardKey,
-  BOARDS_KEY,
+  boardKeyPrefix,
+  boardsKey,
   bulkTasks,
   createTask,
   deleteTask,
@@ -76,7 +77,9 @@ import {
   fetchBoards,
   fetchProfiles,
   patchTask,
-  PROFILES_KEY
+  profilesKey,
+  taskKey,
+  useKanbanScope
 } from './api'
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
@@ -95,6 +98,7 @@ import {
   FIELD_LABEL,
   isLockedTarget,
   lockedReason,
+  PriorityGlyph,
   RunClock,
   shortId,
   useDefaultAssignee,
@@ -201,6 +205,16 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
           <span className="shrink-0 cursor-help font-medium text-amber-500">{k.noHeartbeat}</span>
         </Tip>
       )}
+      {task.status === 'blocked' && task.block_kind && (
+        // #124391: say WHY the card is blocked — the kind arrives on every
+        // card payload; without it every blocked card reads identically.
+        <Tip label={k.blockKindTip(task.block_kind)}>
+          <span className="inline-flex shrink-0 cursor-help items-center gap-1 text-destructive">
+            <Codicon name="debug-breakpoint-data-unverified" size="0.7rem" />
+            {task.block_kind}
+          </span>
+        </Tip>
+      )}
       {unassignedReady && !fallback && (
         <Tip label={k.wontRunTip}>
           <span className="inline-flex shrink-0 cursor-help items-center gap-1 text-amber-500">
@@ -210,12 +224,7 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
         </Tip>
       )}
       <div className="ml-auto flex min-w-0 shrink items-center gap-2">
-        {typeof task.priority === 'number' && task.priority > 0 && (
-          <span className="inline-flex items-center gap-0.5 text-amber-500">
-            <Codicon name="arrow-up" size="0.7rem" />
-            {task.priority}
-          </span>
-        )}
+        {typeof task.priority === 'number' && task.priority > 0 && <PriorityGlyph priority={task.priority} />}
         {task.progress && task.progress.total > 0 && (
           <Meta icon="checklist">
             {task.progress.done}/{task.progress.total}
@@ -546,7 +555,8 @@ function NewTaskDialog({
 }) {
   const k = useKanban()
   const qc = useQueryClient()
-  const { data: roster } = useQuery({ queryKey: PROFILES_KEY, queryFn: fetchProfiles, staleTime: 60_000 })
+  const scope = useKanbanScope()
+  const { data: roster } = useQuery({ queryKey: profilesKey(scope), queryFn: fetchProfiles, staleTime: 60_000 })
   // Title-only creates must RUN: "auto" resolves to the orchestration default
   // (ultimately the active profile), applied at create time. Never silently
   // unassigned — parking a card is the explicit choice, not the default.
@@ -557,7 +567,7 @@ function NewTaskDialog({
   // dir) unless the operator overrides it below. Set the board default in the
   // board switcher's "Board settings…".
   const selectedSlug = useValue($boardSlug)
-  const { data: boards } = useQuery({ queryKey: BOARDS_KEY, queryFn: fetchBoards, staleTime: 30_000 })
+  const { data: boards } = useQuery({ queryKey: boardsKey(scope), queryFn: fetchBoards, staleTime: 30_000 })
   const currentBoard = boards?.boards.find(b => b.slug === (selectedSlug || boards.current))
   const boardDefaultKind = currentBoard?.default_workspace_kind || 'scratch'
   const boardDefaultDir = currentBoard?.default_workdir || ''
@@ -657,7 +667,7 @@ function NewTaskDialog({
         host.notify({ kind: 'warning', message: warning })
       }
 
-      await qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
+      await qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
       onClose()
     } catch (err) {
       setError(errText(err))
@@ -965,10 +975,11 @@ function SelectionBar({
 }) {
   const k = useKanban()
   const qc = useQueryClient()
-  const { data: roster } = useQuery({ queryKey: PROFILES_KEY, queryFn: fetchProfiles, staleTime: 60_000 })
+  const scope = useKanbanScope()
+  const { data: roster } = useQuery({ queryKey: profilesKey(scope), queryFn: fetchProfiles, staleTime: 60_000 })
 
   const finish = (failed: Array<{ error?: string; id: string }>) => {
-    void qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
+    void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
 
     if (failed.length > 0) {
       host.notify({
@@ -1083,6 +1094,7 @@ function SelectionBar({
 export function KanbanBoardPage() {
   const k = useKanban()
   const qc = useQueryClient()
+  const scope = useKanbanScope()
   const slug = useValue($boardSlug)
   const [archived, setArchived] = useState(false)
 
@@ -1090,7 +1102,7 @@ export function KanbanBoardPage() {
   // slow heartbeat for socketless paths (OAuth remotes, dropped connections).
   const { data: board, error } = useQuery({
     queryFn: () => fetchBoard(archived),
-    queryKey: boardKey(slug, archived),
+    queryKey: boardKey(scope, slug, archived),
     refetchInterval: 60_000
   })
 
@@ -1189,48 +1201,48 @@ export function KanbanBoardPage() {
   const moveMut = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => patchTask(id, { status }),
     onMutate: async ({ id, status }) => {
-      await qc.cancelQueries({ queryKey: boardKey(slug, archived) })
-      const previous = qc.getQueryData<KanbanBoard>(boardKey(slug, archived))
+      await qc.cancelQueries({ queryKey: boardKey(scope, slug, archived) })
+      const previous = qc.getQueryData<KanbanBoard>(boardKey(scope, slug, archived))
 
       if (previous) {
-        qc.setQueryData(boardKey(slug, archived), moveCard(previous, id, status))
+        qc.setQueryData(boardKey(scope, slug, archived), moveCard(previous, id, status))
       }
 
       return { previous }
     },
     onError: (err, _vars, context) => {
       if (context?.previous) {
-        qc.setQueryData(boardKey(slug, archived), context.previous)
+        qc.setQueryData(boardKey(scope, slug, archived), context.previous)
       }
 
       host.notify({ kind: 'error', message: errText(err) })
     },
     onSettled: (_data, _err, vars) => {
-      void qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
-      void qc.invalidateQueries({ queryKey: ['kanban', 'task', slug, vars.id] })
+      void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
+      void qc.invalidateQueries({ queryKey: taskKey(scope, slug, vars.id) })
     }
   })
 
   const deleteMut = useMutation({
     mutationFn: (id: string) => deleteTask(id),
     onMutate: async id => {
-      await qc.cancelQueries({ queryKey: boardKey(slug, archived) })
-      const previous = qc.getQueryData<KanbanBoard>(boardKey(slug, archived))
+      await qc.cancelQueries({ queryKey: boardKey(scope, slug, archived) })
+      const previous = qc.getQueryData<KanbanBoard>(boardKey(scope, slug, archived))
 
       if (previous) {
-        qc.setQueryData(boardKey(slug, archived), removeCard(previous, id))
+        qc.setQueryData(boardKey(scope, slug, archived), removeCard(previous, id))
       }
 
       return { previous }
     },
     onError: (err, _id, context) => {
       if (context?.previous) {
-        qc.setQueryData(boardKey(slug, archived), context.previous)
+        qc.setQueryData(boardKey(scope, slug, archived), context.previous)
       }
 
       host.notify({ kind: 'error', message: errText(err) })
     },
-    onSettled: () => void qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
+    onSettled: () => void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
   })
 
   const onMove = (id: string, status: string) => {
@@ -1323,16 +1335,16 @@ export function KanbanBoardPage() {
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-(--ui-surface-background)">
-      {/* Page-owned header chrome: exists exactly while this page is mounted. */}
-      <Contribute area={WORKSPACE_PAGE_HEADER_AREA} id="kanban:board-switcher">
-        <BoardSwitcher />
-      </Contribute>
-
       <header className="flex shrink-0 flex-wrap items-center gap-2 px-4 py-2">
         <h1 className="text-sm font-semibold text-foreground">{k.title}</h1>
         <span className="rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
           {total}
         </span>
+        {/* The full page projects this into its page header; a split tile has
+            none, so the switcher stays here in the row. */}
+        <WorkspacePageHeaderControl id="kanban:board-switcher">
+          <BoardSwitcher />
+        </WorkspacePageHeaderControl>
         {board && (
           <FilterMenu
             archived={archived}

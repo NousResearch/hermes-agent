@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -445,8 +446,9 @@ class TestIntegrationWithModelsModule:
         full_row = _nous(full)
         assert full_row is not None and full_row["models"] == expected
 
+        # The Nous row is already curated, so an int cap never trims it (its free tier sits last).
         one_row = _nous(one)
-        assert one_row is not None and one_row["models"] == expected[:1]
+        assert one_row is not None and one_row["models"] == expected
 
         zero_row = _nous(zero)
         # 0 means an empty model list — NOT unlimited. total_models still real.
@@ -465,6 +467,96 @@ class TestIntegrationWithModelsModule:
 # free-tier picker showed "No free models currently available." even though
 # the Portal was serving qwen/qwen3.6-plus as free. CI must catch this.
 # -----------------------------------------------------------------------------
+
+
+class TestSwrRefreshProfileScope:
+    """Two profile homes — A (process default) and B (routed via the HERMES_HOME ContextVar, as
+    tui_gateway ``_profile_scoped`` does). The off-thread stale-while-revalidate refresh spawned
+    under B must write B's cache file, and A's in-flight refresh must not suppress B's."""
+
+    _CFG = {"enabled": True, "url": "http://master", "ttl_hours": 1.0, "providers": {}}
+
+    @staticmethod
+    def _seed_expired(home: Path, manifest: dict) -> Path:
+        path = home / "cache" / "model_catalog.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        os.utime(path, (1, 1))  # expired → served stale, refreshed off-thread
+        return path
+
+    @staticmethod
+    def _join_swr_threads() -> None:
+        for t in threading.enumerate():
+            if t.name == "model-catalog-swr":
+                t.join(5)
+
+    def test_refresh_under_profile_override_writes_that_profiles_cache(self, isolated_home, tmp_path):
+        from agent.secret_scope import set_multiplex_active
+        from hermes_cli import model_catalog
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        old = _valid_manifest()
+        fresh = {**_valid_manifest(), "updated_at": "2026-05-01T00:00:00Z"}
+        path_a = self._seed_expired(isolated_home, old)
+        path_b = self._seed_expired(tmp_path / "profile-b", old)
+        a_before = path_a.read_bytes()
+        release = threading.Event()
+
+        def fetch(*_args, **_kwargs):
+            assert release.wait(5), "caller did not release the refresh"
+            return fresh
+
+        set_multiplex_active(True)
+        try:
+            with patch.object(model_catalog, "_load_catalog_config", return_value=self._CFG), \
+                 patch.object(model_catalog, "_fetch_manifest_with_fallback", fetch):
+                token = set_hermes_home_override(path_b.parent.parent)
+                try:
+                    assert model_catalog.get_catalog() == old  # stale copy served without blocking
+                finally:
+                    reset_hermes_home_override(token)  # the handler returns before the fetch completes
+                release.set()
+                self._join_swr_threads()
+        finally:
+            set_multiplex_active(False)
+
+        assert json.loads(path_b.read_text(encoding="utf-8")) == fresh
+        assert path_a.read_bytes() == a_before
+
+    def test_inflight_refresh_for_one_profile_does_not_suppress_another(self, isolated_home, tmp_path):
+        from agent.secret_scope import set_multiplex_active
+        from hermes_cli import model_catalog
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        old = _valid_manifest()
+        path_a = self._seed_expired(isolated_home, old)
+        path_b = self._seed_expired(tmp_path / "profile-b", old)
+        release = threading.Event()
+        refreshed_paths: list[str] = []
+        seen = threading.Lock()
+
+        def fetch(*_args, **_kwargs):
+            with seen:
+                refreshed_paths.append(str(model_catalog._cache_path()))
+            release.wait(5)
+            return None
+
+        set_multiplex_active(True)
+        try:
+            with patch.object(model_catalog, "_load_catalog_config", return_value=self._CFG), \
+                 patch.object(model_catalog, "_fetch_manifest_with_fallback", fetch):
+                model_catalog.get_catalog()  # A's refresh is now in flight (blocked on `release`)
+                token = set_hermes_home_override(path_b.parent.parent)
+                try:
+                    model_catalog.get_catalog()  # B must get its own refresh
+                finally:
+                    reset_hermes_home_override(token)
+                release.set()
+                self._join_swr_threads()
+        finally:
+            set_multiplex_active(False)
+
+        assert sorted(refreshed_paths) == sorted([str(path_a), str(path_b)])
 
 
 class TestManifestMatchesInRepoLists:
@@ -508,3 +600,27 @@ class TestManifestMatchesInRepoLists:
             "Run: python scripts/build_model_catalog.py && "
             "git add website/static/api/model-catalog.json"
         )
+
+    def test_inclusion_ling_free_is_curated_and_published(self):
+        """inclusionai/ling-3.0-flash:free must reach the picker from BOTH sources (#73686).
+
+        The model works when named explicitly via ``hermes config set model.default`` but was
+        absent from the curated fallback list, so the runtime fetcher's stale-while-revalidate
+        and offline floors never offered it in the Desktop model picker. The static list is
+        the floor; the published manifest is what fresh installs fetch — both must carry it.
+        """
+        from hermes_cli.models_catalog_static import OPENROUTER_MODELS
+
+        curated_ids = [mid for mid, _desc in OPENROUTER_MODELS]
+        assert "inclusionai/ling-3.0-flash:free" in curated_ids
+
+        repo_root = Path(__file__).resolve().parents[2]
+        manifest_path = repo_root / "website" / "static" / "api" / "model-catalog.json"
+        if not manifest_path.exists():
+            pytest.skip(f"manifest missing at {manifest_path}")
+        with open(manifest_path, encoding="utf-8") as fh:
+            manifest_ids = [
+                entry["id"]
+                for entry in json.load(fh)["providers"]["openrouter"]["models"]
+            ]
+        assert "inclusionai/ling-3.0-flash:free" in manifest_ids

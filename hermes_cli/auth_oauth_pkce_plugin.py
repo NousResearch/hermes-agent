@@ -54,6 +54,11 @@ class OAuthPKCEConfig:
     allowed_hosts: Tuple[str, ...] = ()
     timeout_seconds: float = 180.0
     label: str = ""
+    # Confidential client behind a broker: called with the grant fields (``grant_type``, ``code`` /
+    # ``refresh_token``, ``redirect_uri``, ``code_verifier``) INSTEAD of POSTing ``token_url``; returns
+    # the token-endpoint JSON or raises ``AuthError``. The broker holds the client secret, so the
+    # plugin owns that transport and ``token_url`` is unused.
+    token_request: Optional[Callable[[Dict[str, str]], Mapping[str, Any]]] = None
 
 
 def _err(provider: str, message: str, code: str):
@@ -78,6 +83,8 @@ def _endpoint_host(provider: str, name: str, url: str) -> str:
 
 def validate_config(provider: str, cfg: OAuthPKCEConfig) -> None:
     """Refuse a misdeclared config before any network request (login AND refresh call this)."""
+    if cfg.token_request is not None:
+        return  # brokered: no client or token endpoint of our own to check
     if not str(cfg.client_id or "").strip():
         raise _err(provider, "OAuth client_id is missing.", "oauth_client_id_missing")
     authorize_host = _endpoint_host(provider, "authorize_url", cfg.authorize_url)
@@ -91,10 +98,13 @@ def validate_config(provider: str, cfg: OAuthPKCEConfig) -> None:
 
 
 def _post_token(provider: str, cfg: OAuthPKCEConfig, data: Dict[str, str], *, code: str) -> Dict[str, Any]:
-    """POST the token endpoint and return the rotated pool fields; the payload is never logged."""
-    from hermes_cli.auth import _coerce_ttl_seconds, _default_verify, _utc_now_z
+    """POST the token endpoint (or the plugin's broker) and return the rotated pool fields; the payload
+    is never logged."""
+    from hermes_cli.auth import _default_verify
     from hermes_cli.auth_constants import httpx
 
+    if cfg.token_request is not None:
+        return _token_fields(provider, cfg.token_request(dict(data)), data, code)
     body = {**cfg.extra_token_params, **data, "client_id": cfg.client_id}
     if cfg.audience:
         body.setdefault("audience", cfg.audience)
@@ -104,8 +114,14 @@ def _post_token(provider: str, cfg: OAuthPKCEConfig, data: Dict[str, str], *, co
     except Exception as exc:
         raise _err(provider, f"OAuth token request failed: {type(exc).__name__}", code) from exc
     if response.status_code >= 400:
-        raise _err(provider, f"OAuth token request failed with HTTP {response.status_code}.", code)
-    payload = response.json()
+        raise _token_http_error(provider, response, code)
+    return _token_fields(provider, response.json(), data, code)
+
+
+def _token_fields(provider: str, payload: Mapping[str, Any], data: Dict[str, str], code: str) -> Dict[str, Any]:
+    """Pool fields from a token-endpoint payload; a response without ``refresh_token`` keeps the old one."""
+    from hermes_cli.auth import _coerce_ttl_seconds, _utc_now_z
+
     access_token = str(payload.get("access_token") or "").strip()
     if not access_token:
         raise _err(provider, "OAuth token response carried no access_token.", code)
@@ -116,6 +132,32 @@ def _post_token(provider: str, cfg: OAuthPKCEConfig, data: Dict[str, str], *, co
         "expires_at_ms": int(time.time() * 1000) + ttl * 1000 if ttl else None,
         "last_refresh": _utc_now_z(),
     }
+
+
+def _token_http_error(provider: str, response: Any, fallback_code: str):
+    """Map a failed token HTTP response. A grant-dead JSON ``error`` value becomes the
+    error's ``code`` — the pool's plugin recovery treats those codes as terminal. The
+    response body is not logged."""
+    from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
+
+    error = ""
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            error = str(payload.get("error") or "").strip()
+    except Exception:
+        error = ""
+    if error in _OAUTH_GRANT_DEAD_CODES:
+        return _err(provider, f"OAuth token request failed with HTTP {response.status_code} ({error}).", error)
+    return _err(provider, f"OAuth token request failed with HTTP {response.status_code}.", fallback_code)
+
+
+def _pool_provider(args: Any) -> str:
+    """Canonical profile name for the credential pool. ``args.provider`` may be an alias."""
+    raw = str(getattr(args, "provider", "") or "").strip().lower()
+    from providers import get_provider_profile
+    profile = get_provider_profile(raw)
+    return profile.name if profile is not None else raw
 
 
 def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> Dict[str, Any]:
@@ -183,7 +225,7 @@ def pkce_auth_handler(cfg: OAuthPKCEConfig) -> Callable[[str, Any], bool]:
     def handler(action: str, args: Any) -> bool:
         from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
 
-        provider = str(getattr(args, "provider", "") or "").strip().lower()
+        provider = _pool_provider(args)
         if action == "add":
             tokens = login(provider, cfg, open_browser=not getattr(args, "no_browser", False))
             entry = load_pool(provider).add_entry(PooledCredential(

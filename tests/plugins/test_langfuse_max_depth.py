@@ -6,6 +6,18 @@ import json
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _fresh_max_depth_cache():
+    """``_resolve_max_depth`` is an ``lru_cache`` keyed on the raw env string, so its
+    once-per-value warning persists for the whole process. Clear it around every test
+    or an earlier resolution of the same invalid value (another test, a repeat run)
+    silently turns the "exactly one warning" assertions into 0 warnings."""
+    plugin = importlib.import_module("plugins.observability.langfuse")
+    plugin._resolve_max_depth.cache_clear()
+    yield
+    plugin._resolve_max_depth.cache_clear()
+
+
 @pytest.mark.parametrize("mode", ["sanitized", "full"])
 @pytest.mark.parametrize("configured_depth", [None, "", "0", "4", "5", " 10 "])
 def test_capture_respects_configured_depth_for_tool_inputs_and_outputs(
@@ -49,3 +61,22 @@ def test_invalid_max_depth_warns_and_preserves_default_capture(monkeypatch, capl
     assert len(caplog.records) == 1
     assert "HERMES_LANGFUSE_MAX_DEPTH" in caplog.text
     assert "non-negative integer" in caplog.text
+
+
+def test_invalid_max_depth_warns_once_per_value_not_per_payload(monkeypatch, caplog):
+    """A bad ``HERMES_LANGFUSE_MAX_DEPTH`` must not log one warning per captured prompt/tool payload
+    for the life of the process; a changed (still bad) value gets its own single warning."""
+    plugin = importlib.import_module("plugins.observability.langfuse")
+    monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "full")
+    monkeypatch.setenv("HERMES_LANGFUSE_MAX_DEPTH", "abc")
+    payload = {"result": {"data": [{"index": 0}]}}
+
+    for _ in range(5):
+        plugin._capture_content(payload)
+        plugin._capture_content(payload, tool_result_of=("example", {}))
+    assert sum("HERMES_LANGFUSE_MAX_DEPTH" in r.getMessage() for r in caplog.records) == 1
+
+    monkeypatch.setenv("HERMES_LANGFUSE_MAX_DEPTH", "-7")
+    for _ in range(3):
+        plugin._capture_content(payload)
+    assert sum("HERMES_LANGFUSE_MAX_DEPTH" in r.getMessage() for r in caplog.records) == 2

@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 # Dedicated logger name so the documented grep recipe survives any
 # ``logging.getLogger(__name__)`` rename of internal modules.
@@ -26,7 +26,11 @@ _ANNOUNCE_CAP = 512
 _announced_active: set = set()        # keys: (server_id, workspace_root)
 _announced_unavailable: set = set()   # keys: (server_id, binary_path_or_name)
 _announced_no_root: set = set()       # keys: (server_id, file_path)
-_ALL_BUCKETS = (_announced_active, _announced_unavailable, _announced_no_root)
+_announced_skipped: set = set()       # keys: (server_id, workspace_root)
+_announced_excluded: set = set()      # keys: (server_id, workspace_root)
+_announced_untrusted: set = set()     # keys: (server_id, workspace_root)
+_ALL_BUCKETS = (_announced_active, _announced_unavailable, _announced_no_root, _announced_skipped, _announced_excluded,
+                _announced_untrusted)
 
 
 def _short_path(file_path: str) -> str:
@@ -111,6 +115,35 @@ def log_spawn_failed(server_id: str, workspace_root: str, exc: BaseException) ->
     _emit(server_id, logging.WARNING, f"spawn/initialize failed for {workspace_root}: {type(exc).__name__}: {exc}")
 
 
+def log_skipped_broken(server_id: str, workspace_root: str, file_path: str, retry_in: Optional[float] = None) -> None:
+    """A request was skipped because ``(server_id, root)`` is marked broken.  INFO once per root, then DEBUG:
+    at default log levels a skipped file and a clean file otherwise look identical (``log_clean`` is DEBUG).
+    ``retry_in`` (seconds, from ``lsp.broken_retry_seconds``) names when the pair gets another try."""
+    until = f"retry in {retry_in:.0f}s" if retry_in is not None else "no diagnostics for this root until restart"
+    _emit_once(_announced_skipped, (server_id, workspace_root), server_id, logging.INFO,
+               f"skipping {_short_path(file_path)}: {workspace_root} marked broken after an earlier failure ({until})",
+               f"skipping {_short_path(file_path)}: {workspace_root} marked broken")
+
+
+def log_root_excluded(server_id: str, workspace_root: str, file_path: str, *, invalid: bool = False) -> None:
+    """``workspace_root`` matches ``lsp.exclude_roots`` (or the key is malformed and every root is skipped).
+    INFO once per root — a deliberate gate must still be visible, or an excluded file looks like a clean one —
+    DEBUG thereafter."""
+    why = "lsp.exclude_roots is not a list (fix the key)" if invalid else "matches lsp.exclude_roots"
+    _emit_once(_announced_excluded, (server_id, workspace_root), server_id, logging.INFO,
+               f"skipping {_short_path(file_path)}: {workspace_root} {why}",
+               f"skipping {_short_path(file_path)}: {workspace_root} excluded")
+
+
+def log_untrusted_skipped(server_id: str, workspace_root: str, file_path: str) -> None:
+    """``server_id`` is not safe in an untrusted workspace and ``workspace_root`` is not trusted.
+    INFO once per root (a deliberate gate must not look like a clean file), DEBUG thereafter."""
+    _emit_once(_announced_untrusted, (server_id, workspace_root), server_id, logging.INFO,
+               f"skipped: untrusted workspace {workspace_root} ({_short_path(file_path)}); "
+               "add it to lsp.trusted_workspaces to run this server there",
+               f"skipped: untrusted workspace {workspace_root}")
+
+
 def log_reaped(keys: List[Tuple[str, str]], idle_timeout: float) -> None:
     """Idle clients were reaped.  INFO, one line per sweep.
 
@@ -141,32 +174,7 @@ def reset_announce_caches() -> None:
 
 __all__ = [
     "event_log", "log_clean", "log_disabled", "log_active", "log_diagnostics", "log_no_project_root",
-    "log_server_unavailable", "log_timeout", "log_server_error", "log_spawn_failed", "log_reaped",
+    "log_server_unavailable", "log_timeout", "log_server_error", "log_spawn_failed", "log_skipped_broken", "log_root_excluded",
+    "log_untrusted_skipped", "log_reaped",
     "reset_announce_caches",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-_announced_no_server: set = set()     # keys: (server_id,)
-
-def _announce_once(bucket: set, key: Tuple) -> bool:
-    """Return True if *key* has not been announced for *bucket* yet.
-
-    Atomically marks the key as announced so concurrent callers
-    cannot both win the race and double-log.
-    """
-    with _announce_lock:
-        if key in bucket:
-            return False
-        bucket.add(key)
-        return True
-
-def log_no_server_configured(server_id: str) -> None:
-    """No spawn recipe for this language.  WARNING once."""
-    if _announce_once(_announced_no_server, (server_id,)):
-        _emit(server_id, logging.WARNING, "no server configured")
-# ---- END PLUGIN-COMPAT ----

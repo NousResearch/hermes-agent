@@ -47,6 +47,7 @@ import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
+import { traceIdentityChange } from '@/lib/identity-trace'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import {
   $gateway,
@@ -93,10 +94,10 @@ import {
   setResumeExhaustedSessionId,
   setSessionOwnerHint
 } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import {
   $focusedRuntimeId,
   $focusedSessionState,
-  $focusedStoredSessionId,
   $sessionStates,
   $sessionTiles,
   dropTilesForProfile,
@@ -106,7 +107,15 @@ import {
 import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
+import { pluginDecisions, profiles, skills, toolsets } from './bridge'
+import { composerHost } from './composer'
+import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { sessionsHost } from './sessions'
+import { desktopSettings } from './settings'
+
+/** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
+export { PANES_AREA, STATUSBAR_AREAS, TITLEBAR_AREAS } from './areas'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -203,6 +212,8 @@ const $focusedSessionProfile = computed(
 export interface PluginProfileRoute {
   connectionId: string
   mode: 'local' | 'remote'
+  /** Electron's authoritative registry primary. Absent on older shells. */
+  primary?: true
   /** Desktop profile used to select the connection route. */
   profile: string
   /** Backend Hermes profile served by that route. */
@@ -363,6 +374,13 @@ export const BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS = 60_000
  *  needs a bound of its own or it outlives the wake it describes. */
 export const HYDRATION_SYNC_BADGE_TIMEOUT_MS = 30_000
 let openSessionGeneration = 0
+/** Which generation's wake most recently set $gatewaySwapTarget. Clearing it
+ *  keys off this, not off `generation === openSessionGeneration`, so a
+ *  superseded wake still clears the overlay IT put up — the generation
+ *  counter has already moved on by the time its `finally` runs, and a later
+ *  wake that never sets the target (e.g. a paint-first open without
+ *  awaitHydration) would otherwise leave it stuck forever (#115844). */
+let gatewaySwapTargetOwnerGeneration: number | null = null
 
 export interface PluginOpenSessionOptions {
   awaitHydration?: boolean
@@ -379,6 +397,19 @@ export interface PluginOpenSessionOptions {
   hydrationTimeoutMs?: number
   intent?: OpenSessionIntent
   keepAllProfilesScope?: boolean
+  /** Refresh an already-on-screen surface IN PLACE — no navigation, no
+   *  tile-minting, no focus steal. The canonical-chats re-resume
+   *  (session.reclaimed, roster activity) is a BACKGROUND refresh: the user
+   *  may be reading the Kanban board, a settings page, or another chat, and
+   *  a background event must never take the route or the foreground away
+   *  (issue 121874). The session is re-resolved (registry consultation,
+   *  backend dial, transcript pull) and the transcript of whichever surface
+   *  already holds it — its tile, or main when the route points at it — is
+   *  refreshed exactly like the SDK's own hydration probe
+   *  (`resumeTile(refreshTranscript)` / armed `requestSessionResume`). A
+   *  session that is NOT on screen resolves silently with nothing re-opened;
+   *  the next explicit open handles it. */
+  refreshInPlace?: boolean
   profile?: null | string
   route?: PluginProfileRoute
   workspaceMode?: WorkspaceMode
@@ -685,6 +716,9 @@ export const host = {
     viewport: readonlyAtom<ViewportRect>($viewport)
   },
 
+  /** Read, update, and observe the allowlisted Desktop appearance preferences. */
+  settings: desktopSettings,
+
   /** Toast into the app's notification stack. */
   notify,
   notifyError,
@@ -904,6 +938,16 @@ export const host = {
   ensureAgent: async (connectionId: null | string | undefined, profile: string): Promise<void> =>
     ensureGatewayAgent(connectionId ?? null, (profile ?? '').trim() || 'default'),
 
+  /** Session-list mutations (pin, reorder, colour) — see `./sessions`. */
+  sessions: sessionsHost,
+
+  /** Typed capabilities bridge — see `./bridge.ts`. `pluginDecisions` is
+   *  read-only: plugin toggling stays in the app's Plugins tab. */
+  skills,
+  toolsets,
+  profiles,
+  pluginDecisions,
+
   /** Open a stored session the way core surfaces do. A plugin/Bot Mode open
    *  is navigation, not a workspace or chrome API-home switch —
    *  keepAllProfilesScope defaults true so `$activeGatewayProfile` /
@@ -934,17 +978,25 @@ export const host = {
     // path below still keys off the explicit cross-connection route, so a plain
     // local open dials exactly as before (openGatewayForProfile), never the
     // registry-secondary path.
-    const localConnectionId = activeGatewayConnectionId()
+    const liveConnection = $connection.get()
+    const liveRemote = liveConnection?.mode === 'remote'
+    const liveConnectionId = String(liveConnection?.connectionId ?? '').trim()
+    const ambientConnectionId = (liveRemote && liveConnectionId) || activeGatewayConnectionId()
+    const ambientMode = liveRemote ? ('remote' as const) : ('local' as const)
 
     const ownerRoute =
       explicitRoute ??
-      (options.workspaceMode === 'bots' && profile && localConnectionId
-        ? { connectionId: localConnectionId, mode: 'local' as const, profile: targetProfile }
+      (options.workspaceMode === 'bots' && profile && ambientConnectionId
+        ? { connectionId: ambientConnectionId, mode: ambientMode, profile: targetProfile }
         : null)
 
     const expectHistory = options.expectHistory ?? false
 
-    if (options.workspaceMode === 'bots') {
+    // A refreshInPlace wake is not an entry into the workspace — it refreshes
+    // a chat the user already opened. Never re-publish the bots scope (that
+    // re-homes the pane-strip memory) and never flip the all-profiles view;
+    // both belong to the explicit open that already happened.
+    if (options.workspaceMode === 'bots' && !options.refreshInPlace) {
       publishWorkspaceScope(
         'bots',
         options.workspaceOwnerKey ?? null,
@@ -955,6 +1007,7 @@ export const host = {
     const openingStillCurrent = () =>
       generation === openSessionGeneration &&
       (options.workspaceMode !== 'bots' ||
+        options.refreshInPlace ||
         ($workspaceMode.get() === 'bots' && $workspaceOwnerKey.get() === (options.workspaceOwnerKey ?? null)))
 
     const plan = planPluginOpenSession({
@@ -978,16 +1031,18 @@ export const host = {
     if (ownerRoute) {
       setSessionOwnerHint(storedSessionId, ownerRoute)
     } else if (profile) {
-      // Local plugin-owned opens (Bot Mode without a cross-connection route)
-      // still carry an explicit owning profile. Record it: hidden sessions
-      // (canonical Bot Chats) have no sidebar row, so this hint is the only
-      // durable owner record the session-RPC router can consult — without it
-      // a later prompt.submit resolves to the ACTIVE profile's backend and
-      // 4001s while the bot's own backend is healthy.
-      const connectionId = activeGatewayConnectionId()
-
-      if (connectionId) {
-        setSessionOwnerHint(storedSessionId, { connectionId, mode: 'local', profile: targetProfile })
+      // Plugin-owned opens without a cross-connection route still carry an
+      // explicit owning profile. Record it: hidden sessions have no sidebar
+      // row, so this hint is the only durable owner record the session-RPC
+      // router can consult. Do not stamp mode local when the live connection
+      // is remote — that hint persists and the next open resolves the profile
+      // against this machine (#90477).
+      if (ambientConnectionId) {
+        setSessionOwnerHint(storedSessionId, {
+          connectionId: ambientConnectionId,
+          mode: ambientMode,
+          profile: targetProfile
+        })
       }
     }
 
@@ -1032,8 +1087,11 @@ export const host = {
 
       // Only a cross-connection (explicit route) open forces the all-profiles
       // view; a local bot open keeps the planner's decision, unchanged from
-      // before the synthesized-route addition.
-      if (explicitRoute) {
+      // before the synthesized-route addition. A refreshInPlace wake never
+      // touches the view at all.
+      if (options.refreshInPlace) {
+        // no view change — the refresh inherits whatever is showing
+      } else if (explicitRoute) {
         setShowAllProfiles(true)
       } else if (plan.showAllProfiles !== null) {
         setShowAllProfiles(plan.showAllProfiles)
@@ -1049,6 +1107,7 @@ export const host = {
         // Keep the target-specific overlay visible through transcript hydration,
         // not merely through the gateway/profile activation that precedes it.
         $gatewaySwapTarget.set(targetProfile)
+        gatewaySwapTargetOwnerGeneration = generation
       }
 
       // Only the HYDRATION half retries. Activation already failed its own
@@ -1067,6 +1126,37 @@ export const host = {
           }
 
           const intent = options.intent ?? 'in-place'
+
+          // Background refresh (refreshInPlace): this wake was triggered by
+          // something that HAPPENED in the background (a reclaim, roster
+          // activity), not by the user navigating. Never touch the route or
+          // the tab strip — the user may be reading the Kanban board, a
+          // settings page, or another chat (issue 121874: /kanban was
+          // replaced by the Bot Chat route). Refresh only whichever surface
+          // already holds the session: its tile via resumeTile
+          // (refreshTranscript), or main via the armed explicit-resume
+          // request — the same lever markRuntimeGone pulls for background
+          // reclaims, consumed only while the route already points at the
+          // session, so it can never navigate. A session that is not on
+          // screen resolves without re-opening anything; the next explicit
+          // open owns that.
+          if (options.refreshInPlace) {
+            const existingTile = $sessionTiles.get().some(tile => tile.storedSessionId === storedSessionId)
+            const tileDelegate = existingTile ? sessionTileDelegate() : null
+            // Main is refreshed only when it is actually showing this
+            // session — the same surface discriminator the hydration probe
+            // uses. An off-screen chat re-opens nothing: the request would
+            // sit unconsumed and the wake would silently no-op.
+            const mainShowing = $selectedStoredSessionId.get() === storedSessionId
+
+            if (tileDelegate) {
+              await tileDelegate.resumeTile(storedSessionId, { refreshTranscript: true })
+            } else if (mainShowing) {
+              requestSessionResume(storedSessionId, ownerRoute || undefined)
+            }
+
+            break
+          }
 
           if (options.workspaceMode === 'bots') {
             openSession(storedSessionId, navigate, intent, {
@@ -1191,8 +1281,13 @@ export const host = {
 
       throw error
     } finally {
-      if (options.awaitHydration && generation === openSessionGeneration) {
+      // Clear the overlay THIS wake set, even when a later open superseded
+      // it: `generation === openSessionGeneration` is false by then, but
+      // nothing else is coming to clear it. Skip only when a newer wake has
+      // since taken ownership of the target.
+      if (gatewaySwapTargetOwnerGeneration === generation) {
         $gatewaySwapTarget.set(null)
+        gatewaySwapTargetOwnerGeneration = null
       }
     }
   },
@@ -1444,17 +1539,22 @@ export const host = {
    *  a non-retained secondary socket closes at refcount 0 between calls — and
    *  the gateway reaps any runtime session that socket minted, failing the
    *  next RPC with 4001. Acquire before the first session-scoped RPC, release
-   *  (idempotent) in a `finally`. Feature-detect: older hosts lack this. */
-  retainProfile: async (route: PluginProfileRoute | string): Promise<() => void> => {
+   *  (idempotent) in a `finally`. An explicit user action can mark the retain
+   *  foreground so a retired route takes the pool's reserved interactive
+   *  slot. Feature-detect: older hosts lack this. */
+  retainProfile: async (
+    route: PluginProfileRoute | string,
+    options?: PluginProfileRequestOptions
+  ): Promise<() => void> => {
     if (typeof route !== 'string') {
       if (!route.connectionId.trim() || !route.profile.trim()) {
         throw new Error('Profile route must include connectionId and profile')
       }
 
-      return retainGatewayForAgent(route.connectionId, route.profile)
+      return retainGatewayForAgent(route.connectionId, route.profile, options)
     }
 
-    return retainGatewayForAgent(null, route.trim() || 'default')
+    return retainGatewayForAgent(null, route.trim() || 'default', options)
   },
 
   /** Read persisted sessions from a profile's owning source without dialing
@@ -1517,26 +1617,43 @@ export const host = {
   },
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
-   *  the app itself uses. Lazy: resolves the LIVE socket per call. */
-  request: async <T>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
+   *  the app itself uses. Lazy: resolves the LIVE socket per call. `timeoutMs`
+   *  overrides the socket's 30 s default for RPCs that legitimately run longer
+   *  (session.compress); unset keeps the default. */
+  request: async <T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> => {
     const gateway = $gateway.get()
 
     if (!gateway) {
       throw new Error('Hermes gateway unavailable')
     }
 
-    return gateway.request<T>(method, params)
+    return timeoutMs === undefined ? gateway.request<T>(method, params) : gateway.request<T>(method, params, timeoutMs)
   },
 
   /** The LIVE gateway instance for the active profile (null before the first
    *  socket opens). Most plugins want `host.request`; this exists for SDK
-   *  components that take a `HermesGateway` prop directly (e.g. `McpTab`),
+   *  components that take a `HermesGateway` prop directly (e.g. `ConnectorsTab`),
    *  which need the instance, not just a JSON-RPC door. Re-read per use — the
    *  active instance changes on a profile swap. */
-  getGateway: (): HermesGateway | null => $gateway.get()
+  getGateway: (): HermesGateway | null => $gateway.get(),
+
+  /** Change-only desktop.log line for multi-connection identity diagnostics
+   *  (`[category win=…] tag detail`). Call as `host.traceIdentityChange?.(…)`. */
+  traceIdentityChange,
+
+  composer: composerHost,
+
+  /** Language packs: `host.i18n.registerAppLocale(id, { endonym, rtl?,
+   *  translations })` adds a whole UI language at runtime (see `sdk/i18n.ts`);
+   *  `host.i18n.languageOptions()` lists what the switcher shows. */
+  i18n: i18nHost
 }
 
 // -- react bridge -------------------------------------------------------------
+
+export type { DesktopSettingKey, DesktopSettingValues } from './settings'
+
+// -- ui: the design language --------------------------------------------------
 
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
  *  lists, full-skill detail pane, embedded hub picker with one-click
@@ -1548,14 +1665,12 @@ export const host = {
  *  builds without it would route the pin to the ACTIVE gateway. Bot Mode's
  *  Advanced section is the reference consumer. */
 export { CapabilitiesView } from '@/app/capabilities'
-
-// -- ui: the design language --------------------------------------------------
-
-/** THE full MCP tab core Settings renders — per-server enable + OAuth sign-in
- *  + API-key setup + live probes, not a checkbox list. Route-decoupled so it
- *  renders anywhere (a plugin dialog); pass a live `gateway` (see
- *  `host.getGateway()`) and an optional `profile` to scope it to one bot. */
-export { McpTab } from '@/app/capabilities/mcp/mcp-tab'
+/** THE Connectors tab core Capabilities renders — managed apps, the user's
+ *  own MCP servers, plugin servers and the catalog, with per-server enable,
+ *  sign-in and live probes. Renders anywhere under the app router (a plugin
+ *  dialog); pass a live `gateway` (see `host.getGateway()`) and the `profile`
+ *  to scope it to one bot. */
+export { ConnectorsTab } from '@/app/capabilities/connectors/connectors-tab'
 // Every contribution surface, plugin-reachable: register keybinds, palette
 // commands, routes, themes, panes, composer extensions, and bar items with
 // the same area ids + payload types core uses.
@@ -1564,7 +1679,9 @@ export {
   type ComposerAtCompletionItem,
   type ComposerAtCompletionSource,
   type ComposerAttachmentProvider,
-  type ComposerMiddleware
+  type ComposerMiddleware,
+  type ComposerModelPillContext,
+  type ComposerModelPillProvider
 } from '@/app/chat/composer/contrib'
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree
@@ -1585,6 +1702,12 @@ export { SidebarRowLead } from '@/app/chat/sidebar/chrome'
 export { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
 export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/row-geometry'
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
+/** Page-owned header control (the kanban board switcher): projected into the
+ *  workspace page header when the page renders in the workspace pane, and
+ *  rendered inline, in place, anywhere else (a split route tile). Prefer it
+ *  over a raw `<Contribute area={WORKSPACE_PAGE_HEADER_AREA}>`, which nothing
+ *  paints outside the workspace pane. */
+export { WorkspacePageHeaderControl } from '@/app/contrib/workspace-page-header'
 /** THE overdue test for a cron job's `next_run_at`: non-null once the stored slot
  *  sits past the scheduler grace and the job is expected to fire. Every surface
  *  that prints a next run switches its label on this (`t.cron.next` →
@@ -1617,13 +1740,27 @@ export {
   PanelSectionLabel
 } from '@/app/overlays/panel'
 export {
+  type ProfileGroupHeaderContribution,
+  type ProfileGroupRoute,
   type RouteContribution,
   ROUTES_AREA,
   SIDEBAR_NAV_AREA,
+  SIDEBAR_PROFILE_GROUP_HEADER_AREA,
   type SidebarNavContribution,
   WORKSPACE_PAGE_HEADER_AREA
 } from '@/app/routes'
 
+/** Appearance settings' plugin seam: register a render contribution at
+ *  `APPEARANCE_AREAS.extra` to add controls at the end of the Appearance page.
+ *  `ColorSwatches` is the app's own swatch grid (profile rail / project dialog
+ *  look) — use it for colour picking instead of driving app widgets through
+ *  React internals; pair it with `host.sessions.setColor` for session colours. */
+export { APPEARANCE_AREAS } from '@/app/settings/appearance-contrib'
+/** THE settings rows: `ListRow` is label + description with the control beside
+ *  it (wide) or under it (narrow); `ToggleRow` is the one on/off row — a Switch,
+ *  never an Off/On pill pair. Use them for preference rows in plugin panes and
+ *  dialogs so they line up with core Settings. */
+export { ListRow, ToggleRow } from '@/app/settings/primitives'
 /** THE full per-toolset config panel core Settings renders — provider picker,
  *  env vars / API keys, model catalog picker, and post-setup runners. Route-
  *  decoupled (the "manage keys" deep link is a no-op outside the router); pass
@@ -1641,6 +1778,17 @@ export {
   ModelMenuCloseContext,
   type ModelMenuController
 } from '@/app/shell/model-catalog-menu'
+/** Per-model marks inside that same menu: register a `MODEL_MENU_ROW_AREA`
+ *  data contribution whose `decorate({ provider, model, label })` returns
+ *  `{ icon?, badge? }` (or `null`). Core paints the leading icon slot and a
+ *  trailing badge chip; per slot the first usable answer wins, and a throwing
+ *  decorator is skipped. Never patch the menu's rows yourself. */
+export {
+  MODEL_MENU_ROW_AREA,
+  type ModelMenuRowContext,
+  type ModelMenuRowContribution,
+  type ModelMenuRowDecoration
+} from '@/app/shell/model-menu-row-decorations'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
 /** Canonical raw message renderer: applies Desktop message transforms (including
@@ -1669,6 +1817,7 @@ export { ColorSwatches } from '@/components/ui/color-swatches'
 export { ConfirmDialog } from '@/components/ui/confirm-dialog'
 export {
   ContextMenu,
+  ContextMenuCheckboxItem,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
@@ -1716,6 +1865,10 @@ export { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
  *  layout classes — it just bakes in `type="button"` and a stable `data-slot`.
  *  Use it for rows and regions; `Button` is for ordinary compact actions. */
 export { RowButton } from '@/components/ui/row-button'
+/** The sanctioned embed primitive for external web content: a sandboxed
+ *  iframe (opaque origin, `allow-scripts` by default) — never a raw
+ *  `<webview>`, which would land on the app's own preview partition. */
+export { SandboxedFrame, type SandboxedFrameProps } from '@/components/ui/sandboxed-frame'
 export { ScrollArea } from '@/components/ui/scroll-area'
 export { SearchField } from '@/components/ui/search-field'
 export { SegmentedControl } from '@/components/ui/segmented-control'
@@ -1735,6 +1888,8 @@ export type {
   PluginNotificationAction,
   PluginOs,
   PluginRestOptions,
+  PluginSettingsPage,
+  PluginSettingsSubpage,
   PluginStorage
 } from '@/contrib/plugin'
 /** Mount-scoped contribution: while the rendering component is mounted, its
@@ -1746,8 +1901,10 @@ export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
 
 // -- contracts ----------------------------------------------------------------
 
+/** Settings ▸ Plugins entries (`ctx.registerSettingsPage`); `pluginSettingsHref` deep-links one. */
+export { pluginSettingsHref, SETTINGS_PLUGINS_AREA } from '@/contrib/settings-pages'
 export type { Contribution } from '@/contrib/types'
-/** The live gateway instance type — for typing the `gateway` prop `McpTab`
+/** The live gateway instance type — for typing the `gateway` prop `ConnectorsTab`
  *  takes; obtain the instance from `host.getGateway()`. */
 export type { HermesGateway } from '@/hermes'
 /** Grab-to-pan for overflow containers (boards, timelines, wide tables) —
@@ -1759,9 +1916,15 @@ export { type GrabScroll, useGrabScroll } from '@/hooks/use-grab-scroll'
  *  `translateNow` is the one-shot form for the places a hook can't reach —
  *  notably a `ctx.register` pane `title`, which is read at registration time
  *  and is why plugin pane titles otherwise strand as hardcoded English. It
- *  samples the locale at call time, so React should still use the hooks. */
+ *  samples the locale at call time, so React should still use the hooks. A
+ *  pane whose label must track the locale pairs that `title` with
+ *  `data.tabTitle: () => <LocalizedTabTitle select={t => ...} />`. */
 export {
+  type AppLocaleRegistration,
+  type BundledLocale,
+  type LanguageOption,
   type Locale,
+  LocalizedTabTitle,
   type PluginI18n,
   type PluginLocaleBundles,
   type PluginMessages,
@@ -1804,6 +1967,11 @@ export { formatModifierToken } from '@/lib/keybinds/combo'
  *  a renderer that stays open for days. Only for values that can be
  *  regenerated — eviction costs a recompute or a refetch, never correctness. */
 export { LruCache } from '@/lib/lru-cache'
+/** Capture a gateway file download alongside a REST read (see the SDK guide). */
+export { captureGatewayFileDownload } from '@/lib/media'
+/** True when a saved provider id names this `model.options` row: its slug,
+ *  display name, or a custom-provider alias (`custom:<key>` vs the bare key). */
+export { catalogProviderMatches } from '@/lib/model-options'
 /** The app's deterministic identity color for a name (profiles, assignees,
  *  authors), its translucent tag fill, and the curated picker swatches — so
  *  plugin-rendered identities read the same hue as everywhere else. The
@@ -1815,22 +1983,22 @@ export { PROFILE_SWATCHES, profileColor, profileColorSoft } from '@/lib/profile-
  *  `ctx.socket` frame invalidating a query). Inside components keep using
  *  `useQueryClient`. */
 export { queryClient } from '@/lib/query-client'
+
 /** Compact labels for the reasoning levels exported from @hermes/shared, so a
  *  plugin surfacing a thinking depth uses the same spelling as the app. */
 export { reasoningEffortLabel } from '@/lib/reasoning-effort'
-
-export const PANES_AREA = 'panes'
-export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
-/** Titlebar slots are PERMANENT mount points: a component registered here
- *  stays mounted across chat ↔ page navigation, so `useEffect` setup/cleanup
- *  runs once per registration, not once per route. Page-owned controls that
- *  should exist only while a page is up go to `WORKSPACE_PAGE_HEADER_AREA`. */
-export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
 
 /** The app's own gateway-readiness evaluation (setup.status +
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
  *  readiness from raw RPC shapes. */
 export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+/** Row-decoration slots: register a `data` contribution with a `render` for
+ *  `SESSION_ROW_AREAS.leading` / `.trailing` to decorate sidebar session rows
+ *  (the props carry the row's stored session id). */
+export { SESSION_ROW_AREAS, type SessionRowSlotContribution, type SessionRowSlotProps } from '@/lib/session-row-slots'
+/** A sibling WebSocket beside the route's `/api/ws` (voice PCM, Bot Screen RFB):
+ *  same origin, same auth resolution as chat. */
+export { resolveSiblingWsUrl, type SiblingWsRoute } from '@/lib/sibling-ws-url'
 /** Canonical time formatting — every surface pulls from here so timestamps read
  *  the same app-wide. For a row's AGE, bucket with `coarseElapsed` and render
  *  the compact suffixes (`t.sidebar.row.ageMin` → "52m"), which is what the
@@ -1859,6 +2027,12 @@ export { cn } from '@/lib/utils'
  *  is gone. Pass the owning profile — a hidden session has no row to read it
  *  from, and the persisted half is bucketed per profile. */
 export { ackStoredSessionId, forgetSessionUnread, markSessionUnreadFinished } from '@/store/session-unread'
+/** `sidebarNav.prefs`: hide / re-order the sidebar's nav rows by CONTRIBUTING a
+ *  preference (union of hides, `capabilities` never hidden; the first order
+ *  in registry area order — lowest `order`, then registration — wins). A
+ *  contribution, not a `host.sidebar` verb, so it is attributed and dropped
+ *  on disable. */
+export { SIDEBAR_NAV_PREFS_AREA, type SidebarNavPrefsContribution } from '@/store/sidebar-nav'
 /** Live accent override — set a hex and the ACTIVE theme repaints with its
  *  accent family re-seeded from it (see `retintTheme`); `null` restores the
  *  authored palette. Deliberately not persisted: it is an authoring knob, not
@@ -1893,9 +2067,17 @@ export { THEMES_AREA } from '@/themes/user-themes'
 export type { StatusResponse } from '@/types/hermes'
 /** Public SDK name for the shared gateway wire event; kept stable for plugins. */
 export type { GatewayEvent as RpcEvent } from '@hermes/shared'
+/** Bot Screen wire shapes, generated from `tui_gateway/contracts/display.py`. */
+export type { DisplayLease, DisplayObserveResult, DisplayStatus, DisplayThumbnailResult } from '@hermes/shared'
+/** `session.list` / `profiles.list` session rows, generated from `tui_gateway/contracts`. */
+export type { ProfileSessionPreview, SessionListRow } from '@hermes/shared'
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@hermes/shared'
+/** Client deadline for `approval.respond`: matches the backend's
+ *  `approvals.timeout` (300s) so a plugin answering an approval never rejects
+ *  its own RPC while the backend still applies the decision (#60654). */
+export { APPROVAL_RESPOND_TIMEOUT_MS } from '@hermes/shared'
 /** Hermes' reasoning levels, so a plugin surfacing a thinking depth uses the
  *  same scale as the rest of the app (labels: `reasoningEffortLabel`). */
 export {

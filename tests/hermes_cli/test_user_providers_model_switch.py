@@ -213,6 +213,48 @@ def test_list_authenticated_providers_accepts_base_url_and_singular_model(monkey
     assert custom["total_models"] == 3
 
 
+def test_list_authenticated_providers_splits_comma_default_model_chain(monkeypatch):
+    """Comma-separated ``default_model`` chains surface as individually selectable entries.
+
+    Regression (fixes #50557): a volcengine-agent-plan style fallback chain in
+    ``providers:`` rendered as one dropdown entry in the Desktop picker, which
+    feeds off this payload. The raw chain stays first as the default (fallback)
+    pick; the split ids follow, deduped in order.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
+
+    user_providers = {
+        "volcengine-agent-plan": {
+            "name": "VOLCENGINE-AGENT-PLAN",
+            "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+            "default_model": "deepseek-v4-flash, deepseek-v4-pro, glm-5.2, deepseek-v4-flash",
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="volcengine-agent-plan",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    user_prov = next(
+        (p for p in providers if p.get("is_user_defined") and p["slug"] == "volcengine-agent-plan"),
+        None,
+    )
+
+    assert user_prov is not None
+    assert user_prov["models"] == [
+        "deepseek-v4-flash, deepseek-v4-pro, glm-5.2, deepseek-v4-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "glm-5.2",
+    ]
+    assert user_prov["total_models"] == 4
+
+
 def test_list_authenticated_providers_dedupes_when_user_and_custom_overlap(monkeypatch):
     """When the same slug appears in both ``providers:`` dict and
     ``custom_providers:`` list, emit exactly one row (providers: dict wins
@@ -360,7 +402,7 @@ def test_list_authenticated_providers_dedup_honors_base_url_env_override(monkeyp
 
 def test_switch_model_resolves_user_provider_credentials(monkeypatch, tmp_path):
     """/model switch should resolve credentials for providers: dict providers."""
-    import yaml
+    import hermes_yaml as yaml
     
     config = {
         "providers": {
@@ -373,7 +415,7 @@ def test_switch_model_resolves_user_provider_credentials(monkeypatch, tmp_path):
     }
     
     config_file = tmp_path / "config.yaml"
-    config_file.write_text(yaml.dump(config))
+    config_file.write_text(yaml.safe_dump(config))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     
     # Mock validation to pass

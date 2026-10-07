@@ -1,6 +1,7 @@
-"""Abstract backend interface for computer use. Any implementation (cua-driver over MCP,
-pyautogui, noop, future Linux/Windows) returns the shapes below. All methods are synchronous;
-async is handled inside the backend implementation if needed."""
+"""Abstract backend interface for computer use. Any implementation (cua-driver over MCP, a plugin
+driver, the test noop) returns the shapes below. All methods are synchronous; async is handled inside
+the backend implementation if needed. :class:`ComputerUseProvider` is the factory a provider plugin
+registers (see :mod:`plugins.computer_use`); ``computer_use.backend`` selects exactly one."""
 
 from __future__ import annotations
 
@@ -9,6 +10,8 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+
+from agent.provider_base import ProviderBase
 
 _JPEG_SOF_MARKERS = frozenset({0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF})
 
@@ -80,6 +83,9 @@ class CaptureResult:
     # Guidance appended to the summary by capture lanes that intentionally return no elements (e.g.
     # full-screen composited grabs) to point the model at an interactive lane.
     note: str = ""
+    # ``max_elements`` the backend asked the driver's AX walk to stop at (0 = unbounded / not applicable);
+    # ``len(elements) >= ax_max_elements > 0`` means the tree may be truncated.
+    ax_max_elements: int = 0
 
 
 @dataclass
@@ -169,3 +175,25 @@ class ComputerUseBackend(ABC):
     def wait(self, seconds: float) -> ActionResult:  # default implementation
         time.sleep(max(0.0, min(seconds, 30.0)))
         return ActionResult(ok=True, action="wait", message=f"waited {seconds:.2f}s")
+
+
+class ComputerUseProvider(ProviderBase):
+    """Factory for one computer_use driver, registered via ``ctx.register_computer_use_provider`` from a provider
+    plugin whose directory name is the ``computer_use.backend`` value (built-in: ``plugins/computer_use/cua``). Only
+    the selected provider is imported and instantiated. The model-facing tool schema is identical for every backend:
+    an action the driver cannot perform returns ``ActionResult(ok=False, code="unsupported_action", message=...)``
+    rather than changing the schema."""
+
+    @abstractmethod
+    def create_backend(self, *, permission_mode: str) -> ComputerUseBackend:
+        """A fresh, unstarted backend for one Hermes session (the tool calls ``start()``/``stop()``).
+        ``permission_mode`` is ``standard`` | ``bounded`` | ``unrestricted`` (approval bypass active)."""
+
+    def is_available(self) -> bool:
+        """Usable on this host right now (the tool's ``check_fn``). Cheap: no network, no spawning."""
+        return True
+
+    def doctor(self) -> Optional[int]:
+        """``hermes computer-use doctor`` for this backend: print findings, return the exit code.
+        ``None`` (default) means the backend ships no doctor."""
+        return None

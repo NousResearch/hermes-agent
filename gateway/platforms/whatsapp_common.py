@@ -18,7 +18,10 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from gateway.platforms._shared import extra_or_secret as _extra_or_wsecret, get_scoped_secret as _get_wsecret
+from gateway.platforms._shared import (
+    decode_json_list_literal as _decode_json_list_literal, extra_or_secret as _extra_or_wsecret,
+    get_scoped_secret as _get_wsecret
+)
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 
 
@@ -99,9 +102,10 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
 
     @staticmethod
     def _coerce_allow_list(raw) -> set[str]:
-        """Parse allow_from / group_allow_from from config (list) or env var (CSV)."""
+        """Parse allow_from / group_allow_from from config (list or JSON-list string) or env var (CSV)."""
         if raw is None:
             return set()
+        raw = _decode_json_list_literal(raw)
         parts = raw if isinstance(raw, list) else str(raw).split(",")
         return {str(part).strip() for part in parts if str(part).strip()}
 

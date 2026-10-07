@@ -1,9 +1,6 @@
-/** Keeps ambient UI from covering onboarding without importing the
- *  intro-reveal and guided-chat dependency chains into leaf stores. */
-
 import { atom } from 'nanostores'
 
-export type OnboardingSurface = 'intro' | 'solo-chat'
+export type OnboardingSurface = 'solo-chat'
 
 const EMPTY: ReadonlySet<OnboardingSurface> = new Set()
 
@@ -29,8 +26,4 @@ export function setOnboardingSurfaceActive(surface: OnboardingSurface, active: b
 
 export function onboardingSurfaceActive(): boolean {
   return $onboardingSurfaces.get().size > 0
-}
-
-export function resetOnboardingPresenceForTests(): void {
-  $onboardingSurfaces.set(EMPTY)
 }

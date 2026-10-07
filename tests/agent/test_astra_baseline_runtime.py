@@ -1,8 +1,16 @@
 """Focused real-path coverage for the GPT-6 Astra baseline contract."""
 
+import base64
+import json
 from types import SimpleNamespace
 
 import pytest
+
+
+def _chatgpt_oauth_token() -> str:
+    """A JWT-shaped ChatGPT OAuth access token (chatgpt.com only accepts JWTs; #121486)."""
+    enc = lambda obj: base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+    return f"{enc({'alg': 'RS256'})}.{enc({'https://api.openai.com/auth': {'chatgpt_account_id': 'acct'}})}.sig"
 
 
 def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_path):
@@ -26,7 +34,9 @@ def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_pa
     )
 
     assert agent.api_mode == "codex_responses"
-    assert agent.context_compressor.context_length == 1_050_000
+    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+
+    assert agent.context_compressor.context_length == DEFAULT_CONTEXT_LENGTHS["gpt-6-astra"]
     kwargs = agent._get_transport().build_kwargs(
         model=agent.model,
         messages=[{"role": "user", "content": "Hi"}],
@@ -59,13 +69,14 @@ def test_astra_900k_opt_in_preserves_live_limits_and_wire_contract(monkeypatch, 
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(metadata, "_codex_oauth_context_cache", {})
-    monkeypatch.setattr(metadata.requests, "get", lambda *args, **kwargs: SimpleNamespace(
+    monkeypatch.setattr(metadata.model_metadata_http, "get", lambda *args, **kwargs: SimpleNamespace(
         status_code=200,
         json=lambda: {"models": [{"slug": "gpt-6-astra", "context_window": advertised}]},
     ))
     route = {"base_url": "https://chatgpt.com/backend-api/codex", "provider": "openai-codex"}
-    assert metadata.get_model_context_length("gpt-6-astra-900k", api_key="test-token", **route) == expected
-    assert metadata.get_model_context_length("gpt-6-astra", api_key="test-token", **route) == advertised
+    token = _chatgpt_oauth_token()
+    assert metadata.get_model_context_length("gpt-6-astra-900k", api_key=token, **route) == expected
+    assert metadata.get_model_context_length("gpt-6-astra", api_key=token, **route) == advertised
     assert codex_supported_efforts("gpt-6-astra-900k") == CODEX_ASTRA_EFFORTS
 
     for config in ({"effort": "max"}, {"enabled": False}):

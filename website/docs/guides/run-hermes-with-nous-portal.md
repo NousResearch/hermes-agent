@@ -14,7 +14,7 @@ This guide walks you through running Hermes Agent on a [Nous Portal](https://por
 - A web browser on the machine you're setting up (or SSH port forwarding — see [OAuth over SSH](./oauth-over-ssh.md))
 - About 5 minutes
 
-You do **not** need: an OpenAI key, an Anthropic key, a Firecrawl account, a FAL account, a Browser Use account, or any other per-vendor credential. That's the whole point.
+You do **not** need: an OpenAI key, an Anthropic key, a web search account, a FAL account, a Browser Use account, or any other per-vendor credential. That's the whole point.
 
 ## 1. Get a subscription
 
@@ -91,7 +91,7 @@ Try something that exercises both the model and the Tool Gateway:
 Hey, search the web for "Hermes Agent release notes" and summarize the top 3 hits.
 ```
 
-You should see Hermes call `web_search` (Firecrawl-backed, through the gateway) and respond with a summary. If the search runs and the response makes sense, you're done — the Portal is wired up end to end.
+You should see Hermes call `web_search` (through the gateway) and respond with a summary. If the search runs and the response makes sense, you're done — the Portal is wired up end to end.
 
 ## 5. Pick the model you actually want
 
@@ -257,7 +257,7 @@ hermes auth logout nous       # wipes the local refresh token
 | Without Portal | With Portal |
 |----------------|-------------|
 | 1× OpenRouter / Anthropic / OpenAI key in `.env` | 1× OAuth refresh token, no `.env` keys |
-| 1× Firecrawl key for web | Web routed through gateway |
+| 1× web search key | Web routed through gateway |
 | 1× FAL key for image gen | Image gen routed through gateway |
 | 1× Browser Use / Browserbase key for browser | Browser routed through gateway |
 | 1× OpenAI key for TTS / voice mode | TTS routed through gateway |

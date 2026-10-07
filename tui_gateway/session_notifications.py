@@ -112,6 +112,7 @@ def _notification_event_requires_owner(evt: dict) -> bool:
 # one process can match patterns many times, so their content is part of the key.
 _DEDUP_EXTRA_FIELDS = {
     "watch_match": ("command", "pattern", "output", "suppressed", "message_id"),
+    "heartbeat": ("seq",),
     "watch_disabled": ("command", "message", "suppressed"),
     "watch_overflow_": ("command", "message", "suppressed"),  # prefix match
 }
@@ -145,9 +146,11 @@ def _notif_release_turn(session: dict) -> None:
 
 
 def _notif_claim_turn(session: dict) -> bool:
-    """Claim the idle session (running=True) under history_lock; False if a turn is live."""
+    """Claim the idle session (running=True) under history_lock; False if a turn is live.
+    After the user's Stop no automatic turn starts: the cancel latch holds notifications
+    (requeued by the callers) until the next user prompt clears it."""
     with _session_turn_admission(session) as admitted:
-        if not admitted or session.get("running"):
+        if not admitted or session.get("running") or session.get("_turn_cancel_requested"):
             return False
         session["running"] = True
         return True
@@ -455,6 +458,15 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
                       **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
 
 
+def _background_notifications_off(session: dict) -> bool:
+    """Whether the owning profile set ``display.background_process_notifications: off``. Same
+    gate the messaging gateway applies to its process-event injection; only ``off`` matters
+    here (the other modes shape gateway chat receipts, not agent wakes)."""
+    with _session_profile_runtime_scope(session):
+        raw = (_load_cfg().get("display") or {}).get("background_process_notifications")
+    return raw is False or str(raw or "").strip().lower() == "off"
+
+
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
     """Run the claimed (running=True) agent turn for one notification event."""
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
@@ -469,8 +481,16 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         # from the reaper, keeps its lease, and never reaches its bot mailbox again.
         _notif_release_turn(session)
         return
-    kwargs = ({"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
-              if evt.get("type") == "async_delegation" else {})
+    evt_type = evt.get("type")
+    kwargs: dict = {}
+    if evt_type == "async_delegation":
+        kwargs = {"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
+    elif evt_type == "heartbeat":
+        # Model-facing scaffolding: the process row on the status stack already says it is running,
+        # so the wake never paints as a user bubble (Desktop, TUI and the transcript preview all
+        # honour ``hidden``). Only what the agent says about the new output is visible.
+        from tools.process_registry_notifications import HEARTBEAT_DISPLAY_KIND
+        kwargs = {"display_kind": HEARTBEAT_DISPLAY_KIND}
     from agent.notification_presentation import diagnostic_process_event
     if diagnostic_process_event(evt):
         kwargs.setdefault("display_metadata", {})["notification_category"] = "diagnostic"
@@ -500,9 +520,15 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     if not owned and _notification_event_requires_owner(evt) and not _session_owns_notification_event(sid, session, evt):
         origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
         if deferred is None:
-            (logger.warning if is_delegation else logger.debug)(
+            # A durable replay stays pending: hand it back so the orphan sweep re-offers it once its owner
+            # is live (#97202), and keep that retry out of WARNING.
+            restored = is_delegation and bool(evt.get("restored"))
+            (logger.warning if is_delegation and not restored else logger.debug)(
                 "Dropping unowned %s notification (origin=%r key=%r) instead of delivering to session %s",
                 evt_type, origin, key, sid)
+            if is_delegation:
+                from tools.async_delegation import return_completion_offer
+                return_completion_offer(evt)
         elif is_delegation:
             deferred.append(evt)
         else:
@@ -525,6 +551,10 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": display_text}),
                             platform="tui", diagnostic=diagnostic_process_event(evt))
         emitted.add(dedup_key)
+    if evt_type != "async_delegation" and _background_notifications_off(session):
+        # The user opted out of process-driven agent wakes: the status row above is the whole
+        # delivery. Subagent results are not process notifications and still land.
+        return True
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))
         return True
@@ -602,6 +632,8 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     if not has_mailbox(home):
         return False
     with _session_turn_admission(session) as admitted:
+        # No _turn_cancel_requested here: a delivery is a person's message, not an automatic turn,
+        # and only a local prompt clears the latch, so gating it would park the sender until then.
         if not admitted or any(session.get(key) for key in (
                 "running", "_closing", "_finalized", "queued_prompt", "queued_prompts",
                 "_auto_continue_scheduled")) or session.get("agent") is None:
@@ -689,8 +721,10 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     subscriptions and delivers terminal task events the same way (status.update + agent turn) — the delivery
     path tools/kanban_tools.py documents for platform="tui" rows (issue #59890).
     """
+    from tools import async_delegation
     from tools.process_registry import process_registry
     from tools.process_registry_notifications import format_process_notification
+    process_registry.restore_completions()  # first consumer in a TUI process (#123265)
     queue = process_registry.completion_queue
     emitted = session.setdefault("_notification_emitted", set())
     handle = lambda events, deferred: _notif_handle_ready(  # noqa: E731
@@ -698,6 +732,8 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     last_kanban_poll = last_loop_poll = last_bot_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
+        # Completions whose owner process died after this one started (#97202); throttled per profile home.
+        async_delegation.maybe_sweep_orphaned_completions(queue)
         if now - last_bot_poll >= _BOT_DELIVERY_POLL_SECONDS:  # bot DM → live-owner delivery latency ≤ 5 s
             last_bot_poll = now
             _poll_bot_live_delivery_guarded(sid, session, now)
@@ -808,7 +844,13 @@ def _hud_surface_note(session: dict) -> str:
     surface = session.get("client_surface")
     if surface == "hud":
         from agent.prompt_builder import hud_surface_note
-        return hud_surface_note(getattr(session.get("agent"), "valid_tool_names", None))
+        from tools.tool_search_catalog import TOOL_CALL_NAME
+        agent = session.get("agent")
+        direct = getattr(agent, "valid_tool_names", None) or set()
+        if TOOL_CALL_NAME not in direct:
+            return hud_surface_note(direct)
+        from agent.tool_executor import _tool_search_scoped_names
+        return hud_surface_note(direct, _tool_search_scoped_names(agent))
     if surface == "voice-live":
         from tools.voice_live import voice_live_turn_note
         return voice_live_turn_note(session.get("voice_live_context") or "")

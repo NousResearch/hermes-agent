@@ -5,14 +5,16 @@
 spawned client per ``(server_id, workspace_root)`` — servers flagged ``multi_root`` (pyright) get ONE
 client per ``server_id`` and further roots (typically sibling git worktrees) are attached to the running
 process via ``workspace/didChangeWorkspaceFolders`` — a **broken-set** of pairs that failed
-to spawn/initialize (never retried for the life of the service), and a **delta baseline**
+to spawn/initialize (retried only after ``lsp.broken_retry_seconds``; never, by default), and a **delta baseline**
 per file (``snapshot_baseline()`` runs BEFORE a write; the next ``get_diagnostics_sync()``
 returns only diagnostics not in it).  Off unless config enables it.
 """
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import logging
+import math
 import os
 import threading
 import time
@@ -20,8 +22,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.lsp import eventlog
 from agent.lsp.client import DIAGNOSTICS_DOCUMENT_WAIT, LSPClient, _diagnostic_key as _diag_key
-from agent.lsp.servers import SERVERS, ServerContext, ServerDef, custom_servers, find_server_for_file, language_id_for
-from agent.lsp.workspace import clear_cache, resolve_workspace_for_file
+from agent.lsp.servers import (
+    SERVERS, UNTRUSTED_SAFE_SERVERS, ServerContext, ServerDef, custom_servers, find_server_for_file, language_id_for,
+)
+from agent.lsp.workspace import clear_cache, is_trusted_workspace, operator_workspace_roots, resolve_workspace_for_file
 
 logger = logging.getLogger("agent.lsp.manager")
 
@@ -33,10 +37,46 @@ _Key = Tuple[str, str]
 _Diags = List[Dict[str, Any]]
 
 
-def _client_key(srv: ServerDef, root: str) -> _Key:
+def _float_or(value: Any, default: float) -> float:
+    try:
+        return float(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _path_list(value: Any) -> Optional[List[str]]:
+    """A config list of paths, ``~``-expanded; ``None`` when the value is not a list of strings."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
+        return None
+    return [os.path.expanduser(p) for p in value if p]
+
+
+def _parse_exclude_roots(value: Any) -> Optional[List[str]]:
+    """``lsp.exclude_roots``; ``None`` (fail closed: every root excluded) for a malformed value."""
+    if (roots := _path_list(value)) is None:
+        eventlog.event_log.warning(
+            "lsp.exclude_roots must be a list of glob patterns, e.g. ['~/big-monorepo', '/srv/*/vendor'] "
+            "(got %s); LSP is skipped for every workspace until the key is fixed", type(value).__name__)
+    return roots
+
+
+def parse_trusted_workspaces(value: Any) -> List[str]:
+    """``lsp.trusted_workspaces``; a malformed value trusts nothing extra."""
+    if (roots := _path_list(value)) is None:
+        eventlog.event_log.warning(
+            "lsp.trusted_workspaces must be a list of directories, e.g. ['~/code/my-app'] (got %s); only the "
+            "workspaces you launched Hermes or opened a session in are trusted until the key is fixed",
+            type(value).__name__)
+    return roots or []
+
+
+def _client_key(srv: ServerDef, root: str, trusted: bool) -> _Key:
     """Cache key for the client serving ``root``: multi-root servers share one process per
-    ``server_id``; everything else is keyed per resolved project root."""
-    return (srv.server_id, "" if srv.multi_root else root)
+    ``server_id`` across trusted roots; everything else, untrusted roots included, is keyed per
+    resolved project root (a shared process keeps the trust its first root spawned it with)."""
+    return (srv.server_id, "" if srv.multi_root and trusted else root)
 
 
 class _BackgroundLoop:
@@ -105,6 +145,10 @@ class LSPService:
         disabled_servers: Optional[List[str]] = None,
         idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
         extra_servers: Optional[List[ServerDef]] = None,
+        broken_retry_seconds: float = 0.0,
+        warmup_timeout: float = 0.0,
+        exclude_roots: Any = None,
+        trusted_workspaces: Any = None,
     ) -> None:
         self._enabled = enabled
         self._wait_mode = wait_mode if wait_mode in {"document", "full"} else "document"
@@ -116,6 +160,15 @@ class LSPService:
         self._disabled_servers = set(disabled_servers or [])
         self._idle_timeout = idle_timeout
         self._extra_servers: List[ServerDef] = list(extra_servers or [])
+        self._broken_retry = max(0.0, broken_retry_seconds)
+        self._warmup_timeout = max(0.0, warmup_timeout)
+        # ``None`` = misconfigured → fail closed (every root excluded) until the user fixes the key: a
+        # bare string here means "exclude that workspace", and excluding nothing would re-pay the stall it
+        # was meant to avoid.
+        self._exclude_roots: Optional[List[str]] = _parse_exclude_roots(exclude_roots)
+        self._trusted_workspaces: List[str] = parse_trusted_workspaces(trusted_workspaces)
+        self._untrusted_skipped: set = set()  # (server_id, root) pairs denied by workspace trust
+        self._operator_roots = frozenset(operator_workspace_roots())  # see _note_operator_roots
 
         self._loop = _BackgroundLoop()
         if self._enabled:
@@ -123,7 +176,8 @@ class LSPService:
 
         # Per-(server_id, workspace_root) state
         self._clients: Dict[_Key, LSPClient] = {}
-        self._broken: set = set()
+        # (server_id, root) → monotonic deadline after which the pair may be retried (inf = lifetime).
+        self._broken: Dict[_Key, float] = {}
         self._spawning: Dict[_Key, asyncio.Future] = {}
         self._last_used: Dict[_Key, float] = {}
         self._state_lock = threading.Lock()
@@ -169,6 +223,10 @@ class LSPService:
             disabled_servers=[n for n, c in servers.items() if c.get("disabled")],
             idle_timeout=idle_timeout,
             extra_servers=custom_servers(servers),
+            broken_retry_seconds=_float_or(lsp_cfg.get("broken_retry_seconds"), 0.0),
+            warmup_timeout=_float_or(lsp_cfg.get("warmup_timeout"), 0.0),
+            exclude_roots=lsp_cfg.get("exclude_roots"),
+            trusted_workspaces=lsp_cfg.get("trusted_workspaces"),
         )
 
     def _server_for(self, file_path: str) -> Optional[ServerDef]:
@@ -207,7 +265,83 @@ class LSPService:
         if srv is None or srv.server_id in self._disabled_servers:
             return False
         key = self._broken_key(srv, file_path)
-        return key is not None and key not in self._broken
+        if key is None:
+            return False
+        if self._root_excluded(key[1]):
+            eventlog.log_root_excluded(srv.server_id, key[1], file_path, invalid=self._exclude_roots is None)
+            return False
+        self._note_operator_roots()
+        if self._untrusted_denied(srv, key[1], file_path, self._trusted(key[1])):
+            return False
+        if self._is_broken(key):
+            eventlog.log_skipped_broken(srv.server_id, key[1], file_path, retry_in=self._broken_retry_in(key))
+            return False
+        return True
+
+    def _note_operator_roots(self) -> None:
+        """Remember this thread's ``operator_workspace_roots``.  Called where a tool thread enters (it sees
+        the session's cwd; the loop thread that spawns servers does not), so trust is per process: a
+        workspace any session was opened in stays trusted until shutdown."""
+        if not (roots := operator_workspace_roots()) <= self._operator_roots:
+            with self._state_lock:  # rebind, never mutate: other threads read the old set lock-free
+                self._operator_roots = self._operator_roots | roots
+
+    def _trusted(self, root: str) -> bool:
+        return is_trusted_workspace(root, self._trusted_workspaces, self._operator_roots)
+
+    def _live_key(self, srv: ServerDef, root: str) -> _Key:
+        """The client key for ``root`` (under ``_state_lock``): a multi-root server started while
+        ``root`` was untrusted keeps its own client after ``root`` becomes trusted, so it is found and
+        released rather than orphaned."""
+        own = (srv.server_id, root)
+        return own if own in self._clients or own in self._spawning else _client_key(srv, root, self._trusted(root))
+
+    def _untrusted_denied(self, srv: ServerDef, root: str, file_path: str, trusted: bool) -> bool:
+        """True iff ``srv`` may run project code and ``root`` is not a trusted workspace (deny by default:
+        only ``UNTRUSTED_SAFE_SERVERS`` start in a checkout the operator has not trusted)."""
+        if trusted or srv.server_id in UNTRUSTED_SAFE_SERVERS:
+            return False
+        with self._state_lock:
+            self._untrusted_skipped.add((srv.server_id, root))
+        eventlog.log_untrusted_skipped(srv.server_id, root, file_path)
+        return True
+
+    def _root_excluded(self, root: str) -> bool:
+        """True iff ``root`` matches an ``lsp.exclude_roots`` glob (or the key is misconfigured)."""
+        if self._exclude_roots is None:
+            return True
+        return any(fnmatch.fnmatchcase(root, pat) or fnmatch.fnmatchcase(root, pat.rstrip(os.sep) + os.sep + "*")
+                   for pat in self._exclude_roots)
+
+    def _is_broken(self, key: _Key) -> bool:
+        """Broken-set membership; an entry whose retry deadline passed is dropped so the pair gets one more try."""
+        deadline = self._broken.get(key)
+        if deadline is None:
+            return False
+        if time.monotonic() >= deadline:
+            self._broken.pop(key, None)
+            return False
+        return True
+
+    def _broken_retry_in(self, key: _Key) -> Optional[float]:
+        deadline = self._broken.get(key, math.inf)
+        return None if math.isinf(deadline) else max(0.0, deadline - time.monotonic())
+
+    def _mark_broken(self, key: _Key) -> None:
+        self._broken[key] = time.monotonic() + self._broken_retry if self._broken_retry > 0 else math.inf
+
+    def _wait_budget(self, file_path: str) -> float:
+        """``wait_timeout`` for a root with a running client; ``max(wait_timeout, warmup_timeout)`` for a
+        cold root, whose first request also pays the spawn/initialize and the server's initial program build."""
+        if self._warmup_timeout <= self._wait_timeout:
+            return self._wait_timeout
+        srv = self._server_for(file_path)
+        key = self._broken_key(srv, file_path) if srv is not None else None
+        if key is None:
+            return self._wait_timeout
+        with self._state_lock:
+            client = self._clients.get(self._live_key(srv, key[1]))
+        return self._wait_timeout if client is not None and client.is_running else self._warmup_timeout
 
     def snapshot_baseline(self, file_path: str) -> None:
         """Snapshot current diagnostics for ``file_path`` as the delta baseline (call BEFORE a write).
@@ -217,8 +351,9 @@ class LSPService:
         try:
             # Outer join budget must exceed the inner wait or a slow-but-alive server gets falsely
             # marked broken; it is a ceiling only — the inner wait returns as soon as it completes.
-            t = max(DIAGNOSTICS_DOCUMENT_WAIT + 3.0, self._wait_timeout + 3.0)
-            diags = self._loop.run(self._snapshot_async(file_path), timeout=t)
+            budget = self._wait_budget(file_path)
+            t = max(DIAGNOSTICS_DOCUMENT_WAIT + 3.0, budget + 3.0)
+            diags = self._loop.run(self._snapshot_async(file_path, budget), timeout=t)
         except Exception as e:  # noqa: BLE001
             logger.debug("baseline snapshot failed for %s: %s", file_path, e)
             self._mark_broken_for_file(file_path, e)
@@ -249,8 +384,9 @@ class LSPService:
             return []
         server_id = self._server_for(file_path).server_id  # enabled_for guarantees a match
         try:
-            t = timeout if timeout is not None else self._wait_timeout + 2.0
-            diags = self._loop.run(self._open_and_wait_async(file_path), timeout=t)
+            budget = self._wait_budget(file_path)
+            t = timeout if timeout is not None else budget + 2.0
+            diags = self._loop.run(self._open_and_wait_async(file_path, budget=budget), timeout=t)
         except Exception as e:  # noqa: BLE001
             if isinstance(e, asyncio.TimeoutError):
                 eventlog.log_timeout(server_id, file_path)
@@ -303,10 +439,10 @@ class LSPService:
         key = self._broken_key(srv, file_path) if srv is not None else None
         if key is None:
             return
-        already_broken = key in self._broken
-        self._broken.add(key)
-        ckey = _client_key(srv, key[1])
+        already_broken = self._is_broken(key)
+        self._mark_broken(key)
         with self._state_lock:
+            ckey = self._live_key(srv, key[1])
             client = self._clients.pop(ckey, None)
             self._last_used.pop(ckey, None)
         if client is not None:
@@ -337,25 +473,32 @@ class LSPService:
                  "workspace_folders": list(c.workspace_folders), "state": c.state, "running": c.is_running}
                 for c in self._clients.values()
             ]
-            broken = list(self._broken)
+            broken = [key for key, deadline in self._broken.items() if time.monotonic() < deadline]
+            untrusted = sorted(pair for pair in self._untrusted_skipped if not self._trusted(pair[1]))
         return {
             "enabled": self._enabled, "wait_mode": self._wait_mode, "wait_timeout": self._wait_timeout,
             "install_strategy": self._install_strategy, "clients": clients, "broken": broken,
             "disabled_servers": sorted(self._disabled_servers),
+            "broken_retry_seconds": self._broken_retry, "warmup_timeout": self._warmup_timeout,
+            "exclude_roots": list(self._exclude_roots) if self._exclude_roots is not None else "INVALID",
+            "trusted_workspaces": list(self._trusted_workspaces), "untrusted_skipped": untrusted,
         }
 
     # ---- async internals ----
 
-    async def _snapshot_async(self, file_path: str) -> _Diags:
+    async def _snapshot_async(self, file_path: str, budget: Optional[float] = None) -> _Diags:
         # No fresh data for the pre-edit content → empty baseline.  Safe: the delta
         # filter then removes less, never more.  Never seed from stale stores.
-        return await self._open_and_wait_async(file_path, snapshot=True) or []
+        return await self._open_and_wait_async(file_path, snapshot=True, budget=budget) or []
 
-    async def _open_and_wait_async(self, file_path: str, *, snapshot: bool = False) -> Optional[_Diags]:
+    async def _open_and_wait_async(
+        self, file_path: str, *, snapshot: bool = False, budget: Optional[float] = None,
+    ) -> Optional[_Diags]:
         """Open + wait for FRESH diagnostics: ``[]`` = checked clean, ``None`` = no verdict in budget.
 
-        Callers must not substitute stale data for either.  ``snapshot`` mode
-        (pre-write baseline) skips didSave; both modes wait at most ``lsp.wait_timeout``.
+        Callers must not substitute stale data for either.  ``snapshot`` mode (pre-write baseline)
+        skips didSave; both modes wait at most ``budget`` (``lsp.wait_timeout`` unless the caller
+        computed a cold-root warm-up budget via :meth:`_wait_budget`).
         """
         client = await self._get_or_spawn(file_path)
         if client is None:
@@ -366,7 +509,8 @@ class LSPService:
             if not snapshot:
                 await client.save_file(file_path)
             fresh = await client.wait_for_diagnostics(
-                file_path, version, mode=self._wait_mode, timeout=self._wait_timeout,
+                file_path, version, mode=self._wait_mode,
+                timeout=budget if budget is not None else self._wait_timeout,
             )
         except Exception as e:  # noqa: BLE001
             if snapshot:
@@ -388,7 +532,7 @@ class LSPService:
         if root is None:
             return []
         with self._state_lock:
-            client = self._clients.get(_client_key(srv, root))
+            client = self._clients.get(self._live_key(srv, root))
         return list(client.diagnostics_for(file_path, fresh_only=True)) if client else []
 
     async def _get_or_spawn(self, file_path: str) -> Optional[LSPClient]:
@@ -406,10 +550,15 @@ class LSPService:
         if root is None:
             eventlog.log_disabled(srv.server_id, file_path, "exclude marker hit (server gated off)")
             return None
-        if (srv.server_id, root) in self._broken:
+        if self._untrusted_denied(srv, root, file_path, self._trusted(root)):
             return None
-        key = _client_key(srv, root)
+        if self._is_broken((srv.server_id, root)):
+            return None
         with self._state_lock:
+            key = self._live_key(srv, root)
+            # Derived with the key: trust only grows, so one read before the lock could store an
+            # untrusted spawn under the shared multi-root key every trusted root then attaches to.
+            trusted = key[1] == "" or self._trusted(root)
             client = self._clients.get(key)
             if client is not None and client.is_running:
                 self._last_used[key] = time.time()
@@ -429,9 +578,9 @@ class LSPService:
                 return None
             return await self._attach_root(srv, client, root) if client is not None else None
         try:
-            client = await self._spawn_client(srv, root)
+            client = await self._spawn_client(srv, root, trusted)
             if client is None:
-                self._broken.add((srv.server_id, root))
+                self._mark_broken((srv.server_id, root))
             else:
                 with self._state_lock:
                     self._clients[key] = client
@@ -450,11 +599,12 @@ class LSPService:
             await client.add_workspace_folder(root)
         return client
 
-    async def _spawn_client(self, srv: ServerDef, root: str) -> Optional[LSPClient]:
+    async def _spawn_client(self, srv: ServerDef, root: str, trusted: bool) -> Optional[LSPClient]:
         """Resolve the binary and start a client; ``None`` (after logging) when either fails."""
         ctx = ServerContext(
             workspace_root=root, install_strategy=self._install_strategy, binary_overrides=self._binary_overrides,
             env_overrides=self._env_overrides, init_overrides=self._init_overrides,
+            trusted=trusted,
         )
         spec = srv.build_spawn(root, ctx)
         if spec is None:
@@ -533,7 +683,7 @@ class LSPService:
         # once the future resolves the client is in ``_clients`` and the pass below sees it).
         with self._state_lock:
             pending = [fut for fut in self._spawning.values() if not fut.done()]
-            self._broken = {key for key in self._broken if not _under(key[1])}
+            self._broken = {key: deadline for key, deadline in self._broken.items() if not _under(key[1])}
             for path in [p for p in self._delta_baseline if _under(p)]:
                 del self._delta_baseline[path]
         if pending:

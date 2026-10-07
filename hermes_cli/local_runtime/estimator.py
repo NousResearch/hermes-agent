@@ -6,7 +6,7 @@ ground truth after it. Unknown shapes round UP (never underestimate memory).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from hermes_cli.local_runtime.gguf import GGUFHeader
@@ -19,10 +19,35 @@ _F16_BYTES_PER_ELEM = 2.0
 # sliding-window. Unknown SWA archs treat every layer as full attention (overestimate; safe).
 _SWA_LAYER_FRACTION = {"gemma3": 5 / 6, "gemma2": 1 / 2}
 
+# Architectures whose llama.cpp loader expands a scalar `sliding_window_pattern` period with
+# dense_first=True (the full-attention layer opens each period-length cycle instead of closing
+# it). Confirmed against llama.cpp's per-arch hparams.set_swa_pattern() calls; every other
+# architecture — including the whole Gemma family — uses the dense_first=False default.
+_SWA_DENSE_FIRST_ARCHS = {"cohere2moe", "modern-bert", "smallthinker", "laguna"}
+
+
+def _expand_swa_period(period: int, n_layer: int, dense_first: bool) -> list[int]:
+    """Per-layer SWA/full split from a scalar period, matching llama.cpp's
+    `llama_hparams::set_swa_pattern()`: one full-attention layer per `period`-length cycle, the
+    rest sliding-window."""
+    if period <= 0:
+        return []
+    if dense_first:
+        return [0 if i % period == 0 else 1 for i in range(n_layer)]
+    return [1 if i % period < period - 1 else 0 for i in range(n_layer)]
+
+
 # Per-recurrent-layer state allowance (bytes/seq). Deliberately generous: an entire measured
 # hybrid slot state is ~99 MB including 8K tokens of full-attn KV, so tens of MiB total is the
 # right order; unknown SSM shapes must never underestimate.
 _RECURRENT_STATE_PER_LAYER = 4 << 20
+
+# Compute-buffer bytes per microbatch token per window token, per llama.cpp context, for
+# architectures whose attention scores the whole window each microbatch. qwen4exp's QSA indexer:
+# measured on b11370 with the router's unified KV (every slot sees the full window), device plus
+# host buffers, target and MTP head contexts alike (39.5 + 6.1 B; 5.9 GiB per context at 256K and
+# -ub 512, ~23 GiB at -ub 2048).
+_WINDOW_COMPUTE_BYTES = {"qwen4exp": 46}
 
 
 class LayerKind(Enum):
@@ -37,6 +62,8 @@ class ModelProfile:
     construct profiles directly."""
 
     name: str
+    # Weights the engine loads when it reads lazy_bytes from disk on demand; as_loaded() adds them
+    # back on a machine where it reads them up front.
     weights_bytes: int
     embd_table_bytes: int
     n_ctx_train: int
@@ -50,6 +77,18 @@ class ModelProfile:
     # postures): the draft adds ~17% to per-token KV; 1.2 rounds up so the error stays on the safe
     # side (+250 MiB at 256K, never negative).
     kv_scale: float = 1.0
+    # block index -> FFN weight bytes (from the tensor table); empty when unknown.
+    ffn_block_bytes: dict[int, int] = field(default_factory=dict)
+    # Bytes of architecture-marked tensors (gguf._LAZY_READ_TENSORS) the engine can read from disk
+    # on demand instead of loading.
+    lazy_bytes: int = 0
+    # Compute-buffer bytes per window token at the launch posture (plan_launch sets it from
+    # window_compute_bytes, the microbatch and the context count); zero prices none.
+    window_compute_per_token: int = 0
+
+    @property
+    def window_compute_bytes(self) -> int:
+        return _WINDOW_COMPUTE_BYTES.get(self.architecture, 0)
 
     @property
     def per_token_kv_f16(self) -> int:
@@ -71,33 +110,67 @@ class HardwareBudget:
     total_device_bytes: int
     ram_available_bytes: int
     uma: bool = False
+    gpu_name: str = ""          # display name; legacy fallback for performance estimates
+    platform: str = ""          # sys.platform of the machine being priced
+    gpu_pci_id: int | None = None  # nvidia-smi's packed PCI device/vendor ID
+    # The engine reads lazy tensors from disk here. llama.cpp's own default does so everywhere
+    # except integrated GPUs (b11370 #28160); Hermes passes --lazy-mode on to NVIDIA's, so only
+    # AMD/Intel integrated GPUs load them up front.
+    lazy_reads: bool = True
+
+
+def as_loaded(profile: ModelProfile, budget: HardwareBudget) -> ModelProfile:
+    """The profile as this machine loads it: on-demand tensors count as weights where the engine
+    reads them up front."""
+    if profile.lazy_bytes and not budget.lazy_reads:
+        return replace(profile, weights_bytes=profile.weights_bytes + profile.lazy_bytes, lazy_bytes=0)
+    return profile
 
 
 def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
     kv_heads = header.head_counts_kv()
     dk, dv = header.head_dim_k, header.head_dim_v
+    dk_swa = header.key_length_swa or dk
+    dv_swa = header.value_length_swa or dv
+
+    # Priority ladder, highest first: (1) the file's own per-layer pattern, array or scalar-period
+    # form — architecture-agnostic and exact; (2) a known-architecture fraction, for older files
+    # that declare `sliding_window` but no per-layer pattern; (3) no signal at all -> every layer
+    # priced as full attention (overestimate; safe).
+    pattern = header.sliding_window_pattern
+    if pattern is None and header.sliding_window_pattern_period > 0:
+        pattern = _expand_swa_period(header.sliding_window_pattern_period, header.n_layer,
+                                      header.architecture in _SWA_DENSE_FIRST_ARCHS)
+    has_pattern = (pattern is not None and header.sliding_window > 0
+                  and len(pattern) == len(kv_heads))
     swa_fraction = _SWA_LAYER_FRACTION.get(header.architecture, 0.0)
-    has_swa = header.sliding_window > 0 and swa_fraction > 0
+    has_fraction = not has_pattern and header.sliding_window > 0 and swa_fraction > 0
+    n_attn_total = sum(1 for h in kv_heads if h > 0)
+    n_swa = round(n_attn_total * swa_fraction) if has_fraction else 0
 
     layers: list[tuple[LayerKind, int]] = []
     n_attn_seen = 0
-    n_attn_total = sum(1 for h in kv_heads if h > 0)
-    n_swa = round(n_attn_total * swa_fraction) if has_swa else 0
-    for heads in kv_heads:
+    for i, heads in enumerate(kv_heads):
         if heads == 0:
             layers.append((LayerKind.RECURRENT, 0))
             continue
-        per_token = round(heads * (dk + dv) * _F16_BYTES_PER_ELEM)
-        # Distribute the SWA share across the first n_swa attention layers; only the full/SWA
-        # SPLIT matters to the totals, not which indexes.
-        kind = LayerKind.SWA if n_attn_seen < n_swa else LayerKind.FULL
-        layers.append((kind, per_token))
+        if has_pattern:
+            is_swa = bool(pattern[i])
+        else:
+            # Distribute the SWA share across the first n_swa attention layers; only the
+            # full/SWA split matters to the totals, not which indexes.
+            is_swa = n_attn_seen < n_swa
+        layer_dk, layer_dv = (dk_swa, dv_swa) if is_swa else (dk, dv)
+        per_token = round(heads * (layer_dk + layer_dv) * _F16_BYTES_PER_ELEM)
+        layers.append((LayerKind.SWA if is_swa else LayerKind.FULL, per_token))
         n_attn_seen += 1
 
     return ModelProfile(
-        name=header.path, weights_bytes=header.tensor_bytes, embd_table_bytes=header.embd_table_bytes,
+        name=header.path, weights_bytes=header.tensor_bytes - header.lazy_bytes,
+        embd_table_bytes=header.embd_table_bytes,
         n_ctx_train=header.n_ctx_train, layers=layers, swa_window=header.sliding_window,
-        moe=header.expert_count > 0, architecture=header.architecture, n_vocab=header.n_vocab)
+        moe=header.expert_count > 0, architecture=header.architecture, n_vocab=header.n_vocab,
+        ffn_block_bytes=dict(header.ffn_block_bytes), lazy_bytes=header.lazy_bytes)
 
 
 def kv_dtype_factor(flash_attention: bool) -> float:
@@ -107,8 +180,9 @@ def kv_dtype_factor(flash_attention: bool) -> float:
 
 
 def ctx_bytes(profile: ModelProfile, window: int, *, flash_attention: bool = True) -> int:
-    """Context memory for one window: full layers linear in T, SWA layers capped at the sliding
-    window, recurrent layers constant. Scaled by profile.kv_scale (MTP draft context)."""
+    """Memory that grows with the window: full layers linear in T, SWA layers capped at the sliding
+    window, recurrent layers constant, KV scaled by profile.kv_scale (MTP draft context), plus the
+    posture's window-scaled compute buffers."""
     factor = kv_dtype_factor(flash_attention)
     total = 0.0
     for kind, per_token_f16 in profile.layers:
@@ -118,7 +192,7 @@ def ctx_bytes(profile: ModelProfile, window: int, *, flash_attention: bool = Tru
             total += per_token_f16 * factor * min(window, profile.swa_window)
         else:
             total += per_token_f16 * factor * window
-    return int(total * profile.kv_scale)
+    return int(total * profile.kv_scale) + profile.window_compute_per_token * window
 
 
 @dataclass

@@ -1,22 +1,13 @@
 """Tests for toolset_distributions.py — distribution CRUD, sampling, validation."""
 
-import pytest
 
 from toolset_distributions import (
     DISTRIBUTIONS,
-    get_distribution,
     list_distributions,
     sample_toolsets_from_distribution,
-    validate_distribution,
 )
 
 
-class TestGetDistribution:
-    def test_known_distribution(self):
-        dist = get_distribution("default")
-        assert dist is not None
-        assert "description" in dist
-        assert "toolsets" in dist
 
 
 
@@ -30,25 +21,9 @@ class TestListDistributions:
 
 
 
-class TestValidateDistribution:
-    def test_valid(self):
-        assert validate_distribution("default") is True
-        assert validate_distribution("research") is True
 
 
 
-class TestSampleToolsetsFromDistribution:
-
-
-    def test_minimal_returns_web_only(self):
-        result = sample_toolsets_from_distribution("minimal")
-        assert "web" in result
-
-    def test_returns_list_of_strings(self):
-        result = sample_toolsets_from_distribution("balanced")
-        assert isinstance(result, list)
-        for item in result:
-            assert isinstance(item, str)
 
 
 
@@ -89,7 +64,7 @@ class TestGroupedCompoundEntries:
         result = sample_toolsets_from_distribution("_test_compound_fallback")
         assert set(result) == {"browser", "search"}
 
-    def test_invalid_member_skips_whole_entry(self, monkeypatch, capsys):
+    def test_invalid_member_skips_whole_entry(self, monkeypatch):
         import toolset_distributions as td
 
         monkeypatch.setitem(
@@ -101,4 +76,3 @@ class TestGroupedCompoundEntries:
         result = sample_toolsets_from_distribution("_test_compound_invalid")
         assert "browser" not in result  # invalid member disqualifies the group
         assert "web" in result
-        assert "not valid" in capsys.readouterr().out

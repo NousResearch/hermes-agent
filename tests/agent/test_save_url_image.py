@@ -13,6 +13,7 @@ and the gateway 404'd at ``send_photo`` time.
 from __future__ import annotations
 
 import http.server
+import os
 import socketserver
 import threading
 
@@ -112,9 +113,10 @@ class TestSaveUrlImage:
 
         assert path.exists()
         assert path.read_bytes() == PNG_1PX
-        # The cache directory must be under HERMES_HOME — gateway cleanup
-        # relies on this being the canonical location.
-        assert "cache/images" in str(path)
+        # Durable generated-media dir: under HERMES_HOME but OUTSIDE the swept
+        # inbound caches — gateway cleanup must never delete the only copy of a
+        # generated deliverable (#126445).
+        assert os.path.join("cache", "generated", "images") in str(path)
         assert path.suffix == ".png"
 
     def test_404_raises(self, http_server):

@@ -62,7 +62,10 @@ Use `/compress` when a session gets long, `/new` for a fresh thread, and
 `hermes sessions prune` only when you want to delete old ended sessions from
 storage. If `state.db` has simply grown large, start with the non-destructive
 option first: `hermes sessions optimize` merges FTS5 index segments and
-VACUUMs the database without touching any session data. Compression reduces the active context; it is not a privacy delete.
+VACUUMs the database without touching any session data. Both `optimize` and `prune` refuse
+while another Hermes process (gateway, Desktop, dashboard, cron) holds `state.db` — stop it
+first, or pass `--force`; see [Session storage recovery](session-storage-recovery.md).
+Compression reduces the active context; it is not a privacy delete.
 Pass a name to `/new` (e.g. `/new payments-refactor`) to set the new session's
 initial title up front — useful for finding it later with `/resume <name>` or
 in the `/sessions` picker.
@@ -91,7 +94,7 @@ Each session is tagged with its source platform:
 | `weixin` | Weixin (personal WeChat) |
 | `bluebubbles` | Apple iMessage via BlueBubbles macOS server |
 | `qqbot` | QQ Bot (Tencent QQ) via Official API v2 |
-| `homeassistant` | Home Assistant conversation |
+| `homeassistant` | Home Assistant events (plugin) |
 | `webhook` | Incoming webhooks |
 | `api-server` | API server requests |
 | `acp` | ACP editor integration |
@@ -233,7 +236,7 @@ What happens:
 1. The CLI validates that `<platform>` is enabled and has a home channel set (run `/sethome` from the destination chat once to configure it).
 2. The CLI marks the session pending and **block-polls the gateway**. It refuses if the agent is mid-turn — wait for the current response to finish first.
 3. The gateway watcher claims the handoff and asks the destination adapter for a fresh thread:
-   - **Telegram** — opens a new forum topic (DM topics if Bot API 9.4+ Topics mode is enabled in the chat, or a forum supergroup topic).
+   - **Telegram** — opens a new forum topic (DM topics if the bot owner has enabled Threaded Mode via BotFather, or a forum supergroup topic).
    - **Discord** — creates a 1440-min auto-archive thread under the home text channel.
    - **Slack** — posts a seed message and uses its `ts` as the thread anchor.
    - **Matrix** — posts a seed message and uses its event id as the thread root (`m.thread` relation).
@@ -382,7 +385,9 @@ hermes sessions export ~/exports/ --session-id 20250305_091523_a1b2c3d4
 hermes sessions export backup.jsonl --redact
 ```
 
-Exported files contain one JSON object per line with full session metadata and all messages.
+Exported files contain one JSON object per line with full session metadata and every stored message, each with its `active`/`compacted` flags. That includes turns archived by in-place compaction and messages removed by rewind or edit. Importing the file (the dashboard's session import) restores those rows as archived history, not as live model context. A `/save json` snapshot (CLI, messaging, TUI, or Desktop) holds the same rows. Treat a backup as holding everything the session ever contained. To share a conversation, export a display format (`--format md` or `html`, which holds only the history the session shows) with `--redact`. Each session's backup is built in memory, so a session with more stored rows than `sessions.max_export_messages` is refused (see [Oversized-Transcript Guards](#oversized-transcript-guards)).
+
+Filtered exports include matching pinned and archived sessions. Pinning protects a session from pruning, rather than excluding it from a backup. If an explicit `--session-id` cannot be resolved, export exits with a non-zero status and creates no output file.
 
 Each record also carries a `timings` block derived from the message timestamps, so a reader of an export attached to a bug report can tell a single long model gap from many small tool round-trips without reconstructing it by hand. It holds only ids, roles, counts and durations — `wall_clock_ms`, `largest_gap_ms`, `role_counts`, `tool_calls_emitted` and per-message `intervals` — never prompt text, tool arguments or results, so it survives `--redact` unchanged. Hermes does not persist a model/tool stopwatch, so `complete` is always `false`; when a session has no timestamped messages, `available` is `false` and `unavailable_reason` says why. The block is rebuilt on every export and ignored (and not counted toward size limits) on import.
 
@@ -453,7 +458,7 @@ hermes sessions export --format md --model sonnet --min-messages 50 --redact
 hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4 --delete-after-verified --yes
 ```
 
-Markdown/QMD export writes one `.md` or `.qmd` file per exported session plus a `manifest.jsonl` with the file path, message count, lineage ids, and SHA-256. Bulk export requires at least one filter; a bare bulk export is refused. `--delete-after-verified` is intentionally limited to `--session-id` and requires `--yes`. Because deleting a parent session also removes its delegate/subagent sessions, this mode exports and verifies each delegate in a separate file before deleting anything. If the delegate set changes during export, deletion is refused. `--redact` scrubs secrets (API keys, tokens, credentials) from message content and tool output before writing — recommended for any export you plan to share.
+Markdown/QMD export writes one `.md` or `.qmd` file per exported session plus a `manifest.jsonl` with the file path, message count, lineage ids, and SHA-256. Bulk export requires at least one filter; a bare bulk export is refused. `--delete-after-verified` is intentionally limited to `--session-id` and requires `--yes`. Because deleting a parent session also removes its delegate/subagent sessions, this mode exports and verifies each delegate in a separate file before deleting anything. Markdown/QMD files hold the full history shown by the session, including turns archived by in-place compaction. Deletion compares that exact display transcript and the delegate set again inside the same database transaction that performs the delete; any intervening append, rewrite, rewind, compaction, or delegate change refuses deletion. The same display-history rule applies to `--format html`, `--only user-prompts` (with either Markdown or JSONL output), and `/save md|html`. Full-session JSON/JSONL exports (`hermes sessions export` without `--only`) and `/save json` (CLI, messaging, TUI, Desktop) are backups of every stored row, archived rows included (see [Export Sessions](#export-sessions)). `--redact` scrubs secrets (API keys, tokens, credentials) from message content and tool output before writing — recommended for any export you plan to share.
 
 ### Delete a Session
 
@@ -464,6 +469,10 @@ hermes sessions delete 20250305_091523_a1b2c3d4
 # Delete without confirmation
 hermes sessions delete 20250305_091523_a1b2c3d4 --yes
 ```
+
+Deleting a session that is still open in a running chat does not stop that chat: its next save recreates the session under the same id with the full in-memory transcript. Close the chat first if you want the session gone.
+
+Deleting a session while a turn is actively executing or compressing is refused (exits with code 1) to prevent transcript loss under the live agent. Wait for the active turn or compression to complete before deleting.
 
 ### Rename a Session
 
@@ -483,6 +492,13 @@ Pinning sets a durable "keep" flag: pinned sessions are exempt from the
 `sessions.auto_archive` stale sweep and always appear in listings. It is the
 same flag the Desktop sidebar's Pinned section uses — pin from either surface
 and both see it.
+
+Restoring a session export (the dashboard import, or a profile adopting a
+stranded session) keeps the pinned, archived and hidden flags, and whether an
+archive came from the `sessions.auto_archive` sweep. A restored pinned session
+stays exempt from retention cleanup, an adopted Bot Mode chat stays hidden, and
+a restored sweep archive still comes back when you resume it. Exports that
+predate these flags restore as ordinary, unpinned, visible sessions.
 
 ```bash
 # Pin one or more sessions (unique ID prefixes work)
@@ -566,6 +582,7 @@ delete them too.
 
 :::info
 Pruning only deletes **ended** sessions (sessions that have been explicitly ended or auto-reset). Active sessions are never pruned.
+A conversation that compression split into several sessions is pruned as a unit: its older segments stay while any later segment does.
 :::
 
 ### Bulk-Archive Sessions
@@ -585,9 +602,17 @@ hermes sessions archive --title "dry run" --yes
 ```
 
 At least one filter is required — a bare `hermes sessions archive` refuses to
-archive your entire history. Archived sessions are hidden from
+archive your entire history. A compacted conversation is archived as a unit
+through its live tip: an old compression segment never matches on its own age,
+so a chat that is still active is never hidden because its history is long.
+Archived sessions are hidden from
 `hermes sessions list` and `/resume` but remain in the database and can be
 unarchived from the Desktop/Dashboard session list.
+
+A chat hidden by the `sessions.auto_archive` idle sweep comes back on its own
+once it is live again — when it is resumed, or when new activity compresses it
+into a fresh continuation. A chat you archived yourself (sidebar, API, or
+`hermes sessions archive`) stays archived until you unarchive it.
 
 ### Session Statistics
 
@@ -650,6 +675,54 @@ conversation stays readable via `/resume` and session search either way —
 routing is the only thing the repair changes. Back up first
 (`cp ~/.hermes/state.db ~/.hermes/state.db.bak`).
 
+### Repair Degraded Stored Prompts
+
+Older builds affected by #122822 could let gateway hygiene or gateway `/compress`
+persist a detached maintenance agent's reduced-toolset system prompt over the
+live session. After the root fix in PR #122825 is installed, use
+`hermes sessions repair-prompts` to find rows that were already degraded.
+
+The scan is conservative: it only proposes a repair when the stored prompt is
+missing the `## Skill Safety` guidance **and** the persisted `tools[]` pin
+contains `skill_manage` (which always emits that guidance). Rows with no
+readable pin, or with a `memory`-only pin (which is also a legitimate
+`toolsets: [memory]` setup), are reported as **unverifiable** and are not
+changed by this scan; clear them explicitly by `SESSION_ID` if needed. A
+memory-only row also becomes repairable on its own: once the session is resumed, its
+`tools[]` pin re-pins the full tool surface, after which a scan sees
+`skill_manage` without the Skill Safety guidance and clears it.
+
+```bash
+# Report verified candidates and unverifiable rows; writes nothing
+hermes sessions repair-prompts
+
+# Clear verified degraded prompts after confirmation
+hermes sessions repair-prompts --apply
+
+# Machine-readable report
+hermes sessions repair-prompts --json
+
+# Non-interactive automation: apply and report the ids actually cleared
+hermes sessions repair-prompts --apply --json
+
+# Explicit destructive override for one session (id or unique prefix).
+# This clears the stored prompt even when it is healthy.
+hermes sessions repair-prompts SESSION_ID --apply
+```
+
+Clearing the prompt intentionally stores NULL; the next turn rebuilds and persists healthy bytes,
+which causes one expected
+`Stored system prompt ... is null; rebuilding from scratch` warning for each
+repaired session. That warning is the consequence of this explicit repair, not
+evidence of a new corruption.
+
+Run the repair only after the #122822 root fix is present; otherwise a later
+maintenance compaction can degrade the row again.
+
+A running gateway keeps each cached session's old prompt in memory, so restart
+the gateway after `--apply` (`hermes gateway restart`) for repaired rows to
+take effect.
+
 ### Repair State Crossed Between Profiles
 
 Every profile owns one `state.db`, and every gateway session key names the
@@ -695,6 +768,37 @@ themselves cannot tell the two apart.
 `--apply` refuses while a gateway owns any of the stores (it holds the routing
 index in memory and would write it back), and is safe to re-run: a second run
 finds nothing.
+
+
+### Convert the Store Between WAL and DELETE Journal Mode
+
+`database.journal_mode: delete` only applies to databases Hermes creates. An
+existing `state.db` that is already in WAL mode is **never** live-downgraded at
+open — other gateway, dashboard or cron processes may hold uncheckpointed WAL
+commits, and a downgrade underneath them destroys those commits — so Hermes
+keeps WAL and logs one `ERROR` per process telling you the configured `delete`
+did not apply. The self-service conversion is:
+
+```bash
+# stop every process using the profile's store first (gateway, dashboard, CLIs, cron)
+hermes sessions set-journal-mode delete     # WAL -> rollback journal
+hermes sessions set-journal-mode wal        # back to WAL
+hermes sessions set-journal-mode delete --db ~/.hermes/kanban.db   # another Hermes store
+```
+
+The command refuses — naming each PID and command — while any process still
+holds the file or its `-wal`/`-shm` sidecars, switches the mode without
+waiting out openers (a holder that appears mid-way makes SQLite refuse instead
+of racing it), and verifies the file header reports the new mode. It reminds
+you to set `database.journal_mode` to the same value when the config disagrees,
+because the next open re-applies the configured mode. The holder scan is local
+(open-file tables on Linux/macOS, the Restart Manager on Windows), so it
+cannot see a process in another container or VM sharing the volume. If the
+scan itself fails the command refuses because it cannot prove the store is
+quiet; `--force` waives only that case after you have stopped every Hermes
+process yourself — a process the scan does find is always refused. Enabling
+WAL is also refused when the store sits on a cross-VM filesystem (virtiofs/9p),
+where WAL shared memory corrupts silently.
 
 
 ## Importing Sessions from Claude Code and Codex CLI
@@ -864,8 +968,11 @@ That reverts groups/channels to a single shared session per room, which preserve
 
 Gateway conversations do not reset after inactivity or at a daily boundary. Use `/new`
 or `/reset` for an explicit new conversation; context compression remains automatic.
-Legacy `session_reset` settings, reset-policy overrides and reset-timer environment
-variables are ignored. Cached agents may be released to reclaim resources without
+Core ignores legacy `session_reset` settings, reset-policy overrides and reset-timer
+environment variables. If your config still sets `session_reset.mode` to `idle`, `daily`
+or `both`, gateway startup and `hermes doctor` warn about it. To keep time-based resets,
+install the catalog plugin that reads the same block unchanged:
+`hermes plugins install hermes-session-reset-policy`. Cached agents may be released to reclaim resources without
 replacing the durable conversation. Restart-recovery freshness limits automatic
 continuation, not the history loaded when you send a message.
 
@@ -990,7 +1097,9 @@ Only **ended** sessions are ever deleted. Active sessions are never auto-pruned,
 regardless of age. Ended sessions are aged from their last activity — the
 freshest of live activity, latest message, or session start — so a long-lived
 conversation used recently is not deleted merely because it began before the
-retention window.
+retention window. The same holds for a conversation that compression split into
+several sessions: its older segments are kept while any later segment is, and
+are pruned together with it once the whole conversation qualifies.
 
 **Stale open sessions from automation.** Some producers — cron jobs, kanban
 workers, subagents, one-shot CLI runs — can die without ever marking their
@@ -1010,13 +1119,18 @@ never closed by this sweep.
 ### Oversized-Transcript Guards
 
 Two limits stop a runaway transcript from being loaded into memory all at once
-(both default to `20000` active messages; `0` disables the guard):
+(both default to `20000` messages; `0` disables the guard):
 
 ```yaml
 sessions:
   max_resume_messages: 20000   # interactive resume (CLI / TUI / Desktop)
   max_export_messages: 20000   # one-shot in-memory export of a single session
 ```
+
+`max_export_messages` applies per session to the JSON/JSONL backup (`hermes sessions export`,
+`sessions export` in `hermes console`, and `/save json` in the CLI, messaging, TUI and Desktop). It counts every stored row, archived included, because
+the backup holds all of them. A heavily compacted session with a small live tail can still exceed it.
+The dashboard Sessions page's Export action streams the rows instead and is not capped.
 
 `max_resume_messages` bounds **what the resume actually loads**, not the whole
 history of the conversation:
@@ -1033,7 +1147,9 @@ history of the conversation:
 
 When a resume is refused the client receives error code `4130` with the count
 and the scope it was measured against (`across its lineage` or
-`in its tip segment`). `hermes sessions export` still works for such sessions.
+`in its tip segment`). A TUI/Desktop `/save` refused by `max_export_messages` returns error code `4131`.
+`hermes sessions export` still works for such sessions; its JSON/JSONL
+backup needs each session to stay under `max_export_messages`.
 
 ### Manual Cleanup
 

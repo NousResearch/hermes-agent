@@ -15,7 +15,7 @@ Record a site's XHR into a HAR, derive an HTTP client.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/web-development/har-derived-api-client` |
-| Path | `optional-skills/web-development\har-derived-api-client` |
+| Path | `optional-skills/web-development/har-derived-api-client` |
 | Version | `0.1.0` |
 | Author | Hermes Agent |
 | License | MIT |
@@ -58,7 +58,7 @@ HAR recording works differently in each case (see How to Run).
 ## Prerequisites
 
 - Playwright + a browser binary (capture step only):
-  - `pip install playwright` then `playwright install chromium`
+  - `pip install playwright` then `playwright install chromium --no-shell`
   - (If a system Playwright already has browsers under `~/.cache/ms-playwright`, reuse it.)
 - `requests` or `httpx` for the replay step (stdlib `urllib` also works).
 - No API keys. Any keys/tokens the client needs are the ones the HAR captured.

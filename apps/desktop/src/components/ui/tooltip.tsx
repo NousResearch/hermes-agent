@@ -170,7 +170,7 @@ function PaneClippedContent({
   className,
   collisionBoundary,
   collisionPadding = 12,
-  hideWhenDetached = true,
+  hideWhenDetached,
   placement = 'control',
   boundary = placement === 'control' || placement === 'toolbar' ? 'pane' : 'viewport',
   side,
@@ -218,7 +218,12 @@ function PaneClippedContent({
       collisionBoundary={collisionBoundary ?? pane ?? undefined}
       collisionPadding={collisionPadding}
       data-slot="tooltip-content"
-      hideWhenDetached={hideWhenDetached}
+      // Radix's `collisionPadding` also insets the hide middleware's clip box, so
+      // a 7px rail tick drawn flush against the strip's edge reads as scrolled
+      // out and mounts hidden — a mark that looks dead on hover (#115723). Rail
+      // ticks unmount when scrolled away, so the middleware has nothing to hide
+      // there; leave it to triggers that stay put inside scrolling lists.
+      hideWhenDetached={hideWhenDetached ?? (placement !== 'left-rail' && placement !== 'right-rail')}
       side={side ?? preferred.side}
       sideOffset={sideOffset}
       {...props}

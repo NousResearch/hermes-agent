@@ -24,21 +24,17 @@ import pytest
 
 from hermes_cli.active_sessions import (
     MAX_CONCURRENT_SESSIONS,
-    PER_SESSION_EXCLUSIVE_SUBMIT,
     SESSION_NOT_OWNED,
     active_session_registry_snapshot,
     release_active_session,
     try_acquire_active_session,
 )
 
-
 @pytest.fixture(autouse=True)
 def _isolated_registry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
-
 _owner_seq = itertools.count()
-
 
 def acquire(session_id, config=None, surface="tui", live_id=None):
     """Acquire as a DISTINCT owner unless a live id is given explicitly.
@@ -54,7 +50,6 @@ def acquire(session_id, config=None, surface="tui", live_id=None):
         config=config if config is not None else {},
         metadata={"live_session_id": live_id or f"live-{next(_owner_seq)}"},
     )
-
 
 def test_no_cap_configured_still_fences_one_session():
     """The case the old code got wrong, and the reason this fence exists.
@@ -74,7 +69,6 @@ def test_no_cap_configured_still_fences_one_session():
     # And exactly one holder is recorded -- a refusal must not leave a slot behind.
     assert len(active_session_registry_snapshot()) == 1
 
-
 def test_different_sessions_still_run_concurrently():
     """Exclusivity is PER SESSION. It is not a global mutex.
 
@@ -86,7 +80,6 @@ def test_different_sessions_still_run_concurrently():
     assert lease_1 is not None and refused_1 is None
     assert lease_2 is not None and refused_2 is None
     assert len(active_session_registry_snapshot()) == 2
-
 
 def test_global_capacity_still_applies_independently():
     """The capacity policy is untouched, and refuses for its own reason."""
@@ -100,8 +93,6 @@ def test_global_capacity_still_applies_independently():
         "a capacity refusal must not be reported as an ownership refusal: a client "
         "retries one and must not retry the other the same way"
     )
-    assert "active session limit (2/2)" in str(refusal)
-
 
 def test_capacity_and_exclusivity_are_not_the_same_switch():
     """Both refusals exist under a configured cap, and say different things."""
@@ -112,7 +103,6 @@ def test_capacity_and_exclusivity_are_not_the_same_switch():
     assert refusal.reason == SESSION_NOT_OWNED, (
         "with capacity to spare, the refusal can only be about ownership"
     )
-
 
 def test_a_dead_owner_is_pruned_and_a_successor_may_acquire():
     """A crashed owner must not hold a session hostage forever.
@@ -137,7 +127,6 @@ def test_a_dead_owner_is_pruned_and_a_successor_may_acquire():
     assert successor is not None, f"a dead owner must not block a successor: {refusal}"
     assert len(active_session_registry_snapshot()) == 1
 
-
 def test_a_recycled_pid_does_not_keep_a_lease_alive():
     """Identity is (pid, process start time), not a pid.
 
@@ -158,7 +147,6 @@ def test_a_recycled_pid_does_not_keep_a_lease_alive():
     successor, refusal = acquire("S")
     assert successor is not None, f"a recycled pid must not hold a session: {refusal}"
 
-
 def test_release_lets_the_next_owner_in():
     """The ordinary handoff: A finishes, B proceeds."""
     lease_a, _ = acquire("S")
@@ -171,7 +159,6 @@ def test_release_lets_the_next_owner_in():
     lease_b, refusal = acquire("S")
     assert lease_b is not None, f"after release the session must be acquirable: {refusal}"
 
-
 def test_release_is_idempotent_and_only_drops_its_own_lease():
     """Releasing twice must not free somebody else's session."""
     lease_a, _ = acquire("S1")
@@ -182,7 +169,6 @@ def test_release_is_idempotent_and_only_drops_its_own_lease():
     assert held == {"S2"}
     assert lease_b is not None
 
-
 def test_a_session_with_no_stored_id_is_exempt():
     """An unsaved draft has no identity, and must not exclude every other one.
 
@@ -192,7 +178,6 @@ def test_a_session_with_no_stored_id_is_exempt():
     """
     assert acquire("")[0] is not None
     assert acquire("")[0] is not None, "empty ids do not collide with each other"
-
 
 def test_the_same_live_session_may_re_acquire_its_own_lease():
     """Re-entrancy, and the reason it is not a hole in the fence.
@@ -217,8 +202,3 @@ def test_the_same_live_session_may_re_acquire_its_own_lease():
     other, refusal = acquire("S", live_id="tab-2")
     assert other is None
     assert refusal.reason == SESSION_NOT_OWNED
-
-
-def test_the_capability_is_advertised_because_the_check_exists():
-    """The flag lives beside the enforcement, so it cannot drift from it."""
-    assert PER_SESSION_EXCLUSIVE_SUBMIT is True

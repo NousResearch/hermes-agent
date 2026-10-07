@@ -147,18 +147,43 @@ def _parent_is_live(proc) -> bool:
     return parent is not None and parent.is_running() and parent.create_time() <= proc.create_time()
 
 
+def _posix_venv_holders(*, exclude_pids: set[int] | None = None) -> list[tuple[int, str, str]]:
+    """POSIX holder scan in the same ``(pid, name, cmdline)`` shape as the Windows detector.
+
+    Without this the detector below returned ``[]`` on every non-Windows host, so callers
+    that gate on live holders (including ``--list-venv-holders``) silently saw zero while a
+    gateway was still executing from the venv the updater was about to replace (#134218).
+    Best-effort: an unreadable or mid-exit process is skipped, never fatal.
+    """
+    from hermes_cli.update_cmd import _m
+    from hermes_cli.venv_holder_scan import pids_holding_venv, proc_cmdline, proc_name
+    from hermes_constants import project_venv_dir
+
+    venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
+    return [
+        (pid, proc_name(pid), proc_cmdline(pid))
+        for pid in pids_holding_venv(venv_dir, exclude_pids=exclude_pids)
+    ]
+
+
 def _detect_venv_python_processes(*, exclude_pids: set[int] | None = None) -> list[tuple[int, str, str]]:
     """Live processes running from the project venv's interpreter as ``(pid, name, cmdline)``; never raises.
 
     The hermes.exe shim guard misses the Desktop backend and anything off ``venv\\Scripts\\python(w).exe``;
-    they keep ``.pyd`` files mapped so a mid-update dependency sync dies half-way. Empty off-Windows / without
-    psutil; self + non-gateway ancestors excluded. cmdline/cwd are expensive per process on Windows (500+
-    procs can blow the Desktop preflight watchdog), so they are fetched lazily for plausible candidates only.
-    The FULL cmdline is kept: callers parse it (the pausable-gateway exemption looks for ``gateway run``).
+    they keep ``.pyd`` files mapped so a mid-update dependency sync dies half-way. Self + non-gateway
+    ancestors excluded. cmdline/cwd are expensive per process on Windows (500+ procs can blow the Desktop
+    preflight watchdog), so they are fetched lazily for plausible candidates only. The FULL cmdline is kept:
+    callers parse it (the pausable-gateway exemption looks for ``gateway run``).
+
+    Off Windows the psutil-based scan below is unavailable, so the ``/proc``-based
+    ``_posix_venv_holders`` runs instead: reporting an empty holder list on Linux/macOS made every
+    holder-gated step a silent no-op there (#134218). Without psutil *on Windows* the list stays empty.
     """
     from hermes_cli.update_cmd import _m
+    if not _m()._is_windows():
+        return _posix_venv_holders(exclude_pids=exclude_pids)
     psutil = _psutil()
-    if not _m()._is_windows() or psutil is None:
+    if psutil is None:
         return []
     from hermes_constants import project_venv_dir
     venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"

@@ -223,5 +223,12 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
                 te._execute_tool_calls_sequential(agent, SimpleNamespace(tool_calls=_calls()), rows, "t", finalize=False)
             assert rows and all("Turn aborted — terminal batch timeout" in r["content"] for r in rows), rows
             assert not any("User sent a new message" in r["content"] for r in rows)
+
+        # A slot no worker filled after a system stop says so, in both the row and the hook.
+        with patch.object(te, "_emit_terminal_post_tool_call") as emitted:
+            result, _, _ = te._unfinished_tool_result(
+                agent, te._ToolCallRef("t3", {}, "t", "u1", []), timed_out=False, timeout_s=None)
+        assert "Turn aborted — terminal batch timeout" in result
+        assert emitted.call_args.kwargs["error_message"] == "Tool execution cancelled. Turn aborted — terminal batch timeout"
     finally:
         set_interrupt(False)

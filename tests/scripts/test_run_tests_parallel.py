@@ -409,6 +409,8 @@ def test_zero_collected_across_run_fails_and_says_so(tmp_path: Path) -> None:
     ("positional", ["alpha", "beta"]), ("bare-k", ["alpha"]),
     ("node-id", ["alpha"]), ("explicit-k", ["beta"]),
     ("pathsep", ["alpha", "beta", "gamma"]),
+    # A node id narrows only its own file; the whole file beside it still runs.
+    ("whole-file-and-node-id", ["alpha", "gamma"]),
 ])
 def test_runner_selection_records_actual_test_identity(tmp_path, form, expected):
     probe = tmp_path / "probe"
@@ -429,6 +431,7 @@ def test_runner_selection_records_actual_test_identity(tmp_path, form, expected)
         "node-id": [target + "::test_alpha"],
         "explicit-k": [target + "::test_alpha", "-k", "test_beta"],
         "pathsep": ["--paths", os.pathsep.join([str(probe), str(other)])],
+        "whole-file-and-node-id": [str(other / "test_other.py"), target + "::test_alpha"],
     }[form]
     runner = _probe_root(tmp_path) / "scripts/run_tests_parallel.py"
     result = subprocess.run([sys.executable, str(runner), *arguments, "-j", "1", "--file-timeout", "30"],

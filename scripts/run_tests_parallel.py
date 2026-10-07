@@ -1252,38 +1252,41 @@ def main() -> int:
     # existing path, so discovery silently dropped it and the run exited with
     # "No test files to run" — the selector looked accepted but nothing ran.
     # Translate instead: run the FILE and narrow with ``-k`` on the last
-    # segment, which is what the caller meant.
-    node_id_selectors: List[Tuple[str, str]] = []
+    # segment, which is what the caller meant. The ``-k`` narrows only the
+    # file the node id names: a run mixing whole files with one node id must
+    # still run the whole files (a global ``-k`` filtered them all to zero).
+    node_filters: Dict[str, List[str]] = {}
     if args.paths_positional:
         translated: List[str] = []
+        whole_files: set = set()
         for raw in args.paths_positional:
             if "::" not in raw:
                 translated.append(raw)
+                whole_files.add(raw)
                 continue
             file_part, _, selector = raw.partition("::")
             leaf = selector.rsplit("::", 1)[-1]
             # Strip a parametrized id (``test_x[case]``) down to the function
             # name; ``-k`` matches substrings, and brackets are -k syntax.
             leaf = leaf.split("[", 1)[0]
-            node_id_selectors.append((raw, leaf))
-            translated.append(file_part)
-        if node_id_selectors:
-            args.paths_positional = translated
-            keys = [leaf for _, leaf in node_id_selectors]
-            expr = " or ".join(dict.fromkeys(keys))
-            for raw, leaf in node_id_selectors:
-                print(
-                    f"note: '{raw}' is a pytest node id; this runner is "
-                    f"file-granular. Running the file with -k {leaf!r}.",
-                    file=sys.stderr,
-                )
-            # Only inject -k when the caller didn't pass one themselves; their
-            # explicit filter wins over our inferred one.
-            if not any(
-                t == "-k" or t.startswith("-k=") or (t.startswith("-k") and len(t) > 2)
-                for t in bare_passthrough + explicit_passthrough
-            ):
-                bare_passthrough = bare_passthrough + ["-k", expr]
+            if file_part not in node_filters:
+                translated.append(file_part)
+            node_filters.setdefault(file_part, []).append(leaf)
+            print(
+                f"note: '{raw}' is a pytest node id; this runner is "
+                f"file-granular. Running the file with -k {leaf!r}.",
+                file=sys.stderr,
+            )
+        args.paths_positional = list(dict.fromkeys(translated))
+        # The caller's explicit filter wins over our inferred one, and a file
+        # also named whole runs whole.
+        if any(
+            t == "-k" or t.startswith("-k=") or (t.startswith("-k") and len(t) > 2)
+            for t in bare_passthrough + explicit_passthrough
+        ):
+            node_filters = {}
+        for name in whole_files:
+            node_filters.pop(name, None)
 
     # Bare flags run before any explicit ``--`` passthrough so ordering is
     # intuitive (``run_tests.sh tests/foo.py -q -- --tb=long`` → ``-q --tb=long``).
@@ -1309,6 +1312,11 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
 
     files, roots = _select_files(args, pytest_passthrough, repo_root)
+
+    file_filters = {
+        (repo_root / name).resolve(): ["-k", " or ".join(dict.fromkeys(leaves))]
+        for name, leaves in node_filters.items()
+    }
 
     if not files:
         print("No test files to run", file=sys.stderr)
@@ -1441,7 +1449,8 @@ def main() -> int:
         for file in files:
             t0 = time.monotonic()
             fut = pool.submit(
-                _run_one_file, file, pytest_passthrough, repo_root,
+                _run_one_file, file,
+                pytest_passthrough + file_filters.get(file.resolve(), []), repo_root,
                 _effective_file_timeout(
                     file, repo_root, args.file_timeout, timeout_durations
                 ),

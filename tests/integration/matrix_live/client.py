@@ -20,7 +20,13 @@ def open_encrypted_client() -> AsyncClient:
         user=user_id,
         device_id=device_id,
         store_path=str(store_path),
-        config=AsyncClientConfig(encryption_enabled=True, store_sync_tokens=True),
+        config=AsyncClientConfig(
+            encryption_enabled=True,
+            store_sync_tokens=True,
+            request_timeout=15,
+            max_limit_exceeded=0,
+            max_timeouts=0,
+        ),
     )
     client.restore_login(user_id, device_id, access_token)
     return client

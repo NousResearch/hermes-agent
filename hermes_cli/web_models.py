@@ -280,6 +280,17 @@ class SessionOwnerBackfill(BaseModel):
     cannot inject an arbitrary owner."""
     profile: Optional[str] = None
 
+class SessionClear(BaseModel):
+    """Body for POST /api/sessions/{session_id}/clear."""
+    profile: Optional[str] = None
+    keep_last_n: Optional[int] = None
+    before_timestamp: Optional[Union[str, float]] = None
+
+class SessionMessagesDelete(BaseModel):
+    """Body for POST /api/sessions/{session_id}/messages/bulk-delete."""
+    message_ids: List[int]
+    profile: Optional[str] = None
+
 class SessionPrune(BaseModel):
     older_than_days: Optional[float] = 90
     source: Optional[str] = None

@@ -3322,6 +3322,21 @@ def tool_results_this_turn(messages: List[Dict[str, Any]]) -> int:
     return count
 
 
+def refreshed_stall_budget(codex_ack_continuations: int, tool_rows_since_last_nudge: int) -> int:
+    """The shared continuation budget is CONSECUTIVE, not per-turn (agent.stall_guards).
+
+    ``tool_results_this_turn`` counts tool rows after the most recent user row — and every
+    re-prompt row is itself a user row — so a positive count means the model DID act since the
+    last nudge: real progress, and the budget refreshes. A model that keeps stalling WITHOUT
+    acting keeps its count and still ends after the 2-nudge cap; a long multi-step task whose
+    every stop follows real tool work (download S1 -> plan S2 -> ...) is never abandoned
+    mid-way with its plan tail ("...and downloading:") left hanging.
+    """
+    if tool_rows_since_last_nudge > 0:
+        return 0
+    return codex_ack_continuations
+
+
 # Narrow "trailing continue-intent" detector for the stall guard (agent.stall_guards): only the
 # message TAIL announcing a next action, so mid-sentence "I will" never trips it.
 # CJK branch (zh/ja/ko are unsegmented, so there is no \b after the trigger): a tail sentence

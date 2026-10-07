@@ -15,7 +15,7 @@ Two guards, both notice/re-prompt-only:
 These assert behavior contracts, not message snapshots.
 """
 
-from agent.agent_runtime_helpers import trailing_continue_intent
+from agent.agent_runtime_helpers import refreshed_stall_budget, trailing_continue_intent
 from agent.tool_guardrails import (
     IDENTICAL_RESULT_STUB_MIN_CHARS,
     STALL_GUARD_IDENTICAL_CALL_THRESHOLD,
@@ -431,6 +431,34 @@ def test_ignores_non_cjk_colon_tails():
         "时间：12:30",
     ):
         assert not trailing_continue_intent(tail), tail
+
+
+# ── consecutive stall budget (v4) ───────────────────────────────────────────
+
+
+def test_stall_budget_refreshes_after_tool_progress():
+    """Real tool work since the last nudge refreshes the consecutive budget, so a long
+    multi-step task is never abandoned after two stops (each stop followed progress)."""
+    assert refreshed_stall_budget(2, 1) == 0
+    assert refreshed_stall_budget(1, 7) == 0
+
+
+def test_stall_budget_kept_without_tool_progress():
+    """No tool rows since the last nudge: the count persists and the 2-nudge cap holds,
+    so a model that only announces actions still ends its turn."""
+    assert refreshed_stall_budget(1, 0) == 1
+    assert refreshed_stall_budget(2, 0) == 2
+
+
+def test_stall_budget_zero_stays_zero():
+    assert refreshed_stall_budget(0, 0) == 0
+
+
+def test_stall_exhausted_hint_names_the_resume_action():
+    """The plan-tail backstop never ends silently: the hint tells the user how to resume."""
+    from agent.turn_final_response import _STALL_EXHAUSTED_HINT
+
+    assert "continue" in _STALL_EXHAUSTED_HINT.lower()
 
 
 # ── batch-cycle loop breaker (port of can1357/oh-my-pi#10521) ───────────────

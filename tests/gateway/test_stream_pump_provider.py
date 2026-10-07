@@ -8,8 +8,21 @@ behavior, and the reply-vs-interim teardown-registration split.
 """
 
 import asyncio
+import json
+
+import pytest
 
 from plugins.platforms.discord import voice_mixer as _vm
+
+
+def _np_or_skip():
+    """numpy only ships in the audio-io extra; the pcm fast-path tests resample PCM,
+    the rest of the module must still collect without it."""
+    try:
+        import numpy as np
+        return np
+    except ImportError:
+        pytest.skip("numpy not installed (audio-io extra)", allow_module_level=False)
 
 
 def _make_pump_adapter(cfg=None):
@@ -434,3 +447,92 @@ def test_interim_lane_rewrites_interim_never_supersedes_reply(monkeypatch):
 
     assert rewrite_calls == [("Quick interim note.", True)]  # interim prompt path
     assert mixer.pushed  # interim audio queued into the mixer
+
+
+# -- pcm fast-path for the pump (branch-local Chatterbox experiment) ----------
+
+def test_chatterbox_pcm_config_gates_on_provider(monkeypatch):
+    """None (keep wav path) unless a Chatterbox server is configured; the command
+    provider registration counts as presence; CHATTERBOX_GPU_URL overrides the URL."""
+    import tools.tts_tool as tts_tool
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {
+        "provider": "chatterbox", "providers": {"chatterbox": {"type": "command"}}})
+    monkeypatch.delenv("CHATTERBOX_GPU_URL", raising=False)
+    cfg = DiscordAdapter._chatterbox_pcm_config()
+    assert cfg["base_url"] == "http://127.0.0.1:8004/v1/audio/speech"
+    assert cfg["model"] == "chatterbox-turbo" and cfg["voice"] == "DeeLong.wav"
+    monkeypatch.setenv("CHATTERBOX_GPU_URL", "http://10.0.0.9:8004/v1/audio/speech")
+    assert DiscordAdapter._chatterbox_pcm_config()["base_url"] == "http://10.0.0.9:8004/v1/audio/speech"
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "edge"})
+    assert DiscordAdapter._chatterbox_pcm_config() is None
+
+
+def test_pcm_piece_fast_path_used_and_resampled(monkeypatch):
+    """With a Chatterbox server configured, a pump piece goes pcm (no tempfiles) and
+    comes back as 48 kHz stereo PCM; the wav chain is untouched when absent."""
+    np = _np_or_skip()
+    adapter, mixer = _make_pump_adapter()
+
+    captured = {}
+
+    class _Resp:
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            # 2400 mono 24 kHz samples (~0.1 s) - the resampler doubles to 48k stereo
+            src = (np.sin(np.arange(2400) / 40.0) * 8000).astype(np.int16)
+            return src.tobytes()
+
+    def _fake_urlopen(req, timeout):
+        captured["body"] = json.loads(req.data.decode())
+        return _Resp()
+
+    import tools.tts_tool as tts_tool
+    from plugins.platforms.discord.adapter import DiscordAdapter
+    adapter._chatterbox_pcm_config = lambda: {
+        "base_url": "http://127.0.0.1:8004/v1/audio/speech",
+        "model": "chatterbox-turbo", "voice": "DeeLong.wav", "timeout": 300}
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    # Rebind the REAL piece chain: _make_pump_adapter stubbed _synthesize_piece.
+    adapter._synthesize_piece_pcm = DiscordAdapter._synthesize_piece_pcm.__get__(adapter)
+    adapter._synthesize_piece = DiscordAdapter._synthesize_piece.__get__(adapter)
+
+    async def _scenario():
+        return await adapter._synthesize_piece("Only piece.", 60.0)
+
+    pcm = asyncio.run(_scenario())
+    assert captured["body"]["response_format"] == "pcm"
+    pairs = np.frombuffer(pcm, dtype=np.int16).reshape(-1, 2)
+    assert abs(len(pairs) / 48000.0 - 0.1) < 0.01  # resampled to 48 kHz stereo
+    assert np.array_equal(pairs[:, 0], pairs[:, 1])
+
+
+def test_pcm_piece_falls_back_to_wav_on_failure(monkeypatch):
+    """A pcm-endpoint failure must fail open to the wav chain (pump keeps speaking)."""
+    def _boom(_piece, _timeout, _cfg):
+        raise RuntimeError("pcm endpoint down")
+
+    adapter, _mixer = _make_pump_adapter()
+    adapter._chatterbox_pcm_config = lambda: {"base_url": "x"}
+    adapter._synthesize_piece_pcm = _boom
+    # Rebind the REAL piece chain so its pcm-first/fallback logic actually runs.
+    from plugins.platforms.discord.adapter import DiscordAdapter
+    adapter._synthesize_piece = DiscordAdapter._synthesize_piece.__get__(adapter)
+
+    provider_calls = []
+    _patch_lane_provider(monkeypatch, provider_calls)
+    # The real decode step runs ffmpeg on the fake's non-audio file; stub the seam.
+    monkeypatch.setattr(_vm, "decode_to_pcm", lambda path: b"WAV-PCM")
+
+    pcm = asyncio.run(adapter._synthesize_piece("Fallback piece.", 60.0))
+    assert pcm == b"WAV-PCM"
+    assert len(provider_calls) == 1  # exactly the wav chain ran

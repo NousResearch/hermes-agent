@@ -150,6 +150,63 @@ class StreamingMixerChild:
         return samples
 
 
+class PcmResamplerTo48Stereo:
+    """Stateful resampler: source-rate mono/stereo s16le PCM -> the mixer's format.
+
+    A streaming TTS provider may emit PCM at its own rate/layout (e.g. 24 kHz
+    mono); the mixer is Discord-native 48 kHz stereo. Carries a byte remainder
+    (a sample split across chunk boundaries) and the last source sample (for
+    gap-free linear interpolation across chunks) so back-to-back ``feed`` calls
+    join without a click.
+    """
+
+    __slots__ = ("src_rate", "src_channels", "_rem", "_carry")
+
+    def __init__(self, src_rate: int, src_channels: int = 1):
+        self.src_rate = int(src_rate)
+        self.src_channels = max(1, int(src_channels))
+        self._rem = b""
+        self._carry: "Optional[float]" = None
+
+    def feed(self, pcm: bytes) -> bytes:
+        """Convert one chunk; carry the partial sample + interp tail for the next."""
+        if not pcm:
+            return b""
+        np = _require_numpy()
+        data = self._rem + pcm
+        sample_bytes = 2 * self.src_channels
+        usable = (len(data) // sample_bytes) * sample_bytes
+        self._rem = data[usable:]
+        if usable == 0:
+            return b""
+
+        arr = np.frombuffer(data[:usable], dtype=np.int16).astype(np.float32)
+        if self.src_channels > 1:
+            arr = arr.reshape(-1, self.src_channels).mean(axis=1)
+
+        if self._carry is not None:
+            arr = np.concatenate(([np.float32(self._carry)], arr))
+        if len(arr) < 2:
+            self._carry = float(arr[-1]) if len(arr) else None
+            return b""
+
+        # Linear interpolation to 48 kHz: output positions step source_rate/48000
+        # apart in source space, landing between floor(pos) and floor(pos)+1.
+        out_count = int((len(arr) - 1) * (SAMPLE_RATE / self.src_rate))
+        src_pos = np.arange(out_count, dtype=np.float32) * (self.src_rate / SAMPLE_RATE)
+        base = np.minimum(src_pos.astype(np.int64), len(arr) - 2)
+        frac = src_pos - base
+        out = arr[base] * (1.0 - frac) + arr[base + 1] * frac
+
+        # The last output sample would need arr[-1]'s continuation; carry it in
+        # as the next chunk's first source sample.
+        self._carry = float(arr[-1])
+
+        # Interleave stereo, back to int16 LE.
+        stereo = np.repeat(out.astype(np.int16), CHANNELS)
+        return stereo.astype(np.int16).tobytes()
+
+
 class VoiceMixer(discord.AudioSource):
     """Continuous ``discord.AudioSource`` mixing N children: :meth:`set_ambient` installs the
     looping idle bed, :meth:`play_speech` layers a one-shot clip over it (ducking the bed).

@@ -4062,6 +4062,65 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     def _stream_tts_enabled(self) -> bool:
         return bool(self._stream_tts_cfg().get("enabled"))
 
+    @staticmethod
+    def _chatterbox_pcm_config() -> Optional[Dict[str, Any]]:
+        """Chatterbox pcm-endpoint settings when the configured provider is a
+        Chatterbox server (local branch experiment); None keeps the wav path.
+
+        Config ``tts.chatterbox`` first (base_url/model/voice/timeout), else the
+        existing command-provider registration as the presence signal with the
+        bridge script's own defaults, ``CHATTERBOX_GPU_URL`` overriding the URL.
+        """
+        try:
+            from tools.tts_tool import _load_tts_config
+            cfg = _load_tts_config()
+        except Exception:
+            return None
+        section = cfg.get("chatterbox")
+        if section is None and str(cfg.get("provider") or "").strip().lower() == "chatterbox" \
+                and cfg.get("providers", {}).get("chatterbox"):
+            section = {}
+        if not isinstance(section, dict):
+            return None
+        merged = {
+            "base_url": section.get("base_url")
+            or os.environ.get("CHATTERBOX_GPU_URL")
+            or "http://127.0.0.1:8004/v1/audio/speech",
+            "model": section.get("model", "chatterbox-turbo"),
+            "voice": section.get("voice", "DeeLong.wav"),
+            "timeout": section.get("timeout", 300),
+        }
+        return merged
+
+    async def _synthesize_piece_pcm(self, piece: str, timeout_s: float, pcm_cfg: Dict[str, Any]) -> Optional[bytes]:
+        """Render one piece as raw 24 kHz mono PCM -> 48 kHz stereo via the resampler.
+
+        Same endpoint as the wav bridge, ``response_format: pcm``; skips the
+        tempfile + ffmpeg decode hop (the pump's per-piece overhead) and the cold
+        ffmpeg spawn penalty.
+        """
+        from urllib.request import Request, urlopen
+        from plugins.platforms.discord import voice_mixer as _vm_mod
+
+        body = json.dumps({
+            "model": pcm_cfg["model"], "input": piece,
+            "voice": pcm_cfg["voice"], "response_format": "pcm",
+        }).encode()
+        req = Request(pcm_cfg["base_url"], data=body,
+                      headers={"Content-Type": "application/json"})
+
+        def _fetch() -> bytes:
+            with urlopen(req, timeout=timeout_s) as resp:
+                return resp.read()
+
+        raw = await asyncio.wait_for(asyncio.to_thread(_fetch), timeout=timeout_s)
+        if not raw:
+            return None
+        resampler = getattr(self, "_pcm_resampler", None)
+        if resampler is None:
+            resampler = self._pcm_resampler = _vm_mod.PcmResamplerTo48Stereo(24000, 1)
+        return resampler.feed(raw)
+
     async def _synthesize_piece(self, piece: str, timeout_s: float) -> Optional[bytes]:
         """Render one sentence piece to 48 kHz stereo PCM via the configured TTS provider.
 
@@ -4077,6 +4136,17 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         Returns:
             PCM bytes, or None on failure (caller stops the stream).
         """
+        pcm_cfg = self._chatterbox_pcm_config() if hasattr(self, "_chatterbox_pcm_config") else None
+        if pcm_cfg is not None:
+            try:
+                pcm = await self._synthesize_piece_pcm(piece, timeout_s, pcm_cfg)
+                if pcm:
+                    return pcm
+                logger.warning("Streaming TTS pcm path returned no audio; trying wav fallback")
+            except Exception as e:
+                logger.warning("Streaming TTS pcm path failed (%s); trying wav fallback", e)
+            self._pcm_resampler = None  # resync a carrier-sample tail after a failed piece
+
         with tempfile.TemporaryDirectory(prefix="hermes_stream_tts_") as tmp_dir:
             from tools.tts_tool import text_to_speech_tool
             audio_path = os.path.join(tmp_dir, "piece.wav")

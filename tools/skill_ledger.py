@@ -328,8 +328,9 @@ def _read_ledger(what: str, *, quiet_missing: bool = False) -> Optional[bytes]:
     ``quiet_missing`` keeps a merely absent ledger silent — normal for a fresh install."""
     try:
         raw = ledger_path().read_bytes()
-        raw.decode("utf-8")
-        return raw
+        # Windows editors may prepend a UTF-8 BOM. Normalize it away so every
+        # consumer can decode ordinary UTF-8 without treating the first row as malformed.
+        return raw.decode("utf-8-sig").encode("utf-8")
     except (OSError, UnicodeError) as exc:
         if not (quiet_missing and isinstance(exc, FileNotFoundError)):
             logger.warning("skill_ledger: ledger unreadable (%s); %s", exc, what)
@@ -630,16 +631,3 @@ def rollback_entry(entry_id: str) -> Tuple[bool, str]:
         f"rolled back entry {entry_id} ({entry.get('action')} on "
         f"'{entry.get('skill')}'): {restored} file(s) restored, {removed} removed. "
         f"Safety entry {safety_id} captured the pre-rollback state.")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-ACTOR_AGENT = "agent"
-
-ACTOR_CURATOR = "curator"
-
-ACTOR_USER = "user"
-# ---- END PLUGIN-COMPAT ----

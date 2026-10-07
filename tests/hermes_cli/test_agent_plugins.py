@@ -31,7 +31,7 @@ def _write_skill(root: Path, directory: str = "summarize", **fields: object) -> 
     skill_dir.mkdir(parents=True)
     metadata = {"name": directory, "description": "Summarizes reports."}
     metadata.update(fields)
-    import yaml
+    import hermes_yaml as yaml
 
     (skill_dir / "SKILL.md").write_text(
         f"---\n{yaml.safe_dump(metadata, sort_keys=False)}---\nInstructions.\n",
@@ -67,11 +67,11 @@ def test_loads_manifest_skill_and_stdio_server(tmp_path: Path) -> None:
     assert package.skills[0].root == skill_dir.resolve()
     server = package.mcp_servers["worker"]
     assert server["command"] == "python"
-    assert server["args"] == [str(root.resolve() / "server.py"), "${UNKNOWN}"]
+    assert server["args"] == [str(root.resolve()) + "/server.py", "${UNKNOWN}"]
     assert server["cwd"] == str(root.resolve())
     assert server["env"]["PLUGIN_ROOT"] == str(root.resolve())
     assert server["env"]["PLUGIN_DATA"] == str((tmp_path / "data").resolve())
-    assert server["env"]["CACHE"] == str((tmp_path / "data").resolve() / "cache")
+    assert server["env"]["CACHE"] == str((tmp_path / "data").resolve()) + "/cache"
     assert (tmp_path / "data").is_dir()
 
 
@@ -147,6 +147,31 @@ def test_liveness_without_declaration_disables_package(tmp_path: Path) -> None:
         load_agent_plugin(tmp_path, tmp_path / "data")
 
 
+def _remote_package(root: Path, trust: object | None = None) -> None:
+    servers = {} if trust is None else {"trade": {"trust": trust}}
+    _write_json(root / "plugin.json", _manifest(extensions={"com.nousresearch.hermes": {"servers": servers}}))
+    _write_json(root / "mcp.json", {"$schema": MCP_SCHEMA_V1, "mcpServers": {
+        "trade": {"type": "streamable-http", "url": "https://mcp.example.com/mcp"}}})
+
+
+@pytest.mark.parametrize("declared,expected", [("untrusted", "untrusted"), ("full", None), (None, None)])
+def test_package_can_ask_for_its_server_to_be_gated_but_never_widened(
+    tmp_path: Path, declared: object, expected: object
+) -> None:
+    # A trading/payments package can make Hermes ask before every write-capable call; "full" is the default, so
+    # declaring it grants nothing a config.yaml entry would not already have.
+    _remote_package(tmp_path, declared)
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+    assert package.mcp_servers["trade"].get("trust") == expected
+    assert "trade" not in package.server_declarations  # trust alone declares no application
+
+
+def test_unknown_trust_value_disables_package(tmp_path: Path) -> None:
+    _remote_package(tmp_path, "trusted")
+    with pytest.raises(AgentPluginError, match="trust must be 'untrusted' or 'full'"):
+        load_agent_plugin(tmp_path, tmp_path / "data")
+
+
 def test_unknown_fields_and_non_object_extensions_are_nonfatal(tmp_path: Path) -> None:
     _write_json(
         tmp_path / "plugin.json",
@@ -186,6 +211,7 @@ def test_rejects_invalid_optional_skill_fields(
     assert package.skills == ()
 
 
+@pytest.mark.require_symlinks
 def test_symlink_escape_is_isolated_to_component(tmp_path: Path) -> None:
     root = tmp_path / "plugin"
     root.mkdir()

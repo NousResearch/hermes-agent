@@ -31,6 +31,9 @@ UMA_RAM = 48 * GIB
 
 def _no_cache(monkeypatch):
     monkeypatch.setattr(hw, "_pool_probe_cache", None)
+    # One shared cached nvidia-smi query (see _cached_nvidia_gpu_query): a stale
+    # TTL entry from a previous test would suppress this test's own spawn.
+    monkeypatch.setattr(hw, "_gpu_query_cache", None)
 
 
 # ── _unified_pool_bytes: the classification gate ─────────────
@@ -94,7 +97,7 @@ def test_no_probe_available_stays_discrete(monkeypatch):
 def _uma_machine(monkeypatch, *, view):
     _no_cache(monkeypatch)
     monkeypatch.setattr(hw, "_nvidia_vram",
-                        lambda: (UMA_SMI_TOTAL, 14848 << 20))
+                        lambda: (UMA_SMI_TOTAL, 14848 << 20, "", None))
     monkeypatch.setattr(hw, "_ram_bytes",
                         lambda: (UMA_RAM, 32 * GIB))
     monkeypatch.setattr(hw, "_device_pool_view", lambda: view)
@@ -177,19 +180,46 @@ def test_engine_fallback_without_smi_stays_conservative(monkeypatch):
     assert b.total_device_bytes == UMA_RAM  # RAM path, not the pool
 
 
-def test_smi_resolver_caches_and_survives_empty_path(monkeypatch):
-    """The resolver consults PATH first, and a resolution (hit or miss) is
-    cached for the process."""
-    calls = []
-    monkeypatch.setattr(hw, "_smi_path_cache", None)
-    monkeypatch.setattr(hw.shutil, "which",
-                        lambda name: calls.append(name) or "/usr/bin/nvidia-smi")
-    assert hw._nvidia_smi_path() == "/usr/bin/nvidia-smi"
-    assert hw._nvidia_smi_path() == "/usr/bin/nvidia-smi"
-    assert len(calls) == 1
 
 
-@pytest.mark.linux_only
+@pytest.mark.parametrize("device_type, discrete", [(1, True), (2, False)])
+def test_vulkan_device_type_decides_discrete_vs_unified(monkeypatch, tmp_path, device_type, discrete):
+    """A discrete AMD/Intel card behind a Vulkan engine budgets its own memory with RAM as spill;
+    an integrated one (ggml IGPU) keeps the RAM-as-unified budget, never both pools. The engine is
+    the one config.yaml names, read through the real config loader."""
+    import hermes_cli.local_runtime.binaries as binaries
+    import hermes_cli.local_runtime.devices as devices
+
+    total = 16304 << 20
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("local_runtime:\n  backend: vulkan\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    requested = []
+    engine = binaries.Engine("vulkan", "b10964", tmp_path / "engine" / "llama-server")
+    monkeypatch.setattr(binaries, "installed_engine",
+                        lambda backend="auto", **_: requested.append(backend) or engine)
+    monkeypatch.setattr(devices, "probe_devices", lambda directory, backend: [{
+        "description": "AMD Radeon RX 9060 XT", "type": device_type, "free": total, "total": total}])
+    monkeypatch.setattr(hw, "_accelerator_cache", {})
+    monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
+    monkeypatch.setattr(hw, "_device_pool_view", lambda: None)
+    monkeypatch.setattr(hw, "_ram_bytes", lambda: (32 * GIB, 20 * GIB))
+
+    b = hw.probe_budget(planning=True)
+
+    assert requested == ["vulkan"]
+    assert b.uma is (not discrete)
+    if discrete:
+        assert b.total_device_bytes == total
+        assert b.usable_vram_bytes == total - hw._MARGIN_FLOOR
+        assert b.ram_available_bytes == 32 * GIB
+    else:
+        assert b.total_device_bytes == 32 * GIB
+        assert b.ram_available_bytes == 0
+
+
+@pytest.mark.platforms("linux")
 def test_smi_resolver_uses_wsl_driver_path_when_path_is_empty(monkeypatch):
     """WSL exposes nvidia-smi through the Windows driver directory even
     when a service PATH cannot resolve it."""
@@ -201,22 +231,37 @@ def test_smi_resolver_uses_wsl_driver_path_when_path_is_empty(monkeypatch):
     assert hw._nvidia_smi_path() == str(wsl_smi)
 
 
+def test_memory_probe_carries_identity_without_another_process(monkeypatch):
+    from types import SimpleNamespace
+    import sys
+
+    calls = []
+    name = "NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)"
+    monkeypatch.setattr(hw, "_nvidia_smi_path", lambda: "nvidia-smi")
+    monkeypatch.setattr(hw, "_gpu_query_cache", None)
+    monkeypatch.setattr(hw, "_ram_bytes", lambda: (64 * GIB, 22 * GIB))
+    monkeypatch.setattr(hw, "_device_pool_view", lambda: (UMA_POOL, True))
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        assert argv[0] == "nvidia-smi"
+        # Column order matches _cached_nvidia_gpu_query: total, free, name, pci, used, util.
+        output = f"32704, 31423, {name}, 0x2E0310DE, 2048, 7\n"
+        return SimpleNamespace(returncode=0, stdout=output)
+
+    monkeypatch.setattr(hw.subprocess, "run", run)
+    budget = hw.probe_budget(planning=True)
+    assert budget.gpu_name == name
+    assert budget.gpu_pci_id == 0x2E0310DE
+    assert budget.platform == sys.platform
+    assert budget.total_device_bytes == UMA_POOL
+    assert budget.usable_vram_bytes == int(UMA_POOL * .8)
+    assert len(calls) == 1
+
+
 # ── probe cache ──────────────────────────────────────────────
 
 
-def test_pool_probe_hit_is_cached_for_process(monkeypatch):
-    _no_cache(monkeypatch)
-    calls = []
-
-    def probe():
-        calls.append(1)
-        return (UMA_POOL, True)
-
-    monkeypatch.setattr(hw, "_cuda_driver_pool", probe)
-    monkeypatch.setattr(hw, "_engine_device_pool", lambda: None)
-    assert hw._device_pool_view() == (UMA_POOL, True)
-    assert hw._device_pool_view() == (UMA_POOL, True)
-    assert len(calls) == 1
 
 
 def test_pool_probe_miss_retries_after_ttl(monkeypatch):

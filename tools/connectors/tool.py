@@ -6,6 +6,7 @@ Disconnecting accounts remains a portal-only user decision.
 
 from typing import Any, Callable, Dict, Optional
 
+from tools.connectors.catalog_tool import MANAGE_CATALOG_SCHEMA, manage_catalog
 from tools.connectors.gateway import config as gateway_config
 from tools.connectors.managed import run_managed_action
 from tools.connectors.mcp import run_mcp_operation
@@ -142,4 +143,13 @@ registry.register(
     ),
     check_fn=lambda: gateway_config.connectors_available(),
     emoji="🔗",
+)
+
+# Registry dispatch has no card callback, so it answers with the CLI pointer.
+registry.register(
+    name="manage_catalog",
+    toolset="catalog",
+    schema=MANAGE_CATALOG_SCHEMA,
+    handler=lambda args, **kw: manage_catalog(args, session_id=kw.get("session_id")),
+    emoji="🧩",
 )

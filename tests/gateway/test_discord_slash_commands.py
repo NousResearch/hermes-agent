@@ -366,7 +366,9 @@ async def test_dispatch_thread_session_builds_thread_event(adapter):
 
     adapter.handle_message = capture_handle
 
-    await adapter._dispatch_thread_session(interaction, "555", "Planning", "Hello!")
+    thread = SimpleNamespace(id=555, name="Planning", guild=interaction.guild, topic=None,
+                             parent=SimpleNamespace(id=100, name="general", guild=interaction.guild))
+    await adapter._dispatch_thread_session(interaction, thread, "Hello!")
 
     assert len(captured_events) == 1
     event = captured_events[0]

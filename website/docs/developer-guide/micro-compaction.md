@@ -128,6 +128,12 @@ matters more than it sounds: leaving them in place stacks near-duplicate copies
 of the same text, each with its own heading and end-marker scaffolding, and the
 transcript grows on every turn instead of shrinking.
 
+Dropping a marker leaves the user turns on either side of it adjacent, so they
+are joined into one user message for the model. That joined row is flagged
+`display_metadata.model_only`: the originals stay in display history as compacted
+rows, and every display projection (resume, paged history, prompt timeline)
+skips the join, so a resumed session shows each input exactly once.
+
 ### Defrag
 
 Merge into a summary often enough and it gets baggy — repetitive, and larger

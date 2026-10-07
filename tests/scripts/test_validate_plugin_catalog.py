@@ -1,7 +1,7 @@
 """Behavior tests for scripts/validate_plugin_catalog.py.
 
 The script is the no-install structural validator used by the plugin-catalog
-admission CI: it must run with only stdlib + pyyaml, take file paths or a
+admission CI: it must run with only stdlib + ruamel.yaml, take file paths or a
 directory, exit 0/1, and support --json machine output. These tests exercise
 the CLI contract via subprocess (the same way CI invokes it).
 """
@@ -11,7 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "validate_plugin_catalog.py"
@@ -54,8 +55,10 @@ def run_validator(*args: str) -> subprocess.CompletedProcess:
 # ── valid input ────────────────────────────────────────────────────────
 
 
-def test_valid_entry_passes(tmp_path):
-    path = write_entry(tmp_path, VALID_ENTRY)
+@pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"])
+def test_valid_entry_passes(tmp_path, bom):
+    path = write_entry(tmp_path, {**VALID_ENTRY, "description": "café 東京"})
+    path.write_bytes(bom + path.read_bytes())
     result = run_validator(str(path))
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -137,6 +140,26 @@ def test_short_sha_fails(tmp_path):
 
 def test_non_hex_sha_fails(tmp_path):
     _expect_error(tmp_path, {"sha": "z" * 40}, "sha")
+
+
+@pytest.mark.parametrize("field, value, ok", [
+    ("subdir", "plugins/browserclaw", True),
+    ("subdir", None, True),               # bare `subdir:` = repo root
+    ("subdir", "../planted", False),      # escapes the pinned clone
+    ("subdir", "plugin/../x", False),
+    ("subdir", "/abs/path", False),
+    ("subdir", "plugin\\..\\x", False),
+    ("subdir", 5, False),
+    ("repo", "https://github.com/x\n::error::f", False),  # echoed into CI logs
+    ("sha", "38fe0fb53eff98d477f807432e965429e665ca33\n", False),  # $ admits a trailing \n
+])
+def test_source_fields_the_pinned_gate_joins_or_echoes(tmp_path, field, value, ok):
+    """The admission CI joins subdir onto the pinned clone and echoes repo/sha into the
+    log; the structural gate must refuse the shapes the pinned gate refuses."""
+    if ok:
+        assert run_validator(str(write_entry(tmp_path, {**VALID_ENTRY, field: value}))).returncode == 0
+    else:
+        _expect_error(tmp_path, {field: value}, field)
 
 
 def test_bad_tier_fails(tmp_path):

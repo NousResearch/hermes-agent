@@ -56,13 +56,72 @@ def test_streamed_details_land_on_final_message_and_persist(_mock_close, mock_cr
     mock_create.return_value = mock_client
 
     agent = _agent()
+    delivered = []
+    agent.reasoning_callback = delivered.append
+    agent.stream_delta_callback = lambda text: None
+
+    def streamed_chunks():
+        yield chunks[0]
+        assert delivered == ["I should "]
+        yield chunks[1]
+        assert delivered == ["I should ", "answer."]
+        yield chunks[2]
+
+    mock_client.chat.completions.create.return_value = streamed_chunks()
     response = agent._interruptible_streaming_api_call({})
+    assert "".join(delivered) == "I should answer."
     msg = response.choices[0].message
     assert msg.content == "Hello!"
     assert msg.reasoning_details == [{"type": "reasoning.text", "text": "I should answer.", "signature": "sigZ"}]
     # The persisted assistant dict (what gets replayed next turn) carries them too.
     persisted = agent._build_assistant_message(msg, "stop")
     assert persisted["reasoning_details"] == msg.reasoning_details
+
+
+@patch("run_agent.AIAgent._create_request_openai_client")
+@patch("run_agent.AIAgent._close_request_openai_client")
+def test_live_details_deglue_summary_part_boundaries(_mock_close, mock_create):
+    """The live display gets the same boundary repair as the persisted reasoning.
+
+    A reasoning-summary model streams one delta per completed summary part, each
+    a bare bold heading. Without the ``separate_glued_reasoning_blocks`` repair
+    on the detail path, the live box glues parts head-to-tail while
+    ``reasoning_content`` stays de-glued — display and history disagree.
+    """
+    agent = _agent()
+    client = MagicMock()
+    mock_create.return_value = client
+
+    def summary_chunk(summary, **kw):
+        chunk = _make_chunk(**kw)
+        chunk.choices[0].delta.reasoning = summary  # provider mirrors both fields
+        chunk.choices[0].delta.model_extra = {
+            "reasoning_details": [{"type": "reasoning.summary", "summary": summary}]}
+        return chunk
+
+    client.chat.completions.create.return_value = iter([
+        summary_chunk("**One**"),
+        summary_chunk("**Two**"),
+        _make_chunk(content="Answer", finish_reason="stop", model="test-model"),
+    ])
+    delivered = []
+    agent.reasoning_callback = delivered.append
+    response = agent._interruptible_streaming_api_call({})
+
+    assert "".join(delivered) == "**One**\n\n**Two**"
+    assert response.choices[0].message.reasoning_content == "**One**\n\n**Two**"
+
+    # Details-only variant: the delta carries no plain ``reasoning`` field at all.
+    client.chat.completions.create.return_value = iter([
+        _make_chunk(reasoning_details=[{"type": "reasoning.summary", "summary": "**One**"}]),
+        _make_chunk(reasoning_details=[{"type": "reasoning.summary", "summary": "**Two**"}]),
+        _make_chunk(content="Answer", finish_reason="stop", model="test-model"),
+    ])
+    delivered = []
+    agent.reasoning_callback = delivered.append
+    response = agent._interruptible_streaming_api_call({})
+
+    assert "".join(delivered) == "**One**\n\n**Two**"
 
 
 @patch("run_agent.AIAgent._create_request_openai_client")
@@ -74,3 +133,46 @@ def test_no_details_leaves_attribute_absent(_mock_close, mock_create):
     mock_create.return_value = mock_client
     response = _agent()._interruptible_streaming_api_call({})
     assert not hasattr(response.choices[0].message, "reasoning_details")
+
+
+@patch("run_agent.AIAgent._create_request_openai_client")
+@patch("run_agent.AIAgent._close_request_openai_client")
+def test_live_details_keep_plain_fallback_and_opaque_replay(_mock_close, mock_create):
+    agent = _agent()
+    client = MagicMock()
+    mock_create.return_value = client
+    cases = [
+        ([{"type": "reasoning.text", "text": "Complete thought"}], "C", "Complete thought"),
+        ([{"type": "reasoning.text", "text": "Same"}], "Same", "Same"),
+        ([SimpleNamespace(type="reasoning.summary", summary="Summary")], None, "Summary"),
+        ([{"type": "reasoning.encrypted", "data": "secret", "text": "not readable"}], "Plain", "Plain"),
+        ([{"type": "unknown", "text": "not readable"}], "Plain", "Plain"),
+        ([{"type": "reasoning.text", "text": ""}], "Plain", "Plain"),
+        ([], "Plain", "Plain"),
+        ([{"type": "reasoning.encrypted", "data": "secret"}], None, ""),
+    ]
+    for details, plain, expected in cases:
+        chunk = _make_chunk(content="Answer", finish_reason="stop")
+        chunk.choices[0].delta.reasoning = plain
+        chunk.choices[0].delta.model_extra = {"reasoning_details": details}
+        client.chat.completions.create.return_value = iter([chunk])
+        delivered = []
+        agent.reasoning_callback = delivered.append
+        response = agent._interruptible_streaming_api_call({})
+        assert "".join(delivered) == expected
+        assert response.choices[0].message.content == "Answer"
+        assert response.choices[0].message.reasoning_content == plain
+        preserved = []
+        for detail in details:
+            append_streamed_reasoning_detail(preserved, detail)
+        assert getattr(response.choices[0].message, "reasoning_details", []) == preserved
+
+    def broken_callback(text):
+        raise RuntimeError("consumer failed")
+
+    for callback in (None, broken_callback):
+        agent.reasoning_callback = callback
+        client.chat.completions.create.return_value = iter([
+            _make_chunk(content="Answer", finish_reason="stop", reasoning_details=[
+                {"type": "reasoning.text", "text": "Thought"}])])
+        assert agent._interruptible_streaming_api_call({}).choices[0].message.content == "Answer"

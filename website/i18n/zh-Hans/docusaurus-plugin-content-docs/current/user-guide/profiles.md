@@ -232,7 +232,7 @@ hermes update
 ```bash
 hermes profile list           # 显示所有 profile 及其状态
 hermes profile show coder     # 显示某个 profile 的详细信息
-hermes profile rename coder dev-bot   # 重命名（同步更新别名和服务）
+hermes profile rename coder dev-bot   # 重命名（更新别名；移除旧名称的网关服务）
 hermes profile export coder   # 导出为 coder.tar.gz
 hermes profile import coder.tar.gz   # 从归档文件导入
 ```

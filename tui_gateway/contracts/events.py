@@ -19,7 +19,7 @@ from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
 from .common import MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
-from .config_free_tier_control import SessionControlSnapshot
+from .config_free_tier_control import FreeTierChallengePayload, SessionControlSnapshot
 from .registry import event
 
 
@@ -68,7 +68,8 @@ class SetupReadyPayload(OpenPayload):
 
     provider_configured: bool
     inference_provider: str
-    free_tier: bool
+    free_tier_account: bool
+    free_tier_route: bool
     has_identity: bool
     other_providers: bool
     error: str = ""
@@ -81,6 +82,11 @@ class SetupReadyPayload(OpenPayload):
 
 event("setup.ready", SetupReadyPayload,
       doc="The free-tier bootstrap finished (broadcast); the desktop's setup gate reads the record.")
+
+
+event("free_tier.challenge", FreeTierChallengePayload,
+      doc="The account service wants a browser challenge cleared before the free-tier token exchange "
+          "(broadcast); the desktop loads ``url`` in a hidden window.")
 
 
 class ErrorPayload(Payload):
@@ -167,6 +173,19 @@ class BillingBlock(Payload):
     unverified: bool | None = None
 
 
+class PersistedTurn(Payload):
+    """Committed SQLite row addresses for the agent's current-turn suffix. Missing ids are
+    unproven, never negative acknowledgements. ``complete`` permits retiring the whole local
+    turn only when the original turn boundary, every row and final body are still accounted
+    for; compaction, redirects and partial writes conservatively leave it false. Row ids are
+    scoped to the owning profile's store, as in ``SessionMessage.row_id``."""
+
+    row_ids: list[int]
+    complete: bool
+    user_row_id: int | None = None
+    final_assistant_row_id: int | None = None
+
+
 class MessageCompletePayload(Payload):
     """``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` /
     ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) /
@@ -178,6 +197,9 @@ class MessageCompletePayload(Payload):
     reasoning: str | None = None
     warning: str | None = None
     response_previewed: bool | None = None
+    #: ``text`` is a response this turn already delivered (streamed and/or sealed) — it adds no text.
+    response_reused: bool | None = None
+    response_transformed: bool | None = None
     billing: BillingBlock | None = None
     failure_reason: str | None = None
     rendered: str | None = None
@@ -185,6 +207,7 @@ class MessageCompletePayload(Payload):
     recoverable: bool | None = None
     error_surface: ErrorSurface | None = None
     partial: bool | None = None
+    persisted_turn: PersistedTurn | None = None
 
 
 event("message.complete", MessageCompletePayload, doc="The turn ended: final text, usage and outcome.")
@@ -379,6 +402,26 @@ class SessionReclaimedPayload(Payload):
 
 
 event("session.reclaimed", SessionReclaimedPayload, doc="The backend reclaimed a live session out from under its clients.")
+
+
+class ApprovalCancelledPayload(Payload):
+    """``session_lifecycle._announce_cancelled_gateway_approvals`` (broadcast).
+
+    One frame for every pending approval dropped by an interrupt / reap / teardown (#106678) — the
+    deny-resolve is silent without it, so a reconnecting client's prompt looks lost rather than cancelled.
+    ``cancelled_count`` is the number of dropped entries; ``request_ids`` omits empty/missing ids, so the
+    two can disagree when an entry has no request_id.
+    """
+
+    session_id: str
+    stored_session_id: str
+    reason: str  # interrupt | ws_orphan_reap | idle_timeout | lru_evict | tui_close | ...
+    cancelled_count: int
+    request_ids: list[str]
+
+
+event("approval.cancelled", ApprovalCancelledPayload,
+      doc="Pending gateway approvals were dropped by interrupt/reap/teardown; the wait resolved as deny (not a user refusal).")
 
 
 class SessionControlUpdatePayload(Payload):
@@ -622,6 +665,12 @@ class VoiceStatusPayload(Payload):
     state: str
 
 
+class VoicePartialPayload(Payload):
+    """``methods_voice`` voice.record ``on_partial`` — live STT text so far (``stt.streaming``)."""
+
+    text: str
+
+
 class VoiceTranscriptPayload(Payload):
     """``methods_voice._vr_transcript`` / ``_deliver_fd_transcript`` / typed stop phrase in methods_prompt."""
 
@@ -640,6 +689,7 @@ class WakeDetectedPayload(Payload):
 
 
 event("voice.status", VoiceStatusPayload, doc="Voice recorder state changed.")
+event("voice.partial", VoicePartialPayload, doc="Live STT text so far while the user is still speaking.")
 event("voice.transcript", VoiceTranscriptPayload, doc="A voice capture produced text (or a stop phrase / silence limit).")
 event("wake.detected", WakeDetectedPayload, doc="A wake phrase fired.")
 
@@ -691,6 +741,7 @@ class ChangeSignalPayload(OpenPayload):
 event("cron.changed", ChangeSignalPayload, doc="cron/jobs.json moved; refetch the cron list.")
 event("sessions.changed", ChangeSignalPayload, doc="state.db moved; refetch the session list.")
 event("platforms.changed", ChangeSignalPayload, doc="gateway_state.json moved; refetch platform status.")
+event("projects.changed", ChangeSignalPayload, doc="projects.db moved; refetch the project list + tree.")
 event("pairing.changed", ChangeSignalPayload, doc="Pairing state moved; refetch pairing.")
 event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox envelope is queued; drain it.")
 
@@ -698,8 +749,8 @@ event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox e
 __all__ = [
     "BillingBlock", "BillingStepUpVerificationPayload", "BrowserControllerCancelPayload",
     "BrowserControllerCommandPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
-    "ErrorSurface", "GatewayReadyPayload", "LayoutApplyPayload", "MessageCompletePayload",
-    "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
+    "ErrorSurface", "FreeTierChallengePayload", "GatewayReadyPayload", "LayoutApplyPayload",
+    "MessageCompletePayload", "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
     "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",
     "NotificationClearPayload", "NotificationShowPayload", "OpenPayload", "PaneRevealPayload",
     "PetChangedPayload", "PetGenerateProgressPayload", "PetHatchProgressPayload", "PreviewClosePayload",
@@ -710,6 +761,6 @@ __all__ = [
     "StreamDeltaPayload", "SubagentEventPayload", "SubagentOutputTailEntry", "TerminalClosePayload",
     "TerminalOutputPayload", "TipShowPayload", "TodoUpdatedPayload", "ToolCompletePayload",
     "ToolGeneratingPayload", "ToolLabel", "ToolLabelKind", "ToolOutputRiskPayload", "ToolStartPayload",
-    "TurnStatus", "VoiceStatusPayload",
+    "TurnStatus", "VoicePartialPayload", "VoiceStatusPayload",
     "VoiceTranscriptPayload", "WakeDetectedPayload",
 ]

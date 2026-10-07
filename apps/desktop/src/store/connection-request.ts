@@ -1,4 +1,10 @@
+import type { ToolCallMessagePart } from '@assistant-ui/react'
 import type {
+  CatalogApproved,
+  CatalogAppState,
+  CatalogScan,
+  CatalogServerError,
+  CatalogTier,
   ConnectionAnswer,
   ConnectionOperationStatus,
   ConnectionOperationTarget,
@@ -8,12 +14,14 @@ import type {
   ConnectionTargetEnvField,
   ConnectionTargetKind,
   ConnectionTargetState,
-  ConnectionUpdatePayload
+  ConnectionUpdatePayload,
+  InstallPhase
 } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { SetupField } from '@/components/ui/setup-field-list'
+import { connectorText } from '@/lib/connector-tools'
 
 import { $gateway, requestGatewayForAgent } from './gateway'
 import { $activeGatewayProfile } from './profile'
@@ -38,6 +46,39 @@ export type {
   ConnectionTargetState
 }
 
+/** What the catalog says about a `plugin` / `skill` row (CATALOG-ROW-CONTRACT.md). The host resolved all of
+ *  it; the model supplied only the id. */
+export interface CatalogEntry {
+  display: string
+  description: string
+  tier: CatalogTier | null
+  /** Empty when the entry runs everywhere; the card shows a platform only when it is restricted. */
+  platforms: string[]
+  repo: string | null
+  sha: string | null
+  subdir: string | null
+  scan: CatalogScan | null
+  /** The Hermes version range the plugin needs; its env vars are the target's `requiredEnv`. */
+  requiresHermes: string | null
+  hasDesktopHalf: boolean
+  /** The profile the row installs into; null when the chat's home is no named profile. */
+  targetProfile: string | null
+  appState: CatalogAppState | null
+  /** On an installed skill row: the qualified name the model can now load. */
+  skill: string | null
+  /** The install step while the row is installing; the card words it. */
+  phase: InstallPhase | null
+  /** The non-secret choices the user approved; a Try again after the card settled repeats them. */
+  approved: CatalogApproved | null
+  /** Facts on an installed row: whether it was turned on, what it still needs, what did not connect. */
+  enabled: boolean | null
+  missingEnv: string[]
+  serverErrors: CatalogServerError[]
+  alreadyInstalled: boolean
+  /** The backend's word that the row needs nothing more from the user: installed, skipped or failed. */
+  resolved: boolean
+}
+
 /** One target of the operation as the renderer knows it. State comes only from the backend
  *  (`connection.request`, `connectors.operation.status`, `connection.update`); the card never sets it. */
 export interface ConnectionTarget {
@@ -55,6 +96,8 @@ export interface ConnectionTarget {
   requiredEnv: SetupField[]
   instructions: string | null
   discoveryError: string | null
+  /** Present on `plugin` and `skill` rows only. */
+  catalog?: CatalogEntry
 }
 
 /** The session's connection operation. `deadlineAt`, `opId`, `targets[].state`, `settled` and
@@ -65,7 +108,8 @@ export interface ConnectionOwner {
 }
 
 export interface ConnectionRequest {
-  /** The model's tool call that opened the operation. The card lives on that row and no other. */
+  /** The model's tool call that opened the operation. Call ids repeat across turns, so the row names its
+   *  card by op id (`CONNECTION_OP_ARG`); the call id is only the fallback for a row without one. */
   toolCallId: string
   opId: string
   /** The sequence of the newest frame this cache holds; an older frame for the same op is dropped. */
@@ -84,8 +128,45 @@ const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
 
 export const $connectionRequests = atom<Record<string, ConnectionRequest>>({})
 
-export const sessionConnectionRequest = (sessionId: string | null) =>
-  computed($connectionRequests, requests => requests[keyFor(sessionId)] ?? null)
+/** Settled operations the session's current one replaced, oldest first. Their cards stay drawn on the
+ *  rows that opened them: every settled install card, and the last settled connect card when the current
+ *  operation is an install one. A later connect operation still replaces the connect card, so consecutive
+ *  connect calls show one card. */
+const $keptConnectionRequests = atom<Record<string, ConnectionRequest[]>>({})
+
+/** The key a tool row's args carry its operation id under, written when `connection.request` arrives.
+ *  Models reuse call ids (`call_0` on every turn), so the op id, not the call id, names a row's card. */
+export const CONNECTION_OP_ARG = 'hermes_connection_op'
+
+export const connectionOpOf = (args: ToolCallMessagePart['args']): null | string =>
+  connectorText(args[CONNECTION_OP_ARG]) || null
+
+/** The operation a tool row draws. A row that carries an op id draws that operation and no other. A row
+ *  without one (history loaded from disk, or a call whose request has not arrived yet) falls back to its
+ *  call id, but only when a single known operation has that id, and a running row never takes a settled
+ *  one: that is an earlier call's card. */
+export const toolConnectionRequest = (
+  sessionId: string | null,
+  toolCallId: string,
+  opId: null | string,
+  running: boolean
+) =>
+  computed([$connectionRequests, $keptConnectionRequests], (requests, kept) => {
+    const key = keyFor(sessionId)
+
+    const known = [requests[key], ...(kept[key] ?? [])].filter((request): request is ConnectionRequest =>
+      Boolean(request)
+    )
+
+    if (opId) {
+      return known.find(request => request.opId === opId) ?? null
+    }
+
+    const matches = known.filter(request => request.toolCallId === toolCallId)
+    const only = matches.length === 1 ? matches[0] : null
+
+    return only && !(running && only.settled) ? only : null
+  })
 
 const TARGET_STATES: readonly ConnectionTargetState[] = [
   'connected',
@@ -97,6 +178,7 @@ const TARGET_STATES: readonly ConnectionTargetState[] = [
   'skipped'
 ]
 
+const KINDS: readonly ConnectionTargetKind[] = ['connector', 'mcp', 'plugin', 'skill']
 const ACTIONS: readonly ConnectionTargetAction[] = ['authorize', 'connect', 'enable', 'install', 'reconnect']
 const SETTLE_REASONS: readonly ConnectionSettleReason[] = ['all_resolved', 'continue', 'deadline', 'interrupt']
 
@@ -106,9 +188,52 @@ const oneOf =
   (value: null | string | undefined): T | undefined =>
     allowed.find(candidate => candidate === value)
 
+const targetKind = oneOf(KINDS)
 const targetState = oneOf(TARGET_STATES)
 const targetAction = oneOf(ACTIONS)
 const settleReason = oneOf(SETTLE_REASONS)
+
+export const isCatalogKind = (kind: ConnectionTargetKind): kind is 'plugin' | 'skill' =>
+  kind === 'plugin' || kind === 'skill'
+
+/** A `manage_catalog` install operation, as opposed to a `manage_connections` one. */
+export const isCatalogRequest = (request: ConnectionRequest): boolean =>
+  request.targets.some(target => isCatalogKind(target.kind))
+
+type InstalledFacts = Pick<CatalogEntry, 'alreadyInstalled' | 'enabled' | 'missingEnv' | 'serverErrors'>
+
+const installedFacts = (entry: ConnectionOperationTarget): InstalledFacts => ({
+  alreadyInstalled: entry.already_installed ?? false,
+  enabled: entry.enabled ?? null,
+  missingEnv: entry.missing_env ?? [],
+  serverErrors: entry.server_errors ?? []
+})
+
+function catalogEntry(entry: ConnectionOperationTarget, name: string): CatalogEntry {
+  return {
+    ...installedFacts(entry),
+    appState: entry.app_state ?? null,
+    approved: entry.approved ?? null,
+    description: entry.description ?? '',
+    display: entry.display?.trim() || name,
+    hasDesktopHalf: entry.has_desktop_half ?? false,
+    phase: entry.phase ?? null,
+    platforms: entry.platforms ?? [],
+    repo: entry.repo ?? null,
+    requiresHermes: entry.requires_hermes ?? null,
+    resolved: entry.resolved ?? false,
+    scan: entry.scan ?? null,
+    sha: entry.sha ?? null,
+    skill: entry.skill ?? null,
+    subdir: entry.subdir ?? null,
+    targetProfile: entry.target_profile?.trim() || null,
+    tier: entry.tier ?? null
+  }
+}
+
+// Every frame carries a fresh object; a field-equal entry keeps the old reference so the row does not churn.
+const sameCatalog = (next: CatalogEntry | undefined, previous: CatalogEntry | undefined): boolean =>
+  next === previous || JSON.stringify(next) === JSON.stringify(previous)
 
 export function parseConnectionTarget(entry: ConnectionOperationTarget): ConnectionTarget | null {
   const name = entry.name.trim()
@@ -117,11 +242,15 @@ export function parseConnectionTarget(entry: ConnectionOperationTarget): Connect
     return null
   }
 
+  // An unknown kind from a backend a version ahead renders as the generic MCP row.
+  const kind = targetKind(entry.kind) ?? 'mcp'
+
   return {
     action: targetAction(entry.action) ?? 'install',
+    catalog: isCatalogKind(kind) ? catalogEntry(entry, name) : undefined,
     connectUrl: entry.connect_url ?? null,
     detail: entry.detail ?? '',
-    kind: entry.kind === 'connector' ? 'connector' : 'mcp',
+    kind,
     name,
     state: targetState(entry.state) ?? 'pending',
     tools: entry.tools ?? [],
@@ -195,8 +324,11 @@ export function applyOperationStatus(request: ConnectionRequest, status: Connect
 }
 
 function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarget): ConnectionTarget {
+  const liveCatalog = target.catalog ? catalogEntry(live, target.name) : undefined
+
   const next: ConnectionTarget = {
     ...target,
+    catalog: sameCatalog(liveCatalog, target.catalog) ? target.catalog : liveCatalog,
     connectUrl: live.connect_url ?? target.connectUrl,
     detail: live.detail ?? target.detail,
     state: live.state,
@@ -208,6 +340,7 @@ function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarg
   }
 
   const same =
+    next.catalog === target.catalog &&
     next.connectUrl === target.connectUrl &&
     next.connectionId === target.connectionId &&
     next.detail === target.detail &&
@@ -244,7 +377,22 @@ export function applyConnectionUpdate(request: ConnectionRequest, update: Connec
 }
 
 export function setConnectionRequest(request: ConnectionRequest): void {
-  $connectionRequests.set({ ...$connectionRequests.get(), [keyFor(request.sessionId)]: request })
+  const key = keyFor(request.sessionId)
+  const requests = $connectionRequests.get()
+  const previous = requests[key]
+
+  if (previous && previous.opId !== request.opId) {
+    const catalog = isCatalogRequest(request)
+    const stays = (entry: ConnectionRequest) => isCatalogRequest(entry) || isCatalogRequest(entry) !== catalog
+    const kept = ($keptConnectionRequests.get()[key] ?? []).filter(entry => entry.opId !== request.opId && stays(entry))
+
+    $keptConnectionRequests.set({
+      ...$keptConnectionRequests.get(),
+      [key]: previous.settled && stays(previous) ? [...kept, previous] : kept
+    })
+  }
+
+  $connectionRequests.set({ ...requests, [key]: request })
 }
 
 export function updateConnectionRequest(sessionId: string | null, update: ConnectionUpdatePayload): void {
@@ -261,28 +409,27 @@ export function updateConnectionRequest(sessionId: string | null, update: Connec
   }
 }
 
+/** Drop the session's operation (or, with no session, every one) whose op id matches, from the current
+ *  and the replaced caches alike. */
 export function clearConnectionRequest(opId?: string, sessionId?: string | null): void {
-  const requests = $connectionRequests.get()
+  const cleared = ([key, value]: [string, ConnectionRequest]) =>
+    (sessionId === undefined || key === keyFor(sessionId)) && (!opId || value.opId === opId)
 
-  if (sessionId !== undefined) {
-    const key = keyFor(sessionId)
-    const current = requests[key]
+  const entries = Object.entries($connectionRequests.get())
+  const current = entries.filter(entry => !cleared(entry))
 
-    if (!current || (opId && current.opId !== opId)) {
-      return
-    }
-
-    const next = { ...requests }
-    delete next[key]
-    $connectionRequests.set(next)
-
-    return
+  if (current.length !== entries.length) {
+    $connectionRequests.set(Object.fromEntries(current))
   }
 
-  const kept = Object.entries(requests).filter(([, value]) => opId && value.opId !== opId)
+  const keptBefore = $keptConnectionRequests.get()
 
-  if (kept.length !== Object.keys(requests).length) {
-    $connectionRequests.set(Object.fromEntries(kept))
+  const keptAfter = Object.fromEntries(
+    Object.entries(keptBefore).map(([key, list]) => [key, list.filter(request => !cleared([key, request]))])
+  )
+
+  if (Object.keys(keptBefore).some(key => keptAfter[key].length !== keptBefore[key].length)) {
+    $keptConnectionRequests.set(keptAfter)
   }
 }
 

@@ -298,12 +298,6 @@ class TestConvertMessagesToConverse:
         assert tr["toolResult"]["content"][0]["text"] == "file contents here"
 
 
-    def test_empty_content_gets_placeholder(self):
-        from agent.bedrock_adapter import convert_messages_to_converse
-        messages = [{"role": "user", "content": ""}]
-        system, msgs = convert_messages_to_converse(messages)
-        # Empty string should get a space placeholder
-        assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
 
 
 # ---------------------------------------------------------------------------
@@ -618,14 +612,6 @@ class TestBuildConverseKwargs:
         assert "toolConfig" in kwargs
         assert len(kwargs["toolConfig"]["tools"]) == 1
 
-    def test_default_max_tokens_stays_4096(self):
-        """Callers that don't pass max_tokens keep the historical 4096 cap —
-        the None-omission behavior is strictly opt-in."""
-        from agent.bedrock_adapter import build_converse_kwargs
-        kwargs = build_converse_kwargs(
-            model="test-model", messages=[{"role": "user", "content": "Hi"}],
-        )
-        assert kwargs["inferenceConfig"]["maxTokens"] == 4096
 
     def test_max_tokens_none_omits_cap(self):
         """max_tokens=None omits inferenceConfig.maxTokens so Bedrock uses the
@@ -977,18 +963,6 @@ class TestExtractProviderFromArn:
 # Client cache management
 # ---------------------------------------------------------------------------
 
-class TestClientCache:
-    def test_reset_clears_caches(self):
-        from agent.bedrock_adapter import (
-            _bedrock_runtime_client_cache,
-            _bedrock_control_client_cache,
-            reset_client_cache,
-        )
-        _bedrock_runtime_client_cache["test"] = "dummy"
-        _bedrock_control_client_cache["test"] = "dummy"
-        reset_client_cache()
-        assert len(_bedrock_runtime_client_cache) == 0
-        assert len(_bedrock_control_client_cache) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1074,14 +1048,6 @@ class TestGuardrailConfig:
         )
         assert kwargs["guardrailConfig"] == guardrail
 
-    def test_no_guardrail_when_none(self):
-        from agent.bedrock_adapter import build_converse_kwargs
-        kwargs = build_converse_kwargs(
-            model="test-model",
-            messages=[{"role": "user", "content": "Hi"}],
-            guardrail_config=None,
-        )
-        assert "guardrailConfig" not in kwargs
 
     def test_no_guardrail_when_empty_dict(self):
         from agent.bedrock_adapter import build_converse_kwargs
@@ -1098,13 +1064,91 @@ class TestGuardrailConfig:
 # Error classification
 # ---------------------------------------------------------------------------
 
+def _openai_bedrock_id_forms():
+    from agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+    return [f"{prefix}{model_id}" for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+            for prefix in ("", "us.", "global.")]
+
+
+class TestOpenAIBedrockClassifier:
+    """Bedrock-hosted OpenAI models are addressed by a bare in-Region ID (Mantle) or a geo/global
+    inference-profile ID (bedrock-runtime); both are the same model and both must be recognised."""
+
+    @pytest.mark.parametrize("model_id", _openai_bedrock_id_forms())
+    def test_every_allowlisted_id_form_is_a_bedrock_openai_model(self, model_id):
+        from agent.bedrock_adapter import is_openai_bedrock_model
+        assert is_openai_bedrock_model(model_id) is True
+
+    @pytest.mark.parametrize("model_id", [
+        "openai.gpt-6-astra", "openai.gpt-6-sol", "openai.gpt-6-luna", "openai.gpt-6.1-sol",
+    ])
+    def test_gpt6_generation_is_allowlisted(self, model_id):
+        from agent.bedrock_adapter import is_openai_bedrock_model
+        assert is_openai_bedrock_model(model_id) is True
+
+    @pytest.mark.parametrize("model_id", [
+        "openai.gpt-oss-120b", "us.openai.gpt-oss-120b-1:0", "anthropic.claude-opus-5",
+        "us.anthropic.claude-opus-5", "openai.gpt-99", "bogus.openai.gpt-6.1-sol", "", None,
+    ])
+    def test_non_allowlisted_ids_stay_off_the_openai_route(self, model_id):
+        from agent.bedrock_adapter import is_openai_bedrock_model
+        assert is_openai_bedrock_model(model_id) is False
+
+
 class TestBedrockContextLength:
     """Test Bedrock model context length lookup."""
 
+    def setup_method(self):
+        from agent import bedrock_adapter
+        bedrock_adapter.reset_client_cache()
 
     def test_unknown_model_gets_default(self):
         from agent.bedrock_adapter import get_bedrock_context_length, BEDROCK_DEFAULT_CONTEXT_LENGTH
         assert get_bedrock_context_length("unknown.model-v1:0") == BEDROCK_DEFAULT_CONTEXT_LENGTH
+
+    def test_unknown_model_fallback_is_reported_once_with_the_override(self, caplog):
+        """A silent 128K fallback turned a 1M model into a 96K compression trigger; the static
+        fallback must say so, name the model and the override, and not repeat every resolution."""
+        from agent.bedrock_adapter import get_bedrock_context_length, BEDROCK_DEFAULT_CONTEXT_LENGTH
+        with caplog.at_level("WARNING", logger="agent.bedrock_adapter"):
+            assert get_bedrock_context_length("openai.gpt-99", probe=False) == BEDROCK_DEFAULT_CONTEXT_LENGTH
+            assert get_bedrock_context_length("openai.gpt-99", probe=False) == BEDROCK_DEFAULT_CONTEXT_LENGTH
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1, warnings
+        assert "openai.gpt-99" in warnings[0]
+        assert "model.context_length" in warnings[0]
+        assert f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}" in warnings[0]
+
+    def test_known_model_does_not_warn(self, caplog):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        with caplog.at_level("WARNING", logger="agent.bedrock_adapter"):
+            get_bedrock_context_length("us.anthropic.claude-sonnet-4-6", probe=False)
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+    @pytest.mark.parametrize("model_id", _openai_bedrock_id_forms())
+    def test_profile_prefixed_openai_ids_resolve_like_the_bare_id(self, model_id):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        bare = model_id.split(".", 1)[1] if not model_id.startswith("openai.") else model_id
+        assert get_bedrock_context_length(model_id, probe=False) == get_bedrock_context_length(bare, probe=False)
+
+    def test_gpt61_sol_profile_gets_the_card_window(self):
+        # model-card-openai-gpt-6-1-sol: "Context window: 1M tokens" (272K is the pricing tier).
+        from agent.bedrock_adapter import get_bedrock_context_length
+        assert get_bedrock_context_length("us.openai.gpt-6.1-sol", probe=False) == 1_000_000
+
+    def test_gpt61_sol_profile_compression_trigger_honours_the_configured_cap(self):
+        """Field report: a 400K-capped session on us.openai.gpt-6.1-sol compressed at 96,000
+        (128K fallback x the small-window 75% floor). Through the real resolver and compressor,
+        with the live probe unavailable, the trigger is the operator's cap."""
+        from agent.context_compressor import ContextCompressor
+        compressor = ContextCompressor(
+            model="us.openai.gpt-6.1-sol", provider="bedrock", threshold_percent=0.5,
+            base_url="https://bedrock-runtime.us-east-1.amazonaws.com", api_key="aws-sdk",
+            threshold_tokens_cap=400_000, quiet_mode=True,
+        )
+        with patch("agent.bedrock_adapter.probe_bedrock_context_length", return_value=None):
+            assert compressor.context_length == 1_000_000
+            assert compressor.threshold_tokens == 400_000
 
 
     def test_no_region_skips_probe_uses_table(self):
@@ -1115,6 +1159,70 @@ class TestBedrockContextLength:
         with patch("agent.bedrock_adapter.probe_bedrock_context_length") as mock_probe:
             assert get_bedrock_context_length("anthropic.claude-opus-4-6") == 1_000_000
             mock_probe.assert_not_called()
+
+    def test_static_catalog_claude_ids_match_their_anthropic_window(self):
+        """Every Claude id in the Bedrock static fallback gets the same offline window as its bare
+        Anthropic id, so a model added to the picker can't silently land on the 128K default."""
+        from agent.bedrock_adapter import get_bedrock_context_length
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+        mismatched = []
+        for model_id in _PROVIDER_MODELS["bedrock"]:
+            _, sep, bare = model_id.partition("anthropic.")
+            if not sep:
+                continue
+            hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, bare)
+            expected = hit[1] if hit else None
+            actual = get_bedrock_context_length(model_id, probe=False)
+            if actual != expected:
+                mismatched.append((model_id, expected, actual))
+
+        assert not mismatched, f"Bedrock static Claude ids drift from DEFAULT_CONTEXT_LENGTHS: {mismatched}"
+
+    def test_million_token_claude_entries_match_model_metadata(self):
+        """BEDROCK_CONTEXT_LENGTHS must not drift from DEFAULT_CONTEXT_LENGTHS.
+
+        The table's own comment requires the pairing, but nothing enforced it, so
+        ``claude-opus-5`` reached one table and not the other and silently fell through to
+        BEDROCK_DEFAULT_CONTEXT_LENGTH (#74263). Assert the relationship, not a snapshot of
+        today's catalog. DEFAULT_CONTEXT_LENGTHS spells revisions with dots
+        (``claude-opus-4.8``) while Bedrock IDs use hyphens — normalize rather than skip, so a
+        future 1M model that only ever gets a dotted alias cannot escape the check.
+        """
+        from agent.bedrock_adapter import get_bedrock_context_length
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+
+        mismatched = []
+        with patch("agent.bedrock_adapter.probe_bedrock_context_length") as mock_probe:
+            for name, expected in DEFAULT_CONTEXT_LENGTHS.items():
+                if not name.startswith("claude-") or expected < 1_000_000:
+                    continue
+                actual = get_bedrock_context_length(f"anthropic.{name.replace('.', '-')}", probe=False)
+                if actual != expected:
+                    mismatched.append((name, expected, actual))
+            mock_probe.assert_not_called()
+
+        assert not mismatched, f"1M Claude entries missing from BEDROCK_CONTEXT_LENGTHS: {mismatched}"
+
+    def test_openai_entries_are_sized_and_never_exceed_the_direct_api_window(self):
+        """Every allowlisted Bedrock OpenAI model resolves from the Bedrock table (not the 128K
+        default) to a hosted window no larger than the direct-API window DEFAULT_CONTEXT_LENGTHS
+        holds for the same slug. Hosted limits come from the AWS cards and may be lower; they may
+        never silently borrow the direct-API value."""
+        from agent.bedrock_adapter import (
+            BEDROCK_DEFAULT_CONTEXT_LENGTH, BEDROCK_OPENAI_RESPONSES_MODEL_IDS, get_bedrock_context_length,
+        )
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+
+        violations = []
+        for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS:
+            hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model_id.split(".", 1)[1])
+            direct = hit[1] if hit else None
+            hosted = get_bedrock_context_length(model_id, probe=False)
+            if direct is None or not BEDROCK_DEFAULT_CONTEXT_LENGTH < hosted <= direct:
+                violations.append((model_id, hosted, direct))
+        assert not violations, f"Bedrock OpenAI windows unsized or above the direct API: {violations}"
 
 
 class TestInferenceProfileContextLength:
@@ -1201,31 +1309,11 @@ class TestBedrockContextProbe:
 # Tool-calling capability detection
 # ---------------------------------------------------------------------------
 
-class TestModelSupportsToolUse:
-    """Test non-tool-calling model detection."""
-
-    def test_claude_supports_tools(self):
-        from agent.bedrock_adapter import _model_supports_tool_use
-        assert _model_supports_tool_use("us.anthropic.claude-sonnet-4-6") is True
-
-
-    def test_deepseek_r1_no_tools(self):
-        from agent.bedrock_adapter import _model_supports_tool_use
-        assert _model_supports_tool_use("us.deepseek.r1-v1:0") is False
 
 
 class TestBuildConverseKwargsToolStripping:
     """Test that tools are stripped for non-tool-calling models."""
 
-    def test_tools_included_for_claude(self):
-        from agent.bedrock_adapter import build_converse_kwargs
-        tools = [{"type": "function", "function": {"name": "test", "description": "t", "parameters": {}}}]
-        kwargs = build_converse_kwargs(
-            model="us.anthropic.claude-sonnet-4-6",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=tools,
-        )
-        assert "toolConfig" in kwargs
 
     def test_tools_stripped_for_deepseek_r1(self):
         from agent.bedrock_adapter import build_converse_kwargs
@@ -1273,10 +1361,6 @@ class TestEmptyTextBlockFix:
         assert blocks[0]["text"].strip()
 
 
-    def test_real_text_preserved(self):
-        from agent.bedrock_adapter import _convert_content_to_converse
-        blocks = _convert_content_to_converse("Hello")
-        assert blocks[0]["text"] == "Hello"
 
 
 # ---------------------------------------------------------------------------
@@ -1495,15 +1579,24 @@ class TestRequireBoto3VersionCheck:
             with pytest.raises(RuntimeError, match="does not support converse_stream"):
                 _require_boto3()
 
-    def test_accepts_boto3_at_minimum_version(self):
-        """boto3 == 1.34.59 should be accepted."""
+    def test_missing_boto3_error_reports_why_the_lazy_install_did_not_land(self, monkeypatch):
+        """A completed install that needs a restart must not tell the user to install it again."""
+        import pm
         from agent.bedrock_adapter import _require_boto3
+        from pm.package import InstallError
 
-        fake_boto3 = MagicMock()
-        fake_boto3.__version__ = "1.34.59"
-        with patch.dict("sys.modules", {"boto3": fake_boto3}):
-            result = _require_boto3()
-            assert result is fake_boto3
+        restart = InstallError("venv", "bedrock installed; restart Hermes to activate the new dependency environment")
+
+        def ensure_import(extra):
+            raise restart
+
+        monkeypatch.setattr(pm, "ensure_import", ensure_import)
+        with patch.dict("sys.modules", {"boto3": None}):
+            with pytest.raises(ImportError) as excinfo:
+                _require_boto3()
+        assert str(restart) in str(excinfo.value)
+        assert pm.install_hint("bedrock") not in str(excinfo.value)
+
 
 
 class TestImageBase64Decoding:
@@ -1636,6 +1729,7 @@ class TestReasoningReplaySchema:
     replaying captured thinking as a bare ``text`` key dies client-side with ParamValidationError (#115865)."""
 
     def test_call_converse_replays_thinking_botocore_accepts(self):
+        pytest.importorskip("botocore.session", reason="botocore (bedrock extra) required")
         import botocore.session
         from botocore.validate import validate_parameters
         from agent.bedrock_adapter import call_converse

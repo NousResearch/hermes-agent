@@ -2,8 +2,6 @@ import { readKey, writeJson, writeKey } from '@/lib/storage'
 
 import type { HandoffReceipt } from './handoff-leg'
 
-// Holds the receipt in memory when the disk write fails, so this window still has the session identity.
-// saveHandoffReceipt throws when the write does not read back, so nothing is submitted without a saved receipt.
 const unsavedReceipts = new Map<string, HandoffReceipt>()
 
 export function handoffReceiptKey(connection: null | string, guideStoredId: string): string {
@@ -33,8 +31,6 @@ export function readHandoffReceipt(key: string): HandoffReceipt | null {
     )
   }
 
-  // JSON cannot encode a constructor, so only a primitive string has String as its constructor here.
-  // Comparing constructors rejects a corrupt id instead of coercing it to text.
   const hasTextFields = [value?.storedId, value?.runtimeId, value?.task, value?.brief].every(
     field => field?.constructor === String
   )

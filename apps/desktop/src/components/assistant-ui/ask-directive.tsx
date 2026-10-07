@@ -1,24 +1,3 @@
-/**
- * `::ask{...}` — the model's interactive question, inline in its message.
- *
- * The conversational counterpart of a wall of text: whenever the agent needs
- * a decision, it emits ONE line and the transcript renders real controls —
- * option pills; a single click submits the pick as a visible user turn.
- * Works in every session (it is a core transcript directive, not an
- * onboarding-only one), so dashboard button responses, refinement dialogues,
- * and ordinary chats can all fork interactively.
- *
- *   ::ask{question="Which angle leads?" options="Lead story|Exclusive|Embargoed brief"}
- *   ::ask{question="Paste the runway number" input="true"}
- *
- * Options are pipe-separated. `input="true"` means a typed answer is welcome —
- * that keeps the QUESTION rendering even with no options, but it draws no
- * input row of its own: the composer is always right below the transcript,
- * and a second "type here" bar beside it read as clutter (first live-run
- * feedback). A pick submits VISIBLY so the user sees their choice become a
- * turn.
- */
-
 import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { useState } from 'react'
@@ -28,9 +7,6 @@ import { useSessionView } from '@/app/chat/session-view'
 import { answeredAfter } from '@/lib/chat-messages/parts'
 import { cn } from '@/lib/utils'
 
-// Picked questions, module-scoped: transcript virtualization remounts
-// directives with fresh local state, which would resurrect a settled picker.
-// A repeated question in a later message or another session is a new choice.
 const settled = new Set<string>()
 
 export function AskDirective({ attrs, streaming }: { attrs: Record<string, string>; streaming: boolean }) {
@@ -51,10 +27,6 @@ export function AskDirective({ attrs, streaming }: { attrs: Record<string, strin
   const wantsInput = attrs.input === 'true' || attrs.input === 'yes'
   const [picked, setPicked] = useState<null | string>(() => (settled.has(identity) ? '' : null))
 
-  // A typed reply answers the question too. The card only knew about its own
-  // buttons, so someone who answered in the composer came back to six live
-  // chips under a question they had already dealt with. Any user message
-  // after this one closes the ask.
   const answeredInComposer = answeredAfter(useStore(view.$messages), messageId)
 
   const closed = picked !== null || answeredInComposer

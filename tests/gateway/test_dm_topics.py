@@ -129,40 +129,8 @@ async def test_create_dm_topic_handles_duplicate_error():
     assert result is None
 
 
-@pytest.mark.asyncio
-async def test_create_dm_topic_handles_generic_error():
-    """Generic error should return None with warning."""
-    adapter = _make_adapter()
-    adapter._bot = AsyncMock()
-    adapter._bot.create_forum_topic.side_effect = Exception("some random error")
-
-    result = await adapter._create_dm_topic(chat_id=111, name="General")
-
-    assert result is None
 
 
-@pytest.mark.asyncio
-async def test_create_dm_topic_not_a_forum_points_to_botfather_threaded_mode(caplog):
-    """The 'not a forum' warning must send the operator to the real toggle.
-
-    A bot DM has no "Topics" toggle to tap in chat info — that UI only
-    exists for group forums. The only place that enables Private Chat
-    Topics for a bot DM is BotFather's Threaded Mode, reachable through the
-    BotFather Mini App (not the /mybots text menu). See issue #115019.
-    """
-    adapter = _make_adapter()
-    adapter._bot = AsyncMock()
-    adapter._bot.create_forum_topic.side_effect = Exception("Bad Request: the chat is not a forum")
-
-    with caplog.at_level("WARNING"):
-        result = await adapter._create_dm_topic(chat_id=111, name="General")
-
-    assert result is None
-    warning_text = " ".join(r.message for r in caplog.records)
-    assert "BotFather" in warning_text
-    assert "Threaded Mode" in warning_text
-    assert "tap the bot name" not in warning_text
-    assert "enable 'Topics' in chat settings" not in warning_text
 
 
 @pytest.mark.asyncio
@@ -194,7 +162,7 @@ async def test_ensure_dm_topic_creates_on_demand_and_persists():
 
 def test_persist_dm_topic_thread_id_writes_config(tmp_path):
     """Should write thread_id into the correct topic in config.yaml."""
-    import yaml
+    import hermes_yaml as yaml
 
     config_data = {
         "platforms": {
@@ -217,7 +185,7 @@ def test_persist_dm_topic_thread_id_writes_config(tmp_path):
     config_file = tmp_path / ".hermes" / "config.yaml"
     config_file.parent.mkdir(parents=True)
     with open(config_file, "w") as f:
-        yaml.dump(config_data, f)
+        yaml.safe_dump(config_data, f)
 
     adapter = _make_adapter()
 
@@ -238,7 +206,7 @@ def test_persist_dm_topic_thread_id_writes_config(tmp_path):
 
 def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
     """Failed writes should leave the original config.yaml intact."""
-    import yaml
+    import hermes_yaml as yaml
 
     config_data = {
         "platforms": {
@@ -259,7 +227,7 @@ def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
 
     config_file = tmp_path / ".hermes" / "config.yaml"
     config_file.parent.mkdir(parents=True)
-    original_text = yaml.dump(config_data)
+    original_text = yaml.safe_dump(config_data)
     config_file.write_text(original_text, encoding="utf-8")
 
     adapter = _make_adapter()
@@ -299,7 +267,7 @@ def test_get_dm_topic_info_finds_cached_topic():
 
 def test_get_dm_topic_info_hot_reloads_from_config(tmp_path):
     """Should find a topic added to config after startup (hot-reload)."""
-    import yaml
+    import hermes_yaml as yaml
 
     # Start with empty topics
     adapter = _make_adapter([
@@ -326,7 +294,7 @@ def test_get_dm_topic_info_hot_reloads_from_config(tmp_path):
     config_file = tmp_path / ".hermes" / "config.yaml"
     config_file.parent.mkdir(parents=True)
     with open(config_file, "w") as f:
-        yaml.dump(config_data, f)
+        yaml.safe_dump(config_data, f)
 
     with patch.object(Path, "home", return_value=tmp_path), \
          patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):

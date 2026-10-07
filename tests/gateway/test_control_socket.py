@@ -18,10 +18,7 @@ from gateway.control_socket import (
     windows_pipe_name,
 )
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Unix-socket transport; the named-pipe half is covered on the wine2e lane",
-)
+pytestmark = pytest.mark.platforms("posix")  # Unix-socket transport; the named-pipe half is covered on the wine2e lane
 
 
 def _run(coro):
@@ -309,7 +306,7 @@ def test_collect_fleet_versions_prefers_socket(tmp_path: Path, monkeypatch):
     home.mkdir()
 
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "HEADSHA", "version": "1.0"},
     )
     monkeypatch.setattr(
@@ -351,7 +348,7 @@ def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeyp
     home.mkdir()
 
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "HEADSHA", "version": "1.0"},
     )
     monkeypatch.setattr(
@@ -455,3 +452,32 @@ def test_runtime_inventory_prefers_socket_supervisor(tmp_path: Path, monkeypatch
     # supervisor comes from the gateway's own declaration, not a PID scan
     assert gws[0].supervisor == "systemd"
     assert gws[0].code_sha == "SHA555"
+
+
+def test_windows_pipe_query_is_bounded_when_the_peer_never_answers(home: Path, monkeypatch):
+    """#132547: a pipe handle read cannot time out on its own; the query must still return None at its bound."""
+    import threading
+    import time
+
+    from gateway import control_socket
+
+    released = threading.Event()
+
+    class _SilentPipe:  # accepts the request, never answers
+        def write(self, _data):
+            return None
+
+        def read(self, _n):
+            released.wait(10)
+            return b""
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(control_socket, "open", lambda *_a, **_k: _SilentPipe(), raising=False)
+    start = time.monotonic()
+    try:
+        assert control_socket._query_windows_pipe(home, b"{}\n", 0.3) is None
+        assert time.monotonic() - start < 2.0
+    finally:
+        released.set()

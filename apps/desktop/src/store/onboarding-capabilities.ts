@@ -2,7 +2,6 @@ import type { ProfileScope } from '@/api/client'
 import { getMcpCatalog } from '@/api/mcp'
 import { type OnboardingInterests, onboardingRecommendations } from '@/lib/onboarding-recommendations'
 
-/** A bounded, read-only seed snapshot. No global cache and no connection authority. */
 export async function readOnboardingCapabilities(
   scope?: ProfileScope,
   interests?: OnboardingInterests
@@ -30,7 +29,6 @@ export async function readOnboardingCapabilities(
       'Derive useful tasks from the actual catalog descriptions and the user’s stated work and app choices. Curated examples are optional; their absence must not hide an otherwise relevant catalog entry. Never invent an integration absent from the catalog. Detection earns at most one option per app; do not turn its example into several variants. The rest of the menu comes from the user’s goals and other capabilities. More options within one app are appropriate only when explicitly requested. Do not replace the fresh-machine or Spark setup fork. Keep a connection-free choice. Carry the exact MCP name in the handoff brief when one of these tasks is chosen; the task session uses manage_connections with name and mcp:true.'
     ].join(' ')
   } catch {
-    // An older/unreachable catalog must not block the existing welcome or handoff path.
     return ''
   }
 }

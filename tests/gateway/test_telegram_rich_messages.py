@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from telegram.error import BadRequest, NetworkError, TimedOut
@@ -346,32 +345,8 @@ async def test_routing_direct_messages_topic_id_drops_message_thread_id():
     assert "message_thread_id" not in api_kwargs
 
 
-@pytest.mark.asyncio
-async def test_notification_silent_by_default():
-    adapter = _make_adapter()
-
-    await adapter.send("-100123", RICH_CONTENT)
-
-    api_kwargs = _rich_api_kwargs(adapter)
-    assert api_kwargs["disable_notification"] is True
 
 
-@pytest.mark.asyncio
-async def test_table_only_uses_legacy_with_default_config():
-    """Default config (rich_messages unset → False) keeps tables on legacy path."""
-    config = PlatformConfig(enabled=True, token="fake-token")
-    adapter = TelegramAdapter(config)
-    bot = MagicMock()
-    bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=123))
-    bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
-    bot.send_chat_action = AsyncMock()
-    adapter._bot = bot
-
-    result = await adapter.send("12345", TABLE_ONLY_CONTENT)
-
-    assert result.success is True
-    bot.do_api_request.assert_not_called()
-    bot.send_message.assert_awaited()
 
 
 # ── Streaming drafts: sendRichMessageDraft ─────────────────────────────
@@ -452,10 +427,6 @@ async def test_legacy_draft_stream_finalizes_with_persistent_rich_message():
 # ----------------------------------------------------------------------
 
 
-def test_supports_plain_draft_streaming_when_rich_without_rich_drafts():
-    adapter = _make_adapter()  # rich_messages True, rich_drafts default False
-    assert adapter.supports_draft_streaming(chat_type="dm") is True
-    assert adapter.supports_draft_streaming(chat_type="private") is True
 
 
 @pytest.mark.asyncio

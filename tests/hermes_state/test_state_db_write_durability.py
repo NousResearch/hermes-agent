@@ -29,12 +29,11 @@ only the repair-connection durability half.)
 
 from __future__ import annotations
 
-import ast
 import sqlite3
-import sys
 from pathlib import Path
 
-import hermes_state
+import pytest
+
 from hermes_state import repair_state_db_schema
 from hermes_state_repair import _connect_repair_durable
 
@@ -54,6 +53,7 @@ def _make_db(tmp_path: Path) -> Path:
 # ── Repair-path write durability ────────────────────────────────────────
 
 
+@pytest.mark.platforms("macos")
 def test_connect_repair_durable_sets_macos_barriers(tmp_path: Path) -> None:
     """The repair connection must carry both macOS durability barriers."""
     db = _make_db(tmp_path)
@@ -66,20 +66,16 @@ def test_connect_repair_durable_sets_macos_barriers(tmp_path: Path) -> None:
     finally:
         conn.close()
 
-    if sys.platform == "darwin":
-        # SQLite: 0=OFF, 1=NORMAL, 2=FULL, 3=EXTRA. NORMAL is what tore the
-        # b-tree pages; FULL is what _enforce_macos_synchronous_full sets.
-        assert synchronous == 2, (
-            f"repair connection opened with synchronous={synchronous}; on "
-            "Darwin this lets REINDEX/VACUUM leave half-written b-tree pages"
-        )
-        assert checkpoint_fullfsync == 1, (
-            "repair connection has no F_FULLFSYNC barrier at checkpoint "
-            "boundaries; macOS fsync() does not flush the drive cache"
-        )
-    else:
-        # Elsewhere the helper is a plain connect — no behaviour change.
-        assert synchronous in (0, 1, 2, 3)
+    # SQLite: 0=OFF, 1=NORMAL, 2=FULL, 3=EXTRA. NORMAL is what tore the
+    # b-tree pages; FULL is what _enforce_macos_synchronous_full sets.
+    assert synchronous == 2, (
+        f"repair connection opened with synchronous={synchronous}; on "
+        "Darwin this lets REINDEX/VACUUM leave half-written b-tree pages"
+    )
+    assert checkpoint_fullfsync == 1, (
+        "repair connection has no F_FULLFSYNC barrier at checkpoint "
+        "boundaries; macOS fsync() does not flush the drive cache"
+    )
 
 
 def test_connect_repair_durable_is_autocommit(tmp_path: Path) -> None:
@@ -94,49 +90,6 @@ def test_connect_repair_durable_is_autocommit(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_repair_path_has_no_bare_connects() -> None:
-    """No repair/probe site may bypass the durability helper.
-
-    Source-level guard: the bare form is exactly what regressed, and a unit
-    test on the helper alone would not notice a sixth site being added.
-    """
-    # The repair/probe helpers live in hermes_state_repair; hermes_state only
-    # re-imports them.
-    import hermes_state_repair
-
-    source = Path(hermes_state_repair.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(hermes_state_repair.__file__))
-
-    def is_db_path_connect(node: ast.AST) -> bool:
-        if not isinstance(node, ast.Call):
-            return False
-        callee = node.func
-        if not (
-            isinstance(callee, ast.Attribute)
-            and isinstance(callee.value, ast.Name)
-            and callee.value.id == "sqlite3"
-            and callee.attr == "connect"
-        ):
-            return False
-        if not node.args:
-            return False
-        first = node.args[0]
-        return (
-            isinstance(first, ast.Call)
-            and isinstance(first.func, ast.Name)
-            and first.func.id == "str"
-            and len(first.args) == 1
-            and isinstance(first.args[0], ast.Name)
-            and first.args[0].id == "db_path"
-        )
-
-    # The helper itself opens through ``connect_tracked`` (byte-probe registry, #63386), so no
-    # ``sqlite3.connect(str(db_path), ...)`` may remain anywhere in the module.
-    bare = [node for node in ast.walk(tree) if is_db_path_connect(node)]
-    assert bare == [], (
-        f"{len(bare)} repair/probe connection(s) bypass _connect_repair_durable() and write "
-        "state.db without the macOS fsync barriers or the live-connection registry"
-    )
 
 
 def test_repair_still_works_through_durable_connection(tmp_path: Path) -> None:

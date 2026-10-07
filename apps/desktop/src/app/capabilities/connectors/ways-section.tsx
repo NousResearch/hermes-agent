@@ -124,7 +124,9 @@ function HostedWay({
   return (
     <div className="flex flex-wrap items-center gap-2">
       <span className="min-w-0 flex-1 text-[0.7rem] text-(--ui-text-tertiary)">
-        {way.state === 'available' ? copy.dialog.wayNotConnected(name) : (reason ?? copy.card.state[hostedStateWord(way)])}
+        {way.state === 'available'
+          ? copy.dialog.wayNotConnected(name)
+          : (reason ?? copy.card.state[hostedStateWord(way)])}
       </span>
 
       {way.state === 'available' && onConnect ? (

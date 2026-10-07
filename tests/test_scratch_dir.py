@@ -1,10 +1,12 @@
 """Scratch dir contract: TMPDIR/TMP/TEMP follow HERMES_HOME/cache/scratch unless the user set them."""
 
 import os
+import shutil
 import stat
 import subprocess
 import sys
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -65,14 +67,26 @@ def test_prune_removes_idle_entries_and_keeps_trees_written_deep_inside(tmp_path
     assert not idle.exists() and live.exists() and fresh.exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory modes")
+@pytest.mark.platforms("posix")  # POSIX directory modes
 class TestScratchDirPermissionPolicy:
     """get_scratch_dir must honor the home permission policy instead of a blanket 0700:
     an explicit HERMES_HOME_MODE and a managed/shared home win (#117347)."""
 
+    @staticmethod
+    def _native_mode_after_chmod(path, requested=0o2770):
+        """Return what this host/filesystem preserves from a real chmod request.
+
+        macOS may clear setgid when the directory group is not one of the caller's groups.
+        The portable contract is to request the operator's mode and preserve every bit the
+        host accepts, not to pretend all POSIX filesystems retain identical special bits.
+        """
+        os.chmod(path, requested)
+        return stat.S_IMODE(os.stat(path).st_mode)
+
     def _isolate_env(self, monkeypatch, tmp_path):
-        # HERMES_HOME must point somewhere without a .managed marker, or a marker file in the
-        # real home would flip every case into "managed" (the marker is read via get_hermes_home).
+        # A known, marker-free effective home: each case below plants `.managed` in the home whose
+        # scratch dir it exercises (`get_scratch_dir(home)` reads the marker there), and the real
+        # home's own marker must not leak into callers that still resolve the effective home.
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         for var in ("HERMES_HOME_MODE", "HERMES_MANAGED", "HERMES_CONTAINER",
                     "HERMES_SKIP_CHMOD", "HERMES_UID", "HERMES_GID"):
@@ -83,31 +97,34 @@ class TestScratchDirPermissionPolicy:
         scratch = get_scratch_dir(tmp_path, prune=False)
         assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o700
 
-    def test_explicit_home_mode_retained_with_setgid(self, tmp_path, monkeypatch):
+    def test_explicit_home_mode_uses_native_chmod_semantics(self, tmp_path, monkeypatch):
         self._isolate_env(monkeypatch, tmp_path)
+        probe = tmp_path / "mode-probe"
+        probe.mkdir()
+        expected = self._native_mode_after_chmod(probe)
         monkeypatch.setenv("HERMES_HOME_MODE", "2770")
         scratch = get_scratch_dir(tmp_path, prune=False)
-        assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
+        assert stat.S_IMODE(os.stat(scratch).st_mode) == expected
 
     def test_managed_env_leaves_preexisting_mode_untouched(self, tmp_path, monkeypatch):
         self._isolate_env(monkeypatch, tmp_path)
         monkeypatch.setenv("HERMES_MANAGED", "nixos")
         pre = tmp_path / "cache" / "scratch"
         pre.mkdir(parents=True)
-        os.chmod(pre, 0o2770)
+        expected = self._native_mode_after_chmod(pre)
         scratch = get_scratch_dir(tmp_path, prune=False)
-        assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
+        assert stat.S_IMODE(os.stat(scratch).st_mode) == expected
 
     def test_managed_marker_file_leaves_preexisting_mode_untouched(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
         home.mkdir()
         self._isolate_env(monkeypatch, tmp_path)
         (home / ".managed").write_text("nixos", encoding="utf-8")
-        pre = tmp_path / "cache" / "scratch"
+        pre = home / "cache" / "scratch"
         pre.mkdir(parents=True)
-        os.chmod(pre, 0o2770)
-        scratch = get_scratch_dir(tmp_path, prune=False)
-        assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
+        expected = self._native_mode_after_chmod(pre)
+        scratch = get_scratch_dir(home, prune=False)
+        assert stat.S_IMODE(os.stat(scratch).st_mode) == expected
 
     def test_empty_managed_marker_counts_as_managed(self, tmp_path, monkeypatch):
         # Legacy NixOS module wrote an empty marker; config.get_managed_system treats it as
@@ -116,11 +133,11 @@ class TestScratchDirPermissionPolicy:
         home.mkdir()
         self._isolate_env(monkeypatch, tmp_path)
         (home / ".managed").write_text("", encoding="utf-8")
-        pre = tmp_path / "cache" / "scratch"
+        pre = home / "cache" / "scratch"
         pre.mkdir(parents=True)
-        os.chmod(pre, 0o2770)
-        scratch = get_scratch_dir(tmp_path, prune=False)
-        assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
+        expected = self._native_mode_after_chmod(pre)
+        scratch = get_scratch_dir(home, prune=False)
+        assert stat.S_IMODE(os.stat(scratch).st_mode) == expected
 
     def test_unreadable_managed_marker_counts_as_managed(self, tmp_path, monkeypatch):
         # A marker that exists but cannot be read (OSError -> "") still counts as managed.
@@ -128,11 +145,26 @@ class TestScratchDirPermissionPolicy:
         home.mkdir()
         self._isolate_env(monkeypatch, tmp_path)
         (home / ".managed").mkdir()
-        pre = tmp_path / "cache" / "scratch"
+        pre = home / "cache" / "scratch"
         pre.mkdir(parents=True)
-        os.chmod(pre, 0o2770)
-        scratch = get_scratch_dir(tmp_path, prune=False)
-        assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
+        expected = self._native_mode_after_chmod(pre)
+        scratch = get_scratch_dir(home, prune=False)
+        assert stat.S_IMODE(os.stat(scratch).st_mode) == expected
+
+    def test_effective_home_marker_does_not_govern_another_homes_scratch(self, tmp_path, monkeypatch):
+        # The caller's home decides the policy. A boot caller (``export_scratch_tmp_env``) and
+        # ``hermes doctor`` have already resolved theirs, so the marker lookup must not fall back
+        # to ``get_hermes_home()``: for a sticky profile with HERMES_HOME unset that lookup warns
+        # about the default profile on every command, and it is the wrong home to judge by anyway.
+        selected = tmp_path / "home"
+        selected.mkdir()
+        self._isolate_env(monkeypatch, tmp_path)
+        (selected / ".managed").write_text("nixos", encoding="utf-8")
+        other = tmp_path / "other"
+        pre = other / "cache" / "scratch"
+        pre.mkdir(parents=True)
+        os.chmod(pre, 0o750)
+        assert stat.S_IMODE(os.stat(get_scratch_dir(other, prune=False)).st_mode) == 0o700
 
     def test_canonical_container_signal_without_env_override_keeps_operator_mode(self, tmp_path, monkeypatch):
         # Podman/containerd/K8s runtimes often don't export HERMES_CONTAINER; the canonical
@@ -145,13 +177,16 @@ class TestScratchDirPermissionPolicy:
         scratch = get_scratch_dir(tmp_path, prune=False)
         assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o750
 
-    def test_repeated_calls_do_not_strip_setgid(self, tmp_path, monkeypatch):
+    def test_repeated_calls_do_not_strip_filesystem_supported_mode_bits(self, tmp_path, monkeypatch):
         self._isolate_env(monkeypatch, tmp_path)
+        probe = tmp_path / "mode-probe"
+        probe.mkdir()
+        expected = self._native_mode_after_chmod(probe)
         monkeypatch.setenv("HERMES_HOME_MODE", "2770")
         first = get_scratch_dir(tmp_path, prune=False)
         second = get_scratch_dir(tmp_path, prune=False)
         assert first == second
-        assert stat.S_IMODE(os.stat(second).st_mode) == 0o2770
+        assert stat.S_IMODE(os.stat(second).st_mode) == expected
 
     def test_container_keeps_operator_mode_but_honors_explicit(self, tmp_path, monkeypatch):
         self._isolate_env(monkeypatch, tmp_path)
@@ -160,8 +195,11 @@ class TestScratchDirPermissionPolicy:
         pre.mkdir(parents=True)
         os.chmod(pre, 0o750)
         assert stat.S_IMODE(os.stat(get_scratch_dir(tmp_path, prune=False)).st_mode) == 0o750
+        probe = tmp_path / "mode-probe"
+        probe.mkdir()
+        expected = self._native_mode_after_chmod(probe)
         monkeypatch.setenv("HERMES_HOME_MODE", "2770")
-        assert stat.S_IMODE(os.stat(get_scratch_dir(tmp_path, prune=False)).st_mode) == 0o2770
+        assert stat.S_IMODE(os.stat(get_scratch_dir(tmp_path, prune=False)).st_mode) == expected
 
     def test_hermes_uid_gid_applied_to_scratch(self, tmp_path, monkeypatch):
         self._isolate_env(monkeypatch, tmp_path)
@@ -172,17 +210,11 @@ class TestScratchDirPermissionPolicy:
         mock_chown.assert_called_once_with(tmp_path / "cache" / "scratch", 1000, 911)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
-def test_config_and_constants_share_one_policy_implementation(tmp_path, monkeypatch):
-    """hermes_constants is the single home of managed / container / HERMES_UID policy: config
-    re-exports it (no keep-in-sync twins), so _secure_file skips on the same canonical container
-    signal that apply_secure_dir_policy / get_scratch_dir already honor."""
-    import hermes_constants
+@pytest.mark.platforms("posix")  # POSIX file modes
+def test_secure_file_skips_chmod_on_canonical_container_signal(tmp_path, monkeypatch):
+    """_secure_file skips on the same canonical container signal that apply_secure_dir_policy /
+    get_scratch_dir already honor (one policy implementation in hermes_constants)."""
     from hermes_cli import config
-
-    assert config.get_managed_system is hermes_constants.get_managed_system
-    assert config._chown_to_hermes_uid is hermes_constants._chown_to_hermes_uid
-    assert not hasattr(config, "_is_container")
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     for var in ("HERMES_MANAGED", "HERMES_CONTAINER", "HERMES_SKIP_CHMOD"):
@@ -222,6 +254,107 @@ def test_prune_reaps_process_living_in_idle_entry_and_spares_live_tree(tmp_path)
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=10)
+
+
+def test_prune_records_removals_and_kills_in_scratch_prune_log(tmp_path: Path) -> None:
+    """Every removed entry and every signalled process leaves a line in
+    ``<home>/logs/scratch-prune.log``: the prune's own handler writes it, so the boot-time
+    prune (before ``setup_logging()``) is not silent. An entry rmtree could not delete is
+    neither counted nor recorded as removed (#132401)."""
+    import subprocess
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    gone, stuck = scratch / "idle-lane", scratch / "stuck-lane"
+    ancient = time.time() - 30 * 3600
+    for entry in (gone, stuck):
+        entry.mkdir()
+        (entry / "out.md").write_text("deliverable", encoding="utf-8")
+        for path in (entry / "out.md", entry):
+            os.utime(path, (ancient, ancient))
+    worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=str(gone),
+                              stdin=subprocess.DEVNULL)
+    real_rmtree = shutil.rmtree
+
+    def rmtree(path: str | os.PathLike[str], *args: object, **kwargs: object) -> None:
+        if os.path.realpath(path) != os.path.realpath(stuck):
+            real_rmtree(path, *args, **kwargs)
+
+    try:
+        with patch("hermes_constants_scratch.shutil.rmtree", rmtree):
+            assert prune_scratch_dir(scratch) == 1
+        assert worker.wait(timeout=10) is not None
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+            worker.wait(timeout=10)
+    log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+    assert f"removed {str(gone)!r} (" in log
+    assert f"sent TERM pid={worker.pid} " in log
+    assert f"could not fully remove {str(stuck)!r}" in log and f"removed {str(stuck)!r}" not in log
+
+
+@pytest.mark.platforms("linux")  # macOS and Windows filesystems reject non-UTF-8 names
+def test_prune_log_keeps_record_of_non_utf8_name(tmp_path: Path) -> None:
+    """A legal POSIX name that is not UTF-8 is written escaped, not dropped with its record."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    raw = os.fsencode(scratch) + b"/old-\xff"
+    with open(raw, "wb") as out:
+        out.write(b"x")
+    ancient = time.time() - 30 * 3600
+    os.utime(raw, (ancient, ancient))
+    assert prune_scratch_dir(scratch) == 1
+    log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+    assert "removed " in log and "old-\\udcff" in log
+
+
+@pytest.mark.platforms("linux")  # Windows rejects newlines in names
+def test_prune_log_escapes_newline_in_name(tmp_path: Path) -> None:
+    """A newline in a legal POSIX name is written escaped, so the record stays one line and
+    the rest of the name cannot pass for a record of its own."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "old\nscratch prune: removed fake-entry"
+    entry.write_text("x", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    os.utime(entry, (ancient, ancient))
+    assert prune_scratch_dir(scratch) == 1
+    lines = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig").splitlines()
+    assert len(lines) == 1
+    assert "old\\nscratch prune: removed fake-entry" in lines[0]
+
+
+@pytest.mark.platforms("posix")  # POSIX rename semantics
+def test_prune_log_keeps_record_when_another_prune_rotated_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two prunes of one home can both reach rollover: the other one renames
+    ``scratch-prune.log`` between this one's existence check and its rename. The rotation is
+    already done, so the record goes to the new file instead of being dropped."""
+    import hermes_constants_scratch
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "idle-lane"
+    entry.write_text("x", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    os.utime(entry, (ancient, ancient))
+    log = tmp_path / "logs" / "scratch-prune.log"
+    log.parent.mkdir()
+    log.write_bytes(b"x" * 200)
+    monkeypatch.setattr(hermes_constants_scratch, "_PRUNE_LOG_MAX_BYTES", 100)
+    real_rename = os.rename
+    raced: list[str] = []
+
+    def rename(src: str, dst: str, *args: object, **kwargs: object) -> None:
+        if os.fspath(src) == str(log) and not raced:
+            raced.append(dst)
+            real_rename(src, dst)  # the other prune's rename lands first
+        real_rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", rename)
+    assert prune_scratch_dir(scratch) == 1
+    assert raced
+    records = "".join(p.read_text(encoding="utf-8-sig", errors="replace")
+                      for p in log.parent.glob("scratch-prune.log*"))
+    assert f"removed {str(entry)!r} (" in records
 
 
 def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):

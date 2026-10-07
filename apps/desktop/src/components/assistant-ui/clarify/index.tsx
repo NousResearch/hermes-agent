@@ -1,0 +1,57 @@
+'use client'
+
+import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
+import { useMemo, useState } from 'react'
+
+import { useSessionView } from '@/app/chat/session-view'
+import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
+import { sessionClarifyRequest } from '@/store/clarify'
+
+import { selectMessageRunning } from '../tool/fallback-model'
+
+import { readClarifyArgs } from './parse'
+import { ClarifyToolPending } from './pending'
+import { ClarifyToolSettled } from './settled'
+import { useUndeliveredClarify } from './use-undelivered'
+
+export const ClarifyTool = (props: ToolCallMessagePartProps) => {
+  // Answered → settled Q&A (ToolFallback collapsed the answer away).
+  if (props.result !== undefined) {
+    return <ClarifyToolSettled {...props} />
+  }
+
+  return <ClarifyToolLive {...props} />
+}
+
+function ClarifyToolLive(props: ToolCallMessagePartProps) {
+  // The tool row is in whichever session's transcript rendered it — read THAT
+  // session's clarify (primary or tile), not the globally-active one.
+  const sessionId = useStore(useSessionView().$runtimeId)
+  const $request = useMemo(() => sessionClarifyRequest(sessionId), [sessionId])
+  const request = useStore($request)
+  const fromArgs = useMemo(() => readClarifyArgs(props.args), [props.args])
+  const messageRunning = useAuiState(selectMessageRunning)
+  // Answering clears the request a beat before `tool.complete` swaps in the
+  // settled card. Latch submit so that gap doesn't demote; Stop also clears
+  // the request and must still collapse an unanswered card.
+  const [answered, setAnswered] = useState(false)
+  const undelivered = useUndeliveredClarify(sessionId, messageRunning && !request && !answered)
+
+  // Stopped mid-prompt with no result — don't leave a dead interactive panel.
+  // `session.info` reports running=false while clarify is blocking, so the
+  // running flag alone would remount the question as a tool row. Keep the
+  // card while a request is open or this instance already submitted.
+  if (!messageRunning && !request && !answered) {
+    return <ToolFallback {...props} />
+  }
+
+  return (
+    <ClarifyToolPending
+      fromArgs={fromArgs}
+      onAnswered={() => setAnswered(true)}
+      request={request}
+      undelivered={undelivered}
+    />
+  )
+}

@@ -16,6 +16,7 @@ import re
 import threading
 import time
 from collections import Counter
+from contextvars import copy_context
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
@@ -47,7 +48,7 @@ def load_state() -> Dict[str, Any]:
     }
     path = _state_file()
     try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read curator state: %s", e)
         return base
@@ -107,19 +108,39 @@ def is_enabled() -> bool:  # default ON when no config says otherwise
 
 
 def get_interval_hours() -> int:
-    return _config_number("interval_hours", DEFAULT_INTERVAL_HOURS, int)
+    # < 1 would make should_run_now() true on every idle tick (a review pass each time), so floor it the same way.
+    return _bounded_count("interval_hours", DEFAULT_INTERVAL_HOURS)
 
 
 def get_min_idle_hours() -> float:
     return _config_number("min_idle_hours", DEFAULT_MIN_IDLE_HOURS, float)
 
 
+_warned_bad_values: set = set()
+
+
+def _bounded_count(key: str, default: int) -> int:
+    """*key* (a ``curator.<key>`` day/hour count), floored at 1 like ``curator prune --days`` already
+    refuses (hermes_cli/curator.py::_cmd_prune). A value < 1 collapses stale_cutoff/archive_cutoff
+    onto or past "now" in apply_automatic_transitions(), mass-transitioning every skill with any
+    past activity on the next automatic pass — unlike the manual prune path this runs unconfirmed,
+    so it falls back to the default instead of acting on the bad value."""
+    value = _config_number(key, default, int)
+    if value < 1:
+        # Warn once per (key, bad value): the dashboard status endpoint polls these getters.
+        if (key, value) not in _warned_bad_values:
+            _warned_bad_values.add((key, value))
+            logger.warning("curator.%s must be >= 1 (got %d); using the default of %d", key, value, default)
+        return default
+    return value
+
+
 def get_stale_after_days() -> int:
-    return _config_number("stale_after_days", DEFAULT_STALE_AFTER_DAYS, int)
+    return _bounded_count("stale_after_days", DEFAULT_STALE_AFTER_DAYS)
 
 
 def get_archive_after_days() -> int:
-    return _config_number("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS, int)
+    return _bounded_count("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS)
 
 
 def get_consolidate() -> bool:
@@ -529,7 +550,7 @@ def _parse_structured_summary(llm_final: str) -> Dict[str, List[Dict[str, str]]]
     data = None
     if match:
         try:
-            import yaml  # type: ignore
+            import hermes_yaml as yaml
             data = yaml.safe_load(match.group(1))
         except Exception:
             pass
@@ -814,9 +835,9 @@ def _render_candidate_list() -> str:
     Bundled built-ins are excluded even when ``curator.prune_builtins`` is
     on. That flag makes them eligible for *deterministic archival*
     (``apply_automatic_transitions`` → ``archive_skill``), not for the
-    rewrite/umbrella pass. Listing them here invites ``skill_manage``
-    writes that ``_background_review_write_guard`` unconditionally
-    refuses, burning tool calls until the loop guard aborts the run.
+    rewrite/umbrella pass. Listing them here invites umbrella deletes
+    that ``_background_review_delete_guard`` unconditionally refuses,
+    burning tool calls until the loop guard aborts the run.
 
     Skills in ``skills.disabled`` (global or platform list) are excluded for
     the same reason on the read side: ``skill_view`` — the pass's only read
@@ -893,7 +914,7 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
 
 def run_curator_review(
     on_summary: Optional[Callable[[str], None]] = None, synchronous: bool = False,
-    dry_run: bool = False, consolidate: Optional[bool] = None,
+    dry_run: bool = False, consolidate: Optional[bool] = None, trigger: str = "manual",
 ) -> Dict[str, Any]:
     """Execute a single curator review pass: (1) automatic state transitions (no LLM); (2) if *consolidate* and there are
     candidates, fork an AIAgent on the review prompt; (3) update .curator_state; (4) call *on_summary*.
@@ -903,6 +924,7 @@ def run_curator_review(
     recorded in ``state.last_report_path`` so users can read what WOULD have happened."""
     consolidate = get_consolidate() if consolidate is None else consolidate
     start = datetime.now(timezone.utc)
+    hermes_home = get_hermes_home()  # the LLM pass may run on a thread with no profile binding
     if dry_run:  # count candidates without mutating state
         counts = {"checked": len(_safe_curated_report()), "marked_stale": 0, "archived": 0, "reactivated": 0}
     else:
@@ -948,26 +970,52 @@ def run_curator_review(
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
         state2 = {**load_state(), "last_run_duration_seconds": elapsed, "last_run_summary": final_summary}
         # Per-run report, best-effort; path recorded for `hermes curator status`.
+        after_report = _safe_curated_report()
         try:
             report_path = _write_run_report(
                 started_at=start, elapsed_seconds=elapsed, auto_counts=counts, auto_summary=auto_summary,
-                before_report=before_report, before_names=before_names, after_report=_safe_curated_report(), llm_meta=llm_meta,
+                before_report=before_report, before_names=before_names, after_report=after_report, llm_meta=llm_meta,
             )
             if report_path is not None:
                 state2["last_report_path"] = str(report_path)
         except Exception as e:
             logger.debug("Curator report write failed: %s", e, exc_info=True)
         save_state(state2)
+        _record_run_metric(trigger, dry_run, counts, before_report, after_report, llm_meta, hermes_home)
         _notify(on_summary, f"curator: {final_summary}")
 
     if synchronous:
         _llm_pass()
     else:
-        threading.Thread(target=_llm_pass, daemon=True, name="curator-review").start()
+        # The curator tick runs inside profile_scoped_chore() on a multiplexed gateway, which
+        # installs the home override and secret scope as contextvars. A bare thread starts with
+        # an EMPTY context, so _llm_pass used to lose the profile scope: provider resolution hit
+        # UnscopedSecretError and every home lookup (skill snapshot, run.json/REPORT.md,
+        # .curator_state) fell back to the process home — the root home's library was read,
+        # reported and overwritten under another profile's run. Copy the caller's context into
+        # the thread, the same way the gateway already carries scope into executor work
+        # (_run_in_executor_with_context, MCP discovery #95518).
+        ctx = copy_context()
+        threading.Thread(target=ctx.run, args=(_llm_pass,), daemon=True, name="curator-review").start()
     return {"started_at": start.isoformat(), "auto_transitions": counts, "summary_so_far": auto_summary}
 
 
 # --- Provider/model resolution for the review fork ---
+
+def _record_run_metric(trigger, dry_run, counts, before_report, after_report, llm_meta, hermes_home) -> None:
+    from hermes_cli.observability.shared_metrics_loop import record_curator_run
+
+    def what_changed() -> Dict[str, int]:
+        before, after = _by_name(before_report), _by_name(after_report)
+        diff = _diff_and_classify(set(before), set(after), llm_meta.get("tool_calls") or [], llm_meta.get("final") or "")
+        patched = sum(int(after[n].get("patch_count") or 0) > int(before[n].get("patch_count") or 0)
+                      for n in diff.after_names & set(before))
+        return {"archived": int(counts.get("archived", 0)) + len(diff.removed), "created": len(diff.added),
+                "merged": len(diff.consolidated), "patched": patched}
+
+    outcome = "skipped" if dry_run else "failed" if llm_meta.get("error") else "success"
+    record_curator_run(trigger=trigger, outcome=outcome, counts=what_changed, hermes_home=hermes_home)
+
 
 class _ReviewRuntimeBinding(NamedTuple):
     """Provider/model for the curator review fork plus per-slot overrides."""
@@ -1153,10 +1201,10 @@ def maybe_run_curator(*, idle_for_seconds: Optional[float] = None, on_summary: O
         # Idle gating: only enforce when the caller provided a measurement.
         if not should_run_now() or (idle_for_seconds is not None and idle_for_seconds < get_min_idle_hours() * 3600.0):
             return None
-        if not _claim_run():
+        if not _claim_run():  # the holder's own pass is the one counted; every tick would re-count it
             return None
         try:
-            return run_curator_review(on_summary=on_summary)
+            return run_curator_review(on_summary=on_summary, trigger="scheduled")
         finally:
             _release_run_claim()
     except Exception as e:

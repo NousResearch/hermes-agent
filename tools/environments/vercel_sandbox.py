@@ -21,11 +21,11 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE
 from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment, _load_json_store, _save_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
-from tools.environments.remote_common import ensure_lazy_dep
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +44,41 @@ def _ensure_vercel_sdk() -> None:
     # The SDK (>=0.7) ships default-on telemetry; Hermes policy is opt-in only, so disable it
     # before the SDK is imported. setdefault: an explicit user value is never overridden.
     os.environ.setdefault("VERCEL_TELEMETRY_DISABLED", "1")
-    ensure_lazy_dep("terminal.vercel")
+    try:
+        from pm import ensure_import as _lazy_ensure
+    except ImportError:
+        return  # pm unavailable — vercel's own import sites decide
+    try:
+        _lazy_ensure("vercel")
+    except Exception as e:
+        raise ImportError(str(e))
+_WRITE_RETRY_ATTEMPTS = 3
+_RETRY_BACKOFF_STEP = timedelta(milliseconds=100)
+_MIN_SANDBOX_TIMEOUT = timedelta(minutes=5)
+_MIN_RUNNING_WAIT = timedelta(seconds=1)
+_RUNNING_WAIT_POLL_INTERVAL = timedelta(milliseconds=250)
+_STOP_TIMEOUT = timedelta(seconds=15)
+_STOP_POLL_INTERVAL = timedelta(milliseconds=500)
+_SNAPSHOT_STORE_NAME = "vercel_sandbox_snapshots.json"
 
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        chain.append(current)
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def _extract_status_code(exc: BaseException) -> int | None:
+    response = getattr(exc, "response", None)
+    for value in (getattr(exc, "status_code", None), getattr(response, "status_code", None)):
+        if isinstance(value, int):
+            return value
+    return None
 
 def _is_transient_vercel_error(exc: BaseException) -> bool:
     """True when any exception in the cause/context chain looks retryable."""
@@ -130,11 +163,12 @@ def _is_terminal(status: Any) -> bool:
 class VercelSandboxEnvironment(BaseEnvironment):
     """Vercel cloud sandbox backend."""
 
-    _stdin_mode = "heredoc"
+    _stdin_mode = "payload"
 
     def __init__(self, runtime: str | None = None, cwd: str = DEFAULT_VERCEL_CWD, timeout: int = 60,
                  cpu: float = 1, memory: int = 5120, disk: int = _DEFAULT_CONTAINER_DISK_MB,
-                 persistent_filesystem: bool = True, task_id: str = "default"):
+                 persistent_filesystem: bool = True, task_id: str = "default",
+                 image: str | None = None):
         super().__init__(cwd=cwd, timeout=timeout)
         if disk not in {0, _DEFAULT_CONTAINER_DISK_MB}:
             raise ValueError(
@@ -148,9 +182,15 @@ class VercelSandboxEnvironment(BaseEnvironment):
         _ensure_vercel_sdk()
         from vercel.sandbox import Resources
         vcpus, memory_mb = (math.floor(cpu) if cpu > 0 else None), (memory if memory > 0 else None)
+        # Vercel rejects runtime+image together; runtimes are deprecated (Aug 2026), so a runtime is
+        # only sent when the user still pins one, and then the image is dropped.
+        if runtime:
+            logger.warning("Vercel: terminal.vercel_runtime is deprecated by Vercel; set terminal.vercel_image "
+                           "(default %s) instead", DEFAULT_VERCEL_IMAGE)
         self._create_kwargs = {
             "timeout": max(timedelta(seconds=max(self.timeout, 0)), timedelta(minutes=5)),
             "runtime": runtime or None,
+            "image": None if runtime else (image or DEFAULT_VERCEL_IMAGE),
             "resources": Resources(vcpus=vcpus, memory=memory_mb) if (vcpus, memory_mb) != (None, None) else None}
         self._attach_fresh_sandbox(cwd)
         self._sync_manager.sync(force=True)
@@ -171,8 +211,11 @@ class VercelSandboxEnvironment(BaseEnvironment):
         if isinstance(snapshot_id, str) and snapshot_id:
             try:
                 source = {"type": "snapshot", "snapshot_id": snapshot_id}
+                # A snapshot carries its own filesystem: Vercel refuses runtime with a snapshot
+                # source, and the image would describe a base the snapshot already replaced.
+                restore_kwargs = {k: v for k, v in self._create_kwargs.items() if k not in ("runtime", "image")}
                 return _retry_vercel_call(
-                    "sandbox restore", lambda: Sandbox.create(**self._create_kwargs, source=source),
+                    "sandbox restore", lambda: Sandbox.create(**restore_kwargs, source=source),
                     attempts=_CREATE_RETRY_ATTEMPTS)
             except Exception as exc:
                 logger.warning("Vercel: failed to restore snapshot %s for task %s; falling back to a fresh sandbox: %s",
@@ -307,17 +350,56 @@ class VercelSandboxEnvironment(BaseEnvironment):
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120, stdin_data: str | None = None):
         """``timeout`` is enforced by the base ``_wait_for_process`` via ``cancel_fn`` (the SDK has no
-        per-exec timeout); ``stdin_data`` is already embedded as a heredoc by the base ``execute()``."""
-        del timeout, stdin_data
+        per-exec timeout). Payload stdin is staged through the SDK so it never becomes a shell argv."""
+        del timeout
         sandbox, workspace_root, lock = self._require_sandbox(), self._workspace_root, self._lock
+
+        # Guarded by ``lock`` so cancel() and dispatch agree on whether the shell
+        # has taken ownership of (opened + unlinked) the staged stdin file.
+        state = {"cancelled": False, "staged": None, "dispatched": False}
+
+        def scrub_staged() -> None:  # caller holds ``lock``
+            if state["staged"] and not state["dispatched"]:
+                # Staged but never dispatched: scrub the payload (may hold a
+                # sudo password). Once dispatched the user shell unlinks it
+                # itself, so kill() sends no extra command.
+                with contextlib.suppress(Exception):
+                    sandbox.write_files([{"path": state["staged"], "content": b"", "mode": 0o600}])
+                state["staged"] = None
 
         def cancel() -> None:
             with lock:
+                state["cancelled"] = True
+                scrub_staged()
                 self._stop_sandbox(sandbox)
 
         def exec_fn() -> tuple[str, int]:
-            return _result_parts(
-                sandbox.run_command("bash", ["-lc" if login else "-c", cmd_string], cwd=workspace_root))
+            command = cmd_string
+            if stdin_data:  # empty stdin == no stdin, as on base (heredoc skipped it)
+                with lock:
+                    if state["cancelled"]:
+                        return ("", 130)
+                remote_stdin = self._staged_stdin_path()
+                _retry_vercel_call(
+                    "stdin upload",
+                    lambda: sandbox.write_files([{
+                        "path": remote_stdin,
+                        "content": stdin_data.encode("utf-8", "surrogateescape"),
+                        "mode": 0o600,
+                    }]),
+                    attempts=_WRITE_RETRY_ATTEMPTS,
+                )
+                command = self._redirect_stdin_from_file(cmd_string, remote_stdin)
+                with lock:
+                    state["staged"] = remote_stdin
+            with lock:
+                if state["cancelled"]:
+                    # cancel() may have run mid-upload, before ``staged`` was set.
+                    scrub_staged()
+                    return ("", 130)
+                state["dispatched"] = True
+            return _result_parts(sandbox.run_command(
+                "bash", ["-lc" if login else "-c", command], cwd=workspace_root))
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)
 
     def cleanup(self):
@@ -336,11 +418,3 @@ class VercelSandboxEnvironment(BaseEnvironment):
         # Always stop the sandbox during cleanup to avoid resource leaks (matches Modal/Daytona).
         self._stop_sandbox(sandbox)
         self._close_sandbox_client(sandbox)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from dataclasses import dataclass  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

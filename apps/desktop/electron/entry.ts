@@ -1,9 +1,60 @@
+import { readFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
 import { app } from 'electron'
 
+import { resolveDesktopHermesHome } from './data-paths'
+import { readDesktopLaunchConfig } from './renderer-heap-flags'
 import { wslgLaunchArgs } from './wslg-launch'
 import { spawnWslgLaunch } from './wslg-launch-process'
 
-const args = wslgLaunchArgs(process.argv.slice(1), process.env, process.platform)
+function configuredElectronFlags(env: NodeJS.ProcessEnv): string[] {
+  // Resolve the home exactly like main.ts does, through the shared resolver:
+  // HERMES_DATA_DIR_SUFFIX channel installs and profiles/-rooted HERMES_HOME
+  // values must pick the same config.yaml before the relaunch and inside the
+  // app, or desktop.electron_flags silently never reaches the relaunch.
+  const home = resolveDesktopHermesHome({
+    home: os.homedir(),
+    env,
+    // Linux-only pre-launch path; the win32 legacy-migration probe is never
+    // consulted on posix, so its directoryExists callback is not needed here.
+    directoryExists: () => false,
+    readWindowsHome: () => null
+  })
+
+  try {
+    return readDesktopLaunchConfig(readFileSync(path.join(home, 'config.yaml'), 'utf8')).electronFlags
+  } catch {
+    return []
+  }
+}
+
+const linux = process.platform === 'linux'
+const electronFlags = linux ? configuredElectronFlags(process.env) : []
+
+// True only when the NVIDIA proprietary kernel module is loaded
+// (not nouveau, not the open kernel module, not WSL's dxg passthrough).
+function hasNvidiaProprietaryDriver() {
+  if (process.platform !== 'linux') {return false}
+
+  try {
+    const version = readFileSync('/proc/driver/nvidia/version', 'utf8') || ""
+
+    return !/Open Kernel Module/.test(version)
+  } catch {
+    return false // no nvidia driver on this box
+  }
+}
+
+
+const args = wslgLaunchArgs(
+  process.argv.slice(1),
+  process.env,
+  process.platform,
+  electronFlags,
+  hasNvidiaProprietaryDriver()
+)
 
 if (args) {
   // Keep the launcher alive until the child exits: npm's concurrently must not
@@ -13,7 +64,7 @@ if (args) {
   const child = spawnWslgLaunch(args)
 
   child.once('error', error => {
-    console.error('[hermes] WSLg launch failed:', error)
+    console.error('[hermes] Wayland ozone launch failed:', error)
     app.exit(1)
   })
   child.once('exit', code => app.exit(code ?? 1))

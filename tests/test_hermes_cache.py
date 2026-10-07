@@ -1,4 +1,4 @@
-"""Store-owned inference downloads move without adopting custom storage or user state."""
+"""Package cache selection leaves other installations' downloads and state untouched."""
 
 import pytest
 
@@ -26,7 +26,7 @@ def cache_layout(tmp_path, monkeypatch):
 
 @pytest.mark.platforms("windows")
 @pytest.mark.parametrize("layout", ["default", "profile", "custom", "unpackaged"])
-def test_download_owners_move_together_without_moving_user_state(cache_layout, monkeypatch, layout):
+def test_download_paths_leave_existing_installations_untouched(cache_layout, monkeypatch, layout):
     home, cache = cache_layout
     if layout == "custom":
         home = home.parent / "user-selected"
@@ -43,73 +43,47 @@ def test_download_owners_move_together_without_moving_user_state(cache_layout, m
         "cache/partials": paths.partials_root,
         "tools": paths.writable_store_root,
     }
-    speech_relative = str(active.relative_to(home) / "cache/whisper.cpp")
-    callers[speech_relative] = transcription_whisper_cpp._model_dir
-    should_move = layout in ("default", "profile")
+    callers[str(active.relative_to(home) / "cache/whisper.cpp")] = transcription_whisper_cpp._model_dir
+    packaged = layout in ("default", "profile")
     for relative, resolve in callers.items():
-        source = home / relative
-        source.mkdir(parents=True)
-        weight = source / "download.bin"
-        weight.write_bytes(b"downloaded bytes")
+        original = home / relative
+        original.mkdir(parents=True)
+        weight = original / "download.bin"
+        weight.write_bytes(b"existing install")
         identity = weight.stat().st_ino
-        expected = cache / "hermes-inference" / relative if should_move else source
+        expected = cache / "hermes-inference" / relative if packaged else original
         assert resolve() == expected
-        assert (expected / weight.name).read_bytes() == b"downloaded bytes"
-        assert (expected / weight.name).stat().st_ino == identity  # Rename, no second model copy.
-        assert source.exists() is not should_move
-        assert resolve() == expected  # Restart/repeated status lookup is idempotent.
+        assert weight.read_bytes() == b"existing install"
+        assert weight.stat().st_ino == identity
+        if packaged:
+            assert not expected.exists()  # Path lookup creates/moves/copies nothing.
+            expected.mkdir(parents=True)
+            (expected / weight.name).write_bytes(b"package download")
+            assert resolve() == expected
+            assert weight.read_bytes() == b"existing install"
     assert state.read_bytes() == b"user state"
-    if not should_move:
+    assert not (home / ".cache-migration.lock").exists()
+    if not packaged:
         assert not cache.exists()
 
 
 @pytest.mark.platforms("windows")
-@pytest.mark.parametrize("obstacle", ["collision", "locked", "link", "nested-link"])
-def test_migration_preserves_existing_bytes_and_can_resume(cache_layout, tmp_path, obstacle):
-    import ctypes
+@pytest.mark.parametrize("linked", [False, True])
+def test_packaged_inference_does_not_adopt_old_profile_models(cache_layout, tmp_path, linked):
+    import _winapi
 
     home, cache = cache_layout
-    source = home / "models"
-    source.mkdir(parents=True)
-    target = cache / "hermes-inference" / "models"
-    weight = source / "model.gguf"
-    weight.write_bytes(b"original model")
-    if obstacle in ("link", "nested-link"):
-        linked = tmp_path / "user-models"
-        linked.mkdir()
-        (linked / "keep.gguf").write_bytes(b"user model")
-        link = source / "external" if obstacle == "nested-link" else home / "linked-models"
-        import _winapi
-
-        _winapi.CreateJunction(str(linked), str(link))
-        relative = "models" if obstacle == "nested-link" else "linked-models"
-        assert hermes_cache.managed_cache_dir(relative) == home / relative
-        assert (linked / "keep.gguf").read_bytes() == b"user model"
-        assert weight.read_bytes() == b"original model"
-        assert not cache.exists()
-        return
-
-    if obstacle == "collision":
-        target.mkdir(parents=True)
-        (target / weight.name).write_bytes(b"different model")
-        with pytest.raises(RuntimeError, match="existing files were preserved"):
-            bootstrap.models_dir()
-        assert (target / weight.name).read_bytes() == b"different model"
-        (target / weight.name).unlink()
-    else:
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
-                                     ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]
-        kernel.CreateFileW.restype = ctypes.c_void_p
-        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
-        handle = kernel.CreateFileW(str(weight), 0x80000000, 0, None, 3, 0, None)
-        assert handle != ctypes.c_void_p(-1).value
-        try:
-            with pytest.raises(RuntimeError, match="existing files were preserved"):
-                bootstrap.models_dir()
-        finally:
-            kernel.CloseHandle(handle)
-    assert weight.read_bytes() == b"original model"
-    assert bootstrap.models_dir() == target
-    assert (target / weight.name).read_bytes() == b"original model"
-    assert not source.exists()
+    profile = home / "profiles/work"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("{}")
+    existing = tmp_path / "user-models" if linked else profile / "models"
+    existing.mkdir()
+    if linked:
+        _winapi.CreateJunction(str(existing), str(profile / "models"))
+        _winapi.CreateJunction(str(existing), str(home / "models"))
+    (existing / "keep.gguf").write_bytes(b"other installation's model")
+    assert bootstrap.models_dir() == cache / "hermes-inference/models"
+    assert bootstrap.adopt_legacy_models() == []
+    assert bootstrap.staged_models() == []
+    assert (existing / "keep.gguf").read_bytes() == b"other installation's model"
+    assert not cache.exists()

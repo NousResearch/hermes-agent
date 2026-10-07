@@ -179,9 +179,9 @@ in PM's store; `runtimes/llamacpp/` holds mutable presets and server state.
 Selecting a local model as your main model uses the standard
 `model.provider: llamacpp` + `model.default` settings.
 
-### Microsoft Store storage
+### Windows package storage
 
-The Microsoft Store app keeps downloaded models, speech models, inference
+MSIX installs, including the Microsoft Store app, keep downloaded models, speech models, inference
 state, download partials, and downloaded tool/runtime updates under its
 Windows-managed `LocalCache/hermes-inference/` directory. Hermes obtains the
 physical path from `ApplicationData.Current.LocalCacheFolder` and passes that
@@ -194,13 +194,15 @@ backup, and removes it when you uninstall Hermes. Reinstalling requires
 downloading these models again. See Microsoft's
 [app-data storage guidance](https://learn.microsoft.com/en-us/windows/apps/develop/data/store-and-retrieve-app-data).
 
-On first use, Hermes moves its existing default-home download directories
-into the package cache without making a second copy of the model weights.
-Close other Hermes processes if a migration reports a locked file. Migration
-does not overwrite conflicting files. Custom `HERMES_HOME` locations and
-directories containing symbolic links or junctions retain their existing
-storage ownership. Explicit Hugging Face cache settings are also respected;
-existing shared Hugging Face downloads are not migrated.
+This changes where the packaged app downloads and reads inference files.
+Existing files under `%LOCALAPPDATA%\hermes` are left untouched: nothing is
+moved, copied, or automatically cleaned up. Download models into the package
+cache when using the packaged app; another installation can continue using
+its existing downloads. Uninstall removes the package cache, not those older
+external files.
+
+Explicit custom `HERMES_HOME` locations and Hugging Face cache settings retain
+their existing ownership. Existing shared Hugging Face downloads are not migrated.
 
 Your configuration, credentials, conversations, and memories stay in the
 Hermes home. CLI/source installs retain their existing storage layout.

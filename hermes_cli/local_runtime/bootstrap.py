@@ -102,7 +102,11 @@ def adopt_legacy_models() -> "list[Path]":
     skips it. Returns the new paths of the moved files."""
     from hermes_constants import get_default_hermes_root, named_profile_has_identity
 
-    profiles_root = get_default_hermes_root() / "profiles"
+    root = get_default_hermes_root()
+    # Package caches start independently; old profile models may belong to a CLI install.
+    if models_dir() != root / "models":
+        return []
+    profiles_root = root / "profiles"
     if not profiles_root.is_dir():
         return []
     moved: list[Path] = []

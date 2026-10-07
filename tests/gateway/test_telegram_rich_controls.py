@@ -16,8 +16,8 @@ import pytest
 from gateway.platforms.base import SendResult
 from plugins.platforms.telegram import telegram_rich_controls as rc
 from plugins.platforms.telegram.telegram_rich_controls import (
-    TelegramRichControlsMixin, buttons_html, esc_attr, esc_text, markup_to_tg_button_rows,
-    mdv2_to_html, rich_control_html, rich_control_markup_supported, rich_control_payload)
+    NativeControlMarkup, TelegramRichControlsMixin, buttons_html, esc_attr, esc_text, legacy_control_markup,
+    markup_to_tg_button_rows, mdv2_to_html, rich_control_html, rich_control_markup_supported, rich_control_payload)
 
 
 def keyboard(*rows):
@@ -636,3 +636,172 @@ async def test_facade_pagination_edit_with_noncallback_markup_keeps_registry():
     assert host.is_rich_control_message(123, 555)
     html = host._bot.do_api_request.call_args.kwargs["api_kwargs"]["rich_message"]["html"]
     assert '<tg-button type="url" url="https://t.me/next">Next</tg-button>' in html
+
+
+# --- NativeControlMarkup: semantic styles, overrides, row contents, unwrap ------------------
+def _native_markup(rows, **kw):
+    return NativeControlMarkup(keyboard(*rows), **kw)
+
+
+def test_semantic_styles_follow_callback_action_not_label():
+    """Translated labels (Russian approve/cancel words) must NOT drive styles; the
+    callback ACTION does: ea:once success, sc:cancel danger, mp selection primary."""
+    markup = _native_markup([
+        (("Одобрить один раз", "ea:once:1"), ("Сессия", "ea:session:1")),
+        (("Всегда", "ea:always:1"), ("Отклонить", "ea:deny:1")),
+        (("Отмена", "sc:cancel:9"), ("Разрешить всегда", "sc:always:9")),
+        (("Модель X", "mp:slug"), ("1/3", "mx:noop")),
+        (("Назад", "mb"), ("Отмена", "mx")),
+        (("Вперед", "mpv:2"), ("Далее", "mg:4")),
+        (("Да", "update_prompt:y"), ("Нет", "update_prompt:n")),
+    ])
+    html = rich_control_html("t", None, markup)
+    assert 'data="ea:once:1" style="success"' in html
+    assert 'data="ea:session:1" style="primary"' in html
+    assert 'data="ea:always:1" style="primary"' in html
+    assert 'data="ea:deny:1" style="danger"' in html
+    assert 'data="sc:cancel:9" style="danger"' in html
+    assert 'data="sc:always:9" style="primary"' in html
+    assert 'data="mp:slug" style="primary"' in html
+    assert '<tg-button type="disabled">1/3</tg-button>' in html  # mx:noop page counter
+    assert 'data="mb" style="link"' in html
+    assert 'data="mx" style="danger"' in html
+    assert 'data="mpv:2" style="link"' in html
+    assert 'data="mg:4" style="link"' in html
+    assert 'data="update_prompt:y" style="success"' in html
+    assert 'data="update_prompt:n" style="danger"' in html
+    # Label-inference words ("Отмена" ~ cancel) never leak into semantic mode.
+    assert html.count('style="danger"') == 4  # ea:deny, sc:cancel, mx, update_prompt:n
+
+
+def test_plain_dicts_keep_legacy_label_inference_no_semantics():
+    """Non-wrapper callers keep the generic converter behavior: no semantic styles,
+    label inference still applies ("Cancel" → danger)."""
+    html = rich_control_html("t", None, keyboard((("Cancel", "cp:0"),)))
+    assert 'style="danger"' in html
+    html2 = rich_control_html("t", None, keyboard((("Neutral", "mp:0"),)))
+    assert "style" not in html2  # selection callback in generic mode: no style
+
+
+def test_overrides_drive_selected_and_disabled_not_labels():
+    markup = _native_markup(
+        [(("✓ Provider A", "mp:a"), ("Provider B", "mp:b"))],
+        overrides={"mp:a": {"style": "primary", "disabled": False},
+                   "mp:b": {"disabled": True}})
+    html = rich_control_html("t", None, markup)
+    assert 'data="mp:a" style="primary"' in html
+    assert '<tg-button type="disabled">Provider B</tg-button>' in html
+
+
+def test_row_contents_interleave_per_source_row_verbatim():
+    """Fragments (already escaped) render directly before their row's buttons; the
+    body does not duplicate them; a split row's continuation gets no second copy."""
+    big_row = tuple((f"opt{i}", f"cl:1:{i}") for i in range(10))  # splits at 8
+    markup = _native_markup(
+        [big_row, (("Other", "cl:1:other"),)],
+        row_contents=["1. First &amp; escaped", "", "unrelated"], rich_text="❓ Q")
+    html = rich_control_html("FULL LEGACY BODY WITH OPTIONS", "HTML", markup)
+    assert html.startswith("❓ Q\n")  # rich_text replaced the body
+    assert "FULL LEGACY BODY" not in html
+    lines = html.split("\n")
+    assert lines[0] == "❓ Q"
+    assert lines[1] == "1. First &amp; escaped"  # verbatim, never re-escaped
+    assert "<tg-button-row" in lines[2]  # fragment sits directly above its row
+    # Second split row: no repeated fragment (source row 0 already rendered its copy).
+    assert "1. First" not in html.split("1. First &amp; escaped", 1)[1]
+    assert lines[-1].endswith("</tg-button-row>")
+
+
+def test_wrapper_default_alignment_is_left_and_malformed_base_declines():
+    """No explicit alignment → every row aligns left (native contract), never the
+    client's guess; an invalid explicit global align keeps the client default. A
+    non-dict malformed legacy base makes to_dict() return it verbatim so the
+    converter/gate DECLINES (unsupported → legacy fallback), not an empty keyboard."""
+    wrapped = _native_markup([(("A", "mp:a"),)])
+    html = rich_control_html("t", None, wrapped)
+    assert html.count('<tg-button-row align="left">') == 1
+    aligned = _native_markup([(("A", "mp:a"),)], row_alignments=["center"])
+    assert rich_control_html("t", None, aligned).count('<tg-button-row align="center">') == 1
+    bad = NativeControlMarkup("not-a-markup")
+    assert bad.to_dict() == "not-a-markup"
+    assert rich_control_markup_supported(bad) is False
+
+
+@pytest.mark.asyncio
+async def test_rich_edit_refuses_unsupported_markup_without_dropping_actions():
+    """A pagination edit carrying an unrepresentable button must NOT rich-edit
+    (silent action drop) — it falls back to the legacy edit (None)."""
+    host = Host()
+    host.register_rich_control_message(123, 555)
+    markup = {"inline_keyboard": [[{"text": "Pay", "pay": True}]]}
+    assert await host._edit_control_rich(123, 555, "p2", None, markup) is None
+    assert host._bot.do_api_request.call_count == 0
+    assert host.is_rich_control_message(123, 555)  # gate refusal ≠ registry loss
+
+
+@pytest.mark.asyncio
+async def test_facade_permanent_fallback_unwraps_wrapper_and_forgets_registry():
+    """Permanent rich rejection → legacy edit carries the RAW keyboard (no
+    rich-only metadata) and the registry entry is dropped: later pagination
+    edits must not treat the legacy message as rich."""
+    host = Host()
+    host._bot.do_api_request = AsyncMock(side_effect=RuntimeError("Bad Request: rich unsupported"))
+    host.register_rich_control_message(123, 555)
+    raw_edit = AsyncMock()
+    query = SimpleNamespace(message=SimpleNamespace(chat_id=123, message_id=555), edit_message_text=raw_edit)
+    facade = host.wrap_rich_control_query(query)
+    legacy_kb = {"inline_keyboard": [[{"text": "A", "callback_data": "mp:a"}]]}
+    wrapped = NativeControlMarkup(legacy_kb, overrides={"mp:a": {"disabled": True}},
+                                  row_contents=["frag"], rich_text="rich")
+    await facade.edit_message_text(text="p2", parse_mode="HTML", reply_markup=wrapped)
+    raw_edit.assert_awaited_once_with(text="p2", parse_mode="HTML", reply_markup=legacy_kb)
+    assert not host.is_rich_control_message(123, 555)
+
+
+@pytest.mark.asyncio
+async def test_facade_transient_failure_keeps_registry_and_raises():
+    host = Host()
+    host._bot.do_api_request = AsyncMock(side_effect=TimeoutError("t"))
+    host.register_rich_control_message(123, 555)
+    raw_edit = AsyncMock()
+    query = SimpleNamespace(message=SimpleNamespace(chat_id=123, message_id=555), edit_message_text=raw_edit)
+    facade = host.wrap_rich_control_query(query)
+    with pytest.raises(TimeoutError):
+        await facade.edit_message_text(text="x", reply_markup=None)
+    raw_edit.assert_not_awaited()
+    assert host.is_rich_control_message(123, 555)  # ambiguous: registry entry stays
+
+
+@pytest.mark.asyncio
+async def test_prefix_upgrade_wraps_unregistered_control_when_rich_enabled():
+    """A built-in control callback on an UNREGISTERED (restart-era legacy) message
+    gets the rich facade while rich_controls is on — the next edit upgrades it in
+    place and registers it; the wrapper never reaches a raw PTB serialization."""
+    host = Host()
+    legacy_kb = {"inline_keyboard": [[{"text": "A", "callback_data": "mp:a"}]]}
+    query = SimpleNamespace(data="mp:a", message=SimpleNamespace(chat_id=123, message_id=555),
+                            edit_message_text=AsyncMock())
+    facade = host.wrap_rich_control_query(query)
+    assert facade is not query and facade.is_rich_control is True
+    await facade.edit_message_text(text="p2", parse_mode="HTML", reply_markup=NativeControlMarkup(legacy_kb))
+    html = host._bot.do_api_request.call_args.kwargs["api_kwargs"]["rich_message"]["html"]
+    assert '<tg-button type="callback_data" data="mp:a" style="primary">A</tg-button>' in html
+    assert host.is_rich_control_message(123, 555)  # pagination edit registered the upgraded message
+    query.edit_message_text.assert_not_awaited()  # never the raw PTB path
+
+
+@pytest.mark.asyncio
+async def test_prefix_upgrade_off_foreign_or_private_keeps_raw_query():
+    """rich_controls off, a foreign callback prefix, a missing message, or a private
+    control (ephemeral facade) → the raw query, untouched."""
+    off = Host(rich_controls=False)
+    q = SimpleNamespace(data="mp:a", message=SimpleNamespace(chat_id=1, message_id=2))
+    assert off.wrap_rich_control_query(q) is q
+    host = Host()
+    foreign = SimpleNamespace(data="zz:9", message=SimpleNamespace(chat_id=1, message_id=2))
+    assert host.wrap_rich_control_query(foreign) is foreign
+    no_message = SimpleNamespace(data="mp:a", message=SimpleNamespace(chat_id=None, message_id=None))
+    assert host.wrap_rich_control_query(no_message) is no_message
+    private = SimpleNamespace(data="mp:a", is_private_control=True,
+                              message=SimpleNamespace(chat_id=1, message_id=2))
+    assert host.wrap_rich_control_query(private) is private

@@ -43,7 +43,7 @@ parameter on ``do_api_request``), and captions through
 
 Parent integration (this module edits no adapter/gateway file): mixin first in
 the ``TelegramAdapter`` bases; ``__init__`` sets ``self._private_controls =
-self._coerce_bool_extra("private_controls", False)``; ``_send_control_message``
+self._coerce_bool_extra("private_controls", False)``; ``_send_control_message_routed``
 calls ``private_control_requested`` → ``_send_private_control`` BEFORE the
 public send (failures via ``send_private_control_prompt``'s decline contract —
 never a public fallback; ``send()`` fails closed on
@@ -533,6 +533,11 @@ class TelegramPrivateControlsMixin:
                     raise PrivateControlError("missing_ephemeral_message_id")
 
         send_kwargs["api_kwargs"] = merged_api_kwargs
+        if "reply_markup" in send_kwargs:
+            # ``_serialize_markup`` unwraps a ``NativeControlMarkup`` (rich-only
+            # disabled/style/row-contents metadata is invalid on a legacy send)
+            # and serializes the raw keyboard.
+            send_kwargs["reply_markup"] = _serialize_markup(send_kwargs["reply_markup"])
         try:
             message = await _bounded_api_call(
                 self._bot.send_message(**send_kwargs), label="telegram-private-control")
@@ -802,7 +807,13 @@ class _HandleFacade:
 
 
 def _serialize_markup(reply_markup: Any) -> Any:
-    """``to_dict()`` when available (PTB InlineKeyboardMarkup), else the value as-is."""
+    """Legacy serialization for the plain (non-rich) egress paths: unwrap a
+    ``NativeControlMarkup`` to its raw legacy keyboard first (``legacy_control_markup``),
+    then ``to_dict()`` when available (PTB InlineKeyboardMarkup), else the value as-is.
+    Rich-only metadata (disabled carriers, semantic styles, row contents/alignment,
+    ``rich_text``) never rides a legacy ``reply_markup`` payload."""
+    from plugins.platforms.telegram.telegram_rich_controls import legacy_control_markup
+    reply_markup = legacy_control_markup(reply_markup)
     to_dict = getattr(reply_markup, "to_dict", None)
     if callable(to_dict):
         try:

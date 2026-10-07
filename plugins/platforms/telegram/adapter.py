@@ -183,7 +183,8 @@ from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInbound
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_generation import TelegramGenerationMixin
 from plugins.platforms.telegram.telegram_private_controls import TelegramPrivateControlsMixin
-from plugins.platforms.telegram.telegram_rich_controls import TelegramRichControlsMixin
+from plugins.platforms.telegram.telegram_rich_controls import (
+    NativeControlMarkup, TelegramRichControlsMixin, legacy_control_markup)
 from plugins.platforms.telegram.telegram_rich_media import (
     RichMediaError, TelegramRichMediaMixin, _RichMediaTransient, content_needs_rich_media, media_ref_html, rich_media_spec)
 from plugins.platforms.telegram.telegram_network import (
@@ -406,7 +407,7 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
-    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns, convert_table_to_bullets as _wrap_markdown_tables)
+    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, bounded_put, compile_mention_patterns, convert_table_to_bullets as _wrap_markdown_tables)
 
 # Rich-message regions whose internal newlines must stay bare (Telegram renders them natively):
 # fenced code blocks OR GFM pipe-table blocks (header row, delimiter row, data rows).
@@ -4181,20 +4182,6 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
                     self._bot.send_message(**retry_kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
             raise
 
-    async def _send_control_message(
-        self, chat_id: str, text: str, *, parse_mode: Any, thread_id: Optional[str], metadata: Optional[Dict[str, Any]],
-        reply_markup: Any = None, reply_to_mode: Optional[str] = None):
-        """Send a control-style message (prompt/picker) with topic routing + thread fallback."""
-        reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=reply_to_mode)
-        kwargs: Dict[str, Any] = {
-            "chat_id": normalize_telegram_chat_id(chat_id), "text": text, "parse_mode": parse_mode, **self._link_preview_kwargs()}
-        if reply_markup is not None:
-            kwargs["reply_markup"] = reply_markup
-        kwargs["reply_to_message_id"] = reply_to_id
-        kwargs.update(self._thread_kwargs_for_send(
-            chat_id, thread_id, metadata, reply_to_message_id=reply_to_id, reply_to_mode=reply_to_mode))
-        return await self._send_message_with_thread_fallback(**kwargs)
-
     async def _send_control_message_routed(
         self, chat_id: str, text: str, *, parse_mode: Any, thread_id: Optional[str], metadata: Optional[Dict[str, Any]],
         reply_markup: Any = None, reply_to_mode: Optional[str] = None, on_sent: Any = None):
@@ -4227,6 +4214,7 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
                 if message is not None:
                     return message
             return rich_result
+        kwargs["reply_markup"] = legacy_control_markup(kwargs.get("reply_markup"))
         return await self._send_message_with_thread_fallback(**kwargs)
 
     async def _send_prompt(self, what: str, chat_id: str, metadata: Optional[Dict[str, Any]], build, *,
@@ -4258,13 +4246,25 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
         """2-per-row layout keeps labels readable on mobile (a 4-button row truncates)."""
         return [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
 
+    def _native_control_markup(self, rows: list, *, overrides=None, row_contents=None, rich_text=None,
+                               row_alignments=None):
+        """Keep legacy actions intact; native presentation never leaks into legacy requests."""
+        legacy = InlineKeyboardMarkup(rows)
+        if not self._rich_controls_enabled():
+            return legacy
+        return NativeControlMarkup(legacy, overrides=overrides, row_contents=row_contents,
+                                   rich_text=rich_text, row_alignments=row_alignments)
+
+    def _selection_rows(self, buttons: list) -> list:
+        return [[button] for button in buttons] if self._rich_controls_enabled() else self._rows_of_two(buttons)
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "", metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an inline-keyboard Yes/No prompt for the gateway ``/update`` watcher."""
         def build():
             default_hint = t("platform.telegram.prompt.default_hint", default=default) if default else ""
             text = self.format_message(f"☤ *{t('platform.telegram.prompt.update_header')}*\n\n{prompt}{default_hint}")
-            keyboard = InlineKeyboardMarkup([[
+            keyboard = self._native_control_markup([[
                 InlineKeyboardButton(t("platform.telegram.prompt.affirm"), callback_data="update_prompt:y"),
                 InlineKeyboardButton(t("platform.telegram.prompt.negate"), callback_data="update_prompt:n")]])
             return text, keyboard, None
@@ -4319,7 +4319,7 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
             approval_id = next(self._approval_counter)
             buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
                        for label, choice, _ in prompt.actions]
-            return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), (
+            return prompt.text, self._native_control_markup(self._selection_rows(buttons)), (
                 lambda msg: self._approval_state.__setitem__(approval_id, prompt.session_key))
         return await self._send_prompt(
             "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
@@ -4330,12 +4330,12 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Render a three-button slash-command confirmation prompt."""
         def build():
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(t("platform.telegram.slash_confirm.approve_once"), callback_data=f"sc:once:{confirm_id}"),
-                    InlineKeyboardButton(t("platform.telegram.slash_confirm.always_approve"), callback_data=f"sc:always:{confirm_id}")],
-                [InlineKeyboardButton(t("platform.telegram.slash_confirm.cancel"), callback_data=f"sc:cancel:{confirm_id}")],
-           ])
+            buttons = [
+                InlineKeyboardButton(t("platform.telegram.slash_confirm.approve_once"), callback_data=f"sc:once:{confirm_id}"),
+                InlineKeyboardButton(t("platform.telegram.slash_confirm.always_approve"), callback_data=f"sc:always:{confirm_id}")]
+            rows = self._selection_rows(buttons)
+            rows.append([InlineKeyboardButton(t("platform.telegram.slash_confirm.cancel"), callback_data=f"sc:cancel:{confirm_id}")])
+            keyboard = self._native_control_markup(rows)
             # Budget the MarkdownV2 rendering (escaping expands text), not the raw message.
             preview = self.format_message(self._ea_fit(
                 message, self.MAX_MESSAGE_LENGTH - utf16_len(self.format_message("...")), escape=self.format_message))
@@ -4357,8 +4357,15 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
                 rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
                 rows.append([InlineKeyboardButton(t("platform.telegram.prompt.other"), callback_data=f"cl:{clarify_id}:other")])
-                keyboard = InlineKeyboardMarkup(rows)
-            return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)
+                keyboard = self._native_control_markup(
+                    rows, rich_text=f"❓ {_html.escape(question)}",
+                    row_contents=[f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices)] + [""])
+            def remember(msg):
+                self._clarify_state[clarify_id] = session_key
+                if not hasattr(self, "_clarify_prompt_context"):
+                    self._clarify_prompt_context = {}
+                bounded_put(self._clarify_prompt_context, clarify_id, text, 512)
+            return text, keyboard, remember
         return await self._send_prompt(
             "send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))
 
@@ -4406,7 +4413,10 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
                 buttons.append(InlineKeyboardButton(label, callback_data=f"cp:{i}"))
             if not buttons:
                 return SendResult(success=False, error="No choices")
-            keyboard = InlineKeyboardMarkup(self._rows_of_two(buttons))
+            keyboard = self._native_control_markup(
+                self._selection_rows(buttons), overrides={
+                    f"cp:{i}": {"disabled": True, "style": "success"}
+                    for i, choice in enumerate(choices) if choice.get("is_current")})
 
             def _remember(msg):
                 self._choice_picker_state[str(chat_id)] = {
@@ -4421,6 +4431,8 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
         try:
             await query.edit_message_text(text=self.format_message(result_text), parse_mode=ParseMode.MARKDOWN_V2, reply_markup=None)
         except Exception:
+            if getattr(query, "is_rich_control", False) is True or getattr(query, "is_private_control", False) is True:
+                raise  # A lost rich/private edit acknowledgement is not permission to race another edit.
             with contextlib.suppress(Exception):
                 await query.edit_message_text(text=result_text, parse_mode=None, reply_markup=None)
 
@@ -4473,12 +4485,15 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
     def _picker_back_cancel_row() -> list:
         return [InlineKeyboardButton(t("platform.telegram.picker.back"), callback_data="mb"), InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")]
 
-    def _paged_keyboard(self, buttons: list, page_meta: dict, nav_prefix: str, tail_row: list) -> tuple:
-        rows = self._rows_of_two(buttons)
+    def _paged_keyboard(self, buttons: list, page_meta: dict, nav_prefix: str, tail_row: list, *, overrides=None) -> tuple:
+        rows = self._selection_rows(buttons)
+        alignments = ["left"] * len(rows)
         if page_meta["total_pages"] > 1:
             rows.append(self._picker_nav_row(page_meta["page"], page_meta["total_pages"], nav_prefix))
+            alignments.append("center")
         rows.append(tail_row)
-        return InlineKeyboardMarkup(rows), page_meta["page_info"]
+        alignments.append("right")
+        return self._native_control_markup(rows, overrides=overrides, row_alignments=alignments), page_meta["page_info"]
 
     def _build_provider_keyboard(self, providers: list, page: int = 0) -> tuple:
         """Paginated top-level provider keyboard folding provider families (Kimi/Moonshot, MiniMax, xAI…)
@@ -4488,6 +4503,7 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
         except Exception:
             group_providers = None
         by_slug = {p.get("slug"): p for p in providers}
+        overrides = {f"mp:{p['slug']}": {"style": "success"} for p in providers if p.get("is_current")}
         buttons: list = []
         if group_providers is not None:
             for row in group_providers([p.get("slug") for p in providers]):
@@ -4498,6 +4514,8 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
                     if any(m.get("is_current") for m in members):
                         label = f"✓ {label}"
                     buttons.append(InlineKeyboardButton(label, callback_data=f"mpg:{row['group_id']}"))
+                    if any(m.get("is_current") for m in members):
+                        overrides[f"mpg:{row['group_id']}"] = {"style": "success"}
                 else:
                     p = by_slug.get(row["slug"])
                     if p is not None:
@@ -4505,19 +4523,24 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
         else:
             buttons = [self._provider_button(p) for p in providers]
         page_buttons, page_meta = self._format_choice_page(buttons, page, self._PROVIDER_PAGE_SIZE)
-        return self._paged_keyboard(page_buttons, page_meta, "mpv", [InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")])
+        return self._paged_keyboard(page_buttons, page_meta, "mpv",
+            [InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")], overrides=overrides)
 
-    def _build_model_keyboard(self, models: list, page: int) -> tuple:
+    def _build_model_keyboard(self, models: list, page: int, *, current_model: str = "") -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
         page_models, page_meta = self._format_choice_page(models, page, self._MODEL_PAGE_SIZE)
         start = page_meta["start"]
         buttons: list = []
         for i, model_id in enumerate(page_models):
-            short = model_id.split("/")[-1] if "/" in model_id else model_id
-            if len(short) > 38:
+            short = model_id if self._rich_controls_enabled() else model_id.split("/")[-1]
+            if not self._rich_controls_enabled() and len(short) > 38:
                 short = short[:35] + "..."
+            if current_model and model_id == current_model:
+                short = f"✓ {short}"
             buttons.append(InlineKeyboardButton(short, callback_data=f"mm:{start + i}"))
-        return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row())
+        overrides = {f"mm:{start + i}": {"disabled": True, "style": "success"}
+                     for i, model in enumerate(page_models) if current_model and model == current_model}
+        return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row(), overrides=overrides)
 
     async def _picker_edit(self, query, text_md: str, keyboard) -> None:
         """Re-render the picker message in place (MarkdownV2) and ack the tap."""
@@ -4528,7 +4551,8 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
         """Render the model page for the provider currently selected in ``state``."""
         models = state.get("model_list", [])
         state["model_page"] = page
-        keyboard, page_info = self._build_model_keyboard(models, page)
+        current_model = state.get("current_model", "") if state.get("selected_provider") == state.get("current_provider") else ""
+        keyboard, page_info = self._build_model_keyboard(models, page, current_model=current_model)
         pname = state.get("selected_provider_name", "")
         provider_slug = state.get("selected_provider", "")
         provider = next((p for p in state["providers"] if p["slug"] == provider_slug), None)
@@ -4639,7 +4663,7 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
             except Exception:
                 warning = None
             if warning is not None:
-                keyboard = InlineKeyboardMarkup([
+                keyboard = self._native_control_markup([
                     [InlineKeyboardButton(t("platform.telegram.picker.switch_anyway"), callback_data=f"mc:{idx}")], self._picker_back_cancel_row()])
                 await query.edit_message_text(
                     text=self.format_message(f"⚠ *{warning.title}*\n\n{warning.message}"),
@@ -4659,14 +4683,15 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
             if not members:
                 await query.answer(text=_toast("platform.telegram.picker.group_not_found"))
                 return
-            rows = self._rows_of_two([self._provider_button(p) for p in members])
+            rows = self._selection_rows([self._provider_button(p) for p in members])
             rows.append(self._picker_back_cancel_row())
             await self._picker_edit(
                 query,
                 f"⚙ *{t('platform.telegram.picker.title')}*\n\n"
                 f"{t('platform.telegram.picker.provider_family', family=f'*{_label or group_id}*')}\n\n"
                 f"{t('platform.telegram.picker.select_provider')}",
-                InlineKeyboardMarkup(rows))
+                self._native_control_markup(rows, overrides={
+                    f"mp:{p['slug']}": {"style": "success"} for p in members if p.get("is_current")}))
         elif data == "mb":  # back to provider list (folds groups)
             await self._picker_show_providers(query, state, int(state.get("provider_page", 0) or 0), get_label)
         elif data == "mx":
@@ -4676,13 +4701,13 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
         else:
             await query.answer()  # e.g. page-counter button "mx:noop"
 
-    async def _notify_clarify_expired(self, query, user_display: str) -> None:
+    async def _notify_clarify_expired(self, query, user_display: str, prompt_context: str = "") -> None:
         """Tell the user a clarify tap arrived too late (entry evicted or gateway restarted) — otherwise
         the tap leaves a misleading ✓ the agent never sees."""
         with contextlib.suppress(Exception):
             await query.answer(text=_toast("platform.telegram.prompt.expired_toast"))
         await self._edit_html_quiet(
-            query, f"❓ {_html.escape(query.message.text or '')}\n\n<i>{_html.escape(t('platform.telegram.prompt.expired_body'))}</i>")
+            query, f"{prompt_context or _html.escape(query.message.text or '')}\n\n<i>{_html.escape(t('platform.telegram.prompt.expired_body'))}</i>")
 
     @staticmethod
     async def _edit_html_quiet(query, text: str) -> None:
@@ -4929,6 +4954,7 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
         if not session_key:
             return
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
+        prompt_context = getattr(self, "_clarify_prompt_context", {}).get(clarify_id) or _html.escape(query.message.text or "")
         if choice_token == "other":
             # Flip to text-capture: the gateway's text-intercept resolves the clarify with the next message.
             # Do NOT pop _clarify_state yet — still needed if the entry gets cleared by something else.
@@ -4941,12 +4967,13 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
             if not flipped:
                 # Entry evicted / gateway restarted — a typed answer would go nowhere.
                 self._clarify_state.pop(clarify_id, None)
-                await self._notify_clarify_expired(query, user_display)
+                getattr(self, "_clarify_prompt_context", {}).pop(clarify_id, None)
+                await self._notify_clarify_expired(query, user_display, prompt_context)
                 return
             await query.answer(text=_toast("platform.telegram.prompt.type_answer"))
             await self._edit_html_quiet(
                 query,
-                f"❓ {query.message.text or ''}\n\n"
+                f"{prompt_context}\n\n"
                 f"<i>{_html.escape(t('platform.telegram.prompt.awaiting_typed', user=user_display))}</i>")
             return
         # Numeric choice → resolve immediately with the chosen text
@@ -4967,6 +4994,7 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
             # Race (timeout / session reset): echo the index so the agent sees an intentional response.
             resolved_text = f"choice {idx + 1}"
         self._clarify_state.pop(clarify_id, None)
+        getattr(self, "_clarify_prompt_context", {}).pop(clarify_id, None)
         try:
             from tools.clarify_gateway import resolve_gateway_clarify
             resolved = resolve_gateway_clarify(clarify_id, resolved_text)
@@ -4976,11 +5004,11 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
         if resolved:
             await query.answer(text=f"✓ {resolved_text[:60]}")
             await self._edit_html_quiet(
-                query, f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}")
+                query, f"{prompt_context}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}")
             logger.info("Telegram clarify button resolved (id=%s, choice=%r, user=%s)", clarify_id, resolved_text, user_display)
         else:
             # Entry evicted / gateway restarted between ask and tap.
-            await self._notify_clarify_expired(query, user_display)
+            await self._notify_clarify_expired(query, user_display, prompt_context)
             logger.warning("Telegram clarify button: resolve_gateway_clarify returned False (id=%s)", clarify_id)
 
     async def _handle_update_prompt_callback(self, query, data: str, cb: Dict[str, Any]) -> None:

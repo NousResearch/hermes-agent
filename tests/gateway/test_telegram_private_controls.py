@@ -767,3 +767,47 @@ async def test_ephemeral_replacement_rich_failure_keeps_same_private_target(perm
         assert "rich_message" not in bot.api_calls[-1][1]
     else:
         assert declined_send(result)
+
+
+@pytest.mark.asyncio
+async def test_private_plain_paths_strip_native_wrapper_rich_metadata():
+    """A ``NativeControlMarkup`` riding a private control send/edit: the RICH path
+    renders its buttons natively; the PLAIN fallback (flag off / permanent rich
+    rejection) carries the raw legacy keyboard only — the wrapper's rich-only
+    metadata (disabled carriers, semantic styles, row contents, rich_text) never
+    reaches an ephemeral sendMessage/edit payload, and the plain send keeps the
+    full legacy body (rich_text never replaces it)."""
+    from plugins.platforms.telegram.telegram_rich_controls import NativeControlMarkup
+    legacy_kb = {"inline_keyboard": [[{"text": "Approve", "callback_data": "ea:once:7"}]]}
+    wrapped = NativeControlMarkup(legacy_kb, overrides={"ea:once:7": {"disabled": True}},
+                                  row_contents=["frag"], rich_text="rich only body")
+
+    # Rich path: native buttons from the wrapper, exclusive rich_message form.
+    rich_bot = _Bot(api_result={"message_id": 0, "chat_id": -100,
+                                "api_kwargs": {"receiver_user": {"id": 111}, "ephemeral_message_id": 7}})
+    rich_adapter = _rich_adapter(rich_bot)
+    await rich_adapter._send_private_control(
+        {"chat_id": -100, "text": "full legacy body", "parse_mode": "HTML", "reply_markup": wrapped}, _meta())
+    method, payload = rich_bot.api_calls[0]
+    assert method == "sendRichMessage"
+    assert '<tg-button type="disabled">Approve</tg-button>' in payload["rich_message"]["html"]
+
+    # Plain fallback (flag off): raw keyboard, full body, no rich-only keys.
+    plain_bot = _Bot(send_result=_eph_msg())
+    plain_adapter = _rich_adapter(plain_bot, enabled=False)
+    await plain_adapter._send_private_control(
+        {"chat_id": -100, "text": "full legacy body", "parse_mode": "HTML", "reply_markup": wrapped}, _meta())
+    sent = plain_bot.send_kwargs
+    assert sent["text"] == "full legacy body"  # rich_text never leaks into the legacy send
+    assert sent["reply_markup"] is legacy_kb
+
+    # Plain ephemeral edit fallback (permanent rich rejection): raw keyboard only.
+    perm_bot = _Bot()
+    perm_bot.api_errors.append(RuntimeError("rich not supported"))
+    perm_adapter = _rich_adapter(perm_bot, classifier=lambda exc: "rich not supported" in str(exc))
+    wrapped_query = perm_adapter.wrap_private_control_query(_query(111, _eph_msg()))
+    assert await wrapped_query.edit_message_text("✓", parse_mode="HTML", reply_markup=wrapped) is True
+    rich_call, plain_call = perm_bot.api_calls
+    assert rich_call[0] == "editEphemeralMessageText" and "rich_message" in rich_call[1]
+    assert plain_call[1]["text"] == "✓"
+    assert plain_call[1]["reply_markup"] is legacy_kb  # unwrapped: no disabled/style/fragments

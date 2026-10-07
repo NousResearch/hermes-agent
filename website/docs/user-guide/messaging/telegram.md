@@ -1114,7 +1114,7 @@ Delivery addressing: when the **bot is a chat administrator**, it can send a req
 
 ### Rich action controls (`rich_controls`, Bot API 10.3)
 
-With `telegram.extra.rich_controls: true`, interactive controls are sent as **rich messages** with native `<tg-button-row>` action buttons — Telegram's own button rendering for rich messages, including visual accents (approve/confirm buttons get a success accent, cancel/deny a danger accent; everything else stays neutral).
+With `telegram.extra.rich_controls: true`, all built-in interactive menus use native `<tg-button-row>` controls inside rich messages: model/provider pickers, flat choice pickers (`/reasoning`, `/fast`), execution approvals, slash-command confirmations, clarification prompts and update prompts. This flag is independent of `rich_messages`; changing it requires a gateway restart. Existing public menus upgrade on their next supported callback edit, while new menus use the native layout from their first send.
 
 ```yaml
 gateway:
@@ -1123,6 +1123,15 @@ gateway:
       extra:
         rich_controls: true
 ```
+
+**Native menu layout and states:**
+
+- Provider/model and flat-choice selectors use one button per row, keeping long labels readable. Model identifiers are not manually truncated in rich mode. The current provider remains clickable so its models can be opened; the current model and current flat-choice value are marked with `✓`, success-styled and disabled.
+- Pagination controls are centered; the page counter is a disabled button, not a no-op callback. Back/cancel controls are separate from selection rows. Navigation uses link styling, selection uses primary, one-time approval uses success, persistent approval uses primary, and cancel/deny uses danger. Styles come from the action, not translated button text.
+- Clarification prompts place each escaped option immediately before its own button, with the free-text answer action after the options. Legacy fallback retains the full numbered question and ordinary keyboard.
+- Approval and confirmation actions have their own rows; terminal resolution replaces the same message with its result and removes the controls. Callback identifiers, approval semantics and authorization remain unchanged.
+
+With the flag off, ordinary inline keyboards remain available. A permanent rich rejection also restores ordinary keyboards with no rich-only fields; an ambiguous failure never triggers a second send. Telegram clients own the final rendering of native styles and alignment.
 
 The converter covers **all** RichMessageButton action kinds, not just callbacks: `callback_data`, `url`, `web_app`, `login_url`, `switch_inline_query` (and the `_current_chat` / `_chosen_chat` variants), `copy_text`, and `disabled`. A button carrying an action the converter cannot represent (e.g. callback_game or pay) makes the **whole prompt** fall back to the legacy inline-keyboard path — a user action is never silently dropped.
 

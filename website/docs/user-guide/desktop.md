@@ -513,6 +513,12 @@ You can also set the backend URL without the UI via the `HERMES_DESKTOP_REMOTE_U
 The remote gateway host is configured per [profile](./profiles.md), so each profile can point at its own remote backend (or stay on its local one). Switching profiles switches which remote host the app connects to.
 :::
 
+### Multiple Desktop clients, one backend
+
+Yes, several Desktop installations can connect to the same `hermes serve` process at once — that's the normal shape of a remote/shared backend, not an edge case. Each WebSocket connection gets its own transport, and sessions, approvals, and in-flight tool state are tracked per session id rather than globally, so concurrent clients don't step on each other's turns. Profile selection is also resolved per connection, so one unified backend can host a private profile per person plus a shared profile simultaneously — you don't need a separate `hermes serve` process just to add another profile.
+
+What a **unified** backend (the default; no `--isolated`) does not give you is per-person access control: it has one auth gate — one username/password pair, or one OAuth realm — for the whole process, not one per profile. Anyone who authenticates can see every profile's session list via the sidebar, not just the one they're working in. If the profiles genuinely need to stay private *from each other* (not just organized separately), don't rely on "different profile" as an access boundary between mutually-untrusted people on a unified server. The supported way to get a real auth boundary per profile is a dedicated `hermes serve --isolated` process per profile (its own port, its own credentials) — see `--isolated` under [Web Dashboard → Options](./features/web-dashboard.md#options). That mode currently has its own cross-profile visibility gap tracked in [#76932](https://github.com/NousResearch/hermes-agent/issues/76932); check its status before depending on it for isolation between people who shouldn't see each other's sessions.
+
 ### Troubleshooting
 
 ### Window context unavailable on Windows ARM64

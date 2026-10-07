@@ -550,7 +550,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     [update]
   )
 
-  const reloadFromMessage = useCallback(
+  // answeredFor is internal (the 4033 re-run); assistant-ui calls onReload(parentId, config).
+  const runReload = useCallback(
     async (parentId: string | null, answeredFor?: ChatMessage[]): Promise<void> => {
       const state = readState()
       const runtimeId = runtimeIdRef.current
@@ -609,15 +610,16 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         } else if ((await confirmDeep()) && runtimeIdRef.current === runtimeId) {
           // Re-run from the top: the session is re-read and re-validated after this wait. The answer
           // belongs to this runtime: a rebind during the dialog drops it.
-          await reloadFromMessageRef.current(parentId, messages)
+          await runReloadRef.current(parentId, messages)
         }
       }
     },
     [applySurvivorRowIds, copy.regenerateFailed, readState, submitRewind, t, update]
   )
 
-  const reloadFromMessageRef = useRef(reloadFromMessage)
-  reloadFromMessageRef.current = reloadFromMessage
+  const runReloadRef = useRef(runReload)
+  runReloadRef.current = runReload
+  const reloadFromMessage = useCallback((parentId: string | null) => runReload(parentId), [runReload])
 
   const restoreToMessage = useCallback(
     async (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => {
@@ -708,7 +710,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     [applySurvivorRowIds, readMessages, readState, submitRewind, update]
   )
 
-  const editMessage = useCallback(
+  const runEdit = useCallback(
     async (edited: AppendMessage, answeredFor?: ChatMessage[]): Promise<void> => {
       const planning = readMessages()
       const confirmDeep = () => confirm(deepCutConfirmRequest(t.assistant.thread))
@@ -722,7 +724,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
       // Same re-aim as the primary edit: a stream may have grown the transcript during the confirm.
       const messages = forced.confirmDeepTruncate ? readMessages() : planning
-      const plan = messages === planning ? forced : revalidateEditPlan(forced, messages, edited)
+      const plan = messages === planning ? forced : revalidateEditPlan(forced, planning, messages, edited)
 
       if (!plan) {
         // The edited turn moved while the confirm was open: nothing was sent.
@@ -772,15 +774,16 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         } else if ((await confirmDeep()) && runtimeIdRef.current === sessionId) {
           // Re-run from the top: the session is re-read and re-validated after this wait. The answer
           // belongs to this runtime: a rebind during the dialog drops it.
-          await editMessageRef.current(edited, planning)
+          await runEditRef.current(edited, planning)
         }
       }
     },
     [applySurvivorRowIds, copy.editFailed, readMessages, readState, submitRewind, t, update]
   )
 
-  const editMessageRef = useRef(editMessage)
-  editMessageRef.current = editMessage
+  const runEditRef = useRef(runEdit)
+  runEditRef.current = runEdit
+  const editMessage = useCallback((edited: AppendMessage) => runEdit(edited), [runEdit])
 
   // Branch-visibility sync (assistant-ui hides non-active branches).
   const handleThreadMessagesChange = useCallback(

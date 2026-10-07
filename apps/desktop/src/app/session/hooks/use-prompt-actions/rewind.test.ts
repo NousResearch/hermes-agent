@@ -16,6 +16,7 @@ import {
   planRestore,
   rebindSurvivorRowIds,
   resolveDurableRowId,
+  revalidateEditPlan,
   runRewindSubmit,
   survivorRowIdsFrom,
   truncateSubmitParams
@@ -806,5 +807,29 @@ describe('edit and server-refusal confirms (#133716 review)', () => {
 
     expect(await planConfirmedEdit(transcript, editOf('u2'), decline)).toMatchObject({ confirmDeepTruncate: false })
     expect(asked).toBe(1)
+  })
+})
+
+describe('revalidateEditPlan (#133716)', () => {
+  const planned = [
+    row('u1', 'user', 'old prompt', { rowId: 11 }),
+    row('a1', 'assistant', 'old reply'),
+    row('u2', 'user', 'latest prompt', { rowId: 13 }),
+    row('a2', 'assistant', 'latest reply')
+  ]
+
+  const edit = { role: 'user', sourceId: 'u1', parentId: null, content: [{ type: 'text', text: 'edited' }] } as never
+
+  it('follows a transcript a stream grew; refuses one that gained a later user turn', () => {
+    const plan = { ...planEdit(planned, edit)!, confirmDeepTruncate: true }
+    const streamed = [...planned, row('a2b', 'assistant', 'more')]
+
+    expect(revalidateEditPlan(plan, planned, streamed, edit)).toMatchObject({
+      confirmDeepTruncate: true,
+      truncateRowId: 11
+    })
+    expect(
+      revalidateEditPlan(plan, planned, [...streamed, row('u3', 'user', 'unseen', { rowId: 15 })], edit)
+    ).toBeNull()
   })
 })

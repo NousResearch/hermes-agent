@@ -1002,7 +1002,8 @@ export function usePromptActions({
     [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
   )
 
-  const reloadFromMessage = useCallback(
+  // answeredFor is internal (the 4033 re-run); assistant-ui calls onReload(parentId, config).
+  const runReload = useCallback(
     async (parentId: string | null, answeredFor?: ChatMessage[]): Promise<void> => {
       // Ref, not the closure-captured prop — a truncating resubmit aimed at a
       // stale session deletes the wrong transcript.
@@ -1062,15 +1063,16 @@ export function usePromptActions({
         } else if ((await confirmDeep()) && activeSessionIdRef.current === sessionId) {
           // Re-run from the top: the session is re-read and re-validated after this wait. The answer
           // belongs to this session: a switch during the dialog drops it.
-          await reloadFromMessageRef.current(parentId, messages)
+          await runReloadRef.current(parentId, messages)
         }
       }
     },
     [activeSessionIdRef, applySurvivorRowIds, copy.regenerateFailed, submitRewindPrompt, t, updateSessionState]
   )
 
-  const reloadFromMessageRef = useRef(reloadFromMessage)
-  reloadFromMessageRef.current = reloadFromMessage
+  const runReloadRef = useRef(runReload)
+  runReloadRef.current = runReload
+  const reloadFromMessage = useCallback((parentId: string | null) => runReload(parentId), [runReload])
 
   // Cursor-style "restore checkpoint": rewind the conversation to a past user
   // prompt and run it again from there. Reuses the edit composer's rewind
@@ -1204,7 +1206,7 @@ export function usePromptActions({
     ]
   )
 
-  const editMessage = useCallback(
+  const runEdit = useCallback(
     async (edited: AppendMessage, answeredFor?: ChatMessage[]): Promise<void> => {
       // Ref, not the closure-captured prop — an edit rewinds and resubmits, so
       // a stale target rewrites the wrong session's history.
@@ -1230,7 +1232,7 @@ export function usePromptActions({
       // re-aimed at the current transcript (a stream may have grown it) and dropped, with a notice,
       // only if the edited turn itself moved.
       const messages = forced.confirmDeepTruncate ? currentMessages(sessionId) : planning
-      const plan = messages === planning ? forced : revalidateEditPlan(forced, messages, edited)
+      const plan = messages === planning ? forced : revalidateEditPlan(forced, planning, messages, edited)
 
       if (!plan) {
         // The edited turn moved while the confirm was open: nothing was sent.
@@ -1357,7 +1359,7 @@ export function usePromptActions({
         } else if ((await confirmDeep()) && activeSessionIdRef.current === sessionId) {
           // Re-run from the top: the session is re-read and re-validated after this wait. The answer
           // belongs to this session: a switch during the dialog drops it.
-          await editMessageRef.current(edited, planning)
+          await runEditRef.current(edited, planning)
         }
       }
     },
@@ -1375,8 +1377,9 @@ export function usePromptActions({
     ]
   )
 
-  const editMessageRef = useRef(editMessage)
-  editMessageRef.current = editMessage
+  const runEditRef = useRef(runEdit)
+  runEditRef.current = runEdit
+  const editMessage = useCallback((edited: AppendMessage) => runEdit(edited), [runEdit])
 
   const handleThreadMessagesChange = useCallback(
     (nextMessages: readonly ThreadMessage[]) => {

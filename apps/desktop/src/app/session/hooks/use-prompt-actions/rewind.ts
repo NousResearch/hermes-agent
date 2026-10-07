@@ -747,16 +747,22 @@ export async function planConfirmedEdit(
  */
 export function revalidateEditPlan<P extends EditPlan>(
   plan: P,
+  planned: ChatMessage[],
   current: ChatMessage[],
   edited: AppendMessage
 ): P | null {
   const fresh = planEdit(current, edited)
 
+  const laterUsers = (messages: ChatMessage[], index: number) =>
+    messages.filter((m, i) => i > index && isVisibleUserMessage(m)).length
+
+  // A new later user turn landed during the confirm: the user never answered for archiving it.
   if (
     !fresh ||
     fresh.truncateMessageId !== plan.truncateMessageId ||
     fresh.truncateRowId !== plan.truncateRowId ||
-    fresh.truncateOrdinal !== plan.truncateOrdinal
+    fresh.truncateOrdinal !== plan.truncateOrdinal ||
+    laterUsers(current, fresh.sourceIndex) !== laterUsers(planned, plan.sourceIndex)
   ) {
     return null
   }

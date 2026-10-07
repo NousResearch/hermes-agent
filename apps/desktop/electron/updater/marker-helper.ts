@@ -18,7 +18,7 @@
  */
 
 import { type ChildProcess, spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { resolveUpdateScriptHandoff } from '../updater-process'
@@ -215,6 +215,69 @@ export function markerHelperCommand(
       ...(hasPid ? ['--desktop-pid', String(desktopPid)] : []),
       ...(runId ? ['--handoff-run', runId] : [])
     ]
+  }
+}
+
+/** First line as the scripts clean it: marker.sh `marker_line` (one CR, spaces/tabs); marker.ps1 `.Trim()`. */
+function scriptLine(text: string, isWindows: boolean): string {
+  const line = text.replace(/^\uFEFF/, '').split('\n')[0]
+
+  return isWindows ? line.trim() : line.replace(/\r$/, '').replace(/^[ \t]+|[ \t]+$/g, '')
+}
+
+/**
+ * The checkout lock exactly as marker.sh `checkout_lock_path` / marker.ps1
+ * `Get-CheckoutLockPath` resolve it (hermes_cli/update_lock.py::checkout_lock_path):
+ * `<git common dir>/hermes-update.lock`, else `<root>/.hermes-update.lock`.
+ * Throws when `.git` or `commondir` exists but cannot be read.
+ */
+export function checkoutLockPath(updateRoot: string, isWindows: boolean): string {
+  const dot = path.join(updateRoot, '.git')
+  const plain = path.join(updateRoot, '.hermes-update.lock')
+  const kind = statSync(dot, { throwIfNoEntry: false })
+  let gitdir = dot
+
+  if (kind?.isFile()) {
+    const line = scriptLine(readFileSync(dot, 'utf8'), isWindows)
+
+    // bash `case gitdir:*` is case-sensitive; PowerShell `-like` is not.
+    if (!(isWindows ? /^gitdir:/i : /^gitdir:/).test(line)) {
+      return plain
+    }
+
+    const named = scriptLine(line.slice(7), isWindows)
+
+    // marker.ps1 treats an empty `gitdir:` as no git dir; bash resolves it to the root.
+    if (isWindows && !named) {
+      return plain
+    }
+
+    gitdir = path.resolve(updateRoot, named)
+  } else if (!kind?.isDirectory()) {
+    return plain
+  }
+
+  const commondir = path.join(gitdir, 'commondir')
+
+  if (statSync(commondir, { throwIfNoEntry: false })?.isFile()) {
+    const common = scriptLine(readFileSync(commondir, 'utf8'), isWindows)
+    gitdir = common ? path.resolve(gitdir, common) : gitdir
+  }
+
+  return path.join(gitdir, 'hermes-update.lock')
+}
+
+/**
+ * False only when the scripts' `checkout_lock_held` would answer "not held"
+ * without trying the lock: no regular file at the checkout lock path
+ * (`[ -f ]` / `[IO.File]::Exists`). Anything it cannot settle (an unreadable
+ * `.git`, a stat error other than "missing") asks the script.
+ */
+export function checkoutLockMayBeHeld(updateRoot: string, isWindows: boolean): boolean {
+  try {
+    return statSync(checkoutLockPath(updateRoot, isWindows), { throwIfNoEntry: false })?.isFile() ?? false
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code !== 'ENOTDIR'
   }
 }
 

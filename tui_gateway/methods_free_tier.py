@@ -1,8 +1,9 @@
-"""Nous free-tier JSON-RPC handlers: a renderer reads the profile's local auth state (pull); nothing
-is pushed except the boot bootstrap's one ``setup.ready`` event. ``free_tier.status`` answers from the
+"""Nous free-tier JSON-RPC handlers. ``free_tier.status`` answers from the
 auth store with zero network and zero side effects; ``free_tier.provision`` is the explicit retry when
 the boot bootstrap could not create the identity (desktop-only entry); ``free_tier.ack_notice``
 persists the one-time notice flag on the free-tier identity itself, so it dies with that identity.
+``free_tier.challenge_result`` records a presentation hint for the pending attempt; the
+backend still exchanges with the portal to determine whether the credential is cleared.
 Bodies are rebound onto server.py's globals (method_ctx.bind_module) and reference them bare.
 """
 
@@ -39,6 +40,12 @@ def _(rid, params: dict) -> dict:
             # Why there is no identity, when the last attempt to make one failed:
             # ``{error, error_code, retryable, retry_after}`` (the mint memo's verdict).
             payload.update(anon_auth.last_mint_failure() or {})
+        # A browser challenge the account service is waiting on (``anon_challenge``): the same
+        # payload the ``free_tier.challenge`` event carried, for a client that connected after it.
+        from hermes_cli import anon_challenge
+        challenge = anon_challenge.pending_challenge()
+        if challenge:
+            payload["challenge"] = challenge
         return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5090, str(e))
@@ -86,6 +93,13 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"acked": bool(anon_auth.mark_guest_notice_shown())})
     except Exception as e:
         return _err(rid, 5091, str(e))
+
+
+@method("free_tier.challenge_result")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    from hermes_cli.anon_challenge import record_host_outcome
+    return _ok(rid, {"accepted": record_host_outcome(params["url"], params.get("attempt", 0), params["outcome"])})
 
 
 def register(server) -> None:

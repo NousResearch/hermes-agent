@@ -1608,8 +1608,7 @@ def _(rid, params: dict) -> dict:
     if bearer_token := params.get("bearer_token"):
         server_config["headers"] = mc._save_bearer_auth_token(name, str(bearer_token))
     saved_ok = mc._save_mcp_server(name, server_config)
-    source = "catalog" if entry is not None else ("url" if server_config.get("url") else "local")
-    catalog.record_mcp_install(source, entry.name if entry else None, "success" if saved_ok else "failed")
+    _tools_mod("tui_gateway.mcp_rpc_helpers").record_mcp_add(entry, server_config, saved_ok)
     if not saved_ok:
         return _err(rid, 4001, f"server '{name}' rejected: suspicious command/args configuration")
     saved = mc._get_mcp_servers().get(name, server_config)

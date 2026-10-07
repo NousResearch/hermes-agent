@@ -121,7 +121,19 @@ class CatalogEntry:
 
 
 class CatalogError(Exception):
-    """Manifest parse/validation failure or install error."""
+    """Manifest parse/validation failure or install error.
+
+    ``failure_class`` names the raise site for the extension-install metric (a closed name from
+    ``shared_metrics_contract.EXTENSION_MCP_FAILURE_CLASSES``): manifest problems are
+    ``config_invalid`` unless the site says otherwise.
+    """
+
+    failure_class = "config_invalid"
+
+    def __init__(self, *args, failure_class: Optional[str] = None):
+        super().__init__(*args)
+        if failure_class is not None:
+            self.failure_class = failure_class
 
 
 def _catalog_root() -> Path:
@@ -409,7 +421,7 @@ def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
         _say(f"  $ {cmd}", Colors.DIM)
         rc = subprocess.run(cmd, cwd=str(cwd), shell=True).returncode
         if rc != 0:
-            raise CatalogError(f"bootstrap step failed (exit {rc}): {cmd}")
+            raise CatalogError(f"bootstrap step failed (exit {rc}): {cmd}", failure_class="bootstrap_failed")
 
 
 def _do_git_install(entry: CatalogEntry) -> Path:
@@ -420,7 +432,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
 
     git = shutil.which("git")
     if not git:
-        raise CatalogError("git is required to install this MCP but was not found on PATH")
+        raise CatalogError("git is required to install this MCP but was not found on PATH", failure_class="git_missing")
     if dest.exists():
         # Fresh checkout each install — the manifest ref is the source of truth.
         _say(f"  Removing existing install at {dest}", Colors.DIM)
@@ -448,9 +460,9 @@ def _do_git_install(entry: CatalogEntry) -> Path:
         is_sha_ref = True
     if is_sha_ref:
         if _git("clone", install.url, str(dest)) != 0:
-            raise CatalogError(f"git clone failed for {install.url}")
+            raise CatalogError(f"git clone failed for {install.url}", failure_class="clone_failed")
         if _git("-C", str(dest), "checkout", install.ref) != 0:
-            raise CatalogError(f"git checkout {install.ref} failed")
+            raise CatalogError(f"git checkout {install.ref} failed", failure_class="clone_failed")
 
     if install.bootstrap:
         _run_bootstrap(dest, install.bootstrap)
@@ -491,7 +503,8 @@ def _prompt_env_vars(specs: List[EnvVarSpec], preloaded: Optional[Dict[str, str]
                 save_env_value(spec.name, value)
             collected[spec.name] = value
         elif spec.required:
-            raise CatalogError(f"{spec.name} is required but no value was provided")
+            raise CatalogError(f"{spec.name} is required but no value was provided",
+                               failure_class="missing_credentials")
     return collected
 
 
@@ -719,11 +732,14 @@ def card_install_config(entry: CatalogEntry) -> dict:
     return cfg
 
 
-def record_mcp_install(source: str, name: Optional[str], outcome: str) -> None:
-    """One shared-metrics extension install for an MCP server (catalog entry name, or None when custom)."""
+def record_mcp_install(source: str, name: Optional[str], outcome: str, *, failure_class: Optional[str] = None,
+                       error: Optional[BaseException] = None) -> None:
+    """One shared-metrics extension install for an MCP server (catalog entry name, or None when custom).
+    A failed one names its ``failure_class`` or passes the raised ``error`` (classified by its type)."""
     from hermes_cli.observability.shared_metrics_events import record_extension_install
 
-    record_extension_install(kind="mcp_server", source=source, name=name, outcome=outcome)
+    record_extension_install(kind="mcp_server", source=source, name=name, outcome=outcome,
+                             failure_class=failure_class, error=error)
 
 
 @contextmanager
@@ -733,9 +749,9 @@ def recorded_catalog_install(name: str) -> Iterator[None]:
     fresh = not is_installed(name)
     try:
         yield
-    except Exception:
+    except Exception as exc:
         if fresh:
-            record_mcp_install("catalog", name, "failed")
+            record_mcp_install("catalog", name, "failed", error=exc)
         raise
     if fresh:
         record_mcp_install("catalog", name, "success")
@@ -801,7 +817,8 @@ def _install_entry(entry: CatalogEntry, *, enable: bool, preloaded_env: Optional
     from hermes_cli.mcp_config import _save_mcp_server
 
     if not _save_mcp_server(entry.name, server_cfg):
-        raise CatalogError(f"catalog entry '{entry.name}' rejected: suspicious command/args configuration")
+        raise CatalogError(f"catalog entry '{entry.name}' rejected: suspicious command/args configuration",
+                           failure_class="config_rejected")
 
     _apply_tool_selection(entry, prior_selection=prior_selection, prior_exclude=prior_exclude)
 

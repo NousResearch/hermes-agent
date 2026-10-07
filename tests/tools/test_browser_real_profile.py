@@ -333,7 +333,6 @@ class TestRealProfileCdpLaunch:
             (socket_dir / f"{bt._REAL_PROFILE_SESSION}.pid").write_text(str(os.getpid()), encoding="utf-8")
         copy_dir = tmp_path / "copy"
         copy_dir.mkdir()
-        proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
         closed = []
 
         class FakeChrome:
@@ -354,7 +353,8 @@ class TestRealProfileCdpLaunch:
                           side_effect=[None, "http://127.0.0.1:41000"]), \
              patch.object(bt_real_profile, "_agent_browser_close_session", side_effect=closed.append), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt_session, "_popen_agent_browser",
+                          side_effect=lambda *a, **k: Mock(wait=Mock(return_value=0), returncode=0)), \
              patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
             cdp, err = bt_real_profile._real_profile_cdp()

@@ -84,6 +84,20 @@ cannot spend. Address fills need no confirmation.
 - **CLI**: `hermes vault list`, `hermes vault add`, `hermes vault rm <handle>`,
   `hermes vault sources`.
 
+On a registration page, a saved login handle can be passed to
+`browser_vault_fill` with `mode: "signup"`. Unlike the default login mode,
+which only targets current-password fields, signup mode fills an explicit
+`new-password` field and its same-form confirmation if present. It still
+requires an exact origin match, refuses ambiguous password-only and
+change-password forms (which include a current-password field), as well as
+non-login items, and sends the secret only through the supervised browser
+fill path. Create the saved login using a supported vault or password manager
+beforehand; filling the form does not create the website account by itself.
+
+For 1Password service accounts, the backend resolves an item's vault ID from
+its authenticated list metadata before calling `op item get --vault`; regular
+account sessions keep their existing behavior.
+
 Items live encrypted under `~/.hermes/vault/` (Fernet key + vault file, both
 `0600`), scoped to the profile. Labels, site origins and login identifiers are
 visible metadata; passwords and card values never leave the vault except into

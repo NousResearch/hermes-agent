@@ -194,6 +194,12 @@ def _current_page_origin(task_id: str) -> Optional[str]:
 # Per kind: a JS probe that is truthy on a tab holding the form this kind fills.
 _TAB_PROBES = {
     "login": "!!document.querySelector('input[type=password]')",
+    "signup": "Array.from(document.querySelectorAll('input[type=password]')).some(el => "
+              "el.autocomplete.split(/\\s+/).includes('new-password') || "
+              "/\\b(new|create|choose|set)\\W*password\\b/i.test([el.name, el.id, "
+              "el.getAttribute('aria-label'), el.getAttribute('placeholder'), "
+              "...(el.getAttribute('aria-labelledby') || '').split(/\\s+/).map(id => document.getElementById(id)?.textContent || ''), "
+              "...(el.labels ? Array.from(el.labels, l => l.textContent || '') : [])].join(' ')))",
     "payment": "!!document.querySelector('input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]')",
     "address": "!!document.querySelector('input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]')",
 }
@@ -397,7 +403,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
                        "next": "Submit the form (many sites auto-submit when the last digit lands)."})
 
 
-def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
+def browser_vault_fill(handle: str, task_id: Optional[str] = None, mode: str = "login") -> str:
     """Fill the current page's password field from a vault handle.
 
     Password-only: the identifier is agent-visible metadata (see
@@ -415,10 +421,13 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         classify_login_control,
         select_checkout_fills,
         select_password_fill,
+        select_signup_fills,
     )
     from agent.vault_backends import UnlockRequired, backend_for_handle
     from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
 
+    if mode not in ("login", "signup"):
+        return json.dumps({"success": False, "error_type": "invalid_mode", "error": "Mode must be login or signup."})
     effective_task_id = task_id or "default"
     backend = backend_for_handle(handle)
     if backend is not None and backend.needs_unlock and not backend.is_unlocked():
@@ -442,6 +451,8 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
                 ),
             }
         )
+    if mode == "signup" and meta.kind != "login":
+        return json.dumps({"success": False, "error_type": "invalid_mode", "error": "Signup mode requires a login item."})
     if meta.kind != "login" and not meta.origin:
         return json.dumps({"success": False, "error_type": "no_origin",
                            "error": f"Vault item {handle!r} has no bound origin; {meta.kind} items are filled only on the site they were saved for."})
@@ -457,7 +468,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
     page_origin = None
     for candidate in allowed:
-        page_origin = _focus_bound_origin(effective_task_id, candidate, meta.kind)
+        page_origin = _focus_bound_origin(effective_task_id, candidate, "signup" if mode == "signup" else meta.kind)
         if page_origin:
             break
     page_origin = page_origin or _current_page_origin(effective_task_id)
@@ -492,21 +503,21 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         return json.dumps({"success": False, "error": "Page input inspection returned no usable controls."})
 
     classify = classify_login_control if meta.kind == "login" else classify_checkout_control
+    controls = [LoginControl.from_dict(raw) for raw in raw_controls if isinstance(raw, dict)]
     classified: list[ClassifiedLoginControl] = []
-    for raw in raw_controls:
-        if not isinstance(raw, dict):
-            continue
-        result = classify(LoginControl.from_dict(raw))
+    for control in controls:
+        result = classify(control)
         if result is not None:
             classified.append(result)
-    if not classified:
+    if not classified and mode != "signup":
         return json.dumps({"success": False, "error": f"No {meta.kind} form fields were found on the current page."})
 
     # ── Resolve secret and fill (secret never enters any logged string) ─────
     try:
         if meta.kind == "login":
             secret = {"password": backend.resolve_password(handle)}
-            fills = select_password_fill(classified, secret["password"])
+            fills = (select_signup_fills(controls, secret["password"]) if mode == "signup"
+                     else select_password_fill(classified, secret["password"]))
         else:
             secret = backend.resolve_secret(handle)
             fills = select_checkout_fills(classified, secret, PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS)
@@ -562,7 +573,8 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     out = {"success": bool(filled), "filled_fields": int(filled), "backend": backend.name,
            "kind": meta.kind, "origin": page_origin}
     if meta.kind == "login":
-        out["next"] = ("Submit. If the site then asks for a verification code, call browser_vault_enter_code with this handle"
+        out["next"] = ("Review the signup form and submit." if mode == "signup" else
+                       "Submit. If the site then asks for a verification code, call browser_vault_enter_code with this handle"
                        + (" (a code will be generated automatically)." if meta.has_otp else "."))
     if meta.kind != "login":
         out["fields"] = sorted(f["token"] for f in fills)  # which controls were targeted, never the values
@@ -621,10 +633,10 @@ BROWSER_VAULT_UNLOCK_SCHEMA = {
 BROWSER_VAULT_FILL_SCHEMA = {
     "name": "browser_vault_fill",
     "description": (
-        "Fill the CURRENT browser page from a vault handle (see browser_vault_list): a login item fills ONLY "
-        "the password field (type the identifier/username yourself first with the browser's input tool); a "
-        "payment item fills card number/name/expiry/CVC after the user confirms in their UI; an address item "
-        "fills the address fields. Values are resolved server-side and never appear in the conversation. "
+        "Fill the CURRENT browser page from a vault handle (see browser_vault_list). Default mode login fills "
+        "ONLY a current-password field; mode signup fills an explicit new-password field and its same-form "
+        "confirmation if present, only for login items. Type the identifier yourself. Never pass a plaintext "
+        "password: only a saved vault handle is accepted. Payment and address fills use login mode. "
         "Refused unless the page origin exactly matches the item's bound origin (re-checked atomically at "
         "fill time). If a password manager is locked the user is prompted to unlock first. Never retry a "
         "payment_declined result."
@@ -635,8 +647,11 @@ BROWSER_VAULT_FILL_SCHEMA = {
             "handle": {
                 "type": "string",
                 "description": "Handle from browser_vault_list (vault_… local, op:… 1Password, bw:… Bitwarden)",
-            }
+            },
+            "mode": {"type": "string", "enum": ["login", "signup"],
+                     "description": "Explicit signup mode for new-password and confirmation fields; default login."},
         },
+        "additionalProperties": False,
         "required": ["handle"],
     },
 }
@@ -716,8 +731,11 @@ def _handle_vault_unlock(args: Dict[str, Any], **kwargs) -> str:
 
 
 def _handle_vault_fill(args: Dict[str, Any], **kwargs) -> str:
+    if set(args) - {"handle", "mode"}:
+        return json.dumps({"success": False, "error_type": "invalid_arguments", "error": "Only handle and mode are accepted."})
     tid = kwargs.get("task_id")
-    return _fenced_page_op(tid, lambda: browser_vault_fill(handle=str(args.get("handle") or ""), task_id=tid))
+    return _fenced_page_op(tid, lambda: browser_vault_fill(handle=str(args.get("handle") or ""),
+                                                              task_id=tid, mode=args.get("mode", "login")))
 
 
 from tools.registry import no_cache_check_fn, registry  # noqa: E402

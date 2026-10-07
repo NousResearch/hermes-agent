@@ -39,8 +39,7 @@ class TestRealProfilePin:
 
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None and dst
-        copy = home / "browser-profile" / "chrome-real-profile" / "Default"
-        got = _auth_db((copy / "Cookies"))
+        got = _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies"))
         assert got == "cookies-Profile 2", "pin must override last_used"
 
     def test_bad_pin_fails_closed(self, tmp_path, monkeypatch):
@@ -54,8 +53,7 @@ class TestRealProfilePin:
         assert dst is None
         assert err and "real_profile_pin" in err and "Profile 99" in err
         # Nothing may have been copied when the pin failed closed
-        copy = tmp_path / "hh" / "browser-profile" / "chrome-real-profile" / "Default"
-        assert not copy.exists()
+        assert not (tmp_path / "hh" / "browser-profile" / "chrome" / "Default").exists()
 
     def test_no_pin_keeps_native_last_used(self, tmp_path, monkeypatch):
         import hermes_cli.browser_connect as bc
@@ -67,8 +65,7 @@ class TestRealProfilePin:
 
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None and dst
-        copy = home / "browser-profile" / "chrome-real-profile" / "Default"
-        got = _auth_db((copy / "Cookies"))
+        got = _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies"))
         assert got == "cookies-Profile 4", "no pin = native last_used"
 
     def test_re_sync_respects_pin_when_last_used_flips(self, tmp_path, monkeypatch):
@@ -92,6 +89,5 @@ class TestRealProfilePin:
 
         dst2, err2 = bc.snapshot_real_profile("chrome", src=str(src))
         assert err2 is None and dst2 == dst1
-        copy = home / "browser-profile" / "chrome-real-profile" / "Default"
-        got = _auth_db((copy / "Cookies"))
+        got = _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies"))
         assert got == "cookies-Profile 2-v2", "auth re-sync must stay on the pin"

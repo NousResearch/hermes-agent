@@ -73,18 +73,17 @@ class TestSnapshotRealProfile:
 
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
-        assert dst == str(home / "browser-profile" / "chrome-real-profile")
-        copy = home / "browser-profile" / "chrome-real-profile"
+        assert dst == str(home / "browser-profile" / "chrome")
         # Auth files present
-        assert _auth_db((copy / "Default" / "Cookies")) == "sqlite-cookies"
-        assert (copy / "Default" / "Network" / "Cookies").exists()
-        assert (copy / "Default" / "Login Data").exists()
-        assert (copy / "Local State").exists()
+        assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies")) == "sqlite-cookies"
+        assert (home / "browser-profile" / "chrome" / "Default" / "Network" / "Cookies").exists()
+        assert (home / "browser-profile" / "chrome" / "Default" / "Login Data").exists()
+        assert (home / "browser-profile" / "chrome" / "Local State").exists()
         # Caches, crash dirs, singleton leftovers excluded
-        assert not (copy / "Default" / "Cache").exists()
-        assert not (copy / "Code Cache").exists()
-        assert not (copy / "Crashpad").exists()
-        assert not (copy / "SingletonLock").exists()
+        assert not (home / "browser-profile" / "chrome" / "Default" / "Cache").exists()
+        assert not (home / "browser-profile" / "chrome" / "Code Cache").exists()
+        assert not (home / "browser-profile" / "chrome" / "Crashpad").exists()
+        assert not (home / "browser-profile" / "chrome" / "SingletonLock").exists()
 
     def test_existing_snapshot_refreshes_auth_files_only(self, tmp_path, monkeypatch):
         import hermes_cli.browser_connect as bc
@@ -97,14 +96,12 @@ class TestSnapshotRealProfile:
         # Simulate: user logs into a new site in their own browser, and the
         # copy has drifted state that must survive (History not in refresh set).
         _auth_db((src / "Default" / "Cookies"), "sqlite-cookies-v2")
-        copy_history = (
-            home / "browser-profile" / "chrome-real-profile" / "Default" / "History"
-        )
+        copy_history = home / "browser-profile" / "chrome" / "Default" / "History"
         copy_history.write_text("agent-session-history")
 
         dst2, err2 = bc.snapshot_real_profile("chrome", src=str(src))
         assert err2 is None and dst2 == dst
-        assert _auth_db((copy_history.parent / "Cookies")) == "sqlite-cookies-v2"
+        assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies")) == "sqlite-cookies-v2"
         assert copy_history.read_text() == "agent-session-history"
 
     def test_missing_source_fails_closed(self, tmp_path, monkeypatch):
@@ -160,34 +157,6 @@ class TestSnapshotRealProfile:
         dst2, err2 = bc.snapshot_real_profile("chrome", src=str(src))
         assert err2 is None and dst2 == dst
         assert stat.S_IMODE(os.stat(cookies).st_mode) == 0o600
-
-    def test_snapshot_dir_is_suffixed_not_the_plain_browser_dir(self, tmp_path, monkeypatch):
-        """The snapshot must NOT live under the plain ``<browser>`` dir name: that name
-        can also be resolved to by another engine's user-data-dir (agent-browser's
-        persistent profile / ``AGENT_BROWSER_PROFILE``), and two engines on one dir
-        deadlock on Chromium's SingletonLock (#134684)."""
-        import hermes_cli.browser_connect as bc
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path)
-        dst = bc.real_profile_copy_dir("chrome")
-        assert dst == str(tmp_path / "browser-profile" / "chrome-real-profile")
-        assert dst != str(tmp_path / "browser-profile" / "chrome")
-
-    def test_legacy_plain_snapshot_dir_is_removed(self, tmp_path, monkeypatch):
-        """A pre-#134684 snapshot under the plain ``chrome`` dir is deleted on the next
-        launch: that name is exactly the collision hazard, and the dir holds credential
-        copies, so it must not linger once the suffixed snapshot exists."""
-        import hermes_cli.browser_connect as bc
-        src = self._make_profile(tmp_path / "real")
-        home = tmp_path / "hermes-home"
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
-        legacy = home / "browser-profile" / "chrome" / "Default"
-        legacy.mkdir(parents=True)
-        (legacy / "Cookies").write_text("stale-credential-copy")
-        dst, err = bc.snapshot_real_profile("chrome", src=str(src))
-        assert err is None and dst
-        assert not (home / "browser-profile" / "chrome").exists()
-        snapshot = home / "browser-profile" / "chrome-real-profile"
-        assert _auth_db((snapshot / "Default" / "Cookies")) == "sqlite-cookies"
 
 
 class TestRealProfileCdpLaunch:
@@ -727,9 +696,7 @@ class TestSnapshotIsCredentialStore:
         import hermes_cli.backup as bk
         # Hyphen snapshot dirs are any-depth; Browser Use CLI underscore dir is root-scoped.
         assert bk._should_exclude(
-            __import__("pathlib").Path(
-                "browser-profile/chrome-real-profile/Default/Cookies"
-            )
+            __import__("pathlib").Path("browser-profile/chrome/Default/Cookies")
         )
         assert bk._should_exclude(
             __import__("pathlib").Path(
@@ -740,9 +707,8 @@ class TestSnapshotIsCredentialStore:
     def test_read_guard_blocks_snapshot(self, tmp_path, monkeypatch):
         import agent.file_safety as fs
         home = tmp_path / ".hermes"
-        snapshot = home / "browser-profile" / "chrome-real-profile" / "Default"
-        snapshot.mkdir(parents=True)
-        cookies = snapshot / "Cookies"
+        (home / "browser-profile" / "chrome" / "Default").mkdir(parents=True)
+        cookies = home / "browser-profile" / "chrome" / "Default" / "Cookies"
         cookies.write_text("secret-cookie-db")
         monkeypatch.setenv("HERMES_HOME", str(home))
         err = fs.get_read_block_error(str(cookies))
@@ -785,10 +751,9 @@ class TestReviewBugFixes:
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
         # The copy's Default must carry PROFILE 6's session, not Default's.
-        copy = home / "browser-profile" / "chrome-real-profile" / "Default"
-        got = _auth_db((copy / "Cookies"))
+        got = _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies"))
         assert got == "PROFILE6-SESSION-AUTH"
-        assert _auth_db((copy / "Login Data")) == "profile6-logins"
+        assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Login Data")) == "profile6-logins"
 
     def test_last_used_falls_back_to_default(self, tmp_path):
         import hermes_cli.browser_connect as bc
@@ -807,8 +772,7 @@ class TestReviewBugFixes:
         _auth_db((src / "Profile 6" / "Cookies"), "PROFILE6-REFRESHED")
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))  # refresh
         assert err is None
-        copy = home / "browser-profile" / "chrome-real-profile" / "Default"
-        assert _auth_db((copy / "Cookies")) == "PROFILE6-REFRESHED"
+        assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies")) == "PROFILE6-REFRESHED"
 
     # ── Bug 3: private-URL sidecar must NOT carry the real profile ──
     def test_sidecar_never_uses_real_profile(self):
@@ -876,8 +840,7 @@ class TestReviewRound3:
         d, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
         # Rebuilt from the active profile, not treated as populated.
-        rebuilt = os.path.join(dst, "Default", "Cookies")
-        assert _auth_db(rebuilt) == "PROFILE6-SESSION"
+        assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies")) == "PROFILE6-SESSION"
         assert os.path.isfile(os.path.join(dst, bc._SNAPSHOT_DONE_MARKER))
 
     # ── ④ only the active profile is copied, never the others ──
@@ -891,7 +854,7 @@ class TestReviewRound3:
         monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
-        copy = home / "browser-profile" / "chrome-real-profile"
+        copy = home / "browser-profile" / "chrome"
         # Active profile (Profile 6) landed in Default; other profiles absent.
         assert _auth_db((copy / "Default" / "Cookies")) == "PROFILE6-SESSION"
         assert not (copy / "Profile 3").exists()
@@ -902,7 +865,7 @@ class TestReviewRound3:
         import hermes_cli.browser_connect as bc
         home = tmp_path / "hh"
         monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
-        store = home / "browser-profile" / "chrome-real-profile" / "Default"
+        store = home / "browser-profile" / "chrome" / "Default"
         store.mkdir(parents=True)
         (store / "Cookies").write_text("secret")
         bc.cleanup_real_profile_snapshots()
@@ -1069,13 +1032,12 @@ class TestWindowsLockedProfileCopy:
         finally:
             con.rollback(); con.close()
         assert err is None
-        copy = home / "browser-profile" / "chrome-real-profile" / "Default"
-        copy_ck = str(copy / "Cookies")
+        copy_ck = str(home / "browser-profile" / "chrome" / "Default" / "Cookies")
         t = str(tmp_path / "probe"); shutil.copy2(copy_ck, t)
         n = sqlite3.connect(t).execute("select count(*) from cookies").fetchone()[0]
         assert n == 42  # committed rows copied under the lock; uncommitted excluded
         # No stale journal/wal sidecar left next to the backed-up DB.
-        assert not (copy / "Cookies-journal").exists()
+        assert not (home / "browser-profile" / "chrome" / "Default" / "Cookies-journal").exists()
 
     def test_copy_auth_file_backs_up_db(self, tmp_path):
         import hermes_cli.browser_connect as bc

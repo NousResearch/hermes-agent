@@ -18,6 +18,13 @@ import pytest
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
+def _isolate_hermes_bin_dir(monkeypatch):
+    from tools.environments import local as env_local
+    monkeypatch.setattr(env_local, "_HERMES_BIN_DIR", None)
+    monkeypatch.setattr(env_local, "_HERMES_BIN_DIR_IS_PAYLOAD", False)
+
+
+@pytest.fixture(autouse=True)
 def _reset_backend(grant_computer_use_approvals):
     """Tear down the cached backend between tests; destructive actions get an interactive "once"
     through the shared approval gate (the tool fails closed with nobody to ask)."""

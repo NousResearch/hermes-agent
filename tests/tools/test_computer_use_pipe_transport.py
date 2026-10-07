@@ -19,6 +19,13 @@ from tools.computer_use.cua_backend_pipe import (
 from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession, _orig_subprocess_run
 
 
+@pytest.fixture(autouse=True)
+def _isolate_hermes_bin_dir(monkeypatch):
+    from tools.environments import local as env_local
+    monkeypatch.setattr(env_local, "_HERMES_BIN_DIR", None)
+    monkeypatch.setattr(env_local, "_HERMES_BIN_DIR_IS_PAYLOAD", False)
+
+
 def test_frame_encoding_and_decoding_le():
     payload = b'{"method": "ping"}'
     framed = encode_message_frame(payload, "le")

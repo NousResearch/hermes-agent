@@ -13,6 +13,13 @@ from tools.computer_use import cua_backend as cb
 from tools.computer_use import cua_backend_driver as cb_driver
 
 
+@pytest.fixture(autouse=True)
+def _isolate_hermes_bin_dir(monkeypatch):
+    from tools.environments import local as env_local
+    monkeypatch.setattr(env_local, "_HERMES_BIN_DIR", None)
+    monkeypatch.setattr(env_local, "_HERMES_BIN_DIR_IS_PAYLOAD", False)
+
+
 # ── _empty_discovery_reason ─────────────────────────────────────────────
 
 

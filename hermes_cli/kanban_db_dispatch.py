@@ -133,6 +133,11 @@ class DispatchResult:
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
+    skipped_self_review: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, implementer)`` review rows NOT dispatched because the only
+    candidate reviewer is the profile that implemented the card. Fail-closed:
+    no independent reviewer means no spawn, and the card keeps waiting in
+    ``review`` for one instead of certifying itself."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
@@ -1352,6 +1357,7 @@ def _record_task_failure(
     force_trip: bool = False,
     release_claim: bool = False,
     end_run: bool = False,
+    board: Optional[str] = None,
     event_payload_extra: Optional[dict] = None,
     infrastructure: bool = False,
 ) -> bool:
@@ -1462,7 +1468,21 @@ def _record_task_failure(
         if event_payload_extra:
             payload.update(event_payload_extra)
         _kb._append_event(conn, task_id, "gave_up", payload, run_id=run_id)
-        return True
+    # Outside the txn (create_task opens its own). The card is now terminal
+    # without being successful, so it satisfies nothing: an orchestrator root
+    # waiting on it stays in `todo`, which no dispatch lane reads. Hand that
+    # root's owner one schedulable card carrying the failure instead.
+    from hermes_cli import kanban_reconcile
+
+    # ``board`` is threaded from the spawn path, which knows it. The reclaim and
+    # crash-detection paths do not take a board at all (neither does
+    # ``detect_crashed_workers``), so there it stays None and the card inherits
+    # the current board -- the row still lands in this connection's DB either
+    # way, only project/workdir inheritance would differ on a multi-board host.
+    kanban_reconcile.reconcile_gave_up(
+        conn, task_id, failures=failures, error=error, run_id=run_id, board=board,
+    )
+    return True
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
@@ -1787,8 +1807,27 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
 
 
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
-    """:func:`has_spawnable_ready` for the review column."""
-    return _has_spawnable(conn, "review")
+    """:func:`has_spawnable_ready` for the review column.
+
+    A card whose only candidate reviewer is its own implementer is never
+    spawned, so it must not read as pending review work. Health probes use this
+    to tell a stuck board from a correctly idle one, and a row that can never
+    be claimed would otherwise report "stuck" forever.
+    """
+    if not _has_spawnable(conn, "review"):
+        return False
+    from hermes_cli import kanban_reconcile
+
+    profile_exists = _profile_exists_fn()
+    for row in conn.execute(
+        "SELECT id, assignee FROM tasks WHERE status = 'review' "
+        "AND assignee IS NOT NULL AND claim_lock IS NULL",
+    ).fetchall():
+        if profile_exists is not None and not profile_exists(row["assignee"]):
+            continue
+        if kanban_reconcile.self_review_conflict(conn, row["id"], row["assignee"]) is None:
+            return True
+    return False
 
 
 def review_dispatch_enabled() -> bool:
@@ -2108,7 +2147,8 @@ def _dispatch_lane_task(
     except Exception as exc:
         if _record_task_failure(
             conn, claimed.id, f"workspace: {exc}",
-            outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+            outcome="spawn_failed", failure_limit=failure_limit, release_claim=True,
+            end_run=True, board=board,
         ):
             result.auto_blocked.append(claimed.id)
         return False
@@ -2143,7 +2183,7 @@ def _dispatch_lane_task(
         if _record_task_failure(
             conn, claimed.id, str(exc),
             outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
-            infrastructure=infrastructure,
+            infrastructure=infrastructure, board=board,
         ):
             result.auto_blocked.append(claimed.id)
         return False
@@ -2275,6 +2315,31 @@ def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def _partition_self_review(
+    conn: sqlite3.Connection, review_rows: list[sqlite3.Row], result: DispatchResult,
+    *, dry_run: bool, board: Optional[str],
+) -> list[sqlite3.Row]:
+    """Review rows that have an independent reviewer; the rest are recorded and
+    handed to the orchestrator.
+
+    ``request_review`` leaves the assignee untouched when no reviewer is named,
+    so the default handoff parks the card in ``review`` still owned by its
+    implementer and the lane would spawn that profile to certify its own work.
+    """
+    from hermes_cli import kanban_reconcile
+
+    keep: list[sqlite3.Row] = []
+    for row in review_rows:
+        implementer = kanban_reconcile.self_review_conflict(conn, row["id"], row["assignee"])
+        if implementer is None:
+            keep.append(row)
+            continue
+        result.skipped_self_review.append((row["id"], implementer))
+        if not dry_run:
+            kanban_reconcile.reconcile_self_review(conn, row["id"], implementer, board=board)
+    return keep
+
+
 def _any_spawnable_review(
     conn: sqlite3.Connection,
     review_rows: list[sqlite3.Row],
@@ -2360,6 +2425,13 @@ def _dispatch_once_locked(
     # Review rows are enumerated up front so the budget split can see whether
     # review work exists at all.
     review_rows = _lane_rows(conn, "review") if review_dispatch_enabled() else []
+    # Fail closed on self-review, BEFORE the reservation below: a card with no
+    # independent reviewer is never spawnable, so leaving it in the lane would
+    # also hold a ready slot back on every tick.
+    if review_rows:
+        review_rows = _partition_self_review(
+            conn, review_rows, result, dry_run=dry_run, board=board,
+        )
     # Per-profile cap. Deferred tasks go to skipped_per_profile_capped, not
     # skipped_unassigned — "busy, retry later" differs from "needs routing".
     # Resolved BEFORE the review reservation so the reservation can see which

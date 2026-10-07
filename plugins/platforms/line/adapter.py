@@ -40,7 +40,7 @@ from gateway.platforms._shared import (
     get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, SendResult,
+    gateway_trust_env, BasePlatformAdapter, SendResult, _TEXT_INJECT_EXTENSIONS,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
     cache_video_from_bytes_async,
 )
@@ -570,9 +570,31 @@ class LineAdapter(BasePlatformAdapter):
         source_obj = self.build_source(
             chat_id=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_id, chat_name=chat_id,
             message_id=message_id)
-        await self.handle_message(MessageEvent(
+        message = MessageEvent(
             text=text, message_type=_LINE_MESSAGE_TYPES.get(msg_type, MessageType.TEXT), source=source_obj,
-            raw_message=event, message_id=message_id, media_urls=media_urls, media_types=media_types))
+            raw_message=event, message_id=message_id, media_urls=media_urls, media_types=media_types)
+        if msg_type == "file" and media_urls:
+            message.media_text_inlined = [False]
+            content = await asyncio.to_thread(self._read_inline_document, media_urls[0], media_types[0])
+            if content is not None:
+                name = re.sub(r'[^\w.\- ]', '_', msg.get("fileName") or msg.get("file_name") or "document")
+                message.text = f"[Content of {name}]:\n{content}\n\n{text}"
+                message.media_text_inlined = [True]
+        await self.handle_message(message)
+
+    @staticmethod
+    def _read_inline_document(path: str, mime: str) -> Optional[str]:
+        # Match the text-only, 100 KiB inline boundary used by Telegram. Read one extra
+        # byte instead of trusting metadata or reading an oversized cache file in full.
+        if Path(path).suffix.lower() not in _TEXT_INJECT_EXTENSIONS and not mime.startswith("text/"):
+            return None
+        try:
+            with open(path, "rb") as document:
+                data = document.read(100 * 1024 + 1)
+            return data.decode("utf-8") if len(data) <= 100 * 1024 else None
+        except (OSError, UnicodeDecodeError):
+            return None
+
 
     async def _handle_postback_event(self, event: Dict[str, Any]) -> None:
         """User tapped the slow-LLM postback button — deliver the cached payload. READY replies (push

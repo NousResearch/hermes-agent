@@ -10,7 +10,7 @@ export const esSharedMetrics = {
   collectedNames: 'Nombres de herramientas, comandos y elementos del catálogo integrados',
   collectedMilestones: 'Recuentos de configuración agrupados',
   collectedReliability:
-    'Resultados y duración de actualizaciones, fallos, velocidad de inicio y de respuesta, estado de las plataformas de mensajería',
+    'Resultados y duración de actualizaciones e instalaciones (con un motivo de una lista fija y la etapa cuando algo falla, incluida una instalación nueva registrada en este equipo que solo se cuenta si aceptas), fallos, velocidad de inicio y de respuesta, estado de las plataformas de mensajería',
   collectedUsage:
     'Cómo se usa Hermes: precisión y eficiencia del agente (ediciones acertadas, bucles, recuperaciones, tokens y llamadas a herramientas por tarea, cortes de caché), tiempo activo por superficie y modo de Desktop, qué áreas, acciones y ajustes de la app se usan, se cierran enseguida o se desactivan, y resultados de la configuración de proveedores',
   collectedMachine:
@@ -18,7 +18,7 @@ export const esSharedMetrics = {
   installId:
     'Al enviar, cada paquete diario se sube al servicio de telemetría de Nous. Los paquetes llevan el ID de instalación de este perfil: un UUID aleatorio y estable sin información personal, que se restablece al borrar el directorio de métricas compartidas.',
   consentWindow:
-    'Solo se envían los paquetes cuyo periodo de recopilación completo cae dentro de una ventana de consentimiento registrada; los datos de antes de aceptar, o de cualquier intervalo con el envío desactivado, se quedan en este equipo. Puedes volver a desactivar el envío cuando quieras.',
+    'Solo se envían los paquetes cuyo periodo de recopilación completo cae dentro de una ventana de consentimiento registrada. Salvo el aviso de instalación nueva (registrado en este equipo y que solo se cuenta si aceptas), los datos de antes de aceptar, o de cualquier intervalo con el envío desactivado, se quedan en este equipo. Puedes volver a desactivar el envío cuando quieras.',
   readDocs: 'Leer todos los detalles',
   share: 'Recopilar y enviar a Nous',
   local: 'Recopilar solo en local',

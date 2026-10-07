@@ -19,7 +19,9 @@ can still write the checkout, and must NOT leak into processes that outlive the 
   child started here is created SUSPENDED, assigned to the update's kill-on-close job and only
   then resumed, so it and everything it spawns die with the lock owner. The Node build goes
   through ``pm.progress.run_contained`` (whose Popen it never sees): :func:`contained_command`
-  wraps it in a stdlib launcher that joins the job before it starts node.
+  wraps it in a stdlib launcher that joins the job before it starts node and, once node exits,
+  terminates and waits out everything node left running (C3): a normal release never frees the
+  checkout under a build descendant.
 * Windows fails CLOSED (D2): a child the job refuses is never run. The msvcrt byte lock belongs
   to the process that took it — an inherited handle does not keep it, the kernel unlocks it when
   the owner exits — so nothing else could fence a writer outside the job: after the owner's
@@ -470,14 +472,26 @@ def _prefetch_for_move(git_cmd: list[str], args: list[str], kwargs: dict) -> Non
 # keep the job open). A refused join, or a command outside the job, never runs (D2): the launcher says so on stderr, writes the notice to the report file
 # (argv[2]) — run_contained captures the child's stderr, so stderr alone is not seen (m1) — and
 # exits; the updater logs the notice, notes it in the receipt and raises CustodyRefused.
+# The command also runs in a kill-on-close job of the launcher's own, nested in the update job
+# (review C3): once the command exits, the launcher terminates that job — whatever npm / the
+# builder started and left running — and waits until no process of it is left before it
+# returns, so the caller never releases the checkout while a build descendant still writes.
+# Only the command's tree: the update job also holds the update's other children. The Windows
+# twin of the POSIX launcher below (_REAP_TREE); the nested job's handle closing (a killed
+# launcher) kills the tree too.
 _CUSTODY_UNAVAILABLE = "hermes: update custody unavailable"
 _REFUSED_EXIT = 87
 _JOIN_JOB = (
-    "import ctypes, subprocess, sys\n"
+    "import ctypes, subprocess, sys, time\n"
     "k = ctypes.WinDLL('kernel32', use_last_error=True)\n"
     "k.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]\n"
     "k.GetCurrentProcess.restype = ctypes.c_void_p\n"
     "k.CloseHandle.argtypes = [ctypes.c_void_p]\n"
+    "k.CreateJobObjectW.restype = ctypes.c_void_p\n"
+    "k.SetInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong]\n"
+    "k.TerminateJobObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]\n"
+    "k.QueryInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong,\n"
+    "                                        ctypes.c_void_p]\n"
     "h = ctypes.c_void_p(int(sys.argv[1]))\n"
     "def refuse(why):\n"
     f"    note = '{_CUSTODY_UNAVAILABLE} (%s); the command was not run' % why\n"
@@ -491,22 +505,56 @@ _JOIN_JOB = (
     f"    sys.exit({_REFUSED_EXIT})\n"
     "if not k.AssignProcessToJobObject(h, k.GetCurrentProcess()):\n"
     "    refuse('could not join the update job: %d' % ctypes.get_last_error())\n"
-    # Verify, never assume the topology: a redirecting interpreter (a Store Python alias) can
-    # join while what it starts lands outside the job. Start the command suspended and run it
-    # only once Windows says it is in the job (F54).
+    # JOBOBJECT_EXTENDED_LIMIT_INFORMATION (KILL_ON_JOB_CLOSE) and the BASIC_ACCOUNTING record
+    # whose ActiveProcesses says when the command's tree is gone.
+    "class Basic(ctypes.Structure):\n"
+    "    _fields_ = [('times', ctypes.c_int64 * 2), ('flags', ctypes.c_uint32), ('ws', ctypes.c_size_t * 2),\n"
+    "                ('procs', ctypes.c_uint32), ('affinity', ctypes.c_size_t), ('classes', ctypes.c_uint32 * 2)]\n"
+    "class Limits(ctypes.Structure):\n"
+    "    _fields_ = [('basic', Basic), ('io', ctypes.c_uint64 * 6), ('memory', ctypes.c_size_t * 4)]\n"
+    "class Usage(ctypes.Structure):\n"
+    "    _fields_ = [('times', ctypes.c_int64 * 4), ('faults', ctypes.c_uint32), ('total', ctypes.c_uint32),\n"
+    "                ('active', ctypes.c_uint32), ('terminated', ctypes.c_uint32)]\n"
+    "tree = k.CreateJobObjectW(None, None)\n"
+    "limits = Limits()\n"
+    "limits.basic.flags = 0x2000\n"
+    "if not tree or not k.SetInformationJobObject(tree, 9, ctypes.byref(limits), ctypes.sizeof(limits)):\n"
+    "    refuse('could not create the job for the command tree: %d' % ctypes.get_last_error())\n"
+    # Verify, never assume the topology: a packaged interpreter (Store Python) joins, but starts a
+    # program outside its package with desktop-app breakaway, so the command leaves every job
+    # that permits breakaway, as the update job does (restarted gateways break away). Start the
+    # command suspended; if Windows says it is outside the job, put it in explicitly (F80), and
+    # run it only once it is in (F54): a command the job will not take is refused, never run.
     "k.IsProcessInJob.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]\n"
     "p = subprocess.Popen(sys.argv[3:], stdin=subprocess.DEVNULL, creationflags=0x4)\n"
-    "inside = ctypes.c_int(0)\n"
-    "if not k.IsProcessInJob(ctypes.c_void_p(int(p._handle)), h, ctypes.byref(inside)) or not inside.value:\n"
+    "def in_job():\n"
+    "    inside = ctypes.c_int(0)\n"
+    "    return k.IsProcessInJob(ctypes.c_void_p(int(p._handle)), h, ctypes.byref(inside)) and inside.value\n"
+    "if not in_job() and not (k.AssignProcessToJobObject(h, ctypes.c_void_p(int(p._handle))) and in_job()):\n"
     "    p.kill()\n"
     "    p.wait()\n"
     "    refuse('the command would start outside the update job')\n"
+    "if not k.AssignProcessToJobObject(tree, ctypes.c_void_p(int(p._handle))):\n"
+    "    error = ctypes.get_last_error()\n"
+    "    p.kill()\n"
+    "    p.wait()\n"
+    "    refuse('could not hold the command tree in a job: %d' % error)\n"
     "k.CloseHandle(h)\n"
     "nt = ctypes.WinDLL('ntdll')\n"
     "nt.NtResumeProcess.argtypes = [ctypes.c_void_p]\n"
     "if nt.NtResumeProcess(ctypes.c_void_p(int(p._handle))) != 0:\n"
     "    p.kill()\n"
-    "sys.exit(p.wait())\n"
+    "code = p.wait()\n"
+    # C3: nothing the command started outlives it; return only once its whole tree is gone.
+    "k.TerminateJobObject(tree, 1)\n"
+    "usage, end = Usage(), time.monotonic() + 10\n"
+    "while time.monotonic() < end:\n"
+    "    if not k.QueryInformationJobObject(tree, 1, ctypes.byref(usage), ctypes.sizeof(usage), None):\n"
+    "        break\n"
+    "    if not usage.active:\n"
+    "        break\n"
+    "    time.sleep(0.02)\n"
+    "sys.exit(code)\n"
 )
 
 
@@ -704,8 +752,9 @@ def contained_command(argv: Sequence[str], *, inherit_lock: bool = True, root=No
     inherited for checkout ``root``), under a launcher that keeps the command in the caller's
     process group and kills every descendant left when it exits (:data:`_REAP_TREE`).
     Windows inside an update: the command runs under a launcher that joins the update's
-    kill-on-close job first; when the job cannot be handed over or the join is refused, the
-    command never runs and :class:`CustodyRefused` is raised (D2)."""
+    kill-on-close job first and returns only once no process the command started is left (C3);
+    when the job cannot be handed over or the join is refused, the command never runs and
+    :class:`CustodyRefused` is raised (D2)."""
     argv = list(argv)
     if not (sys.platform == "win32" and _held() is not None):
         from hermes_cli.update_lock import checkout_lock_fds

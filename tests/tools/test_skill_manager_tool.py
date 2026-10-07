@@ -74,6 +74,20 @@ description: Use when deploying multi-region Kubernetes clusters with custom CNI
 Step 1.
 """
 
+# Directory name deliberately differs from the frontmatter name — the
+# mismatch scenario from #99609. Nothing at creation time forces the two
+# to agree, and skills_list displays the frontmatter name.
+MISMATCHED_NAME_CONTENT = """\
+---
+name: keeta-eng-conduct
+description: Frontmatter name differs from the directory name.
+---
+
+# Mismatched Name Skill
+
+Step 1: Do the thing under the other name.
+"""
+
 
 # ---------------------------------------------------------------------------
 # _validate_name
@@ -161,6 +175,16 @@ class TestCreateSkill:
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _create_skill("my-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is False
+        assert "already exists" in result["error"]
+
+    def test_create_rejects_name_colliding_with_existing_frontmatter_name(self, tmp_path):
+        """A new skill's directory name must not collide with an existing
+        skill's displayed (frontmatter) name — skills_list dedups by that
+        name, so the new skill would be silently hidden."""
+        with _skill_dir(tmp_path):
+            _create_skill("eng-conduct", MISMATCHED_NAME_CONTENT)
+            result = _create_skill("keeta-eng-conduct", VALID_SKILL_CONTENT)
         assert result["success"] is False
         assert "already exists" in result["error"]
 
@@ -294,6 +318,79 @@ class TestEditSkill:
             found = _find_skill("my-skill")
         assert found is not None
         assert found["path"] == tmp_path / "mlops" / "my-skill"
+
+    def test_find_skill_accepts_frontmatter_name(self, tmp_path):
+        """The name ``skills list`` displays must resolve in skill_manage.
+
+        skills_list shows the frontmatter ``name:`` when it diverges from
+        the directory name, but ``_find_skill`` matched only the directory
+        name — so every mutating action called with the displayed name
+        failed with a misleading "not found in active profile" error while
+        the skill sat visibly enabled in the correct profile (#99609).
+        """
+        with _skill_dir(tmp_path):
+            _create_skill(
+                "eng-conduct", MISMATCHED_NAME_CONTENT, category="example-category"
+            )
+            found = _find_skill("keeta-eng-conduct")
+        assert found is not None
+        assert found["path"] == tmp_path / "example-category" / "eng-conduct"
+
+    def test_edit_existing_skill_by_frontmatter_name(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill(
+                "eng-conduct", MISMATCHED_NAME_CONTENT, category="example-category"
+            )
+            result = _edit_skill("keeta-eng-conduct", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True, result.get("error")
+        content = (tmp_path / "example-category" / "eng-conduct" / "SKILL.md").read_text()
+        assert "Updated description" in content
+
+    def test_find_skill_directory_name_wins_over_foreign_frontmatter(self, tmp_path):
+        """One skill's frontmatter name must not shadow another skill's dir.
+
+        The conflicting pair is written directly to disk: _create_skill's
+        duplicate check now also consults the frontmatter fallback, so it
+        refuses to create a skill whose directory name collides with an
+        existing skill's frontmatter name — the same collision
+        skills_list's seen-names dedup would silently hide.
+        """
+        claiming = tmp_path / "real-target"
+        claiming.mkdir()
+        (claiming / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        claimed = tmp_path / "test-skill"
+        claimed.mkdir()
+        (claimed / "SKILL.md").write_text(MISMATCHED_NAME_CONTENT)
+        with _skill_dir(tmp_path):
+            found = _find_skill("test-skill")
+        assert found is not None
+        assert found["path"] == claimed
+
+    def test_find_skill_ambiguous_display_name_refuses_to_guess(self, tmp_path):
+        """Two distinct skills sharing a frontmatter display name (#61172).
+
+        The display-name fallback must not silently pick one of them — the
+        caller would mutate the wrong skill. Like skill_view's same-tier
+        collision refusal, the shared display name resolves to nothing while
+        a UNIQUE display name resolves and each skill stays reachable by its
+        directory name.
+        """
+        for dir_name in ("alpha-home", "beta-office"):
+            skill = tmp_path / dir_name
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(MISMATCHED_NAME_CONTENT)
+        unique = tmp_path / "gamma-solo"
+        unique.mkdir()
+        (unique / "SKILL.md").write_text(
+            MISMATCHED_NAME_CONTENT.replace("keeta-eng-conduct", "solo-display"))
+        with _skill_dir(tmp_path):
+            assert _find_skill("keeta-eng-conduct") is None
+            assert _find_skill("solo-display")["path"] == unique
+            assert _find_skill("alpha-home")["path"] == tmp_path / "alpha-home"
+            assert _find_skill("beta-office")["path"] == tmp_path / "beta-office"
+            result = _edit_skill("keeta-eng-conduct", VALID_SKILL_CONTENT_2)
+        assert result["success"] is False
+        assert "not found" in result["error"]
 
     def test_edit_invalid_content_rejected(self, tmp_path):
         with _skill_dir(tmp_path):

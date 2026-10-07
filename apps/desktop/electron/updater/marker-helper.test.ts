@@ -7,12 +7,15 @@
 
 import fs from 'fs'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import os from 'os'
 import path from 'path'
 
 import { afterEach, describe, test } from 'vitest'
 
 import {
+  checkoutLockMayBeHeld,
+  checkoutLockPath,
   type HelperSpawn,
   markerHelperCommand,
   parseMarkerHelperVerdict,
@@ -223,4 +226,63 @@ test('the Windows command line: powershell -File windows.ps1 -MarkerOp ... (hidd
     '-InstallRoot',
     root
   ])
+})
+
+// Review K132354 (helper always spawned): with no marker the gate skips the
+// helper only when the script would answer "not held" for a missing checkout
+// lock, so the TS path must be the script's own.
+describe.skipIf(process.platform === 'win32')('checkout lock path mirrors marker.sh', () => {
+  const markerSh = path.resolve(__dirname, '../../../../scripts/desktop-update/marker.sh')
+
+  const scriptPath = (root: string) =>
+    execFileSync('bash', ['-c', 'source "$0"; checkout_lock_path', markerSh], {
+      env: { ...process.env, INSTALL_ROOT: root },
+      encoding: 'utf8'
+    }).trim()
+
+  const layouts: Record<string, (root: string, other: string) => void> = {
+    'no .git (ZIP install)': () => {},
+    '.git directory': root => fs.mkdirSync(path.join(root, '.git')),
+    'linked worktree: BOM, CRLF, relative gitdir, relative commondir': root => {
+      fs.mkdirSync(path.join(root, 'wt', 'admin'), { recursive: true })
+      fs.writeFileSync(path.join(root, '.git'), '\uFEFFgitdir: wt/admin \r\n')
+      fs.writeFileSync(path.join(root, 'wt', 'admin', 'commondir'), '../common\n')
+    },
+    'absolute gitdir and commondir': (root, other) => {
+      fs.writeFileSync(path.join(root, '.git'), `gitdir:${other}\n`)
+      fs.writeFileSync(path.join(other, 'commondir'), `\t${path.join(other, 'main')}\n`)
+    },
+    '.git file that is not a gitdir pointer': root => fs.writeFileSync(path.join(root, '.git'), 'GITDIR: x\n'),
+    'empty .git file': root => fs.writeFileSync(path.join(root, '.git'), ''),
+    'empty commondir': root => {
+      fs.mkdirSync(path.join(root, '.git'))
+      fs.writeFileSync(path.join(root, '.git', 'commondir'), '\n')
+    }
+  }
+
+  test.each(Object.keys(layouts))('%s', name => {
+    const root = scratchRoot('lock-path')
+    const other = scratchRoot('lock-path-other')
+    layouts[name](root, other)
+
+    const expected = scriptPath(root)
+    assert.equal(path.resolve(checkoutLockPath(root, false)), path.resolve(expected))
+    assert.equal(checkoutLockMayBeHeld(root, false), false, 'no lock file: the script answers not held')
+    fs.mkdirSync(path.dirname(expected), { recursive: true })
+    fs.writeFileSync(expected, '')
+    assert.equal(checkoutLockMayBeHeld(root, false), true, 'a lock file: only the script can tell')
+  })
+
+  test('an unreadable .git pointer asks the script', () => {
+    const root = scratchRoot('lock-path-unreadable')
+    fs.mkdirSync(path.join(root, '.git', 'x'), { recursive: true })
+    fs.rmSync(path.join(root, '.git'), { recursive: true })
+    fs.writeFileSync(path.join(root, '.git'), 'gitdir: elsewhere\n', { mode: 0o000 })
+
+    if (process.getuid?.() === 0) {
+      return // root reads it anyway
+    }
+
+    assert.equal(checkoutLockMayBeHeld(root, false), true)
+  })
 })

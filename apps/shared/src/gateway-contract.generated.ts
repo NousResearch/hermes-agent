@@ -642,6 +642,26 @@ export interface FreeTierStatusResult {
   error_code?: string | null
   retryable?: boolean | null
   retry_after?: number | null
+  challenge?: FreeTierChallengePayload | null
+}
+/** ``hermes_cli/anon_challenge.py::BrowserChallenge.as_payload``: the ``free_tier.challenge`` event, and ``free_tier.status``'s ``challenge`` field for a client that connected after it. */
+export interface FreeTierChallengePayload {
+  type: 'browser'
+  url: string
+  required: boolean
+  expires_in: number
+  message: string
+  attempt?: number
+  [key: string]: unknown
+}
+export interface FreeTierChallengeResultParams {
+  profile?: string | null
+  url: string
+  attempt?: number
+  outcome: 'done' | 'failed' | 'closed' | 'timeout' | 'refused' | 'error' | 'unsupported'
+}
+export interface FreeTierChallengeResult {
+  accepted: boolean
 }
 export interface FreeTierProvisionResult {
   has_guest: boolean
@@ -1013,6 +1033,7 @@ export interface ConnectionOperationTarget {
   kind: ConnectionTargetKind
   action: ConnectionTargetAction
   state: ConnectionTargetState
+  resolved?: boolean | null
   detail?: string | null
   instructions?: string | null
   discovery_error?: string | null
@@ -1030,11 +1051,17 @@ export interface ConnectionOperationTarget {
   sha?: string | null
   subdir?: string | null
   scan?: CatalogScan | null
-  requirements?: string[] | null
+  requires_hermes?: string | null
   has_desktop_half?: boolean | null
   target_profile?: string | null
   app_state?: CatalogAppState | null
   skill?: string | null
+  phase?: InstallPhase | null
+  approved?: CatalogApproved | null
+  enabled?: boolean | null
+  missing_env?: string[] | null
+  server_errors?: CatalogServerError[] | null
+  already_installed?: boolean | null
 }
 export type ConnectionTargetKind = 'connector' | 'mcp' | 'plugin' | 'skill'
 export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
@@ -1057,6 +1084,19 @@ export interface CatalogScan {
 export type CatalogScanStatus = 'passed' | 'warnings' | 'failed'
 /** The desktop app a catalog plugin drives, from its ``hermes_platform`` declaration. */
 export type CatalogAppState = 'present' | 'missing_app' | 'app_not_running' | 'unknown'
+/** The slow steps of an install, as ids; the desktop catalog card words them in its own language. */
+export type InstallPhase = 'downloading' | 'python_packages' | 'loading_tools'
+/** The non-secret Advanced choices the user approved on a catalog row; a Try again after the operation settled repeats them. */
+export interface CatalogApproved {
+  force: boolean
+  enable: boolean
+  ref?: string | null
+}
+/** An MCP server an installed plugin brought that did not connect, with the raw reason. */
+export interface CatalogServerError {
+  name: string
+  error: string
+}
 export interface ConnectionWakeResult {
   status: 'ok'
 }
@@ -3165,6 +3205,7 @@ export interface SessionListRow {
   message_count?: number
   live_message_count?: number | null
   source?: string
+  _lineage_root_id?: string | null
 }
 export interface SessionMostRecentParams {
   profile?: string | null
@@ -4460,6 +4501,7 @@ export interface TourRequestParams {
   side?: string | null
   steps?: TourStep[] | null
   step_index?: number | null
+  preset?: TourPreset | null
 }
 export interface TourStep {
   selector?: string | null
@@ -4468,6 +4510,8 @@ export interface TourStep {
   side?: string | null
   [key: string]: unknown
 }
+/** Which built-in tour ``start`` without steps runs. */
+export type TourPreset = 'quick' | 'full'
 export interface DisplayInstallSudoParams {
   session_id: string
   profile_key: string
@@ -4865,6 +4909,10 @@ export interface BrowserControllerCancelPayload {
 export interface VoiceStatusPayload {
   state: string
 }
+/** ``methods_voice`` voice.record ``on_partial`` — live STT text so far (``stt.streaming``). */
+export interface VoicePartialPayload {
+  text: string
+}
 /** ``methods_voice._vr_transcript`` / ``_deliver_fd_transcript`` / typed stop phrase in methods_prompt. */
 export interface VoiceTranscriptPayload {
   text?: string | null
@@ -5022,6 +5070,8 @@ export interface RpcMethods {
   'file.attach': { params: FileAttachParams; result: FileAttachResult }
   /** Mark the one-time availability notice as shown on the free-tier identity. */
   'free_tier.ack_notice': { params: ProfileParams; result: FreeTierAckNoticeResult }
+  /** Report a browser window outcome for the matching pending attempt; mint remains authoritative. */
+  'free_tier.challenge_result': { params: FreeTierChallengeResultParams; result: FreeTierChallengeResult }
   /** Explicit retry of the free-tier identity mint when the boot bootstrap could not create it. */
   'free_tier.provision': { params: ProfileParams; result: FreeTierProvisionResult }
   /** Pure read of the focused profile's free-tier identity state (no network, no side effects). */
@@ -5471,6 +5521,7 @@ export const RPC_METHODS = [
   'display.thumbnail',
   'file.attach',
   'free_tier.ack_notice',
+  'free_tier.challenge_result',
   'free_tier.provision',
   'free_tier.status',
   'gateway.capabilities',
@@ -5750,6 +5801,8 @@ export interface BackendGatewayEventMap {
   'display.status': DisplayStatusPayload
   /** A session-level failure outside a turn (agent init, model switch, compression, resume). */
   error: ErrorPayload
+  /** The account service wants a browser challenge cleared before the free-tier token exchange (broadcast); the desktop loads ``url`` in a hidden window. */
+  'free_tier.challenge': FreeTierChallengePayload
   /** First frame of a connection: the resolved skin, the change-event capability and the replay epoch. */
   'gateway.ready': GatewayReadyPayload
   /** Apply a named desktop layout preset. */
@@ -5860,6 +5913,8 @@ export interface BackendGatewayEventMap {
   'tool.start': ToolStartPayload
   /** Barge-in: the spoken interjection interrupted the turn; no payload. */
   'voice.interrupted': Record<string, never>
+  /** Live STT text so far while the user is still speaking. */
+  'voice.partial': VoicePartialPayload
   /** Voice recorder state changed. */
   'voice.status': VoiceStatusPayload
   /** A voice capture produced text (or a stop phrase / silence limit). */
@@ -5886,6 +5941,7 @@ export const GATEWAY_EVENT_TYPES = [
   'display.lease',
   'display.status',
   'error',
+  'free_tier.challenge',
   'gateway.ready',
   'layout.apply',
   'message.complete',
@@ -5941,6 +5997,7 @@ export const GATEWAY_EVENT_TYPES = [
   'tool.output_risk',
   'tool.start',
   'voice.interrupted',
+  'voice.partial',
   'voice.status',
   'voice.transcript',
   'wake.detected'

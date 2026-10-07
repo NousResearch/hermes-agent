@@ -264,6 +264,7 @@ docs/superpowers/*
 .update-incomplete.lock
 # Kernel lock `hermes update` holds on the checkout (hermes_cli/update_lock.py).
 .hermes-update.lock
+.hermes-update-zip-swap.lock
 
 # Checkout fingerprint the __pycache__ tree was last validated against
 # (launch-time stale-bytecode sweep). Runtime state, never a code change.

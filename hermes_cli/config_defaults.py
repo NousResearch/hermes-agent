@@ -292,6 +292,24 @@ DEFAULT_CONFIG = {
         # timeout_s <= 0 disables; poll_s = sampling interval. Invalid values (NaN, Inf,
         # non-positive poll) warn and fall back to defaults. See agent/turn_liveness.py.
         "turn_liveness": {"timeout_s": 600.0, "poll_s": 15.0},
+        # Opt-in adaptive reasoning adjustment. When enabled, each user turn is classified by a
+        # deterministic local heuristic (no extra LLM call) and the effort is temporarily raised
+        # above the configured agent.reasoning_effort baseline — up to max_effort — for turns that
+        # warrant it (complex debugging, architecture/security work, consequential infrastructure
+        # changes, in-depth research). Setting min_effort: low additionally allows clearly simple
+        # turns (casual chatter, short fact lookups, single mechanical steps) to drop below the
+        # baseline; without it the feature is escalation-only. Requires an explicit
+        # agent.reasoning_effort baseline — with no baseline set, adjusting would toggle thinking
+        # presence mid-conversation and fragment prompt caching, so the feature stays inert. The
+        # baseline is restored after the turn and a one-line notice is shown whenever the level
+        # changes. Explicit session-scoped /reasoning picks (or the Desktop effort menu) always win.
+        # Delegate subagents inherit the effective level + this policy and reclassify their own
+        # goal; delegation.reasoning_effort pins them.
+        "adaptive_reasoning": {
+            "enabled": False,
+            "max_effort": "xhigh",  # adjustment ceiling: high or xhigh
+            "min_effort": "",  # optional floor; "low" enables downshift
+        },
     },
 
     "terminal": {
@@ -2723,44 +2741,7 @@ DEFAULT_CONFIG = {
 }
 
 
-def _env(description, prompt, **keys):
-    """One OPTIONAL_ENV_VARS entry; keyword order is preserved as dict key order."""
-    return {"description": description, "prompt": prompt, **keys}
-
-
-_OMIT = object()
-
-
-def _category(category, password, advanced):
-    """Entry factory for one category with its usual password/advanced defaults.
-
-    ``url``/``help``/``tools`` are only written when passed; ``password=None`` omits the key;
-    ``advanced`` is only written when true. Key order matches the plain ``_env`` entries.
-    """
-    def make(description, prompt, url=_OMIT, *, help=_OMIT, tools=_OMIT, password=password,
-             advanced=advanced):
-        d = {"description": description, "prompt": prompt}
-        d.update((k, v) for k, v in (("help", help), ("url", url), ("tools", tools)) if v is not _OMIT)
-        if password is not None:
-            d["password"] = password
-        d["category"] = category
-        if advanced:
-            d["advanced"] = True
-        return d
-    return make
-
-
-_prov = _category("provider", password=True, advanced=True)
-_tool = _category("tool", password=True, advanced=False)
-_msg = _category("messaging", password=False, advanced=False)
-_skill = _category("skill", password=True, advanced=True)
-_setting = _category("setting", password=False, advanced=False)
-
-
-def _base_url(name, prompt_name=None):
-    """Provider ``*_BASE_URL`` override entry (advanced, not a secret)."""
-    prompt = f"{prompt_name or name} base URL (leave empty for default)"
-    return _prov(f"{name} base URL override", prompt, None, password=False)
+from hermes_cli.config_defaults_env import _base_url, _env, _msg, _prov, _setting, _skill, _tool  # noqa: E402
 
 
 # Optional environment variables that enhance functionality. Feeds the dashboard keys page and setup

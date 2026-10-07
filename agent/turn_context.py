@@ -17,6 +17,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from agent.adaptive_reasoning import rebase_adaptive_turn
 from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
@@ -1058,6 +1059,7 @@ def build_turn_context(
     from tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()
+    rebase_adaptive_turn(agent)  # a restored primary baseline re-derives this turn's adjustment
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)
 

@@ -547,10 +547,12 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
             session_db = _open_profile_session_db(profile_home)
         # A rebuild is not a conversation boundary (/new pops the pins before calling us): carry the
         # session's /model, /reasoning and /fast picks, else config_model_seen below hides the
-        # reversion from the per-turn sync.
+        # reversion from the per-turn sync. The /reasoning pick's provenance rides with it so the
+        # rebuild doesn't re-infer whether it was explicit.
         if "model_override" not in kwargs and isinstance(session.get("model_override"), dict):
             kwargs["model_override"] = session["model_override"]
         for pin, kwarg in (("create_reasoning_override", "reasoning_config_override"),
+                           ("reasoning_user_override", "reasoning_user_override"),
                            ("create_service_tier_override", "service_tier_override")):
             if kwarg not in kwargs and session.get(pin) is not None:
                 kwargs[kwarg] = session[pin]
@@ -600,8 +602,13 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         # /new is a full conversation boundary: session-scoped runtime overrides (/model,
         # /reasoning, /fast) do NOT carry forward and the pins are cleared so a rebuild can't
         # resurrect them. Global process state is never touched (see _apply_model_switch).
-        for k in ("model_override", "create_reasoning_override", "create_service_tier_override", "one_turn_model_restore"):
+        for k in ("model_override", "create_reasoning_override", "reasoning_user_override",
+                  "create_service_tier_override", "one_turn_model_restore"):
             session.pop(k, None)
+        resumed = session.get("resume_runtime_overrides")
+        if isinstance(resumed, dict):
+            resumed.pop("reasoning_config_override", None)
+            resumed.pop("reasoning_user_override", None)
         new_agent = _rebuild_session_agent(
             sid, session, session_id=session["session_key"],
             platform_override=_session_source(session),

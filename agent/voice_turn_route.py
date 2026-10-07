@@ -143,7 +143,8 @@ def begin_voice_turn_route(agent: Any, messages: List[Dict[str, Any]], system_pr
     target = _route_target(agent, cfg)
     if target is None and effort is None:
         return system_prompt
-    state: Dict[str, Any] = {"reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None))}
+    current = getattr(agent, "reasoning_config", None)
+    state: Dict[str, Any] = {"reasoning_config": current, "reasoning_copy": copy.deepcopy(current)}
     agent._voice_route_state = state
     if target is not None:
         state.update(_capture(agent))
@@ -159,7 +160,7 @@ def begin_voice_turn_route(agent: Any, messages: List[Dict[str, Any]], system_pr
         if reason:
             _reinstall(agent, state)
             _warn_once(agent, target, reason)
-            agent._voice_route_state = {"reasoning_config": state["reasoning_config"]}
+            agent._voice_route_state = {key: state[key] for key in ("reasoning_config", "reasoning_copy")}
             return agent._cached_system_prompt or system_prompt
         from agent.chat_completion_helpers import rewrite_prompt_model_identity
         rewrite_prompt_model_identity(agent, agent.model, agent.provider)
@@ -190,4 +191,7 @@ def end_voice_turn_route(agent: Any) -> None:
         logger.warning("Voice turn route restore failed; the next turn re-resolves the main runtime",
                        exc_info=True)
         agent._fallback_activated = True  # restore_primary_runtime takes it from here
-    agent.reasoning_config = state["reasoning_config"]
+    # Hand back the very object the turn started with: an outer adaptive-reasoning turn restores its
+    # baseline only while its own config is still in place. The copy stands in only if it was mutated.
+    saved = state["reasoning_config"]
+    agent.reasoning_config = saved if saved == state["reasoning_copy"] else state["reasoning_copy"]

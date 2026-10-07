@@ -8798,10 +8798,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # still small enough to never threaten memory.
     _BUSY_QUEUE_MAX_PENDING = 32
 
-    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
+    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> bool:
         adapter = self._adapter_for_source(event.source)
         if not adapter:
-            return
+            return False
         # #28503 — Previously this called ``merge_pending_message_event``
         # with the default ``merge_text=False``, which silently OVERWROTE
         # the single pending slot when consecutive text messages arrived
@@ -8825,7 +8825,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
-            return
+            return True
 
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
             logger.warning(
@@ -8833,9 +8833,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key,
                 self._BUSY_QUEUE_MAX_PENDING,
             )
-            return
+            return False
 
         self._enqueue_fifo(session_key, event, adapter)
+        return True
 
     async def _maybe_ack_busy_queue_reaction(self, event: MessageEvent) -> None:
         """#81632 — React with ``display.busy_queue_ack_emoji`` on enqueue.
@@ -9163,8 +9164,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # turn (#43066 sub-bug 2). The FIFO path gives each text its own
         # turn in arrival order while still preserving photo-burst / album
         # merge semantics for media.
+        queued_successfully = False
         if not steered and not redirected:
-            self._queue_or_replace_pending_event(session_key, event)
+            queued_successfully = bool(self._queue_or_replace_pending_event(session_key, event))
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
@@ -9173,8 +9175,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # #81632 — In queue mode the follow-up was enqueued for later; give
         # the user instant visual confirmation via a platform reaction
         # (display.busy_queue_ack_emoji, e.g. "⏳"). No-op when the setting
-        # is empty (default) or the adapter lacks reaction support.
-        if is_queue_mode and not steered and not redirected:
+        # is empty (default), when the message was dropped at queue cap, or
+        # the adapter lacks reaction support.
+        if is_queue_mode and not steered and not redirected and queued_successfully:
             await self._maybe_ack_busy_queue_reaction(event)
 
         # If not in queue/steer mode, interrupt the running agent immediately.

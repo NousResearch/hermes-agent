@@ -564,6 +564,62 @@ class TestBusyQueueAckEmojiReaction:
         # Enqueue still happened despite the reaction failure.
         assert adapter._pending_messages.get(sk) is event
 
+    @pytest.mark.asyncio
+    async def test_queue_cap_drop_never_reacts(self, monkeypatch):
+        """When busy queue is at cap (32 items), dropped follow-up must not react."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {"display": {"busy_queue_ack_emoji": "⏳"}},
+        )
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+        adapter.send_reaction = AsyncMock(return_value=True)
+
+        event = _make_event(text="overflow follow-up")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        # Simulate queue at cap (32 items)
+        runner._queue_depth = MagicMock(return_value=32)
+
+        agent = MagicMock()
+        agent._active_children = []
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        # Message was dropped at cap, reaction must NOT have been sent
+        adapter.send_reaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_telegram_send_reaction_respects_reactions_enabled(self, monkeypatch):
+        """TelegramAdapter.send_reaction checks _reactions_enabled() first."""
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        adapter = object.__new__(TelegramAdapter)
+        adapter._bot = MagicMock()
+        adapter._bot.set_message_reaction = AsyncMock()
+
+        # By default TELEGRAM_REACTIONS is unset ("false")
+        monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+        result = await adapter.send_reaction("123", "456", "⏳")
+        assert result is False
+        adapter._bot.set_message_reaction.assert_not_called()
+
+        # When enabled, it proceeds to _set_reaction
+        monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+        result = await adapter.send_reaction("123", "456", "⏳")
+        assert result is True
+        adapter._bot.set_message_reaction.assert_awaited_once_with(
+            chat_id=123,
+            message_id=456,
+            reaction="⏳",
+        )
+
 
 class TestLongRunningNotificationOwnership:
     """The long-running heartbeat must stop once its run no longer owns the

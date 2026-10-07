@@ -9935,6 +9935,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def send_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Best-effort emoji reaction (busy-queue acknowledgment flow)."""
+        if not self._reactions_enabled():
+            return False
         return await self._set_reaction(chat_id, message_id, emoji)
 
     async def on_processing_start(self, event: MessageEvent) -> None:

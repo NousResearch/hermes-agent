@@ -2,41 +2,80 @@
 name: popular-web-designs
 description: Landing pages and UIs from 54 design systems like Stripe.
 version: 1.0.0
-author: Hermes Agent + Teknium (design systems sourced from VoltAgent/awesome-design-md)
+author: Teknium (teknium1), Hermes Agent (design systems sourced from VoltAgent/awesome-design-md)
 license: MIT
 tags: [design, css, html, ui, web-development, design-systems, templates]
 platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    related_skills: [claude-design, design-md]
 ---
 
-# Popular Web Designs
+# Popular Web Designs Skill
 
-54 real-world design systems ready for use when generating HTML/CSS. Each template captures a
-site's complete visual language: color palette, typography hierarchy, component styles, spacing
-system, shadows, responsive behavior, and practical agent prompts with exact CSS values.
+54 real-world design systems ready for pasting into generated HTML/CSS — palette, type scale,
+component styles, spacing, shadows, responsive behavior, each with exact CSS values and an
+implementation-notes block. It supplies the visual vocabulary of known sites; it does not run
+the design process or exercise taste (that is `claude-design`) and it does not author token
+spec files (that is `design-md`).
 
-## Related design skills
+## When to Use
 
-- **`claude-design`** — use for the design *process and taste* (scoping a brief,
-  producing variants, verifying a local HTML artifact, avoiding AI-design slop).
-  Pair it with this skill when the user wants a thoughtfully-designed page styled
-  after a known brand: `claude-design` drives the workflow, this skill supplies
-  the visual vocabulary.
-- **`design-md`** — use when the deliverable is a formal DESIGN.md token spec
-  file, not a rendered artifact.
+Load this skill when the request names a site, a product, or a mood to borrow a look from:
 
-## How to Use
+- "make it look like **Stripe / Linear / Vercel**", "site styled like Airbnb", "dashboard like Sentry"
+- a landing page, marketing page, or UI that should carry a known product's visual language
+- a look chosen by mood or content type — jump to [Choosing a Design](#choosing-a-design)
 
-1. Pick a design from the catalog below
+Do **not** load it when the user wants:
+
+| User wants... | Use instead |
+|---|---|
+| design process: scoping a brief, variants, avoiding AI-design slop | `claude-design` |
+| a `DESIGN.md` token spec file (WCAG/Tailwind/DTCG export) | `design-md` |
+| an original brand identity invented from scratch (no site to copy) | `claude-design` |
+| ASCII art, a diagram, or an infographic | `ascii-art`, `architecture-diagram`, `baoyu-infographic` |
+
+Both apply at once? Load `claude-design` for the workflow and this skill for the vocabulary —
+that is the pairing each skill's own docs describe.
+
+## Prerequisites
+
+- Native tools only: `write_file` (create the HTML), `browser_navigate` (open it),
+  `browser_vision` (check it).
+- Network access to `fonts.googleapis.com` for the CDN font of each template.
+  `templates/apple.md` is the deliberate exception: SF Pro is proprietary, so it uses the
+  system font stack and ships no Google Fonts `<link>`.
+
+## How to Run
+
+1. Pick a design from the [Design Catalog](#design-catalog) below, or use
+   [Choosing a Design](#choosing-a-design) to match a look to the content.
 2. Load it: `skill_view(name="popular-web-designs", file_path="templates/<site>.md")`
-3. Use the design tokens and component specs when generating HTML
-4. Open the saved file with `browser_navigate(url="file:///abs/path/index.html")` and check it with `browser_vision`
+3. Read the tokens and component specs (template § 1–6) while generating the HTML from the
+   [HTML skeleton](#html-skeleton).
+4. Write it with `write_file`, open it with
+   `browser_navigate(url="file:///abs/path/index.html")`, check it with `browser_vision`.
 
-Each template includes a **Hermes Implementation Notes** block at the top with:
-- CDN font substitute and Google Fonts `<link>` tag (ready to paste)
-- CSS font-family stacks for primary and monospace
-- Reminders to use `write_file` for HTML creation and `browser_vision` for verification
+Every template opens with a **Hermes Agent — Implementation Notes** block:
 
-## HTML Generation Pattern
+- CDN font substitute plus a ready-to-paste Google Fonts `<link>`
+- `font-family` stacks for the primary and monospace faces
+- the `write_file` / `browser_vision` reminders above
+
+## Quick Reference
+
+| I need | Go to |
+|---|---|
+| exact colors, type, spacing values | `templates/<site>.md` § 1–6 |
+| the HTML skeleton with the font `<link>` | [HTML skeleton](#html-skeleton) |
+| proprietary font → CDN substitute | [Font Substitution Reference](#font-substitution-reference) |
+| which site fits this content | [Design Catalog](#design-catalog), [Choosing a Design](#choosing-a-design) |
+| gates before shipping the page | [Verification](#verification) |
+
+## Procedure
+
+### HTML skeleton
 
 ```html
 <!DOCTYPE html>
@@ -202,3 +241,27 @@ Match the design to the content:
 - **Premium / luxury:** Apple, BMW, Stripe, Superhuman, Revolut
 - **Data-dense / dashboards:** Sentry, Kraken, Cohere, ClickHouse
 - **Monospace / terminal aesthetic:** Ollama, OpenCode, x.ai, VoltAgent
+
+## Pitfalls
+
+- **The substitute face loses weight, not just shape.** When the CDN font differs from the
+  original (`DM Sans` for Circular and Airbnb Cereal, `Source Sans 3` for the Stripe sohne-var),
+  copy the template's `font-weight`, `font-size`, and `letter-spacing` verbatim — those values
+  carry more of the identity than the family name does.
+- **Templates are token maps, not components.** They define colors, type, and component styles;
+  they ship no breakpoints, states, or JS. Derive layout from § 5 and decide the responsive
+  behavior yourself.
+- **Each template describes one mode.** Most are the site's dark *or* light face (§ 1); needing
+  the other means deriving neutrals from the same ramp, not inverting the hex values.
+- **Don't recall a brand's colors from memory.** Read the hex values in § 2 — remembered brand
+  palettes are usually a shade off, and that is the first thing a reader notices.
+
+## Verification
+
+1. `browser_navigate(url="file:///abs/path/index.html")` — the page renders from disk with no
+   missing-resource look (fonts present, not silently falling back to the system face).
+2. `browser_vision` on the render and compare against the template: background/foreground vs
+   § 2 hex values, heading weights vs § 3, buttons/cards vs § 4, spacing rhythm vs § 5.
+3. Check 375 px and 1440 px widths — no horizontal overflow, the reading column stays single.
+4. If fidelity to the real site was the point, put the render beside a screenshot of that site
+   and confirm the palette and type weight match before calling it done.

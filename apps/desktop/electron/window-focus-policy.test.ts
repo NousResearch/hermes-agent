@@ -27,6 +27,16 @@ test('focus is only taken when the window does not already have it', () => {
   assert.equal(shouldFocusToTakeKeyboard({ isFocused: () => false }), true)
 })
 
+test('the native focus method keeps its window receiver', () => {
+  const window = {
+    focused: false,
+    isFocused() {
+      return this.focused
+    },
+  }
+  assert.equal(shouldFocusToTakeKeyboard(window), true)
+})
+
 test('an already-focused window never pumps the OS foreground path', () => {
   // The #83998 regression: a redundant .focus() on a focused window still
   // runs SetForegroundWindow on Windows, dismissing another app's dialog.

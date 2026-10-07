@@ -774,6 +774,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
                 tokens = set_session_vars(
                     session_key=session_id, session_id=session_id, cwd=state.cwd, cron_session="",
+                    # ACP has no detached-result consumer. Join delegates before end_turn
+                    # rather than leaving results for an unrelated gateway/API process.
+                    async_delivery=False,
                 )
                 return lambda: clear_session_vars(tokens)
 

@@ -371,9 +371,15 @@ def _cmd_adopt(args) -> int:
         # Mirror the real run's per-name decision: skills already under
         # curator management are reported as such (same message the real
         # path prints) instead of being listed as adoption candidates, so
-        # the dry run answers "is this skill already adopted?".
-        already_managed = [n for n in names if skill_usage.is_curator_managed(n)]
-        pending = [n for n in names if not skill_usage.is_curator_managed(n)]
+        # the dry run answers "is this skill already adopted?". Single-pass
+        # bucketing evaluates each name once.
+        already_managed = []
+        pending = []
+        for n in names:
+            if skill_usage.is_curator_managed(n):
+                already_managed.append(n)
+            else:
+                pending.append(n)
         for n in already_managed:
             print(f"curator: '{n}' is already curator-managed")
         if pending:

@@ -58,3 +58,22 @@ def test_adopt_dry_run_unmanaged(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "would adopt 1 skill(s) (dry run):" in out
     assert "+ fresh-skill" in out
+
+
+def test_adopt_dry_run_single_pass_evaluation(monkeypatch):
+    """Ensure is_curator_managed is evaluated only once per skill name."""
+    from unittest.mock import MagicMock
+    import hermes_cli.curator as curator_cli
+    import tools.skill_usage as skill_usage
+
+    mock_check = MagicMock(side_effect=lambda name: name == "skill-a")
+    monkeypatch.setattr(skill_usage, "is_curator_managed", mock_check)
+
+    args = SimpleNamespace(
+        skill=["skill-a", "skill-b", "skill-c"],
+        all_unmanaged=False,
+        dry_run=True,
+        yes=False,
+    )
+    assert curator_cli._cmd_adopt(args) == 0
+    assert mock_check.call_count == 3

@@ -46,6 +46,10 @@ optional_env:
     description: "Only answer channel/group-chat messages that @mention the bot or reply to it (default false; needed once the app has RSC message-read consent)"
     prompt: "Require @mention in channels and group chats? (true/false)"
     password: false
+  - name: TEAMS_REACTIONS
+    description: "Add processing-status emoji reactions (👀 while working, ✅/❌ on complete). Default true. Agent send_message react/unreact is always available."
+    prompt: "Enable processing-status reactions? (true/false)"
+    password: false
   - name: TEAMS_HOME_CHANNEL
     description: "Default chat/channel ID for cron / notification delivery"
     prompt: "Home channel (or empty)"

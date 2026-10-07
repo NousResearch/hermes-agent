@@ -157,6 +157,10 @@ platforms:
 
 ## 功能特性
 
+### 表情反应
+
+机器人可以对消息添加/移除表情反应（处理中 👀，成功 ✅，失败 ❌），并接收用户的 `messageReaction` 事件。处理状态反应可通过 `TEAMS_REACTIONS=false` 关闭；Agent 的 `send_message` react/unreact 始终可用。流式逐字编辑尚未接入。
+
 ### 交互式审批卡片
 
 当 Agent 需要执行可能存在风险的命令时，它会发送一张带有四个按钮的 Adaptive Card，而不是要求你输入 `/approve`：

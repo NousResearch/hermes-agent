@@ -27,14 +27,16 @@ def _uid_list(value: Any) -> List[str]:
 
 def _uid_map(value: Any) -> Dict[str, Any]:
     """Normalize a ``{tool call id: uid}`` map (a live dict, or the JSON text an export/import carries): a
-    non-empty string uid, or a list of them for a provider id repeated inside one row (one per occurrence,
-    see ``merge_tool_call_uids``); anything else is dropped, and a non-map is ``{}``."""
+    non-empty string uid, or a list with one slot per occurrence for a provider id repeated inside one row
+    (see ``fold_tool_call_uids``): a uid, or ``None`` for an occurrence persisted without one, at least one
+    a uid. Anything else is dropped, and a non-map is ``{}``."""
     if isinstance(value, str):
         value = _json_or(value, {}, "Failed to deserialize a tool-call uid map, falling back to {}")
     if not isinstance(value, dict):
         return {}
     return {k: v for k, v in value.items() if isinstance(k, str) and k and (
-        (isinstance(v, str) and v) or (isinstance(v, list) and v and all(isinstance(u, str) and u for u in v)))}
+        (isinstance(v, str) and v) or (isinstance(v, list) and any(isinstance(u, str) for u in v)
+                                        and all(u is None or (isinstance(u, str) and u) for u in v)))}
 
 
 def _tool_call_uid_map(msg: Mapping[str, Any]) -> Dict[str, Any]:

@@ -138,33 +138,33 @@ def record_absorbed_message(
         survivor[ABSORBED_MESSAGE_UIDS] = absorbed
 
 
-def merge_tool_call_uids(into: Mapping[str, Any], extra: Mapping[str, Any]) -> dict:
-    """Union two ``_tool_call_uids`` maps without losing an occurrence. Folding two assistant turns that
-    reuse a provider id (llama.cpp-style constant ids) leaves both calls in ``tool_calls``; the id then maps
-    to every occurrence's uid, in call order, as a list. Provider ids themselves are never rewritten."""
-    merged = dict(into)
-    for call_id, uid in extra.items():
-        merged[call_id] = _uid_occurrences(merged[call_id]) + _uid_occurrences(uid) if call_id in merged else uid
-    return merged
-
-
-def _uid_occurrences(value: Any) -> list:
-    return list(value) if isinstance(value, list) else [value]
-
-
-def per_occurrence_tool_call_uids(uids: Mapping[str, Any], tool_calls: List[Mapping[str, Any]]) -> dict:
-    """*uids* with every provider id this row names more than once spelled out as one uid per occurrence. A
-    single response that repeats an id shares ONE uid (its results carry it, so every call stays paired);
-    before a fold appends another turn's occurrences, the shared uid must fill each of this row's slots or
-    the appended uids would align with the wrong calls."""
+def fold_tool_call_uids(prev_uids: Any, prev_calls: List[Mapping[str, Any]], new_uids: Any,
+                        new_calls: List[Mapping[str, Any]]) -> dict:
+    """The ``_tool_call_uids`` of a fold that appends *new_calls* to *prev_calls*, each side described by its
+    own map (missing or empty for a row an older build wrote). A provider id the combined calls name more
+    than once (llama.cpp-style constant ids) maps to a list with one slot per occurrence, in call order: the
+    uid that occurrence was persisted with (a single response that repeats an id shares ONE uid, which fills
+    each of its row's slots) or ``None`` for an occurrence its side never mapped, so a result can never
+    inherit another occurrence's uid. An id named once keeps its scalar; a key that names none of the calls
+    is dropped. Provider ids themselves are never rewritten, and no uid is minted: an unmapped call's stored
+    results carry none."""
     from agent.message_sanitization import coalesce_tool_call_id
 
-    counts = Counter(call_id for tc in tool_calls if (call_id := coalesce_tool_call_id(tc)))
-    expanded = dict(uids)
-    for call_id, count in counts.items():
-        if count > 1 and isinstance(uid := uids.get(call_id), str):
-            expanded[call_id] = [uid] * count
-    return expanded
+    maps = [uids if isinstance(uids, Mapping) else {} for uids in (prev_uids, new_uids)]
+    occurrences: dict = {}  # provider id -> one uid (or None) per occurrence, in combined call order
+    for uids, calls in zip(maps, (prev_calls, new_calls)):
+        seen: Counter = Counter()
+        for tc in calls:
+            if not (call_id := coalesce_tool_call_id(tc)):
+                continue
+            uid = uids.get(call_id)
+            if isinstance(uid, list):
+                uid = uid[seen[call_id]] if seen[call_id] < len(uid) else None
+            seen[call_id] += 1
+            occurrences.setdefault(call_id, []).append(uid if isinstance(uid, str) and uid else None)
+    # Built from the calls alone: a key naming no call (left behind when repair pruned it) pairs nothing, and
+    # must not overwrite the uid of the one real occurrence of that id on the other side.
+    return {call_id: slots if len(slots) > 1 else slots[0] for call_id, slots in occurrences.items() if any(slots)}
 
 
 def index_tool_call_uids(index: MutableMapping[str, str], assistant: Mapping[str, Any]) -> frozenset:
@@ -172,7 +172,9 @@ def index_tool_call_uids(index: MutableMapping[str, str], assistant: Mapping[str
     later tool-result row can be resolved by any spelling of its ``tool_call_id``. Provider ids repeat, so
     every id this assistant names first shadows an earlier occurrence's entry: a result pairs with the
     NEAREST preceding call, and a call without a uid (a legacy row) pairs its result with nothing. A
-    provider id repeated inside one row (two folded turns) maps each call to its own occurrence's uid.
+    provider id repeated inside one row (two folded turns) maps each call to its own occurrence's uid, and
+    the calls are walked in order, so there too the last occurrence owns the results after it: one without
+    a uid (a ``None`` slot) clears an earlier occurrence's entry instead of inheriting it.
     Returns every pairing-id variant the assistant names."""
     from agent.message_sanitization import coalesce_tool_call_id, tool_call_id_variants
 
@@ -190,9 +192,11 @@ def index_tool_call_uids(index: MutableMapping[str, str], assistant: Mapping[str
         if isinstance(uid, list):
             nth = occurrence[call_id] = occurrence.get(call_id, -1) + 1
             uid = uid[nth] if nth < len(uid) else None
-        if isinstance(uid, str) and uid:
-            for variant in variants:
+        for variant in variants:
+            if isinstance(uid, str) and uid:
                 index[variant] = uid
+            else:
+                index.pop(variant, None)
     return named
 
 

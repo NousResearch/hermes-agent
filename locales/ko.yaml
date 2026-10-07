@@ -3455,6 +3455,7 @@ explainer:
     ollama_runtime_context_too_small: "로컬 모델의 컨텍스트 창이 너무 작아 작업을 끝낼 수 없었어요. 컨텍스트 크기를 늘리거나 더 큰 모델을 사용하세요."
     pending_tool_result: "도구 결과가 아직 대기 중인 상태에서 턴이 멈췄고 모델이 후속 텍스트를 만들지 않았어요. `continue`를 보내면 요약해 드려요."
     interrupted_during_api_call: "응답을 받기 전에 요청이 호출 도중 중단됐어요. `continue`를 보내 다시 시도하세요."
+    client_disconnect: "the client disconnected mid-call, so the turn stopped and nothing was saved for it. Reconnect and send your message again."
     max_iterations_reached: "최종 답변 전에 도구 반복 최대 한도에 도달했어요. `continue`를 보내 계속 진행하거나 `max_iterations`를 늘려 보세요."
     error_near_max_iterations: "최종 답변 전에 반복 한도 근처에서 오류가 발생했어요. 위의 도구 출력을 확인한 뒤 `continue`를 보내세요."
     repeated_outer_errors: "턴이 반복되는 오류로 계속 실패해서 무한히 재시도하지 않고 일찍 멈췄어요. 위의 오류를 확인한 뒤 `continue`를 보내 다시 시도하세요."

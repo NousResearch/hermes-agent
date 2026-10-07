@@ -3455,6 +3455,7 @@ explainer:
     ollama_runtime_context_too_small: "la ventana de contexto del modelo local era demasiado pequeña para terminar. Aumenta el tamaño del contexto o usa un modelo más grande."
     pending_tool_result: "el turno se detuvo con un resultado de herramienta aún pendiente y el modelo no produjo texto de seguimiento. Envía `continue` para que lo resuma."
     interrupted_during_api_call: "la solicitud se interrumpió a mitad de la llamada, antes de recibir una respuesta. Envía `continue` para reintentar."
+    client_disconnect: "the client disconnected mid-call, so the turn stopped and nothing was saved for it. Reconnect and send your message again."
     max_iterations_reached: "se alcanzó el límite máximo de iteraciones de herramientas antes de una respuesta final. Envía `continue` para seguir, o aumenta `max_iterations`."
     error_near_max_iterations: "ocurrió un error cerca del límite de iteraciones antes de una respuesta final. Revisa la salida de la herramienta arriba y luego envía `continue`."
     repeated_outer_errors: "el turno siguió fallando con errores repetidos y se detuvo antes de tiempo en lugar de reintentar indefinidamente. Revisa los errores arriba y luego envía `continue` para reintentar."

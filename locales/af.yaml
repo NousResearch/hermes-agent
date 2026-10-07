@@ -3455,6 +3455,7 @@ explainer:
     ollama_runtime_context_too_small: "die plaaslike model se konteksvenster was te klein om klaar te maak. Vergroot die konteksgrootte of gebruik 'n groter model."
     pending_tool_result: "die beurt het gestop terwyl 'n gereedskapsresultaat nog hangende was en die model geen opvolgteks gelewer het nie. Stuur `continue` om dit te laat opsom."
     interrupted_during_api_call: "die versoek is middel in die oproep onderbreek voordat 'n antwoord ontvang is. Stuur `continue` om weer te probeer."
+    client_disconnect: "the client disconnected mid-call, so the turn stopped and nothing was saved for it. Reconnect and send your message again."
     max_iterations_reached: "die maksimum gereedskapsiterasie-limiet is bereik voor 'n finale antwoord. Stuur `continue` om voort te gaan, of verhoog `max_iterations`."
     error_near_max_iterations: "'n fout het naby die iterasielimiet voorgekom voor 'n finale antwoord. Kyk na die gereedskapsuitvoer hierbo en stuur dan `continue`."
     repeated_outer_errors: "die beurt het met herhaalde foute bly misluk en is vroeg gestop in plaas van om eindeloos te herprobeer. Kyk na die foute hierbo en stuur dan `continue` om weer te probeer."

@@ -24,6 +24,7 @@ def request_hard_interrupt(
     message: str | None = None,
     *,
     tool_reason: str | None = None,
+    stop_kind: str | None = None,
 ) -> bool:
     """Request an explicit stop, falling back to the legacy interrupt ABI.
 
@@ -31,7 +32,8 @@ def request_hard_interrupt(
     doubles may only expose ``interrupt(message=None)`` and must not receive keyword
     arguments they do not know. ``tool_reason`` is a trusted, fixed category that may be
     exposed in model-visible tool cancellation output, forwarded only when the callable
-    explicitly supports it. Returns ``False`` only when neither callable is available.
+    explicitly supports it. ``stop_kind`` (structured provenance, e.g. a vanished client)
+    follows the same feature-detect rule. Returns ``False`` only when neither callable is available.
     """
     # Static lookup first: a dynamic ``__getattr__`` proxy (unspecced MagicMock, RPC
     # facade) must not be treated as genuinely implementing the new ABI.
@@ -48,6 +50,8 @@ def request_hard_interrupt(
     kwargs = {}
     if tool_reason is not None and _accepts_keyword(interrupt, "tool_reason"):
         kwargs["tool_reason"] = tool_reason
+    if stop_kind is not None and _accepts_keyword(interrupt, "stop_kind"):
+        kwargs["stop_kind"] = stop_kind
     if message is None:
         interrupt(**kwargs)
     else:

@@ -3455,6 +3455,7 @@ explainer:
     ollama_runtime_context_too_small: "yerel modelin bağlam penceresi işi bitirmek için çok küçüktü. Bağlam boyutunu artırın veya daha büyük bir model kullanın."
     pending_tool_result: "tur, bir araç sonucu hâlâ beklenirken durdu ve model devam metni üretmedi. Özetlemesi için `continue` gönderin."
     interrupted_during_api_call: "istek, yanıt alınamadan çağrının ortasında kesildi. Yeniden denemek için `continue` gönderin."
+    client_disconnect: "the client disconnected mid-call, so the turn stopped and nothing was saved for it. Reconnect and send your message again."
     max_iterations_reached: "nihai bir yanıt üretilmeden azami araç yineleme sınırına ulaşıldı. Devam etmek için `continue` gönderin veya `max_iterations` değerini yükseltin."
     error_near_max_iterations: "nihai bir yanıt üretilmeden, yineleme sınırına yakın bir noktada hata oluştu. Yukarıdaki araç çıktısını kontrol edin, ardından `continue` gönderin."
     repeated_outer_errors: "tur tekrarlanan hatalarla sürekli başarısız olduğu için sonsuza dek yeniden denemek yerine erken durduruldu. Yukarıdaki hataları kontrol edin, ardından yeniden denemek için `continue` gönderin."

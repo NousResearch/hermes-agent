@@ -3455,6 +3455,7 @@ explainer:
     ollama_runtime_context_too_small: "本地模型的上下文窗口太小，无法完成。请增大上下文长度或使用更大的模型。"
     pending_tool_result: "本回合在工具结果仍待处理时停止，模型没有生成后续文本。发送 `continue` 让它进行总结。"
     interrupted_during_api_call: "请求在调用中途被中断，尚未收到回复。发送 `continue` 重试。"
+    client_disconnect: "the client disconnected mid-call, so the turn stopped and nothing was saved for it. Reconnect and send your message again."
     max_iterations_reached: "在得出最终答案之前已达到工具迭代次数上限。发送 `continue` 继续，或提高 `max_iterations`。"
     error_near_max_iterations: "在接近迭代上限时出错，尚未得出最终答案。请查看上方的工具输出，然后发送 `continue`。"
     repeated_outer_errors: "本回合反复出错，已提前停止，不再无限重试。请查看上方的错误，然后发送 `continue` 重试。"

@@ -9,6 +9,7 @@ from contextlib import suppress
 from typing import Any, Dict, Optional
 
 from agent.i18n import t
+from agent.interrupt_control import STOP_KIND_CLIENT_DISCONNECT
 from agent.tool_dispatch_helpers import (
     _extract_error_preview, _extract_file_mutation_targets, _extract_landed_file_mutation_paths
 )
@@ -41,6 +42,8 @@ _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
     "budget_exhausted": "explainer.exit.budget_exhausted",
     "ollama_runtime_context_too_small": "explainer.exit.ollama_runtime_context_too_small",
     "pending_tool_result": "explainer.exit.pending_tool_result",
+    f"interrupted_during_api_call({STOP_KIND_CLIENT_DISCONNECT})": "explainer.exit.client_disconnect",
+    f"interrupted_by_system({STOP_KIND_CLIENT_DISCONNECT})": "explainer.exit.client_disconnect",
 }
 
 # Parameterised reasons (``max_iterations_reached(3/3)`` …) matched by prefix.

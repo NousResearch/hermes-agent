@@ -3566,6 +3566,7 @@ explainer:
     ollama_runtime_context_too_small: "the local model's context window was too small to finish. Increase the context size or use a larger model."
     pending_tool_result: "the turn stopped while a tool result was still pending and the model produced no follow-up text. Send `continue` to let it summarize."
     interrupted_during_api_call: "the request was interrupted mid-call before a reply was received. Send `continue` to retry."
+    client_disconnect: "the client disconnected mid-call, so the turn stopped and nothing was saved for it. Reconnect and send your message again."
     max_iterations_reached: "the maximum tool-iteration limit was reached before a final answer. Send `continue` to keep going, or raise `max_iterations`."
     error_near_max_iterations: "an error occurred near the iteration limit before a final answer. Check the tool output above, then send `continue`."
     repeated_outer_errors: "the turn kept failing with repeated errors and was stopped early instead of retrying forever. Check the errors above, then send `continue` to retry."

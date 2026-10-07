@@ -129,6 +129,7 @@ class DurableTurnLease:
                 self.agent._interrupt_requested = True
                 self.agent._interrupt_message = message
                 self.agent._tool_interrupt_reason = _REASON_LEASE_LOST
+                self.agent._interrupt_stop_kind = None
 
     def commit_liveness_abort(self, snapshot, message: str) -> bool:
         """Commit point for the watchdog's stall observation.
@@ -176,6 +177,7 @@ class DurableTurnLease:
                 return
             agent._interrupt_requested = False
             agent._interrupt_message = None
+            agent._interrupt_stop_kind = None
             getattr(agent, "_hard_interrupt_requested", threading.Event()).clear()
             agent._interrupt_thread_signal_pending = False
             if agent._execution_thread_id is not None:
@@ -403,6 +405,7 @@ def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> 
         except Exception:
             agent._interrupt_requested = False
             agent._interrupt_message = None
+            agent._interrupt_stop_kind = None
         return result
     # Fail closed like gateway TurnLeaseTimeoutError: surface a resend notice, not a bare TimeoutError.
     timeout_msg = (

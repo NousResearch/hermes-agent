@@ -16,6 +16,7 @@ from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
 from agent.i18n import t
+from agent.interrupt_control import STOP_KIND_CLIENT_DISCONNECT
 
 try:
     from aiohttp import web
@@ -963,7 +964,8 @@ class OpenAICompatRoutesMixin:
             await response.write(_sse_frame(finish_chunk))
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-            await _abandon_agent_task(agent_ref, agent_task, "SSE client disconnected")
+            await _abandon_agent_task(agent_ref, agent_task, "SSE client disconnected",
+                                      stop_kind=STOP_KIND_CLIENT_DISCONNECT)
             logger.info("SSE client disconnected; interrupted agent task %s", completion_id)
         except Exception:
             # Agent crashed mid-stream: an error chunk beats a TransferEncodingError.
@@ -1010,7 +1012,8 @@ class OpenAICompatRoutesMixin:
                 await st.emit_completed()
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             st.persist_incomplete_if_needed()
-            await _abandon_agent_task(agent_ref, agent_task, "SSE client disconnected")
+            await _abandon_agent_task(agent_ref, agent_task, "SSE client disconnected",
+                                      stop_kind=STOP_KIND_CLIENT_DISCONNECT)
             logger.info("SSE client disconnected; interrupted agent task %s", response_id)
         except asyncio.CancelledError:
             # Server-side cancellation (shutdown, timeout): persist incomplete, then re-raise.

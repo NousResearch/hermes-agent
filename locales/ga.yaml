@@ -3455,6 +3455,7 @@ explainer:
     ollama_runtime_context_too_small: "bhí fuinneog chomhthéacs na samhla áitiúla róbheag le críochnú. Méadaigh méid an chomhthéacs nó úsáid samhail níos mó."
     pending_tool_result: "stop an seal fad a bhí toradh uirlise fós ar feitheamh agus níor thug an tsamhail aon téacs leantach. Seol `continue` chun ligean dó achoimre a dhéanamh."
     interrupted_during_api_call: "cuireadh isteach ar an iarratas i lár glao roimh fhreagra a fháil. Seol `continue` chun triail eile a bhaint as."
+    client_disconnect: "the client disconnected mid-call, so the turn stopped and nothing was saved for it. Reconnect and send your message again."
     max_iterations_reached: "sroicheadh uasteorainn atriallta na n-uirlisí roimh fhreagra deiridh. Seol `continue` chun leanúint ar aghaidh, nó ardaigh `max_iterations`."
     error_near_max_iterations: "tharla earráid gar don teorainn atriallta roimh fhreagra deiridh. Seiceáil aschur na huirlise thuas, ansin seol `continue`."
     repeated_outer_errors: "lean an seal ag teip le hearráidí arís agus arís eile agus stopadh é go luath in ionad atriail a dhéanamh go deo. Seiceáil na hearráidí thuas, ansin seol `continue` chun triail eile a bhaint as."

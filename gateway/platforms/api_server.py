@@ -147,6 +147,7 @@ from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
+from agent.interrupt_control import STOP_KIND_CLIENT_DISCONNECT
 from gateway.readiness import collect_runtime_readiness
 from gateway.browser_control_artifacts import (
     ArtifactError, ArtifactRateLimiter, ArtifactStore, ArtifactTooLarge, DEFAULT_ALLOWED_MIME_TYPES,
@@ -671,14 +672,15 @@ def _responses_usage_payload(usage: Dict[str, Any]) -> Dict[str, int]:
 
 async def _abandon_agent_task(
     agent_ref, agent_task, reason: str, *,
-    reap_source: str = "api_server_sse_disconnect", await_cancel: bool = True) -> None:
+    reap_source: str = "api_server_sse_disconnect", await_cancel: bool = True,
+    stop_kind: Optional[str] = None) -> None:
     """Interrupt + reap an abandoned SSE agent run, then cancel its task wrapper.
     ``await_cancel=False`` on the CancelledError path, which must not await in the handler."""
     agent = agent_ref[0] if agent_ref else None
     if agent is not None:
         with suppress(Exception):
             # The abandoning client/server is the issuer, not the user (#112647).
-            request_hard_interrupt(agent, reason, tool_reason=reason.lower())
+            request_hard_interrupt(agent, reason, tool_reason=reason.lower(), stop_kind=stop_kind)
         _reap_disconnected_agent_processes(agent, source=reap_source)
     if not agent_task.done():
         agent_task.cancel()
@@ -3729,7 +3731,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 await response.write(_sse_frame(payload, event=name, ensure_ascii=False))
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             await self._drain_session_stream_task_on_disconnect(
-                run_id, task, interrupt_message="SSE client disconnected", shield_wait=False)
+                run_id, task, interrupt_message="SSE client disconnected", shield_wait=False,
+                stop_kind=STOP_KIND_CLIENT_DISCONNECT)
             logger.info("Session SSE client disconnected; interrupted live run %s", run_id)
         except asyncio.CancelledError:
             await self._drain_session_stream_task_on_disconnect(
@@ -3753,7 +3756,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return _approval_notify
 
     async def _drain_session_stream_task_on_disconnect(
-        self, run_id: str, task: "asyncio.Task", *, interrupt_message: str, shield_wait: bool
+        self, run_id: str, task: "asyncio.Task", *, interrupt_message: str, shield_wait: bool,
+        stop_kind: Optional[str] = None,
     ) -> None:
         """Preserve live run control refs until the executor-backed turn actually exits."""
         agent = self._active_run_agents.get(run_id)
@@ -3764,7 +3768,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     await task
             return
         with suppress(Exception):
-            agent.interrupt(interrupt_message)
+            agent.interrupt(interrupt_message, stop_kind=stop_kind)
         if not task.done():
             with suppress(Exception):
                 await (asyncio.shield(task) if shield_wait else task)

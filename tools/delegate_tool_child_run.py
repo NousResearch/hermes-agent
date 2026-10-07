@@ -12,7 +12,7 @@ import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
 from agent.compression_marker import elide
-from agent.interrupt_compat import request_hard_interrupt
+from agent.interrupt_compat import _accepts_keyword, request_hard_interrupt
 from dataclasses import dataclass, field
 from tools import file_state
 from tools.delegate_tool_progress import _quiet, _safe_progress
@@ -77,10 +77,14 @@ def _attach_child(parent_agent: Any, child: Any) -> None:
     hard = getattr(parent_agent, "_hard_interrupt_requested", None)
     if hard is None or hard.is_set():
         _signal_child_stop(child, message or "parent agent interrupted",
-                           tool_reason=getattr(parent_agent, "_tool_interrupt_reason", None) or "parent agent interrupted")
+                           tool_reason=getattr(parent_agent, "_tool_interrupt_reason", None) or "parent agent interrupted",
+                           stop_kind=getattr(parent_agent, "_interrupt_stop_kind", None))
     else:
         with _quiet("Failed to propagate interrupt to late child: %s"):
-            child.interrupt(message)
+            if _accepts_keyword(getattr(child, "interrupt", None), "stop_kind"):
+                child.interrupt(message, stop_kind=getattr(parent_agent, "_interrupt_stop_kind", None))
+            else:
+                child.interrupt(message)
 
 def _detach_child(parent_agent: Any, child: Any) -> None:
     """Remove the child from parent interrupt propagation (no-op if absent)."""
@@ -91,11 +95,13 @@ def _detach_child(parent_agent: Any, child: Any) -> None:
     except (ValueError, UnboundLocalError) as e:
         logger.debug("Could not remove child from active_children: %s", e)
 
-def _signal_child_stop(child: Any, *reason: str, tool_reason: str = "parent delegation ended") -> None:
+def _signal_child_stop(child: Any, *reason: str, tool_reason: str = "parent delegation ended",
+                       stop_kind: str | None = None) -> None:
     """Cooperative interrupt so the child's worker thread can exit cleanly. ``tool_reason`` is the
     fixed cause the child's tools see (a pending approval wait reports it instead of a user deny)."""
     with _quiet(None):
-        if (child is not None and not request_hard_interrupt(child, *reason, tool_reason=tool_reason)
+        if (child is not None and not request_hard_interrupt(child, *reason, tool_reason=tool_reason,
+                                                             stop_kind=stop_kind)
                 and hasattr(child, "_interrupt_requested")):
             child._interrupt_requested = True
 

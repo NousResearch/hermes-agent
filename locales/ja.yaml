@@ -3455,6 +3455,7 @@ explainer:
     ollama_runtime_context_too_small: "ローカルモデルのコンテキストウィンドウが小さすぎて完了できませんでした。コンテキストサイズを増やすか、より大きなモデルを使用してください。"
     pending_tool_result: "ツール結果が保留中のままターンが停止し、モデルは後続のテキストを生成しませんでした。`continue` を送信すると要約させることができます。"
     interrupted_during_api_call: "応答を受信する前に、リクエストが呼び出し中に中断されました。`continue` を送信して再試行してください。"
+    client_disconnect: "the client disconnected mid-call, so the turn stopped and nothing was saved for it. Reconnect and send your message again."
     max_iterations_reached: "最終回答の前に、ツールイテレーションの上限に達しました。`continue` を送信して続行するか、`max_iterations` を引き上げてください。"
     error_near_max_iterations: "最終回答の前、イテレーション上限の付近でエラーが発生しました。上のツール出力を確認してから、`continue` を送信してください。"
     repeated_outer_errors: "繰り返しエラーでターンが失敗し続けたため、無限に再試行せずに早期停止しました。上のエラーを確認してから、`continue` を送信して再試行してください。"

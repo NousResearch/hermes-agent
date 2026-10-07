@@ -3472,6 +3472,7 @@ explainer:
     ollama_runtime_context_too_small: "a helyi modell kontextusablaka túl kicsi volt a befejezéshez. Növeld a kontextusméretet, vagy használj nagyobb modellt."
     pending_tool_result: "a kör úgy állt le, hogy egy eszköz eredménye még függőben volt, és a modell nem írt hozzá folytatást. Küldj `continue` üzenetet, hogy összefoglalja."
     interrupted_during_api_call: "a kérés a hívás közepén, a válasz megérkezése előtt megszakadt. Küldj `continue` üzenetet az újrapróbáláshoz."
+    client_disconnect: "the client disconnected mid-call, so the turn stopped and nothing was saved for it. Reconnect and send your message again."
     max_iterations_reached: "az eszköziterációk maximális száma még a végső válasz előtt elérve. Küldj `continue` üzenetet a folytatáshoz, vagy emeld meg a `max_iterations` értékét."
     error_near_max_iterations: "az iterációs limit közelében hiba történt, még a végső válasz előtt. Nézd meg a fenti eszközkimenetet, majd küldj `continue` üzenetet."
     repeated_outer_errors: "a kör ismétlődő hibákkal folyton elakadt, ezért idő előtt leállt, hogy ne próbálkozzon a végtelenségig. Nézd meg a fenti hibákat, majd küldj `continue` üzenetet az újrapróbáláshoz."

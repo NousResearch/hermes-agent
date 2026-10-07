@@ -13,9 +13,11 @@ from tools.delegate_tool_child_run import _attach_child
 class _Child:
     def __init__(self):
         self.stops = []
+        self.kinds = []
 
-    def hard_interrupt(self, message=None, *, tool_reason=None):
+    def hard_interrupt(self, message=None, *, tool_reason=None, stop_kind=None):
         self.stops.append(message)
+        self.kinds.append(stop_kind)
 
 
 def test_child_attached_after_parent_stop_is_stopped_too():
@@ -24,6 +26,19 @@ def test_child_attached_after_parent_stop_is_stopped_too():
     _attach_child(parent, late)
     assert late in parent._active_children
     assert late.stops == ["stop"]
+
+
+def test_late_child_inherits_disconnect_stop_kind():
+    """A child attached after a disconnect stop carries the provenance too."""
+    from agent.interrupt_control import STOP_KIND_CLIENT_DISCONNECT
+
+    parent = SimpleNamespace(_active_children=[], _interrupt_requested=True,
+                             _interrupt_message="SSE client disconnected",
+                             _interrupt_stop_kind=STOP_KIND_CLIENT_DISCONNECT)
+    late = _Child()
+    _attach_child(parent, late)
+    assert late.stops == ["SSE client disconnected"]
+    assert late.kinds == [STOP_KIND_CLIENT_DISCONNECT]
 
 
 def test_child_attached_to_running_parent_is_left_alone():

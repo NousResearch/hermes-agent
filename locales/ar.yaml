@@ -3455,6 +3455,7 @@ explainer:
     ollama_runtime_context_too_small: "نافذة سياق النموذج المحلي أصغر من أن تكفي لإتمام العمل. زِد حجم السياق أو استخدم نموذجًا أكبر."
     pending_tool_result: "توقّف الدور بينما كانت نتيجة أداة لا تزال قيد الانتظار، ولم ينتج النموذج أي نص لاحق. أرسل `continue` ليقوم بالتلخيص."
     interrupted_during_api_call: "قُطع الطلب أثناء الاستدعاء قبل تلقّي رد. أرسل `continue` لإعادة المحاولة."
+    client_disconnect: "the client disconnected mid-call, so the turn stopped and nothing was saved for it. Reconnect and send your message again."
     max_iterations_reached: "بلغ الحد الأقصى لتكرارات الأدوات قبل الوصول إلى إجابة نهائية. أرسل `continue` للمتابعة، أو ارفع قيمة `max_iterations`."
     error_near_max_iterations: "حدث خطأ قرب حد التكرارات قبل الوصول إلى إجابة نهائية. راجع مخرجات الأداة أعلاه، ثم أرسل `continue`."
     repeated_outer_errors: "ظلّ الدور يفشل بأخطاء متكررة فأُوقف مبكرًا بدلًا من إعادة المحاولة إلى ما لا نهاية. راجع الأخطاء أعلاه، ثم أرسل `continue` لإعادة المحاولة."

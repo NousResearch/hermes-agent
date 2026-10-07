@@ -449,7 +449,9 @@ class GatewayModelCommandsMixin:
             on_model_selected=on_model_selected,
             metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
         )
-        return bool(result.success)
+        from gateway.relay.egress import declined_send
+        # A refused private prompt must not turn into a public model listing.
+        return bool(result.success or declined_send(result))
 
     async def _model_listing_reply(
         self, event: MessageEvent, ctx: _ModelSwitchContext, profile_home
@@ -728,7 +730,8 @@ class GatewayModelCommandsMixin:
                 chat_id=event.source.chat_id, title=title, choices=choices, session_key=session_key,
                 on_choice_selected=on_choice_selected, metadata=self._reply_metadata(event),
             )
-            return bool(getattr(result, "success", False))
+            from gateway.relay.egress import declined_send
+            return bool(getattr(result, "success", False) or declined_send(result))
         except Exception as e:
             logger.warning("send_choice_picker failed, falling back to text: %s", e)
             return False

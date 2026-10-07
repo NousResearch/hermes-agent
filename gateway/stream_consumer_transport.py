@@ -93,6 +93,8 @@ class StreamTransportMixin:
         md = dict(self.metadata) if self.metadata else {}
         if self._initial_reply_to_id:
             md.setdefault("reply_to_message_id", self._initial_reply_to_id)
+        if self._thinking_drafts_active() and self._tool_progress_lines:
+            md["telegram_thinking_status"] = self._tool_progress_lines[-1]
         return md or None
 
     def _stale_preview_ids(self, *, segment_only: bool = False) -> set:

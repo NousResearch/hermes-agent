@@ -1,0 +1,492 @@
+"""Requester-only Telegram group controls via Bot API 10.2/10.3 ephemeral messages.
+
+Parent-stamped metadata (authentic source only): ``telegram_requester_user_id``
+(str; required by the send — a configured group without it FAILS CLOSED, never
+public), ``telegram_chat_type`` (dm/private/channel keep the public path),
+``telegram_callback_query_id`` / ``telegram_ephemeral_reply_id`` (the two 15s
+non-admin delivery triggers; chat admins may send any time — Telegram rejects
+non-privileged attempts, we report them as failures, never as delivery).
+
+Ephemeral messages have ``message_id == 0`` and carry ``receiver_user`` +
+``ephemeral_message_id`` (PTB 22.8 preserves them in ``api_kwargs``; outbound
+extras ride ``api_kwargs`` / raw ``do_api_request``); edits/deletes go through
+``editEphemeralMessageText`` / ``deleteEphemeralMessage`` with ``(chat_id,
+receiver_user_id, ephemeral_message_id)`` — receiver is separate from chat and
+a regular ``message_id`` is never a target.
+
+Parent integration (this module edits no adapter/gateway file): mixin first in
+the ``TelegramAdapter`` bases; ``__init__`` sets ``self._private_controls =
+self._coerce_bool_extra("private_controls", False)``; ``_send_control_message``
+calls ``private_control_requested`` → ``_send_private_control`` BEFORE the
+public send (failures via ``send_private_control_prompt``'s decline contract —
+never a public fallback; ``send()`` fails closed on
+``metadata.telegram_private_control``); ``_handle_callback_query`` wraps with
+``wrap_private_control_query`` + ``gate_private_control_query`` before
+``_accept_update`` and the allowlist auth (receiver gate layers ON TOP of the
+allowlist); ``_callback_ctx`` captures ``query.id`` / ``query.from_user.id``;
+``delete_message`` routes ``eph:`` ids to ``delete_ephemeral_control``; picker
+text fallbacks gate on ``gateway.relay.egress.declined_send(result)``.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import logging
+from types import SimpleNamespace
+from typing import Any, Dict, Optional, Tuple
+
+from gateway.platforms.base import SendResult
+from gateway.platforms.helpers import bounded_put
+from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
+
+logger = logging.getLogger(__name__)
+
+EPH_PREFIX = "eph:"
+GROUP_CHAT_TYPES = frozenset({"group", "supergroup", "forum"})
+TOAST_LIMIT = 200
+_RECEIVERS_ONLY_TOAST = "This control is addressed to another member."
+DECLINE_ERROR = "telegram egress declined: private control delivery unavailable"
+_TEXT_SEND_DEADLINE = 60.0
+
+
+class PrivateControlError(Exception):
+    """Private control failed; never convert into a public send (content is requester-only)."""
+
+
+def _redact_private_error(exc: object) -> str:
+    """Redacted transport error text; never logs raw exceptions (tokens/secrets)."""
+    try:
+        from plugins.platforms.telegram.adapter import _redact_telegram_error_text
+        return _redact_telegram_error_text(exc)
+    except Exception:
+        return "<private control error redacted>"
+
+
+def _ephemeral_fields(message: Any) -> Optional[Tuple[int, int, Any]]:
+    """``(receiver_user_id, ephemeral_message_id, chat_id)`` of an ephemeral Message, else None.
+
+    Ephemeral messages carry ``receiver_user`` + ``ephemeral_message_id`` in
+    ``api_kwargs`` (PTB 22.8); dict form (raw API echo) is accepted too.
+    """
+    if message is None:
+        return None
+    if isinstance(message, dict):
+        kw = dict(message.get("api_kwargs") or {})
+        kw.update({k: message[k] for k in ("receiver_user", "ephemeral_message_id") if k in message})
+        chat = message.get("chat")
+        chat_id = chat.get("id") if isinstance(chat, dict) else message.get("chat_id")
+    else:
+        kw = dict(getattr(message, "api_kwargs", None) or {})
+        receiver = getattr(message, "receiver_user", None)
+        if receiver is not None and "receiver_user" not in kw:
+            kw["receiver_user"] = receiver
+        chat_id = getattr(message, "chat_id", None)
+        if chat_id is None:
+            chat_id = getattr(getattr(message, "chat", None), "id", None)
+    receiver_user = kw.get("receiver_user") or {}
+    try:
+        receiver = int(receiver_user.get("id") if isinstance(receiver_user, dict) else getattr(receiver_user, "id", None))
+        ephemeral = int(kw.get("ephemeral_message_id"))
+    except (TypeError, ValueError):
+        return None
+    if receiver <= 0 or ephemeral <= 0:  # message_id is 0 for ephemeral; ids are positive
+        return None
+    return receiver, ephemeral, chat_id
+
+
+def parse_private_handle(message_id: Any) -> Optional[Tuple[int, int]]:
+    """``eph:<receiver>:<ephemeral>`` → (receiver, ephemeral); rejects non-positive halves."""
+    if not isinstance(message_id, str) or not message_id.startswith(EPH_PREFIX):
+        return None
+    parts = message_id.split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        receiver, ephemeral = int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+    if receiver <= 0 or ephemeral <= 0:
+        return None
+    return receiver, ephemeral
+
+
+def is_private_control_handle(message_id: Any) -> bool:
+    """True when a message id is an ``eph:`` private-control handle."""
+    return parse_private_handle(message_id if isinstance(message_id, str) else None) is not None
+
+
+def _record_key(chat_id: Any, receiver_user_id: int, ephemeral_message_id: int) -> Tuple[Any, int, int]:
+    """Registry key: chat + receiver + ephemeral. The ephemeral id is reusable after
+    delete/expiry and the same id may exist in two groups simultaneously — the chat
+    disambiguates, and both stay addressable."""
+    return (normalize_telegram_chat_id(chat_id), receiver_user_id, ephemeral_message_id)
+
+
+class _PrivateRecord(dict):
+    """Registry record: chat-scoped address plus metadata for later edits/deletes."""
+
+    def __init__(self, chat_id: Any, receiver_user_id: int, ephemeral_message_id: int,
+                 metadata: Optional[Dict[str, Any]] = None, callback_query_id: Optional[str] = None):
+        super().__init__(chat_id=chat_id, receiver_user_id=receiver_user_id,
+                         ephemeral_message_id=ephemeral_message_id,
+                         metadata=dict(metadata or {}), callback_query_id=callback_query_id)
+        self.handle = f"{EPH_PREFIX}{receiver_user_id}:{ephemeral_message_id}"
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+
+class PrivateQuery:
+    """CallbackQuery facade whose message is ephemeral (requester-only).
+
+    Identity attributes delegate to the wrapped query; ``edit_message_text`` and
+    ``delete`` route to the raw ephemeral endpoints. NEVER issues a public
+    send/edit — failure degrades to nothing, never to the shared chat message.
+    Rich buttons: the adapter's ``_rich_control_payload(text, parse_mode=…,
+    reply_markup=…)`` helper (rich-control module) converts to
+    ``InputRichMessage``; without it, text is delivered as plain/parse_mode text.
+    """
+
+    def __init__(self, query: Any, adapter: Any, record: _PrivateRecord):
+        object.__setattr__(self, "_query", query)
+        object.__setattr__(self, "_adapter", adapter)
+        object.__setattr__(self, "record", record)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._query, name)  # only reached for non-facade attrs
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name.startswith("_") or name == "record":
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._query, name, value)
+
+    @property
+    def is_private_control(self) -> bool:
+        return True
+
+    def receiver_matches(self) -> bool:
+        """True when the tap comes from the record's receiver (layers ON TOP of the allowlist)."""
+        from_user = getattr(self._query, "from_user", None)
+        try:
+            return int(getattr(from_user, "id", 0)) == self.record["receiver_user_id"]
+        except (TypeError, ValueError):
+            return False
+
+    async def answer_receivers_only(self) -> None:
+        """Per-tapper toast: the only public-surface response a mismatched tap gets."""
+        with contextlib.suppress(Exception):
+            await self._query.answer(text=_RECEIVERS_ONLY_TOAST[:TOAST_LIMIT])
+
+    async def edit_message_text(self, *args: Any, text: Optional[str] = None, parse_mode: Any = None,
+                                reply_markup: Any = None, **kwargs: Any) -> bool:
+        """``editEphemeralMessageText`` — never the shared message, never a ``message_id``."""
+        if text is None and args:
+            text = args[0]
+        if not self.receiver_matches():
+            await self.answer_receivers_only()
+            return False
+        helper = getattr(self._adapter, "_rich_control_payload", None)
+        rich = None
+        if helper is not None and text is not None:
+            try:
+                rich = helper(text, parse_mode=parse_mode, reply_markup=reply_markup)
+            except Exception:
+                rich = None
+        return await self._adapter.edit_ephemeral_control_text(
+            self.record, text, parse_mode=parse_mode, reply_markup=reply_markup, rich_message=rich)
+
+    async def delete(self) -> bool:
+        """``deleteEphemeralMessage`` for the wrapped ephemeral control message."""
+        if not self.receiver_matches():
+            await self.answer_receivers_only()
+            return False
+        return await self._adapter.delete_ephemeral_control(self.record)
+
+
+class TelegramPrivateControlsMixin:
+    """Requester-only group controls (``extra.private_controls``) via ephemeral messages."""
+
+    def _private_controls_enabled(self) -> bool:
+        flag = getattr(self, "_private_controls", None)
+        if flag is not None:
+            return bool(flag)
+        coerce = getattr(self, "_coerce_bool_extra", None)  # object.__new__ test adapters
+        try:
+            return bool(coerce("private_controls", False)) if callable(coerce) else False
+        except Exception:
+            return False
+
+    def private_control_requested(self, chat_id: Any, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """Whether this control send must attempt the requester-only ephemeral path.
+
+        True iff ``extra.private_controls`` is on and the source chat is a group or
+        forum (DMs/channels excluded). Requester-INDEPENDENT: a configured group
+        without the stamp still requests the private path, and the send FAILS CLOSED.
+        """
+        if not self._private_controls_enabled():
+            return False
+        chat_type = str((metadata or {}).get("telegram_chat_type") or (metadata or {}).get("chat_type") or "")
+        return chat_type.strip().lower() in GROUP_CHAT_TYPES
+
+    # ---------------------------------------------------------------- registry
+
+    def _private_records(self) -> Dict[Tuple[Any, int, int], _PrivateRecord]:
+        if not hasattr(self, "_private_control_records"):
+            self._private_control_records: Dict[Tuple[Any, int, int], _PrivateRecord] = {}
+        return self._private_control_records
+
+    def _lookup_private_record(self, chat_id: Any, receiver_user_id: int, ephemeral_message_id: int) -> Optional[_PrivateRecord]:
+        """Registry hit requires the full ``(chat, receiver, ephemeral)`` key."""
+        return self._private_records().get(_record_key(chat_id, receiver_user_id, ephemeral_message_id))
+
+    def resolve_private_control(self, obj: Any, chat_id: Any = None) -> Optional[_PrivateRecord]:
+        """Record for a handle/record/message; None for non-private or chat-mismatched input.
+
+        A handle known under a different chat refuses (ephemeral ids are reusable
+        across chats); a handle with no chat known refuses rather than guessing.
+        The caller keeps the regular (public) path untouched on None.
+        """
+        if obj is None:
+            return None
+        if isinstance(obj, _PrivateRecord):
+            return obj
+        if isinstance(obj, str):
+            parsed = parse_private_handle(obj)
+            if parsed is None:
+                return None
+            receiver, ephemeral = parsed
+            if chat_id is None:
+                return None  # no chat known — refuse rather than guessing
+            record = self._lookup_private_record(chat_id, receiver, ephemeral)
+            if record is not None:
+                return record
+            # The registry key includes the chat: an ``eph:`` handle from chat A
+            # must never drive an edit in chat B, and an unknown (receiver,
+            # ephemeral, chat) triple still has a valid API address.
+            return _PrivateRecord(chat_id, receiver, ephemeral)
+        fields = _ephemeral_fields(obj)
+        if fields is None:
+            return None
+        receiver, ephemeral, obj_chat = fields
+        if chat_id is None:
+            chat_id = obj_chat
+        record = self._lookup_private_record(chat_id, receiver, ephemeral) if chat_id is not None else None
+        if record is not None:
+            return record
+        if chat_id is None:
+            return None  # not a known private control and no addressable chat
+        return _PrivateRecord(chat_id, receiver, ephemeral)
+
+    # -------------------------------------------------------------------- send
+
+    async def _send_private_control(self, kwargs: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None):
+        """Send one control as a requester-only ephemeral message; returns a message-like
+        handle (opaque ``eph:<receiver>:<ephemeral>``, scoped chat, feeds ``on_sent``).
+
+        RAISES ``PrivateControlError`` on ANY failure — never a falsy success-shape
+        (that would make the caller fall back to the public send and leak the
+        requester-only content to the group).
+        """
+        if not self._bot:
+            raise PrivateControlError("not_connected")
+        meta = metadata or {}
+        try:
+            receiver = int(str(meta.get("telegram_requester_user_id")).strip())
+        except (TypeError, ValueError):
+            receiver = 0
+        if receiver <= 0:
+            raise PrivateControlError("missing_requester_user_id")  # fail closed
+
+        send_kwargs = dict(kwargs)
+        ephemeral_params: Dict[str, Any] = {"receiver_user_id": receiver}
+        callback_query_id = str(meta.get("telegram_callback_query_id") or "").strip()
+        if callback_query_id:
+            # Non-admin delivery needs a 15s trigger (callback query or ephemeral
+            # reply); admins send any time. We do NOT preflight privilege —
+            # Telegram rejects non-privileged sends and we report them.
+            ephemeral_params["callback_query_id"] = callback_query_id
+        # A regular reply anchor is meaningless on an ephemeral send; an ``eph:``
+        # anchor becomes the ephemeral reply_parameters form.
+        anchor = send_kwargs.pop("reply_to_message_id", None)
+        if "reply_parameters" not in send_kwargs:
+            reply_ephemeral = parse_private_handle(str(meta.get("telegram_ephemeral_reply_id") or anchor))
+            if reply_ephemeral is not None:
+                send_kwargs["reply_parameters"] = {"ephemeral_message_id": reply_ephemeral[1]}
+        send_kwargs["api_kwargs"] = {"ephemeral_message_parameters": ephemeral_params}
+
+        try:
+            from plugins.platforms.telegram.adapter import _await_with_thread_deadline
+            message = await _await_with_thread_deadline(
+                self._bot.send_message(**send_kwargs), timeout=_TEXT_SEND_DEADLINE,
+                label="telegram-private-control", dump_on_blocked_loop=False)
+        except Exception as exc:
+            raise PrivateControlError(_redact_private_error(exc)) from exc
+
+        fields = _ephemeral_fields(message)
+        if fields is None or fields[1] <= 0:
+            # "Success" without an ephemeral id is unmanageable (no edit/delete
+            # target) — fail closed, never public-fallback, never pretend delivered.
+            raise PrivateControlError("missing_ephemeral_message_id")
+        receiver_id, ephemeral_id, _msg_chat = fields
+        record = _PrivateRecord(
+            send_kwargs.get("chat_id"), receiver_id, ephemeral_id, metadata=meta,
+            callback_query_id=callback_query_id or None)
+        bounded_put(self._private_records(), _record_key(record["chat_id"], receiver_id, ephemeral_id), record, 1024)
+        return _HandleFacade(record)
+
+    async def send_private_control_prompt(self, kwargs: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None,
+                                          on_sent: Any = None) -> SendResult:
+        """SendResult wrapper. EVERY failure of a requested private control is a
+        uniform egress decline (privacy boundary, not a network fact — no retry,
+        no transient kind, no public fallback):
+        ``raw_response={"success": False, "code": "egress_declined", "error":
+        DECLINE_ERROR}`` plus the same ``error`` text, the exact shape
+        ``gateway.relay.egress.declined_send`` recognizes, so the gateway's
+        existing fallback suppression fires and nothing is public-posted. Never
+        ``{"private_control": True, "declined": True}`` (not recognized)."""
+        try:
+            handle = await self._send_private_control(kwargs, metadata)
+        except PrivateControlError as exc:
+            logger.warning("[%s] private control send declined (%s) — no public fallback", getattr(self, "name", "telegram"), exc)
+            return SendResult(
+                success=False, error=DECLINE_ERROR, retryable=False,
+                raw_response={"success": False, "code": "egress_declined", "error": DECLINE_ERROR})
+        if on_sent is not None:
+            try:
+                on_sent(handle)
+            except Exception:
+                # Delivered; a state-hook failure is non-fatal and never public-fallback material.
+                logger.debug("[%s] private control on_sent hook failed", getattr(self, "name", "telegram"), exc_info=True)
+        return SendResult(success=True, message_id=handle.message_id, raw_response={"private_control": True})
+
+    # ------------------------------------------------------------- edit/delete
+
+    async def edit_ephemeral_control_text(self, record_or_handle: Any, text: Optional[str], *,
+                                          chat_id: Any = None, parse_mode: Any = None, reply_markup: Any = None,
+                                          rich_message: Optional[Dict[str, Any]] = None) -> bool:
+        """``editEphemeralMessageText`` for a private control. Returns False on failure
+        (quiet-edit call sites treat it as non-fatal); never retries via editMessageText."""
+        record = self.resolve_private_control(
+            record_or_handle, chat_id=chat_id if chat_id is not None else (
+                record_or_handle.get("chat_id") if isinstance(record_or_handle, _PrivateRecord) else None))
+        if record is None or record["ephemeral_message_id"] <= 0:
+            logger.debug("[%s] private control edit refused: no valid ephemeral target", getattr(self, "name", "telegram"))
+            return False
+        if text is None and rich_message is None:
+            return False
+        if not self._bot:
+            return False
+        payload: Dict[str, Any] = {
+            "chat_id": record["chat_id"], "receiver_user_id": record["receiver_user_id"],
+            "ephemeral_message_id": record["ephemeral_message_id"]}
+        if text is not None:
+            payload["text"] = str(text)
+        if parse_mode is not None:
+            payload["parse_mode"] = str(getattr(parse_mode, "value", parse_mode))
+        if reply_markup is not None:
+            payload["reply_markup"] = _serialize_markup(reply_markup)
+        if rich_message:
+            payload["rich_message"] = rich_message
+        try:
+            await self._bot.do_api_request("editEphemeralMessageText", api_kwargs=payload)
+            return True
+        except Exception as exc:
+            logger.debug(
+                "[%s] editEphemeralMessageText failed (chat=%s receiver=%s ephemeral=%s): %s",
+                getattr(self, "name", "telegram"), record["chat_id"], record["receiver_user_id"],
+                record["ephemeral_message_id"], _redact_private_error(exc))
+            return False
+
+    async def delete_ephemeral_control(self, record_or_handle: Any, *, chat_id: Any = None) -> bool:
+        """``deleteEphemeralMessage`` for a private control; never a public delete."""
+        record = self.resolve_private_control(record_or_handle, chat_id=chat_id)
+        if record is None or record["ephemeral_message_id"] <= 0:
+            logger.debug("[%s] private control delete refused: no valid ephemeral target", getattr(self, "name", "telegram"))
+            return False
+        if not self._bot:
+            return False
+        payload: Dict[str, Any] = {
+            "chat_id": record["chat_id"], "receiver_user_id": record["receiver_user_id"],
+            "ephemeral_message_id": record["ephemeral_message_id"]}
+        try:
+            await self._bot.do_api_request("deleteEphemeralMessage", api_kwargs=payload)
+            return True
+        except Exception as exc:
+            logger.debug(
+                "[%s] deleteEphemeralMessage failed (chat=%s receiver=%s ephemeral=%s): %s",
+                getattr(self, "name", "telegram"), record["chat_id"], record["receiver_user_id"],
+                record["ephemeral_message_id"], _redact_private_error(exc))
+            return False
+
+    # ------------------------------------------------------------- inbound wrap
+
+    def wrap_private_control_query(self, query: Any) -> Optional[PrivateQuery]:
+        """Facade for a callback query on an ephemeral message; None keeps the public path."""
+        if query is None:
+            return None
+        fields = _ephemeral_fields(getattr(query, "message", None))
+        if fields is None:
+            return None
+        receiver, ephemeral, chat_id = fields
+        record = self._lookup_private_record(chat_id, receiver, ephemeral)
+        if record is None:
+            record = _PrivateRecord(chat_id, receiver, ephemeral)
+        return PrivateQuery(query, self, record)
+
+    def callback_receiver_matches(self, query: Any, record: _PrivateRecord) -> bool:
+        """True when the tap's user is the receiver the ephemeral control addresses."""
+        from_user = getattr(query, "from_user", None)
+        try:
+            return int(getattr(from_user, "id", 0)) == record["receiver_user_id"]
+        except (TypeError, ValueError):
+            return False
+
+    async def gate_private_control_query(self, wrapped: Optional[PrivateQuery]) -> bool:
+        """Receiver gate BEFORE ``_accept_update`` and the allowlist auth. None (regular
+        public control) passes — the allowlist decides. Mismatched tap: toast only,
+        pending state untouched, handler never runs."""
+        if wrapped is None:
+            return True
+        if wrapped.receiver_matches():
+            return True
+        await wrapped.answer_receivers_only()
+        return False
+
+
+class _HandleFacade:
+    """Message-like handle for a sent ephemeral control (feeds ``on_sent`` closures).
+
+    ``message_id`` is the opaque ``eph:<receiver>:<ephemeral>`` (never a regular
+    id — those are 0 for ephemeral); ``chat`` is scoped to the id alone.
+    """
+
+    def __init__(self, record: _PrivateRecord):
+        object.__setattr__(self, "_record", record)
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "message_id":
+            return self._record.handle
+        if name == "chat_id":
+            return self._record["chat_id"]
+        if name == "chat":
+            return SimpleNamespace(id=self._record["chat_id"])
+        if name == "receiver_user":
+            return SimpleNamespace(id=self._record["receiver_user_id"])
+        if name == "ephemeral_message_id":
+            return self._record["ephemeral_message_id"]
+        raise AttributeError(name)
+
+
+def _serialize_markup(reply_markup: Any) -> Any:
+    """``to_dict()`` when available (PTB InlineKeyboardMarkup), else the value as-is."""
+    to_dict = getattr(reply_markup, "to_dict", None)
+    if callable(to_dict):
+        try:
+            return reply_markup.to_dict()
+        except Exception:
+            return reply_markup
+    return reply_markup

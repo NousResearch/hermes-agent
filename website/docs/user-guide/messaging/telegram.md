@@ -1077,6 +1077,52 @@ gateway:
 
 **What if a draft frame fails?** Any failure (transient network error, server-side rejection, older python-telegram-bot install) flips that response back to the edit-based path for the rest of the stream. The next response gets a fresh attempt.
 
+### Native generation Stop button (Bot API 10.2)
+
+When a DM reply streams through Telegram's native draft transport, the draft carries `can_stop: true` — Telegram renders a **Stop** control natively next to the generation. Tapping it produces a `stopped_message_generation` update, which the gateway maps to the same turn-scoped cancellation as the `/stop` command: the running turn is interrupted, the draft preview ends, and nothing further is posted for that reply.
+
+The Stop binding is **turn-scoped, not chat-scoped**: it is keyed to the exact (chat, topic, draft) generation being streamed. A late Stop that arrives after the turn already completed (or while a successor turn is running) is ignored — it can never cancel someone else's turn. Long tool phases are covered by a heartbeat that re-frames the draft every 10 seconds, keeping Stop reachable past Telegram's ~30-second draft expiry.
+
+No configuration is required beyond streaming with the draft transport (`gateway.streaming.transport: auto` or `draft`). The control uses Telegram's `keep_on_stop` draft option so the completed portion of a stopped reply stays visible.
+
+### Thinking drafts (`rich_drafts`)
+
+With `gateway.streaming.enabled: true` and `telegram.extra.rich_drafts: true`, the live DM preview can show a native *thinking* block while the agent works. During the pre-reply phase (before the first output token, and during tool execution) Hermes streams `sendRichMessageDraft` frames whose payload contains a `<tg-thinking>` block — Telegram renders it as the client's native animated status indicator instead of a wall of "typing…".
+
+Tool progress lines (when enabled, see [tool progress](#tool-progress)) route into the same draft frame, so the preview shows the last tool status line under the thinking block rather than sending separate interim messages. The thinking block is a **presentation placeholder only** — it never contains model reasoning transcripts, just the localized status label.
+
+### Requester-only group controls (`private_controls`, Bot API 10.3)
+
+By default, every interactive control the gateway posts in a group — exec approval buttons, model/choice pickers, clarification prompts — is a **regular public message** every member can see and click. With `telegram.extra.private_controls: true`, groups, supergroups and forum topics instead get **ephemeral controls**: delivered only to the requesting member via Telegram's ephemeral message API.
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        private_controls: true
+```
+
+Delivery uses the requester's callback query (within Telegram's 15-second window) or the ephemeral-reply anchor, so controls appear directly under the message that triggered them. Only the receiver sees the control; only the receiver can drive its buttons — a member tapping another member's ephemeral control gets a quiet rejection, never a state change. Edits and dismissal use Telegram's ephemeral edit/delete endpoints and never target a regular message id.
+
+**Failure semantics (fail closed).** If an ephemeral delivery cannot be completed — the requester id is missing, the 15-second window has passed, Telegram rejects the send, or the response lacks a usable ephemeral id — the control is **not** re-sent to the group. Hermes returns a uniform egress decline that the gateway's fallback suppression understands: the refused prompt never degrades into a public model listing, approval card or status message. You'll notice a missing button rather than a leaked one.
+
+### Rich action controls (`rich_controls`, Bot API 10.3)
+
+With `telegram.extra.rich_controls: true`, interactive controls are sent as **rich messages** with native `<tg-button-row>` action buttons — Telegram's own button rendering for rich messages, including visual accents (approve/confirm buttons get a success accent, cancel/deny a danger accent; everything else stays neutral).
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        rich_controls: true
+```
+
+Existing callback payloads pass through **verbatim** — the same `ea:`/`mp:`/`cp:` prefixes and authorizations as legacy inline keyboards, so allowlists and receiver gates behave identically. Label text and attributes are HTML-escaped; callback data keeps Telegram's 1–64 byte bounds; URL/web-app buttons fall back to the legacy path (rich buttons carry exactly one action). Pagination edits stay rich; a terminal edit (no keyboard) drops the control from the rich registry.
+
+Failure semantics match the rich-message finals path: a permanent rejection (older Bot API, capability error) transparently falls back to the legacy inline-keyboard prompt; a transient failure returns an ambiguous, non-retryable result so the prompt is never duplicated. `private_controls` wins over `rich_controls` when both are set — a group requester's control stays ephemeral.
+
 ## Rendering: Rich Messages, Tables and Link Previews
 
 **Rich Messages (Bot API 10.1).** Final replies that contain constructs the legacy MarkdownV2 path degrades — tables, task lists, collapsible `<details>`, and block math — are sent with Telegram's native [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage) using the agent's **raw markdown**, so they render natively with no client-side flattening. In DMs, the default `rich_drafts: false` keeps the streaming preview plain — it uses Telegram's ephemeral draft transport with legacy rendering (tables and other rich-only constructs stay as raw markdown in the preview) — then persists the completed response with `sendRichMessage`. Setting `rich_drafts: true` makes the live preview use `sendRichMessageDraft` too. Edit-based streams can finalize an existing preview in place through `editMessageText`'s `rich_message` parameter. Ordinary replies (plain prose, bold/italic, simple lists) stay on the MarkdownV2 path for consistent font weight and spacing across clients.

@@ -103,6 +103,32 @@ skipped. Agent Plugins v1 does not define trust, permissions, provenance, or a
 sandbox. Enabling a package grants its instructions and local executable the
 same full-trust posture as other installed Hermes plugins.
 
+A package can ask Hermes to gate one of its MCP servers, the same way a user's
+`trust: untrusted` does in `config.yaml`. Use it for servers whose tools spend
+money, trade, send messages or change accounts, so the user approves each
+write-capable call instead of relying on the skill's instructions alone:
+
+```json
+{
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "servers": {
+        "trade": { "trust": "untrusted" }
+      }
+    }
+  }
+}
+```
+
+The server name must match an `mcp.json` entry. With `untrusted`, every tool
+call to that server that is not annotated `readOnlyHint: true` asks the user
+first, and fails closed where nobody can answer (cron, unattended runs). The
+only other accepted value is `full`, the default, so a package can narrow
+access but never widen it. A `config.yaml` server with the same name replaces
+the package's entry, including its trust. Other harnesses ignore this extension.
+`trust` can sit beside `app`, `requires` and `liveness` in the same server
+entry (see [Application declarations](./application-declarations.md)).
+
 The [rendered specification](https://agent-plugins.org/specification) currently
 labels v1.0.0 a Working Draft, while the
 [versioned specification repository](https://github.com/agentplugins/agent-plugins-spec/blob/main/spec/1.0.0.md)

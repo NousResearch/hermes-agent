@@ -820,12 +820,26 @@ def stranded_owner(cause: str, assignee: str) -> str:
 
 
 def _fleet_cap(cfg: Optional[dict]) -> Optional[int]:
+    """The effective host concurrency cap, resolved exactly as the dispatcher does.
+
+    ``kanban.max_in_progress`` gets the dispatcher's own coercion (a positive int,
+    else nothing), and an unset/invalid value falls through to the same
+    memory-derived default the dispatcher applies. Reading the raw key here instead
+    made this diagnostic disagree with the spawner it explains: with the key unset
+    the fleet ran under a derived cap while ``stranded_cause`` saw none, so a card
+    starved by the cap was reported — and routed — as a lane that got no worker.
+    """
     kanban_cfg = (cfg or {}).get("kanban")
-    if isinstance(kanban_cfg, dict):
-        cap = kanban_cfg.get("max_in_progress")
-        if isinstance(cap, int) and cap > 0:
-            return cap
-    return None
+    raw = kanban_cfg.get("max_in_progress") if isinstance(kanban_cfg, dict) else None
+    configured = _positive_int(raw, 0) or None
+    try:
+        from hermes_cli.kanban_db_dispatch import resolve_max_in_progress
+    except Exception:  # noqa: BLE001 — diagnostics must not hard-depend on the dispatcher
+        return configured
+    try:
+        return resolve_max_in_progress(configured)
+    except Exception:  # noqa: BLE001
+        return configured
 
 
 def board_facts_for_ready_lane(conn, *, config: Optional[dict] = None) -> dict[str, dict]:
@@ -847,7 +861,14 @@ def board_facts_for_ready_lane(conn, *, config: Optional[dict] = None) -> dict[s
         "AND assignee IS NOT NULL GROUP BY assignee"
     ):
         running_by_assignee[row["assignee"]] = int(row["n"])
-    fleet_running = sum(running_by_assignee.values())
+    # The cap is the dispatcher's: it counts EVERY ``status='running'`` row
+    # (``count_running_tasks``), including one whose assignee is NULL or blank —
+    # a lane renamed away, an orphaned claim. Summing only the grouped rows here
+    # reported a free slot while the dispatcher saw none, so a card starved by the
+    # cap was classified — and routed — as a lane that simply got no worker.
+    fleet_running = int(conn.execute(
+        "SELECT COUNT(*) AS n FROM tasks WHERE status = 'running'"
+    ).fetchone()["n"])
     cap = _fleet_cap(config)
     ahead: dict[str, int] = {}
     facts: dict[str, dict] = {}
@@ -1244,59 +1265,63 @@ def route_stranded_cards(
     filed = 0
     for cause, group in by_cause.items():
         collapsed = len(group) > max(int(collapse_over), 1)
-        key = bulk_repair_key(cause) if collapsed else repair_idempotency_key(
-            group[0]["task_id"], cause)
-        headline = {"cause": cause, "owner": group[0]["owner"], "severity": group[0]["severity"],
-                    "collapsed": collapsed}
-        existing = _existing_repair_card(conn, key)
-        if existing:
-            out.append({**headline, "task_id": group[0]["task_id"],
-                        "repair_card": existing, "outcome": "existing"})
-            continue
-        if dry_run:
-            out.append({**headline, "task_id": group[0]["task_id"],
-                        "repair_card": None, "outcome": "dry_run"})
-            continue
-        if filed >= max(int(limit), 0):
-            for cand in group:
+        # Collapsed: ONE card stands for the whole population, with one audit event.
+        # Otherwise every stranded card is repaired on its own — one card AND one
+        # event each. Filing a single card for a group while auditing every card in
+        # it recorded a repair for cards that were never repaired (and the group's
+        # first-card idempotency key meant the rest could never be filed later).
+        targets = [(group[0], True)] if collapsed else [(cand, False) for cand in group]
+        for cand, is_collapsed in targets:
+            key = (bulk_repair_key(cause) if is_collapsed
+                   else repair_idempotency_key(cand["task_id"], cause))
+            headline = {"cause": cause, "owner": cand["owner"], "severity": cand["severity"],
+                        "collapsed": is_collapsed}
+            existing = _existing_repair_card(conn, key)
+            if existing:
+                out.append({**headline, "task_id": cand["task_id"],
+                            "repair_card": existing, "outcome": "existing"})
+                continue
+            if dry_run:
+                out.append({**headline, "task_id": cand["task_id"],
+                            "repair_card": None, "outcome": "dry_run"})
+                continue
+            if filed >= max(int(limit), 0):
                 out.append({**headline, "task_id": cand["task_id"],
                             "repair_card": None, "outcome": "capped"})
-            continue
-        if collapsed:
-            entries = [{"task_id": cand["task_id"], "assignee": cand["row"]["assignee"],
-                        "title": cand["row"]["title"],
-                        "age": _age_label(cand["diagnostic"].data.get("age_seconds")),
-                        "reason": cand["route"]["reason"],
-                        "facts": cand["diagnostic"].data} for cand in group]
-            title = f"Dispatch starvation: {len(group)} cards stranded ({cause})"
-            body = _bulk_repair_body(cause, entries, key)
-        else:
-            title = f"Dispatch starvation: {group[0]['task_id']} is {cause}"
-            body = _stranded_repair_body(group[0]["row"], group[0]["diagnostic"],
-                                        group[0]["route"], key)
-        repair_card = kb.create_task(
-            conn,
-            title=title,
-            body=body,
-            assignee=group[0]["owner"],
-            idempotency_key=key,
-            creator_task_id=group[0]["task_id"],
-            board=board,
-        )
-        # Audit the routing on the stranded card itself: one event per individually
-        # routed card, one for a collapsed population (N events per tick is the
-        # write amplification this collapse exists to avoid).
-        for cand in (group[:1] if collapsed else group):
+                continue
+            if is_collapsed:
+                entries = [{"task_id": c["task_id"], "assignee": c["row"]["assignee"],
+                            "title": c["row"]["title"],
+                            "age": _age_label(c["diagnostic"].data.get("age_seconds")),
+                            "reason": c["route"]["reason"],
+                            "facts": c["diagnostic"].data} for c in group]
+                title = f"Dispatch starvation: {len(group)} cards stranded ({cause})"
+                body = _bulk_repair_body(cause, entries, key)
+            else:
+                title = f"Dispatch starvation: {cand['task_id']} is {cause}"
+                body = _stranded_repair_body(cand["row"], cand["diagnostic"],
+                                             cand["route"], key)
+            repair_card = kb.create_task(
+                conn,
+                title=title,
+                body=body,
+                assignee=cand["owner"],
+                idempotency_key=key,
+                creator_task_id=cand["task_id"],
+                board=board,
+            )
+            # Audit the routing on the stranded card itself: exactly one event per
+            # card a repair card was actually filed for.
             with kb.write_txn(conn):
                 kb._append_event(
                     conn, cand["task_id"], "stranded_routed",
-                    {"repair_card": repair_card, "cause": cause, "owner": group[0]["owner"],
-                     "severity": cand["severity"], "collapsed": collapsed,
-                     "cards": len(group) if collapsed else 1},
+                    {"repair_card": repair_card, "cause": cause, "owner": cand["owner"],
+                     "severity": cand["severity"], "collapsed": is_collapsed,
+                     "cards": len(group) if is_collapsed else 1},
                 )
-        filed += 1
-        out.append({**headline, "task_id": group[0]["task_id"],
-                    "repair_card": repair_card, "outcome": "filed"})
+            filed += 1
+            out.append({**headline, "task_id": cand["task_id"],
+                        "repair_card": repair_card, "outcome": "filed"})
     return out
 
 

@@ -119,7 +119,16 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "Free-form dict of structured facts about this "
                 "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
                 "\"findings\": [...]}. Surfaced to downstream "
-                "workers alongside ``summary``."
+                "workers alongside ``summary``. A completion that "
+                "claims a landing carries its evidence here — one of: "
+                "\"merged_commit\" together with the checkout it merged "
+                "in (\"merged_repo\", plus \"merged_branch\" when the "
+                "commit is not on that checkout's own HEAD); "
+                "\"deploy_stamp\" pointing at a readable "
+                ".deployed-from naming the commit; or \"live_sha256\" "
+                "equal to \"merged_blob_sha256\", with \"artifact_path\" "
+                "naming the deployed file. A published-but-unmerged PR "
+                "is not a landing."
         )),
         "result": _prop("string", (
                 "Short result log line (legacy field, maps to "
@@ -505,7 +514,10 @@ KANBAN_CREATE_SCHEMA = _schema(
         )),
         "completion_contract": _prop("string", (
             "Declare at creation: local-only (default), OWNER/REPO for PR publication, or an exact GitHub PR URL. "
-            "PR tasks cannot complete until repository-required exact-head CI passes. On publication pass metadata.published_pr."
+            "PR tasks cannot complete until repository-required exact-head CI passes. On publication pass metadata.published_pr. "
+            "A card whose deliverable is LANDED declares that on the completion instead (see the complete tool's metadata): the "
+            "merged commit and the checkout it merged in, or a deploy stamp naming it, or a live hash equal to the merged blob. "
+            "A published-but-unmerged PR is not a landing."
         )),
         "goal_max_turns": _prop("integer", (
                 "Turn budget for goal_mode workers. Caps how many "

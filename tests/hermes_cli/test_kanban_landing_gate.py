@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -58,6 +61,44 @@ def _status(conn, tid) -> str:
     return conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()["status"]
 
 
+def _git(repo: Path, *args: str) -> str:
+    """Run git in a fixture repo; a failure is the harness's, not the test's."""
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
+
+
+@pytest.fixture
+def landing_repo(tmp_path):
+    """A real checkout: one commit on the release branch, one only on a side branch.
+
+    The release branch is left checked out, so a claim naming no ``merged_branch``
+    resolves against the checkout's own HEAD -- the default the module documents.
+    """
+    if shutil.which("git") is None:  # pragma: no cover - git is a CI given
+        pytest.skip("git is not available")
+    repo = tmp_path / "app"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "dev@example.com")
+    _git(repo, "config", "user.name", "Dev")
+    (repo / "app.py").write_text("print('v1')\n")
+    _git(repo, "add", "app.py")
+    _git(repo, "commit", "-qm", "merged on the release branch")
+    release = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    merged = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-b", "unmerged-work")
+    (repo / "app.py").write_text("print('v2')\n")
+    _git(repo, "add", "app.py")
+    _git(repo, "commit", "-qm", "only on the side branch")
+    unmerged = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", release)
+    return {"path": str(repo), "branch": release, "merged": merged, "unmerged": unmerged}
+
+
 # --- the claim path: a claimed landing must substantiate it -------------------
 
 def test_landing_claim_without_evidence_is_refused(conn):
@@ -80,25 +121,104 @@ def test_landing_claim_without_evidence_is_refused(conn):
     assert "completed" not in _kinds(conn, tid)
 
 
-def test_merged_commit_lands_the_card(conn):
-    tid = _running(conn)
-    assert kb.complete_task(
-        conn, tid, summary="landed", metadata={"landed": {"merged_commit": MERGED_SHA}},
-    ) is True
-    assert _status(conn, tid) == "done"
-    assert not _event_payloads(conn, tid, "completion_blocked_landing_evidence")
-
-
-def test_deploy_stamp_lands_the_card(conn):
+def test_merged_commit_on_the_named_branch_lands_the_card(conn, landing_repo):
+    """The commit is resolved against the checkout it says it merged in."""
     tid = _running(conn)
     assert kb.complete_task(
         conn, tid, summary="landed",
-        metadata={"landed_evidence": {"deploy_stamp": f"{MERGED_SHA} @ 2026-09-25T23:20"}},
+        metadata={"landed": {"merged_commit": landing_repo["merged"],
+                             "merged_repo": landing_repo["path"],
+                             "merged_branch": landing_repo["branch"]}},
+    ) is True
+    assert _status(conn, tid) == "done"
+    recorded = _event_payloads(conn, tid, "completed")[-1]["landing_evidence"]
+    assert recorded["merged_commit"] == landing_repo["merged"]
+    assert recorded["merged_branch"] == landing_repo["branch"]
+
+
+def test_merged_commit_resolves_against_the_checkouts_own_branch(conn, landing_repo):
+    """``merged_branch`` defaults to the checkout's HEAD."""
+    tid = _running(conn)
+    assert kb.complete_task(
+        conn, tid, summary="landed",
+        metadata={"landed": {"merged_commit": landing_repo["merged"],
+                             "merged_repo": landing_repo["path"]}},
     ) is True
     assert _status(conn, tid) == "done"
 
 
+def test_a_merged_commit_naming_no_checkout_is_not_evidence(conn):
+    """A sha is shaped like a commit; it is not proof of a landing.
+
+    Against a real repository the same five-looking cells -- a sha in no repo, an
+    unmerged branch head, another branch -- all read ``done`` while the only check
+    was a regex. The checkout has to be named before git can be asked about it.
+    """
+    tid = _running(conn)
+    with pytest.raises(kb.UnlandedCardError) as exc:
+        kb.complete_task(
+            conn, tid, summary="landed", metadata={"landed": {"merged_commit": MERGED_SHA}},
+        )
+    assert "merged_repo" in str(exc.value)
+    assert _status(conn, tid) == "running"
+
+
+def test_a_commit_only_on_an_unmerged_branch_is_not_a_landing(conn, landing_repo):
+    """An unmerged branch head (or an open PR's head) is not on the target."""
+    tid = _running(conn)
+    with pytest.raises(kb.UnlandedCardError) as exc:
+        kb.complete_task(
+            conn, tid, summary="landed",
+            metadata={"merged_commit": landing_repo["unmerged"],
+                      "merged_repo": landing_repo["path"],
+                      "merged_branch": landing_repo["branch"]},
+        )
+    assert landing_repo["branch"] in str(exc.value)
+    assert _status(conn, tid) == "running"
+
+
+def test_a_commit_unknown_to_the_named_checkout_is_refused(conn, landing_repo):
+    tid = _running(conn)
+    with pytest.raises(kb.UnlandedCardError) as exc:
+        kb.complete_task(
+            conn, tid, summary="landed",
+            metadata={"merged_commit": MERGED_SHA, "merged_repo": landing_repo["path"],
+                      "merged_branch": landing_repo["branch"]},
+        )
+    assert "no commit" in str(exc.value)
+    assert _status(conn, tid) == "running"
+
+
+def test_a_named_checkout_that_is_not_a_repo_is_refused(conn, tmp_path):
+    tid = _running(conn)
+    with pytest.raises(kb.UnlandedCardError) as exc:
+        kb.complete_task(
+            conn, tid, summary="landed",
+            metadata={"merged_commit": MERGED_SHA, "merged_repo": str(tmp_path / "not-a-repo")},
+        )
+    assert "merged commit" in str(exc.value)
+    assert _status(conn, tid) == "running"
+
+
+def test_a_deploy_stamp_with_no_file_behind_it_is_not_evidence(conn):
+    """A stamp LINE is a claim about a deploy, not a deploy.
+
+    Accepting the value itself meant a bare "sha @ when" string landed a card with
+    nothing on disk behind it -- and the mismatch guard, which reads the real stamp,
+    never ran.
+    """
+    tid = _running(conn)
+    with pytest.raises(kb.UnlandedCardError) as exc:
+        kb.complete_task(
+            conn, tid, summary="landed",
+            metadata={"landed_evidence": {"deploy_stamp": f"{MERGED_SHA} @ 2026-09-25T23:20"}},
+        )
+    assert "deploy stamp" in str(exc.value)
+    assert _status(conn, tid) == "running"
+
+
 def test_live_hash_equal_to_the_merged_blob_lands_the_card(conn):
+    """A substantiated form carries the card; an unverifiable one beside it does not veto it."""
     tid = _running(conn)
     assert kb.complete_task(
         conn, tid, summary="landed",
@@ -128,12 +248,20 @@ def test_non_landing_card_completes_unchanged(conn):
     assert not _event_payloads(conn, tid, "completion_blocked_landing_evidence")
 
 
-def test_published_pr_alone_is_left_to_pr_acceptance(conn):
-    """A declared PR contract is gated by the acceptance path, not by this gate:
-    no landing *claim* was made, so nothing here refuses it."""
-    tid = _running(conn)
-    gap = kb._landing.landing_gap({"published_pr": "https://github.com/acme/repo/pull/7"})
-    assert gap is None
+def test_published_pr_alone_is_left_to_pr_acceptance():
+    """A declared PR contract is gated by the acceptance path, not by this gate.
+
+    ``declares_landing_contract`` is true for it, and the module docstring used to
+    list the card's own contract as a landing declaration -- but wiring it into
+    ``landing_gap`` would refuse the completions ``kanban_pr_acceptance`` exists to
+    allow, whose criterion is a PR published at the exact head with its required
+    checks green, not a merge (pinned by
+    ``tests/hermes_cli/test_kanban_pr_acceptance.py``). So the contract answers the
+    chain-head question only, and no landing *claim* means nothing here refuses it.
+    """
+    assert kb._landing.declares_landing_contract({"completion_contract": "acme/repo"}) is True
+    assert kb._landing.landing_gap({"published_pr": "https://github.com/acme/repo/pull/7"}) is None
+    assert kb._landing.landing_gap({}) is None
 
 
 def test_a_claim_key_that_is_not_evidence_never_refuses_a_plain_card(conn):

@@ -248,13 +248,9 @@ def _git_retirement_proof(request: dict, terminal: dict, git_cmd, cwd,
             # so fail open to the unverified answer instead of stranding the
             # retirement. The apply path re-judges decisively below.
             return False
-        # The apply path CAN fetch: refill the grafted history, then judge on
-        # real history. Same custody lane (and the same guarded preparation)
-        # as the pinned-target fetch below.
-        try:
-            _strict_git_fetch(git_cmd, cwd, ["fetch", "--unshallow", "--no-tags", "origin", request["commit"]], 900)
-        except (OSError, subprocess.SubprocessError, ValueError):
-            pass  # the classification below keeps the refusal honest
+        # The apply path CAN fetch: judge the fetched objects first, refill
+        # the grafted history only when the proof is still inconclusive, then
+        # re-judge on real history (all owned by the shared classifier).
         return _classify_strict_ancestry(request, git_cmd, cwd, run_git)
     # The target commit is not locally visible (the depth-1 era never healed,
     # and update_cmd keeps shallow installs shallow until the apply fetch).
@@ -324,14 +320,23 @@ def _strict_git_fetch(git_cmd, cwd, fetch_args, timeout: int) -> subprocess.Comp
 def _classify_strict_ancestry(request: dict, git_cmd, cwd, run_git) -> bool:
     """The one post-fetch verdict, shared by both strict fetch branches.
 
-    A shallow boundary can survive the fetch (a depth-1 fetch of the pinned
-    target leaves its ancestors grafted), which makes an older HEAD read as
-    divergent. Before any refusal, refill the grafted history once
-    (``--unshallow`` under the same guarded fetch lane) and re-judge on real
-    history; only a real-history descendant or divergent pair is refused, so
-    the first attempt admits an eligible older install instead of requiring a
-    retry.
+    Judge the fetched objects first: when the ancestry is already provable
+    (``rev-list`` succeeds empty and ``HEAD`` is an ancestor of the target),
+    the verdict returns without any history refill — a shallow boundary can
+    survive the pinned fetch while the ``HEAD -> target`` relation is already
+    decided, and unconditionally ``--unshallow``-ing it would download the
+    whole blob history behind the boundary (the reason the updater owns
+    ``fetch_full_commit_graph`` and its ``blob:none`` conversion). Only an
+    inconclusive shallow result enters the guarded refill: ``--unshallow``
+    under the same guarded fetch lane, then re-judge on real history; only a
+    real-history descendant or divergent pair is refused, so the first attempt
+    admits an eligible older install instead of requiring a retry.
     """
+    result = run_git("rev-list", "--ancestry-path", f"{request['commit']}..HEAD")
+    if result.returncode == 0 and not result.stdout.strip():
+        proof = run_git("merge-base", "--is-ancestor", "HEAD", request["commit"])
+        if proof.returncode == 0:
+            return True
     shallow = run_git("rev-parse", "--is-shallow-repository")
     if shallow.returncode == 0 and shallow.stdout.strip() == "true":
         try:

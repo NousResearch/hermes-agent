@@ -39,10 +39,6 @@ def relay_turn(tmp_path, monkeypatch):
         relay_runtime._reset_for_tests()
 
 
-@pytest.mark.parametrize(
-    "api_mode",
-    ["chat_completions", "codex_responses", "anthropic_messages"],
-)
 def test_sync_execute_uses_callback_on_event_loop_thread(monkeypatch):
     class UnexpectedManagedAttempt:
         def run_managed(self, *_args, **_kwargs):
@@ -66,6 +62,10 @@ def test_sync_execute_uses_callback_on_event_loop_thread(monkeypatch):
     assert asyncio.run(invoke()) == {"payload": "request"}
 
 
+@pytest.mark.parametrize(
+    "api_mode",
+    ["chat_completions", "codex_responses", "anthropic_messages"],
+)
 def test_relay_request_body_omits_client_timeout(api_mode):
     request = {"model": "test-model", "timeout": 1800.0}
 

@@ -1,45 +1,17 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { deAuxTasks } from './de_aux_tasks'
+import { deBoot } from './de_boot'
+import { deLocalModels } from './de_local_models'
+import { deModelMenu } from './de_model_menu'
+import { deNotices } from './de_notices'
+import { deProjects } from './de_projects'
+import { deSharedMetrics } from './de_shared_metrics'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
 export const deOverrides = {
-  sharedMetrics: {
-    consentTitle: 'Hermes verbessern helfen?',
-    consentBody:
-      'Geteilte Metriken enthalten nur begrenzte Zähler. Niemals Prompts, Dateien, Pfade oder Fehlertexte. Die Erfassung bleibt lokal. Das Senden an Nous ist eine separate Zustimmung.',
-    whatIsCollected: 'Was erfasst wird',
-    collectedIntro: 'Nur begrenzte Zähler:',
-    collectedActivity: 'Aktivität, Session-Länge, Ergebnisse und Fehlerklassen',
-    collectedModels: 'Modellrouten und Token-Summen',
-    collectedNames: 'Namen integrierter Tools, Befehle und Katalogeinträge',
-    collectedMilestones: 'Gruppierte Einrichtungszahlen',
-    collectedReliability:
-      'Update-Ergebnisse und -Dauer, Abstürze, Start- und Antwortzeiten, Zustand der Messaging-Plattformen',
-    collectedUsage:
-      'Wie Hermes genutzt wird: Genauigkeit und Effizienz des Agenten (Treffer bei Bearbeitungen, Schleifen, Erholung nach Fehlern, Tokens und Tool-Aufrufe pro Aufgabe, Cache-Brüche), aktive Zeit pro Oberfläche und Desktop-Modus, welche App-Bereiche, Aktionen und Einstellungen genutzt, schnell geschlossen oder abgeschaltet werden, sowie Ergebnisse der Anbietereinrichtung',
-    collectedMachine:
-      'Grobe Gerätedaten: RAM-Bereich, GPU-Typ, Alter und Kanal der Hermes-Version, Anzahl ausstehender Updates, ob ein lokaler Modellserver genutzt wird',
-    installId:
-      'Beim Senden wird jedes Tagespaket an den Nous-Telemetriedienst hochgeladen. Pakete tragen die Installations-ID dieses Profils: eine feste zufällige UUID ohne persönliche Daten, zurückgesetzt durch Löschen des Shared-Metrics-Ordners.',
-    consentWindow:
-      'Gesendet werden nur Pakete, deren gesamter Erfassungszeitraum in ein erfasstes Zustimmungsfenster fällt – Daten von vor Ihrer Zustimmung oder aus Lücken, in denen das Senden aus war, bleiben auf diesem Rechner. Das Senden lässt sich jederzeit wieder abschalten.',
-    readDocs: 'Alle Details lesen',
-    share: 'Erfassen und an Nous senden',
-    local: 'Nur lokal erfassen',
-    off: 'Nein, danke',
-    changeLater: 'Sie können das jederzeit unter Einstellungen → Sicherheit ändern.',
-    saveFailed: 'Ihre Auswahl konnte nicht gespeichert werden',
-    collectLabel: 'Nutzungsstatistiken erfassen',
-    collectDesc: 'Begrenzte Zähler auf diesem Gerät. Niemals Prompts, Dateien, Pfade oder Fehlertexte.',
-    sendLabel: 'Nutzungsstatistiken an Nous senden',
-    sendDesc:
-      'Jedes Tagespaket an den Nous-Telemetriedienst hochladen. Nur Daten aus einem Zustimmungsfenster werden gesendet. Erfordert aktive Erfassung.',
-    unavailable: 'Aktualisieren Sie das Hermes-Backend, um diese Einstellung zu ändern.',
-    stripBody: 'Nur begrenzte Zähler, niemals Prompts oder Dateien.',
-    stripChoices: { share: 'An Nous senden', local: 'Nur lokal', off: 'Nein danke' },
-    stripDetails: 'Details'
-  },
+  sharedMetrics: deSharedMetrics,
   intro: introDe,
   connectors: {
     title: 'Verbinden Sie Ihre Apps',
@@ -437,84 +409,7 @@ export const deOverrides = {
     revealUnavailable:
       'Dieser Pfad befindet sich nicht auf diesem Computer, sondern auf dem Backend-Rechner. Verwenden Sie „Im Dateibaum anzeigen“.'
   },
-  boot: {
-    ready: 'Hermes Desktop ist bereit',
-    desktopBootFailedWithMessage: message => `Desktop-Start fehlgeschlagen: ${message}`,
-    steps: {
-      connectingGateway: 'Live-Desktop-Gateway wird verbunden',
-      loadingSettings: 'Hermes-Einstellungen werden geladen',
-      loadingSessions: 'Letzte Sessions werden geladen',
-      retryingRemoteBackend: 'Wird mit dem Remote-Hermes-Backend neu verbunden…',
-      startingDesktopConnection: 'Desktop-Verbindung wird gestartet',
-      startingHermesDesktop: 'Hermes Desktop wird gestartet…'
-    },
-    errors: {
-      backgroundExited: 'Der Hermes-Hintergrundprozess wurde beendet.',
-      backgroundExitedDuringStartup: 'Der Hermes-Hintergrundprozess wurde während des Starts beendet.',
-      backendStopped: 'Backend gestoppt',
-      restartHermes: 'Hermes neu starten',
-      openLogs: 'Logs öffnen',
-      desktopBootFailed: 'Desktop-Start fehlgeschlagen',
-      gatewayConnectionLost: 'Verbindung zum Gateway verloren',
-      gatewayConnectionLostDetail:
-        'Im Hintergrund wird weiterhin versucht, die Verbindung herzustellen. Sie können weiterlesen und weiterschreiben – öffnen Sie die Gateway-Einstellungen, falls das anhält.',
-      reconnectNow: 'Jetzt neu verbinden',
-      connectionSettings: 'Verbindungseinstellungen',
-      gatewaySignInRequired: 'Gateway-Sign-in erforderlich',
-      gatewaySignInRequiredDetail:
-        'Melden Sie sich erneut an, um die Verbindung wiederherzustellen. Ihre Chats und Einstellungen sind sicher.',
-      signInAgain: 'Erneut anmelden',
-      ipcBridgeUnavailable: 'Der Desktop-IPC-Bridge ist nicht verfügbar.'
-    },
-    causes: {
-      exitedEarly: 'Der Hintergrunddienst von Hermes hat direkt nach dem Start aufgehört.',
-      timedOut: 'Der Hintergrunddienst von Hermes hat nicht rechtzeitig geantwortet.',
-      permission: 'Hermes konnte nicht in seinen Datenordner schreiben (Berechtigungsproblem).',
-      diskFull: 'Die Festplatte ist voll, deshalb konnte Hermes nicht starten.',
-      portInUse: 'Ein anderes Programm verwendet den Netzwerkport, den Hermes braucht.',
-      installMissing:
-        'Ein Teil der Hermes-Installation fehlt. Wählen Sie „Installation reparieren“, um sie wiederherzustellen.'
-    },
-    failure: {
-      title: 'Hermes konnte nicht gestartet werden',
-      description:
-        'Das Hintergrund-Gateway ist nicht gestartet. Probieren Sie einen der Wiederherstellungsschritte unten. Keiner davon löscht Ihre Chats oder Einstellungen.',
-      details: 'Details',
-      remoteTitle: 'Remote-Gateway-Sign-in erforderlich',
-      remoteDescription:
-        'Ihre Remote-Gateway-Session ist abgelaufen. Melden Sie sich erneut an, um die Verbindung wiederherzustellen. Keiner dieser Schritte löscht Ihre Chats oder Einstellungen.',
-      retry: 'Erneut versuchen',
-      repairInstall: 'Installation reparieren',
-      useLocalGateway: 'Lokales Gateway verwenden',
-      gatewaySettings: 'Gateway-Einstellungen',
-      back: 'Zurück',
-      openLogs: 'Logs öffnen',
-      repairHint:
-        'Die Reparatur führt den Installer erneut aus und kann auf einem frischen Computer ein paar Minuten dauern.',
-      remoteSignInHint: signInLabel =>
-        `Meldet Sie von der gespeicherten Remote-Browser-Session ab und öffnet dann ${signInLabel}. Verwenden Sie das lokale Gateway, um stattdessen zum integrierten Backend zu wechseln.`,
-      signOutAndSignIn: 'Abmelden & anmelden',
-      remoteFailureHint:
-        'Überprüfen Sie die Gateway-URL und die Anmeldung in den Gateway-Einstellungen, oder wechseln Sie zum lokalen Gateway.',
-      cloudDownTitle: 'Nous Cloud Agent ist down',
-      cloudDownDescription:
-        'Der von Nous verwaltete Cloud-Agent, mit dem sich dieses Gateway verbindet, meldet einen Serverfehler. Er kann von hier aus nicht neu gestartet werden – prüfen Sie seinen Status, wechseln Sie zum lokalen Gateway oder wenden Sie sich an den Support.',
-      cloudDownHint:
-        'Die Schaltflächen unten öffnen das Nous Portal (Instanzstatus und Steuerung) und unseren Discord für Support.',
-      cloudDownCheckPortal: 'Portal-Status prüfen',
-      cloudDownDiscord: 'Hilfe auf Discord holen',
-      hideRecentLogs: 'Neueste Logs ausblenden',
-      showRecentLogs: 'Neueste Logs anzeigen',
-      signedInTitle: 'Angemeldet',
-      signedInMessage: 'Wird mit dem Remote-Gateway neu verbunden…',
-      signInIncompleteTitle: 'Sign-in unvollständig',
-      signInIncompleteMessage: 'Das Anmeldefenster wurde geschlossen, bevor die Authentifizierung abgeschlossen war.',
-      signInFailed: 'Sign-in fehlgeschlagen',
-      signInToRemoteGateway: 'Beim Remote-Gateway anmelden',
-      signInWithProvider: provider => `Mit ${provider} anmelden`,
-      identityProvider: 'Ihr Identity-Provider'
-    }
-  },
+  boot: deBoot.boot,
   notifications: {
     region: 'Benachrichtigungen',
     hide: 'Ausblenden',
@@ -617,10 +512,7 @@ export const deOverrides = {
       creditsTitle: 'Credits'
     }
   },
-  remoteDisplayBanner: {
-    message: reason =>
-      `Software-Rendering aktiv — Remote-Display erkannt (${reason}). GPU-Beschleunigung ist deaktiviert, um Flackern zu verhindern.`
-  },
+  ...deNotices,
   billingBlock: {
     titleNous: 'Keine Nous-Credits mehr',
     titleProvider: provider => `Keine Credits mehr — ${provider}`,
@@ -868,6 +760,14 @@ export const deOverrides = {
     resetConfirm: 'Alle Einstellungen auf Hermes-Standard zurücksetzen?',
     exportFailed: 'Export fehlgeschlagen',
     resetFailed: 'Zurücksetzen fehlgeschlagen',
+    pluginPages: {
+      blurb: 'Optionen installierter Plugins. Jedes Plugin hat eine eigene Seite, manche mit Unterseiten.',
+      empty: 'Noch kein Plugin hat Einstellungen.',
+      manage: 'Plugins verwalten',
+      agentSettings: 'Agent-Einstellungen',
+      pageCount: (n: number) => (n === 1 ? '1 Seite' : `${n} Seiten`),
+      missing: 'Dieses Plugin hat keine Einstellungsseite. Es ist eventuell deaktiviert oder deinstalliert.'
+    },
     nav: {
       providers: 'Anbieter',
       providerAccounts: 'Konten',
@@ -889,23 +789,15 @@ export const deOverrides = {
     },
     plugins: {
       title: 'Desktop-Plugins',
-      blurb: 'Gebündelt oder im Ordner „Desktop-Plugins“ abgelegt. Deaktivieren, um live zu entladen.',
-      count: n => `${n} installiert`,
       openFolder: 'Ordner für Desktop-Plugins öffnen',
       rescan: 'Erneut scannen',
       reveal: 'Im Dateimanager anzeigen',
-      enable: 'Aktivieren',
-      disable: 'Deaktivieren',
       failed: 'fehlgeschlagen',
-      empty: 'Noch keine Desktop-Plugins installiert.',
       kinds: {
         bundled: 'gebündelt',
         disk: 'auf Datenträger',
         runtime: 'Laufzeit'
       },
-      agentHalfMissing: 'Agent-Hälfte fehlt hier',
-      agentHalfMissingTip:
-        'Das ist die Desktop-Hälfte eines gebündelten Plugins, aber seine Agent-Hälfte ist auf dem aktuell verbundenen Backend/Profil nicht installiert. Installieren Sie sie unter Fähigkeiten → Plugins.',
       installModal: {
         installFromGit: 'Von Git installieren',
         reviewRepository: 'Repository prüfen',
@@ -2015,6 +1907,8 @@ export const deOverrides = {
         'Nicht unterstützte Remote-Plattform. Der Desktop-SSH-Modus von Hermes unterstützt Linux-, macOS- und Windows-Remote-Hosts.',
       sshErrTimeout: 'SSH-Verbindung ist ausgelaufen. Der Host ist möglicherweise nicht erreichbar oder schläft.',
       sshErrUpdateRequired: 'Aktualisieren Sie Hermes auf dem Remote-Host, bevor Sie sich mit Desktop-SSH verbinden.',
+      sshErrInteractiveAuth:
+        'Tailscale SSH erfordert eine interaktive Browser-Prüfung. Führen Sie im Terminal `ssh <host> true` aus, schließen Sie die Prüfung ab und versuchen Sie es erneut – Hermes führt SSH nicht interaktiv aus.',
       sshErrUnknown: 'SSH-Verbindung fehlgeschlagen.'
     },
     keys: {
@@ -2122,6 +2016,8 @@ export const deOverrides = {
       change: 'Ändern',
       autoUseMain: 'automatisch · Hauptmodell verwenden',
       inheritMainEffort: 'übernehmen · Aufwand des Hauptmodells',
+      inheritsFrom: task => `erbt von ${task}`,
+      followTask: task => `${task} folgen`,
       providerDefault: '(Anbietervorgabe)',
       fallbackAdd: 'Fallback hinzufügen',
       fallbackEmpty: 'Keine Fallback-Modelle — es wird das Standardmodell verwendet, außer es schlägt fehl.',
@@ -2134,172 +2030,9 @@ export const deOverrides = {
       moaAggregator: 'Aggregator',
       moaAggregatorBilled: 'handelndes Modell · wird für den Lauf berechnet',
       moaReferenceHint: 'berät standardmäßig einmal pro Turn',
-      tasks: {
-        vision: {
-          label: 'Sehen',
-          hint: 'Bildanalyse'
-        },
-        compression: {
-          label: 'Kompression',
-          hint: 'Kontext-Verdichtung'
-        },
-        skills_hub: {
-          label: 'Skills-Hub',
-          hint: 'Skill-Suche'
-        },
-        approval: {
-          label: 'Freigabe',
-          hint: 'Intelligente Auto-Freigabe'
-        },
-        mcp: {
-          label: 'MCP',
-          hint: 'MCP-Tool-Routing'
-        },
-        title_generation: {
-          label: 'Titel-Generierung',
-          hint: 'Session-Titel'
-        },
-        review: {
-          label: 'Review',
-          hint: '/review Bewertungs-Subagent'
-        },
-        triage_specifier: {
-          label: 'Triage-Spezifizierer',
-          hint: 'Kanban-Spezifikation ausarbeiten'
-        },
-        kanban_decomposer: {
-          label: 'Kanban-Zerleger',
-          hint: 'Aufgaben zerlegen'
-        },
-        profile_describer: {
-          label: 'Profil-Beschreiber',
-          hint: 'Automatische Profilbeschreibungen'
-        },
-        curator: {
-          label: 'Kurator',
-          hint: 'Skill-Nutzungs-Review'
-        }
-      }
+      tasks: deAuxTasks
     },
-    localModels: {
-      connectionChanged: 'Verbindung für lokale Modelle geändert',
-      title: 'Lokale Modelle',
-      runtimeTitle: 'Lokale Laufzeit',
-      runtimeReady: backend => `Bereit · ${backend}`,
-      serverRunning: 'Läuft',
-      runtimeInstalled: 'llama.cpp-Laufzeit installiert',
-      runtimeInstalledDetail: (tag, backend) =>
-        `Build ${tag}, ${backend}-Backend. Hermes startet und verwaltet den Server für Sie.`,
-      installTitle: 'Lokale Laufzeit installieren',
-      installDetail:
-        'Lädt die llama.cpp-Inferenz-Engine herunter (einige hundert MB). Heruntergeladene Modelle laufen komplett auf diesem Rechner – kein Konto, nichts verlässt Ihren Computer.',
-      installAction: 'Laufzeit installieren',
-      installing: 'Laufzeit wird installiert…',
-      installFailed: 'Laufzeit-Installation fehlgeschlagen',
-      hardwareTitle: 'Dieser Rechner',
-      hardwareLoading: 'Ihre Hardware wird geprüft…',
-      vram: label => `${label} GPU-Speicher`,
-      ram: label => `${label} RAM`,
-      unifiedMemory: 'Kombinierter Speicher',
-      modelsTitle: 'Modelle',
-      recommended: 'Empfohlen',
-      recommendedReason: {
-        'best-quality-resident':
-          'Das Modell mit der höchsten Qualität, das komplett auf Ihrer GPU mit voller Geschwindigkeit läuft. Die Auswahl wägt Qualität gegen die erwartete Geschwindigkeit auf dieser Hardware ab.',
-        'speed-gated-quality':
-          'Ein besseres Modell würde auf diesen Rechner passen, aber bei seiner Speicherbandbreite zu langsam reagieren — das ist das beste Modell, das schnell bleibt.',
-        'fastest-resident':
-          'Kein Modell erreicht volle Geschwindigkeit auf dieser Hardware; dieses kommt am nächsten und läuft komplett im GPU-Speicher.'
-      },
-      noRecommendationTitle: 'Keine automatische Empfehlung für diesen Rechner',
-      noRecommendationDetail:
-        'Die automatische Einrichtung braucht ein kuratiertes Modell, das vollständig in den Grafikspeicher oder den gemeinsamen Speicher passt. Sie können unten trotzdem ein Modell wählen oder weitere Modelle durchsuchen.',
-      noRecommendationAction: 'Modelle durchsuchen',
-      downloaded: 'Heruntergeladen',
-      downloadAction: size => `Download · ${size}`,
-      downloadProgress: (done, total) => `${done} von ${total} werden heruntergeladen`,
-      downloadDoneToast: model => `${model} ist bereit.`,
-      installDoneToast: 'Lokale Laufzeit installiert und bereit.',
-      quickstartTitle: 'Ein Modell auf diesem Rechner ausführen',
-      quickstartDetail: (model, size) =>
-        `Ein Klick richtet alles ein: die lokale Engine, ${model} (${size} Download) und Ihre Voreinstellung für neue Chats. Nichts verlässt diesen Computer.`,
-      quickstartDetailReady: model =>
-        `Ein Klick macht ${model} zu Ihrer Voreinstellung für neue Chats. Alles läuft auf diesem Rechner.`,
-      quickstartAction: 'Für mich einrichten',
-      quickstartConfigure: 'Konfigurieren…',
-      quickstartDoneToast: model => `${model} ist eingerichtet — neue Chats laufen auf diesem Rechner.`,
-      quickstartFailed: 'Einrichtung des lokalen Modells fehlgeschlagen',
-      quickstartStageEngine: 'Engine',
-      quickstartStageModel: 'Modell',
-      quickstartStageFinish: 'Fertig',
-      useAction: 'Verwenden',
-      activePill: 'Voreinstellung',
-      updateTitle: 'Engine-Update verfügbar',
-      updateDetail: (next, current) =>
-        `Eine neuere llama.cpp-Version (${next}) ist bereit zur Installation – Sie verwenden ${current}. Während des Downloads laufen die Modelle weiter.`,
-      updateAction: 'Engine aktualisieren',
-      updating: 'Engine wird aktualisiert…',
-      upToDateTitle: 'Engine aktuell',
-      upToDateDetail: (tag, backend) =>
-        `llama.cpp ${tag} (${backend}) wird ausgeführt — der neueste Build, den Hermes mitliefert.`,
-      activeDetail: 'Neue Chats verwenden dieses Modell – es wird geladen, wenn Sie Ihre erste Nachricht senden',
-      activeNotLoaded: 'Wird bei Ihrer ersten Nachricht geladen',
-      loadedPill: 'Im Speicher',
-      placementResident: 'komplett auf GPU',
-      placementSpilled: 'teils im RAM',
-      placementResidentTip: 'Läuft komplett im GPU-Speicher bei diesem Kontextfenster — volle Geschwindigkeit.',
-      placementSpilledTip:
-        'Ein Teil dieses Modells läuft aus dem Arbeitsspeicher — es funktioniert, aber langsamer. Ein kompakterer Build oder ein kleinerer Kontext würde komplett passen.',
-      loadingPill: 'Wird geladen…',
-      ejectTip: 'GPU-Speicher freigeben (wird bei der nächsten Nachricht wieder geladen)',
-      ejected: 'Modell entladen — GPU-Speicher freigegeben.',
-      ejectFailed: 'Das Modell konnte nicht entladen werden',
-      stopServer: 'Ausschalten',
-      startServer: 'Einschalten',
-      runtimeRunningDetail:
-        'Der lokale Server läuft. Wenn Sie ihn ausschalten, wird der gesamte GPU-Speicher freigegeben, und neue Chats können keine lokalen Modelle verwenden, bis Sie ihn wieder einschalten.',
-      serverStopped: 'Lokaler Server gestoppt — GPU-Speicher freigegeben.',
-      serverStarted: 'Lokaler Server läuft.',
-      serverStopFailed: 'Der lokale Server konnte nicht gestoppt werden',
-      serverStartFailed: 'Der lokale Server konnte nicht gestartet werden',
-      activating: 'Wird gestartet…',
-      activateFailed: model => `Konnte nicht zu ${model} wechseln`,
-      activateDoneToast: model => `Neue Chats verwenden ${model}.`,
-      downloadFailed: model => `Download von ${model} fehlgeschlagen`,
-      pillFitsGpu: 'Passt auf Ihre GPU',
-      pillUsesRam: 'Verwendet Arbeitsspeicher',
-      pillTooBig: 'Zu groß für diesen Rechner',
-      browseTitle: 'Weitere Modelle finden',
-      browseHint:
-        'Durchsuchen Sie ganz Hugging Face. Hier heruntergeladene Modelle werden automatisch an Ihren Rechner angepasst, aber nicht von uns getestet.',
-      browsePlaceholder: 'Modelle nach Name oder Autor suchen…',
-      browseSearching: 'Hugging Face wird durchsucht',
-      browseListing: 'Modelldateien werden gelesen',
-      browseShowFiles: 'Dateien anzeigen',
-      browseRefresh: 'Aktualisieren',
-      browseDownloads: 'Downloads',
-      browseLikes: 'Likes',
-      browseGated: 'erfordert Hugging-Face-Anmeldung',
-      browseNoGguf: 'Keine kompatiblen Modelldateien gefunden.',
-      browseFitUnknown: 'Passform unbekannt',
-      browseAlreadyDownloaded: 'Bereits heruntergeladen.',
-      addedByYou: 'Von Ihnen hinzugefügt',
-      browseDownloadStarted: '{name} wird heruntergeladen',
-      browseDownloadAria: '{name} herunterladen',
-      sideloadButton: 'Modelldatei hinzufügen',
-      sideloadTitle: 'Eine GGUF-Modelldatei wählen',
-      sideloadDone: '{name} hinzugefügt.',
-      sideloadAlreadyPresent: 'Bereits in Ihrer Bibliothek.',
-      pillFullContext: max => `Voller ${max}-Kontext`,
-      pillFullContextTip: 'Läuft von Anfang an mit dem kompletten Kontextfenster des Modells',
-      pillUpTo: max => `Bis zu ${max} Kontext`,
-      pillGrowsTip: 'Wächst automatisch, wenn Ihr Gespräch mehr Platz braucht',
-      pillVision: 'Sieht Bilder',
-      deleteAction: 'Modell löschen',
-      deleteConfirm: model => `${model} von der Festplatte löschen?`,
-      deleted: model => `${model} gelöscht.`,
-      deleteFailed: 'Löschen fehlgeschlagen'
-    },
+    localModels: deLocalModels,
     billing: {
       perMonth: (amount: string) => `${amount}/Monat`,
       creditsPerMonth: (amount: string) => `${amount} Credits/Monat`,
@@ -2911,7 +2644,7 @@ export const deOverrides = {
         save: 'Einstellungen speichern',
         saved: (name: string) => `Einstellungen von ${name} gespeichert.`,
         saveFailed: (name: string) => `Einstellungen von ${name} konnten nicht gespeichert werden`,
-        optional: '(optional)',
+        required: 'Erforderlich',
         secretSet: '•••••••• (gesetzt)',
         secretStoredAs: (env: string) =>
           `Wird in der .env des Profils als ${env} gespeichert, nie in config.yaml; leer lassen, um den aktuellen Wert zu behalten.`
@@ -4025,87 +3758,7 @@ export const deOverrides = {
       guide: 'Wiederherstellungsanleitung'
     },
     noFilterMatches: 'Keine Sessions passen zu diesen Filtern',
-    projects: {
-      showAllSessions: 'Alle Sessions anzeigen',
-      sectionLabel: 'Projekte',
-      home: 'Start',
-      autoDiscovered: 'Automatisch erkannt',
-      newButton: 'Neues Projekt',
-      createTitle: 'Neues Projekt',
-      createDesc: 'Geben Sie dem Workspace einen Namen und fügen Sie einen oder mehrere Ordner hinzu.',
-      renameTitle: 'Projekt umbenennen',
-      addFolderTitle: 'Ordner hinzufügen',
-      namePlaceholder: 'z. B. Skunkworks',
-      foldersLabel: 'Ordner',
-      ideaLabel: 'Idee',
-      ideaPlaceholder: 'Worum geht es in diesem Projekt? (gespeichert in IDEA.md)',
-      ideaGenerate: 'Idee generieren',
-      ideaGenerating: 'Wird generiert…',
-      ideaShuffle: 'Vorlagen mischen',
-      noFolders: 'Noch keine Ordner hinzugefügt.',
-      addFolder: 'Ordner hinzufügen',
-      primaryBadge: 'primär',
-      removeFolder: 'Entfernen',
-      create: 'Erstellen',
-      menu: 'Aktionen',
-      menuRename: 'Umbenennen…',
-      menuAppearance: 'Aussehen',
-      noColor: 'Keine Farbe',
-      menuAddFolder: 'Ordner hinzufügen',
-      menuSetActive: 'Als aktiv festlegen',
-      menuDelete: 'Löschen',
-      moveToProject: 'In Projekt verschieben',
-      movedTo: name => `In ${name} verschoben`,
-      moveFailed: 'Session konnte nicht verschoben werden',
-      moveNoFolder: 'Dieses Projekt hat keinen Ordner, in den verschoben werden kann',
-      moveNoProjects: 'Keine anderen Projekte',
-      reveal: 'Im Ordner anzeigen',
-      copyPath: 'Pfad kopieren',
-      removeFromSidebar: 'Aus der Sidebar ausblenden',
-      createdInPreviousContext:
-        'Das Projekt wurde auf der vorherigen Verbindung oder im vorherigen Profil erstellt. Wechsle zurück; IDEA.md wurde nicht geschrieben.',
-      createFailed: 'Projekt konnte nicht erstellt werden',
-      staleBackend:
-        'Aktualisieren Sie das Hermes-Backend, um Projekte zu erstellen – Ihr Backend ist älter als diese Desktop-App (Einstellungen → Updates → Backend).',
-      deleteConfirm:
-        'Das entfernt das gespeicherte Projekt aus Hermes. Dateien, Git-Repos und Worktrees bleiben unberührt.',
-      startWork: 'Neuer Worktree',
-      newWorktreeTitle: 'Neuer Worktree',
-      newWorktreeDesc: 'Benennen Sie den Branch für diesen Worktree.',
-      branchPlaceholder: 'z. B. my-feature',
-      branchOff: () => ({ after: '', before: 'abzweigen von ' }),
-      baseBranchPlaceholder: 'Branches durchsuchen…',
-      baseBranchNone: 'Keine Branches gefunden',
-      startWorkFailed: 'Worktree konnte nicht erstellt werden',
-      worktreeStaleBackend:
-        'Aktualisieren Sie das Hermes-Backend, um Worktrees über diese Remote-Verbindung zu erstellen – es ist älter als die Git-Worktree-API.',
-      worktreeProjectLabel: 'Projekt',
-      worktreeProjectPlaceholder: 'Projekte durchsuchen…',
-      worktreeProjectNone: 'Keine Projekte mit Ordner',
-      convertBranch: 'Einen Branch konvertieren…',
-      convertBranchTitle: 'Einen Branch konvertieren',
-      convertBranchDesc: 'Ausgecheckte Branches öffnen oder einen Worktree für einen freien Branch erstellen.',
-      convertBranchPlaceholder: 'Branches durchsuchen…',
-      convertBranchInstead: 'Einen bestehenden Branch konvertieren',
-      branchOpenExisting: 'öffnen',
-      branchSwitchHome: 'Start wechseln',
-      branchCreateWorktree: 'neuer Worktree',
-      branchTrackRemote: 'Remote verfolgen',
-      branchesLoading: 'Branches werden geladen…',
-      noBranches: 'Keine Branches gefunden',
-      removeWorktree: 'Worktree entfernen',
-      removeWorktreeFailed: 'Worktree konnte nicht entfernt werden (nicht committete Änderungen?)',
-      removeWorktreeConfirm:
-        'Aus Git entfernen (löscht das Worktree-Verzeichnis; der Branch bleibt), oder einfach die Lane aus der Sidebar ausblenden und den Worktree auf der Festplatte belassen.',
-      removeWorktreeDirty:
-        'Dieser Worktree hat nicht committete Änderungen. Kraftvoll entfernen (verwirft diese Änderungen), oder einfach die Lane ausblenden und ihn auf der Festplatte behalten.',
-      forceRemove: 'Kraftvoll entfernen',
-      enter: label => `${label} öffnen`,
-      reorder: label => `${label} neu anordnen`,
-      toggle: (label, open) => `${open ? 'Anzeigen' : 'Ausblenden'} ${label} Sessions`,
-      showAllCount: (count: number) => `Alle ${count} Sessions anzeigen`,
-      back: 'Alle Projekte'
-    },
+    projects: deProjects,
     newSessionIn: label => `Neue Session in ${label}`,
     showMoreIn: (count, label) => `Noch ${count} mehr in ${label} anzeigen`,
     loading: 'Wird geladen…',
@@ -5049,22 +4702,7 @@ export const deOverrides = {
     windowControls: 'Fenster-Bedienelemente',
     paneControls: 'Panele-Bedienelemente',
     appControls: 'App-Bedienelemente',
-    modelMenu: {
-      search: 'Modelle durchsuchen',
-      noModels: 'Keine Modelle gefunden',
-      editModels: 'Modelle bearbeiten…',
-      followDefault: 'Standard aus den Einstellungen verwenden',
-      refreshModels: 'Modelle aktualisieren',
-      favorites: 'Favoriten',
-      addFavorite: 'Zu Favoriten hinzufügen',
-      removeFavorite: 'Aus Favoriten entfernen',
-      favoriteShortcut: '⇧ Klick',
-      fast: 'Schnell',
-      free: 'kostenlos',
-      cacheRead: 'Cache-Lesung',
-      priceTitle: (input: string, output: string, cache: string) =>
-        `Eingabe ${input}/Mtok · Ausgabe ${output}/Mtok` + (cache ? ` · Cache-Lesung ${cache}/Mtok` : '')
-    },
+    modelMenu: deModelMenu,
     modelOptions: {
       noOptions: 'Keine Optionen für dieses Modell',
       options: 'Optionen',
@@ -6027,9 +5665,6 @@ export const deOverrides = {
     sessionUnavailable: 'Session nicht verfügbar',
     createSessionFailed: 'Neue Session konnte nicht erstellt werden',
     promptFailed: 'Prompt fehlgeschlagen',
-    staleSessionTitle: 'Chat veraltet',
-    staleSessionBody:
-      'Dieses Fenster war hinter einer anderen Ansicht desselben Chats. Die neuesten Nachrichten wurden geladen. Senden Sie erneut, wenn Sie noch möchten.',
     providerCredentialRequired:
       'Fügen Sie Anmeldedaten für einen Anbieter hinzu, bevor Sie Ihre erste Nachricht senden.',
     emptySlashCommand: 'leerer Slash-Befehl',

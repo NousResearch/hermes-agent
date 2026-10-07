@@ -14,6 +14,7 @@ import {
   useState
 } from 'react'
 
+import { ProviderStatusChip } from '@/components/provider-status-chip'
 import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -37,6 +38,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
@@ -791,6 +793,7 @@ export function ModelCatalogMenu({
                     open={!collapsed}
                     size="0.625rem"
                   />
+                  <ProviderStatusChip className="ml-auto mr-0.5" provider={group.provider} />
                 </DropdownMenuItem>
                 {!collapsed &&
                   group.families.map(family => (
@@ -1008,6 +1011,7 @@ function ModelFamilyRow({
   const { name, tag } = modelDisplayParts(family.id)
   const decoration = useModelMenuRowDecoration({ label: name, model: family.id, provider: provider.slug })
   const caps = provider.capabilities?.[family.id]
+  const limit = familyLimit(provider, family, isCurrent)
 
   // Live per-model $/Mtok pricing (Nous Portal and other providers that ship
   // it). A `-fast` sibling shares the base id's price: the collapsed row
@@ -1118,7 +1122,7 @@ function ModelFamilyRow({
             <Codicon name={favorite ? 'star-full' : 'star-empty'} size="0.75rem" />
           </button>
         </Tip>
-        <span className="flex min-w-0 flex-1 items-center gap-1.5">
+        <span className={cn('flex min-w-0 flex-1 items-center gap-1.5', limit.tone)}>
           {decoration.icon !== undefined ? <ModelMenuRowIcon icon={decoration.icon} /> : null}
           <span className="min-w-0 truncate">
             <HighlightMatches foldSeparators query={search} text={name} />
@@ -1130,6 +1134,7 @@ function ModelFamilyRow({
             </Badge>
           ) : null}
         </span>
+        <ModelResetBadge time={limit.reset} />
         {loadProgress ? (
           <span className="flex shrink-0 items-center gap-1.5" title={copyPicker.loadingIntoMemory}>
             <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
@@ -1184,7 +1189,7 @@ const LOCAL_PROVIDER_SLUG = 'llamacpp'
 
 // Heading for every row group in the list (Favorites, providers, downloads).
 const catalogGroupLabel =
-  'px-2 pb-0.5 pt-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)'
+  'px-2 pb-0.5 pt-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-secondary)'
 
 // A provider inside a mixed Favorites section: the group heading's ink, set
 // in normal case and indented to the model names it labels, so it reads as
@@ -1200,6 +1205,35 @@ function ModelChip({ children, setting = false }: { children: ReactNode; setting
       {children}
     </Badge>
   )
+}
+
+/** A limited provider stays pickable: the account-wide case dims every row
+ *  (the group heading says why), the per-model case dims and tags only the
+ *  rows cooling down, so a sibling reads as the way to keep working. The
+ *  current row stays bright so the selection still reads. */
+function familyLimit(
+  provider: ModelOptionProvider,
+  family: ModelFamily,
+  isCurrent: boolean
+): { reset: null | string; tone?: string } {
+  const ms = modelResetMs(provider, family.id) ?? (family.fastId ? modelResetMs(provider, family.fastId) : null)
+  const reset = ms === null ? null : formatReset(ms)
+  const dim = !isCurrent && (reset !== null || accountResetMs(provider) !== null)
+
+  return { reset, tone: dim ? 'text-(--ui-text-tertiary)' : undefined }
+}
+
+function ModelResetBadge({ time }: { time: null | string }): null | ReactElement {
+  const { t } = useI18n()
+  const copy = t.shell.modelMenu
+
+  return time ? (
+    <Tip label={copy.modelLimitedTip(time)}>
+      <Badge className="shrink-0 tabular-nums" size="xs" variant="warn">
+        {copy.modelResets(time)}
+      </Badge>
+    </Tip>
+  ) : null
 }
 
 // A model still downloading: visible so the user knows it's coming (and

@@ -8,6 +8,17 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
+import type { AppTourTranslations, HandoffTourTranslations } from './types_app_tour'
+import type { AuxTaskCopyMap } from './types_aux_tasks'
+import type { BillingTranslations } from './types_billing'
+import type { BootTranslations } from './types_boot'
+import type { CatalogInstallTranslations } from './types_catalog_install'
+import type { ModelMenuTranslations } from './types_model_menu'
+import type { NoticeTranslations } from './types_notices'
+import type { SidebarProjectsTranslations } from './types_projects'
+import type { SharedMetricsTranslations } from './types_shared_metrics'
+import type { UninstallSectionTranslations } from './types_uninstall_section'
+
 /** The locales compiled into the app (`TRANSLATIONS`). */
 export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
 
@@ -60,42 +71,10 @@ interface ModeOptionCopy {
   description: string
 }
 
-interface AuxTaskCopy {
-  label: string
-  hint: string
-}
-
-export interface Translations {
+export interface Translations extends NoticeTranslations {
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
-  sharedMetrics: {
-    consentTitle: string
-    consentBody: string
-    whatIsCollected: string
-    collectedIntro: string
-    collectedActivity: string
-    collectedModels: string
-    collectedNames: string
-    collectedMilestones: string
-    collectedReliability: string
-    collectedUsage: string
-    collectedMachine: string
-    installId: string
-    consentWindow: string
-    readDocs: string
-    share: string
-    local: string
-    off: string
-    changeLater: string
-    saveFailed: string
-    collectLabel: string
-    collectDesc: string
-    sendLabel: string
-    sendDesc: string
-    unavailable: string
-    stripBody: string
-    stripChoices: { share: string; local: string; off: string }
-    stripDetails: string
-  }
+  sharedMetrics: SharedMetricsTranslations
+  appTour: AppTourTranslations
   externalOpenFailed: {
     title: string
     message: string
@@ -460,76 +439,7 @@ export interface Translations {
     revealUnavailable: string
   }
 
-  boot: {
-    ready: string
-    desktopBootFailedWithMessage: (message: string) => string
-    steps: {
-      connectingGateway: string
-      loadingSettings: string
-      loadingSessions: string
-      retryingRemoteBackend: string
-      startingDesktopConnection: string
-      startingHermesDesktop: string
-    }
-    errors: {
-      backgroundExited: string
-      backgroundExitedDuringStartup: string
-      backendStopped: string
-      restartHermes: string
-      openLogs: string
-      desktopBootFailed: string
-      gatewayConnectionLost: string
-      gatewayConnectionLostDetail: string
-      reconnectNow: string
-      connectionSettings: string
-      gatewaySignInRequired: string
-      gatewaySignInRequiredDetail: string
-      signInAgain: string
-      ipcBridgeUnavailable: string
-    }
-    causes: {
-      exitedEarly: string
-      timedOut: string
-      permission: string
-      diskFull: string
-      portInUse: string
-      installMissing: string
-    }
-    failure: {
-      title: string
-      description: string
-      details: string
-      remoteTitle: string
-      remoteDescription: string
-      retry: string
-      repairInstall: string
-      useLocalGateway: string
-      gatewaySettings: string
-      back: string
-      openLogs: string
-      repairHint: string
-      bundledReinstallHint: string
-      reinstallApp: string
-      remoteSignInHint: (signInLabel: string) => string
-      signOutAndSignIn: string
-      remoteFailureHint: string
-      cloudDownTitle: string
-      cloudDownDescription: string
-      cloudDownHint: string
-      cloudDownCheckPortal: string
-      cloudDownDiscord: string
-      hideRecentLogs: string
-      showRecentLogs: string
-      signedInTitle: string
-      signedInMessage: string
-      signInIncompleteTitle: string
-      signInIncompleteMessage: string
-      signInFailed: string
-      signInToRemoteGateway: string
-      signInWithProvider: (provider: string) => string
-      identityProvider: string
-    }
-  }
+  boot: BootTranslations
 
   notifications: {
     sharedProfileWarning: string
@@ -631,18 +541,7 @@ export interface Translations {
     }
   }
 
-  remoteDisplayBanner: {
-    message: (reason: string) => string
-  }
-
-  billingBlock: {
-    titleNous: string
-    titleProvider: (provider: string) => string
-    fallbackMessage: string
-    openBilling: string
-    addCredits: string
-    dismiss: string
-  }
+  billingBlock: BillingTranslations['billingBlock']
 
   sendDiagnostics: {
     title: string
@@ -725,6 +624,9 @@ export interface Translations {
     resetConfirm: string
     exportFailed: string
     resetFailed: string
+    pluginPages: Record<'agentSettings' | 'blurb' | 'empty' | 'manage' | 'missing', string> & {
+      pageCount: (n: number) => string
+    }
     nav: {
       providers: string
       providerAccounts: string
@@ -743,21 +645,15 @@ export interface Translations {
       billing: string
       notifications: string
       vault: string
+      plugins: string
     }
     plugins: {
       title: string
-      blurb: string
-      count: (n: number) => string
       openFolder: string
       rescan: string
       reveal: string
-      enable: string
-      disable: string
       failed: string
-      empty: string
       kinds: { bundled: string; disk: string; runtime: string }
-      agentHalfMissing: string
-      agentHalfMissingTip: string
       installModal: {
         installFromGit: string
         reviewRepository: string
@@ -1050,23 +946,7 @@ export interface Translations {
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
-    uninstallSection: {
-      dangerZone: string
-      checkingInstalled: string
-      uninstallHermes: string
-      chooseHowMuch: string
-      confirmUninstall: string
-      confirmBody: (what: string) => string
-      appLabel: string
-      couldNotStart: string
-      uninstalling: string
-      yesUninstall: string
-      options: {
-        gui: { title: string; description: string; consequence: string }
-        lite: { title: string; description: string; consequence: string }
-        full: { title: string; description: string; consequence: string }
-      }
-    }
+    uninstallSection: UninstallSectionTranslations
     poolLimits: {
       warmBotBackendsAria: string
       warmBotBackendsTitle: string
@@ -1421,6 +1301,7 @@ export interface Translations {
       sshErrPlatform: string
       sshErrTimeout: string
       sshErrUpdateRequired: string
+      sshErrInteractiveAuth: string
       sshErrUnknown: string
     }
     keys: {
@@ -1520,6 +1401,8 @@ export interface Translations {
       change: string
       autoUseMain: string
       inheritMainEffort: string
+      inheritsFrom: (task: string) => string
+      followTask: (task: string) => string
       providerDefault: string
       fallbackAdd: string
       fallbackEmpty: string
@@ -1530,7 +1413,7 @@ export interface Translations {
       moaAggregator: string
       moaAggregatorBilled: string
       moaReferenceHint: string
-      tasks: Record<string, AuxTaskCopy>
+      tasks: AuxTaskCopyMap
     }
     localModels: {
       connectionChanged: string
@@ -2164,7 +2047,7 @@ export interface Translations {
         save: string
         saved: (name: string) => string
         saveFailed: (name: string) => string
-        optional: string
+        required: string
         secretSet: string
         secretStoredAs: (env: string) => string
       }
@@ -2819,6 +2702,7 @@ export interface Translations {
     next: string
     overdueSince: string
     noRuns: string
+    queuedRun: string
     manage: string
     showRuns: string
     hideRuns: string
@@ -3021,81 +2905,7 @@ export interface Translations {
       guide: string
     }
     noFilterMatches: string
-    projects: {
-      showAllSessions: string
-      sectionLabel: string
-      home: string
-      autoDiscovered: string
-      newButton: string
-      createTitle: string
-      createDesc: string
-      renameTitle: string
-      addFolderTitle: string
-      namePlaceholder: string
-      foldersLabel: string
-      ideaLabel: string
-      ideaPlaceholder: string
-      ideaGenerate: string
-      ideaGenerating: string
-      ideaShuffle: string
-      noFolders: string
-      addFolder: string
-      primaryBadge: string
-      removeFolder: string
-      create: string
-      menu: string
-      menuRename: string
-      menuAppearance: string
-      noColor: string
-      menuAddFolder: string
-      menuSetActive: string
-      menuDelete: string
-      moveToProject: string
-      movedTo: (name: string) => string
-      moveFailed: string
-      moveNoFolder: string
-      moveNoProjects: string
-      reveal: string
-      copyPath: string
-      removeFromSidebar: string
-      createdInPreviousContext: string
-      createFailed: string
-      staleBackend: string
-      deleteConfirm: string
-      startWork: string
-      newWorktreeTitle: string
-      newWorktreeDesc: string
-      branchPlaceholder: string
-      branchOff: () => { after: string; before: string }
-      baseBranchPlaceholder: string
-      baseBranchNone: string
-      startWorkFailed: string
-      worktreeStaleBackend: string
-      worktreeProjectLabel: string
-      worktreeProjectPlaceholder: string
-      worktreeProjectNone: string
-      convertBranch: string
-      convertBranchTitle: string
-      convertBranchDesc: string
-      convertBranchPlaceholder: string
-      convertBranchInstead: string
-      branchOpenExisting: string
-      branchSwitchHome: string
-      branchCreateWorktree: string
-      branchTrackRemote: string
-      branchesLoading: string
-      noBranches: string
-      removeWorktree: string
-      removeWorktreeFailed: string
-      removeWorktreeConfirm: string
-      removeWorktreeDirty: string
-      forceRemove: string
-      enter: (label: string) => string
-      reorder: (label: string) => string
-      toggle: (label: string, open: boolean) => string
-      showAllCount: (count: number) => string
-      back: string
-    }
+    projects: SidebarProjectsTranslations
     newSessionIn: (label: string) => string
     showMoreIn: (count: number, label: string) => string
     loading: string
@@ -3550,9 +3360,9 @@ export interface Translations {
       notAvailable: string
       failed: string
       noReturn: string
+      owed: (steps: string) => string
     }
-    /** Update-status overlay + version-details (mechanism-aware update UI):
-     * the overlay reads these off t.updates directly. */
+    /** Update-status overlay + version-details (mechanism-aware update UI), read off t.updates directly. */
     appName: string
     version: (value: string) => string
     versionUnavailable: string
@@ -3599,19 +3409,12 @@ export interface Translations {
     versionDetailsUncommittedChanges: string
   }
 
+  handoffTour: HandoffTourTranslations
   /** The guided first run's pre-written opening line — banked, not generated,
    *  so the first paint costs no model time. Translated per locale because the
    *  model is told to speak the user's language from its first real turn, and
    *  an English opener above a Japanese reply reads as two different agents.
    *  `nameSuggestion` offers the OS account name as a default. */
-  handoffTour: {
-    profileTitle: string
-    profileText: string
-    sessionsTitle: string
-    sessionsText: string
-    stayTitle: string
-    stayText: string
-  }
   guidedGreeting: {
     line: string
     nameSuggestion: (name: string) => string
@@ -3859,21 +3662,7 @@ export interface Translations {
     windowControls: string
     paneControls: string
     appControls: string
-    modelMenu: {
-      search: string
-      noModels: string
-      editModels: string
-      followDefault: string
-      refreshModels: string
-      favorites: string
-      addFavorite: string
-      removeFavorite: string
-      favoriteShortcut: string
-      fast: string
-      free: string
-      cacheRead: string
-      priceTitle: (input: string, output: string, cache: string) => string
-    }
+    modelMenu: ModelMenuTranslations
     modelOptions: {
       noOptions: string
       options: string
@@ -3944,6 +3733,9 @@ export interface Translations {
       showTerminal: string
       hideTerminal: string
       gateway: string
+      backend: string
+      messagingStopped: string
+      messagingDegraded: (name: string) => string
       gatewayReady: string
       gatewayNeedsSetup: string
       gatewayUnavailable: string
@@ -4412,29 +4204,7 @@ export interface Translations {
       questionProgress: (answered: number, total: number) => string
       notDelivered: string
     }
-    catalogInstall: {
-      preparing: string
-      install: string
-      advanced: string
-      skip: string
-      installing: string
-      installed: string
-      notInstalled: string
-      failed: string
-      showNames: string
-      hideNames: string
-      skill: (name: string) => string
-      kind: { plugin: string; skill: string }
-      tier: { official: string; community: string }
-      targetProfile: (profile: string) => string
-      sendFailed: string
-      commitLabel: string
-      subdirLabel: string
-      securityHeading: string
-      scan: { passed: string; warnings: string; failed: string }
-      requirementsLabel: string
-      credentialsHeading: string
-    }
+    catalogInstall: CatalogInstallTranslations
     mcpSetup: {
       installTitle: string
       enableTitle: string
@@ -4562,8 +4332,6 @@ export interface Translations {
     sessionUnavailable: string
     createSessionFailed: string
     promptFailed: string
-    staleSessionTitle: string
-    staleSessionBody: string
     providerCredentialRequired: string
     emptySlashCommand: string
     slashCommandIgnoredTitle: string

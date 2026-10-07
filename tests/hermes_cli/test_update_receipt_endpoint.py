@@ -32,6 +32,9 @@ def client():
     return c
 
 
+_ACTION_ID = "d" * 32
+
+
 def _write_receipt(tmp_path: Path, monkeypatch, *, outcome="success") -> dict:
     receipt = {
         "schema": 1,
@@ -40,6 +43,7 @@ def _write_receipt(tmp_path: Path, monkeypatch, *, outcome="success") -> dict:
         "argv": ["hermes", "update"],
         "pid": 12345,
         "outcome": outcome,
+        "action_id": _ACTION_ID,
         "pre_update": {"sha": "a" * 40, "version": "0.20.4"},
         "post_update": {"sha": "b" * 40, "version": "0.20.5"},
         "steps": [{"name": "pre_update_backup", "ok": True, "detail": "", "at": ""}],
@@ -91,6 +95,9 @@ class TestUpdateStatusReadsReceipt:
     def _clear_registries(self, monkeypatch, tmp_path):
         monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path / "actions")
         (tmp_path / "actions").mkdir(exist_ok=True)
+        # The dashboard's own log names the action it spawned; the receipt must name the same one.
+        (tmp_path / "actions" / "hermes-update.log").write_text(
+            f"=== hermes-update started 2026-08-23 07:00:00 {_ACTION_ID} ===\n", encoding="utf-8")
         monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
         monkeypatch.setattr(_web_server_gateway, "_ACTION_RESULTS", {})
         monkeypatch.setattr(_web_server_gateway, "_ACTION_COMMANDS", {})

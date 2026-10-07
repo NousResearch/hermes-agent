@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-10-02T16:15:09Z",
+  "updated_at": "2026-10-06T20:59:58Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -275,6 +275,10 @@
         },
         {
           "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+          "description": "free"
+        },
+        {
+          "id": "inclusionai/ling-3.0-flash:free",
           "description": "free"
         },
         {

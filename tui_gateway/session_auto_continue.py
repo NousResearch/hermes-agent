@@ -269,6 +269,8 @@ def _session_compression_in_flight(session: dict) -> bool:
     ``_session_has_compression_in_flight``, #56391); this is the local-RPC twin. Both
     blocking reads run off the event loop so a large state.db never freezes the dispatcher.
     """
+    if session.get("_manual_compress_active"):  # held before/after the DB lock row exists (#133504)
+        return True
     agent = session.get("agent")
     sid = str(getattr(agent, "session_id", "") or "") or str(session.get("session_key") or "")
     if not sid:

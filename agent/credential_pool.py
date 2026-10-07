@@ -22,13 +22,14 @@ from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret, get_secret_str
 from agent.retry_utils import reset_delay_from_message
 from hermes_cli.auth_plugin_providers import plugin_refresh_hook
-from agent.credential_pool_plugin import apply_plugin_refresh_result, recover_failed_plugin_refresh
+from agent.credential_pool_plugin import apply_plugin_refresh_result, plugin_row_is_expiring, recover_failed_plugin_refresh
 from agent.credential_persistence import (
     fingerprint_secret_value,
     is_borrowed_credential_source,
     sanitize_borrowed_credential_payload,
 )
 import hermes_cli.auth as auth_mod
+from hermes_cli.auth_oauth_grants import owned_profile_reads_root_state
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     PROVIDER_REGISTRY,
@@ -1232,8 +1233,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         normalized_error = _normalize_error_context(error_context)
         # Permanent OAuth failures become STATUS_DEAD, not STATUS_EXHAUSTED:
         # otherwise a revoked credential re-enters rotation every hour and
-        # fails immediately until the user removes it (#32849).
-        terminal = self._is_terminal_auth_failure(status_code, normalized_error)
+        # fails immediately until the user removes it (#32849); a row whose
+        # refresh grant just went DEAD stays DEAD on the 401 that follows.
+        terminal = entry.last_status == STATUS_DEAD or self._is_terminal_auth_failure(status_code, normalized_error)
         # Carry the classifier's verdict so the cooldown is sized by what
         # actually failed (a billing 403 must not get the sole-credential
         # transient cooldown); absent a classification, clear a stale one.
@@ -1983,10 +1985,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:
         if entry.auth_type != AUTH_TYPE_OAUTH:
             return False
-        if self.provider == "anthropic":
-            if entry.expires_at_ms is None:
-                return False
-            return int(entry.expires_at_ms) <= int(time.time() * 1000) + 120_000
+        if self.provider == "anthropic" or plugin_refresh_hook(self.provider) is not None:
+            return plugin_row_is_expiring(entry)  # expiry-stamped rows: rotate 2 min ahead of expires_at_ms
         if self.provider == "openai-codex":
             return _codex_access_token_is_expiring(entry.access_token, CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)
         if self.provider == "xai-oauth":
@@ -2640,14 +2640,8 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
 
 def _seed_nous_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
     state, source_path = _load_provider_state_with_source(auth_store, "nous")
-    global_root = _global_auth_file_path()
-    if (
-        source_path is not None and global_root is not None and _same_path(source_path, global_root)
-        and _store_owns_pool_provider(auth_store, "nous")
-    ):
-        # A profile that owns local nous rows (e.g. an agent_key-only row surviving a
-        # fork strip/heal) must not re-seed root's single-use refresh token into its
-        # own pool from the global-root fallback: that re-creates the fork.
+    if owned_profile_reads_root_state(auth_store, "nous", source_path):
+        # e.g. an agent_key-only row surviving a fork strip/heal
         return
     has_runtime_material = bool(
         isinstance(state, dict)
@@ -2809,7 +2803,9 @@ def _seed_tokens_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
     Codex CLI / VS Code causes refresh_token_reused races. Adoption is an
     explicit one-time prompt via `hermes auth openai-codex`.
     """
-    state = _load_provider_state(auth_store, seed.provider)
+    state, source_path = _load_provider_state_with_source(auth_store, seed.provider)
+    if owned_profile_reads_root_state(auth_store, seed.provider, source_path):
+        return
     tokens = state.get("tokens") if isinstance(state, dict) else None
     if not (isinstance(tokens, dict) and tokens.get("access_token")):
         return

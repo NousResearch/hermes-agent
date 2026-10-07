@@ -1106,7 +1106,7 @@ class CLIModalMixin:
                           allow_session: bool = True,
                           smart_denied: bool = False) -> list[str]:
         """Smart-DENY overrides and re-ask-every-time gates (allow_session=False) show only
-        once/deny; ``allow_permanent=False`` for another reason (e.g. tirith) hides only 'always'."""
+        once/deny; ``allow_permanent=False`` for another reason hides only 'always'."""
         if smart_denied or not allow_session:
             choices = ["once", "deny"]
         elif allow_permanent:

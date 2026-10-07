@@ -136,6 +136,31 @@ def test_other_public_api_paths_are_public_under_gate(gated_app, path):
         )
 
 
+def test_plugin_assets_pass_gate_while_api_stays_gated(gated_app):
+    """Plugin JS/CSS bundles are mounted at ``/dashboard-plugins/*`` and loaded
+    by the SPA via ``<script src>`` / ``<link href>`` tags, which cannot carry
+    session cookies — so every plugin asset request must bypass the OAuth gate
+    and reach ``serve_plugin_asset`` (which enforces its own suffix allowlist
+    and traversal guard). Meanwhile a non-public ``/api/*`` request must still
+    401, proving the gate itself is intact.
+    """
+    r = gated_app.get("/dashboard-plugins/some-plugin/index.js", follow_redirects=False)
+    assert r.status_code != 401, (
+        "/dashboard-plugins/ returned 401 under the OAuth gate — plugin "
+        "assets are loaded by script/link tags and must be public"
+    )
+    if r.status_code == 302:
+        location = r.headers.get("location", "")
+        assert "/login" not in location, (
+            f"/dashboard-plugins/ redirected to {location} — plugin assets "
+            "must reach serve_plugin_asset, not the login page"
+        )
+    r2 = gated_app.get("/api/auth/me", follow_redirects=False)
+    assert r2.status_code == 401, (
+        "/api/auth/me should still be gated"
+    )
+
+
 # ---------------------------------------------------------------------------
 # OAuth round trip
 # ---------------------------------------------------------------------------

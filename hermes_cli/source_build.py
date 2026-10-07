@@ -103,16 +103,25 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False) ->
     return ensure("npm", base_env=env, explicit=explicit).env
 
 
-def run_source_script(project_root: Path, script: str, *args: str, env: dict, label: str) -> None:
+def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
+    """``pm.progress.run_contained`` for a build command that writes the checkout (node, npm):
+    it and everything it starts stay in the update's custody (POSIX: the checkout lock fd, the
+    caller's process group, and every descendant killed when it exits; Windows: the owner's
+    kill-on-close job), so the checkout is never handed to a contender while one of them still
+    writes. Outside an update it is ``run_contained`` as is."""
     from pm.progress import run_contained
+    from hermes_cli.update_custody import contained_command
 
+    with contained_command(command, root=project_root) as (argv, custody):
+        return run_contained(argv, label, **kwargs, **custody)
+
+
+def run_source_script(project_root: Path, script: str, *args: str, env: dict, label: str) -> None:
+    command = [shutil.which("node", path=env["PATH"]), str(project_root / script), *args]
     # npm's deprecation warnings are the loudest lines and never actionable
     # here; they still land in the failure tail.
-    run_contained(
-        [shutil.which("node", path=env["PATH"]), str(project_root / script), *args],
-        label, hide=lambda line: line.lower().startswith("npm warn"), indent="  ",
-        cwd=project_root, env=env,
-    )
+    run_in_custody(project_root, command, label, hide=lambda line: line.lower().startswith("npm warn"),
+                   indent="  ", cwd=project_root, env=env)
 
 
 def prepare_source_dependencies(project_root: Path, workspaces: tuple[str, ...], *, env: dict,
@@ -156,8 +165,26 @@ def source_frontends(project_root: Path) -> tuple[str, ...]:
     return tuple(name for name in ("ui-tui", "web") if (project_root / name / "package.json").is_file())
 
 
+class ProductBuildError(RuntimeError):
+    """One or more products failed; every independent product was still attempted."""
+
+    def __init__(self, failures: list[tuple[str, BaseException]]):
+        self.failures = failures
+        super().__init__("; ".join(f"{name}: {_failure_text(exc)}" for name, exc in failures))
+
+
+def _failure_text(exc: BaseException) -> str:
+    if isinstance(exc, subprocess.CalledProcessError):
+        return f"{' '.join(map(str, exc.cmd)) if isinstance(exc.cmd, (list, tuple)) else exc.cmd} exited {exc.returncode}"
+    return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+
+
 def build_update_products(project_root: Path, *, desktop: bool) -> None:
-    """Prepare the selected union once; a failed product aborts the update."""
+    """Prepare the selected union once, attempting every independent product.
+
+    A failed product never skips the next one (a broken web build must not leave the TUI or the
+    desktop app stale); the failures are raised together at the end as ``ProductBuildError``.
+    """
     # Both current updates and historical takeover reach this in a fresh target
     # interpreter, never in the updater's pre-sync import graph.
     from hermes_cli.main_install_repair import _install_configured_features_missing_deps
@@ -168,57 +195,42 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     # any frontend compile so extensionless imports cannot shadow source (#132431).
     clean_stale_typescript_sibling_js(project_root)
     frontends = source_frontends(project_root)
-    if not frontends:
-        return
-    env = source_build_env(explicit=True)
-    workspaces = frontends + (("apps/desktop",) if desktop else ())
-    publish_stage("Updating Node dependencies")
-    prepare_source_dependencies(project_root, workspaces, env=env, explicit=True)
-    # An update that changed no TUI/web input reuses the receipted output, as the
-    # launch path already does; recompiling it produces the same bytes. Desktop
-    # additionally needs the packaged app to name HEAD (its baked stamp carries the
-    # commit), so it is reused only when HEAD did not move: "Already up to date",
-    # a retried tail, a takeover re-entry.
-    if "ui-tui" in frontends:
-        if source_product_current(project_root, "tui", project_root / "ui-tui/dist"):
-            print("  ✓ TUI is up to date")
-        else:
-            publish_stage("Building the TUI")
-            build_source_tui(project_root, env=env)
-    if "web" in frontends:
-        if source_product_current(project_root, "web", project_root / "hermes_cli/web_dist"):
-            print("  ✓ Web UI is up to date")
-        else:
-            publish_stage("Building the web UI")
-            build_source_web(project_root, env=env)
-    if desktop:
-        from hermes_cli.main_desktop import (
-            _packaged_desktop_current_for_head, _refresh_installed_desktop_apps, build_prepared_desktop)
+    if frontends:
+        desktop_built = False
+        env: dict = {}
+        workspaces = frontends + (("apps/desktop",) if desktop else ())
+        publish_stage("Updating Node dependencies")
 
-        desktop_dir = project_root / "apps/desktop"
-        if _packaged_desktop_current_for_head(desktop_dir, project_root):
-            print("  ✓ Desktop app is up to date")
-        else:
-            publish_stage("Building the desktop app")
-            # The desktop build mutates checkout-scoped node_modules and
-            # apps/desktop/release; serialize it against a concurrent manual
-            # `hermes desktop` (#93940). The update path waits rather than exits:
-            # the in-flight build it queues behind produces the same fresh tree
-            # this update needs.
-            from hermes_cli.desktop_build_lock import DesktopBuildLock
+        def node_dependencies() -> None:
+            # Acquiring npm is part of this step: its failure must be reported like the install's.
+            env.update(source_build_env(explicit=True))
+            prepare_source_dependencies(project_root, workspaces, env=env, explicit=True)
 
-            build_lock = DesktopBuildLock(project_root)
-            build_lock.acquire(wait=True)
-            try:
-                build_prepared_desktop(
-                    desktop_dir, source_mode=False,
-                    npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root,
-                )
-            finally:
-                build_lock.release()
-        # A current release/ can still sit beside a stale installed copy (an earlier
-        # update rebuilt but never installed); healing must not wait for the next build.
-        _refresh_installed_desktop_apps(desktop_dir)
+        # Every product compiles from these node_modules: without them there is nothing to build.
+        if attempt("Node dependencies", node_dependencies):
+            # An update that changed no TUI/web input reuses the receipted output, as the
+            # launch path already does; recompiling it produces the same bytes. Desktop
+            # additionally needs the packaged app to name HEAD (its baked stamp carries the
+            # commit), so it is reused only when HEAD did not move: "Already up to date",
+            # a retried tail, a takeover re-entry.
+            if "ui-tui" in frontends:
+                if source_product_current(project_root, "tui", project_root / "ui-tui/dist"):
+                    print("  ✓ TUI is up to date")
+                else:
+                    publish_stage("Building the TUI")
+                    attempt("TUI build", lambda: build_source_tui(project_root, env=env))
+            if "web" in frontends:
+                if source_product_current(project_root, "web", project_root / "hermes_cli/web_dist"):
+                    print("  ✓ Web UI is up to date")
+                else:
+                    publish_stage("Building the web UI")
+                    attempt("web UI build", lambda: build_source_web(project_root, env=env))
+            if desktop:
+                desktop_built = attempt("desktop app build", lambda: _build_desktop_product(project_root, env, publish_stage))
+        if desktop and not desktop_built:
+            # One whole line the Desktop hand-off scripts match: the follow-up text is truncated
+            # and names whichever products failed first, so it cannot say if THIS app was rebuilt.
+            print(f"  Desktop app build owed: {failures[-1][0]} failed")
     # A configured memory provider that no longer ships in core is installed from the
     # catalog for every profile home sharing this venv (config, data and tool names
     # unchanged). The update must finish even if the migration blows up.
@@ -226,7 +238,7 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         from hermes_cli.memory_provider_migration import migrate_all_homes
 
         migrate_all_homes()
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- post-commit boundary: printed as ⚠, never fails the committed update; every later update/tail re-runs it
         print(f"  ⚠ Memory provider migration skipped: {exc}")
     # Same for a gateway platform / toolset that left core (Home Assistant): every home that used
     # it gets its catalog plugin (hermes_cli/left_core_migration.py).
@@ -234,8 +246,40 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         from hermes_cli.left_core_migration import migrate_all_homes as migrate_left_core
 
         migrate_left_core()
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- post-commit boundary: printed as ⚠, never fails the committed update; every later update/tail re-runs it
         print(f"  ⚠ Plugin migration skipped: {exc}")
+    if failures:
+        raise ProductBuildError(failures)
+
+
+def _build_desktop_product(project_root: Path, env: dict, publish_stage) -> None:
+    from hermes_cli.main_desktop import (
+        _packaged_desktop_current_for_head, _refresh_installed_desktop_apps, build_prepared_desktop)
+
+    desktop_dir = project_root / "apps/desktop"
+    if _packaged_desktop_current_for_head(desktop_dir, project_root):
+        print("  ✓ Desktop app is up to date")
+    else:
+        publish_stage("Building the desktop app")
+        # The desktop build mutates checkout-scoped node_modules and
+        # apps/desktop/release; serialize it against a concurrent manual
+        # `hermes desktop` (#93940). The update path waits rather than exits:
+        # the in-flight build it queues behind produces the same fresh tree
+        # this update needs.
+        from hermes_cli.desktop_build_lock import DesktopBuildLock
+
+        build_lock = DesktopBuildLock(project_root)
+        build_lock.acquire(wait=True)
+        try:
+            build_prepared_desktop(
+                desktop_dir, source_mode=False,
+                npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root,
+            )
+        finally:
+            build_lock.release()
+    # A current release/ can still sit beside a stale installed copy (an earlier
+    # update rebuilt but never installed); healing must not wait for the next build.
+    _refresh_installed_desktop_apps(desktop_dir)
 
 
 if __name__ == "__main__":

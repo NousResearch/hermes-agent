@@ -300,7 +300,10 @@ def _new_expiry(ttl: Any, expires_at: Any, previous: dict, now: datetime) -> Opt
             return _resolve_expiry(expires_at)
         return None
     if ttl is None or not str(ttl).strip():
-        return _parse_stamp((previous or {}).get("expires_at"))
+        kept = _parse_stamp((previous or {}).get("expires_at"))
+        # A deadline that has already PASSED can never hold: preserving it would arm a
+        # pause that is instantly lifted — a silent no-op re-arm. Drop it and say so.
+        return None if kept is None or kept <= now else kept
     seconds = parse_duration(ttl)
     if not seconds:
         return None  # requested but unusable: engage without a deadman

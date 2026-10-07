@@ -1288,7 +1288,9 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
                                 </Button>
                               )
                             }
-                            description={g.cloudStatusLabel(agent.dashboardGatewayState)}
+                            description={
+                              agent.dashboardGatewayState ? g.cloudStatusLabel(agent.dashboardGatewayState) : undefined
+                            }
                             title={savedAgent(agent)?.label || agent.name}
                           />
                         </div>

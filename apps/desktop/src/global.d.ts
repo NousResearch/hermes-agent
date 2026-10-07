@@ -1366,8 +1366,8 @@ export interface DesktopCloudAgent {
   status: string
   // null until the agent has a provisioned dashboard (show "provisioning…").
   dashboardUrl: string | null
-  // "active" | "degraded" | "down" | "unknown".
-  dashboardGatewayState: string
+  // null when NAS reports "unknown" or nothing usable (show no status line).
+  dashboardGatewayState: 'active' | 'degraded' | 'down' | null
 }
 
 // An org the signed-in user belongs to — for the org picker shown when a

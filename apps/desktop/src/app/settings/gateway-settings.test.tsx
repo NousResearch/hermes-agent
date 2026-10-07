@@ -607,4 +607,46 @@ describe('GatewaySettings', () => {
     expect(await within(hostRow).findByRole('combobox')).toBeTruthy()
     expect(within(hostRow).queryByRole('textbox')).toBeNull()
   })
+
+  // Discovery has already normalized dashboardGatewayState (cloud-discovery.ts):
+  // the renderer only ever sees a known state or null.
+  it.each([
+    [null, null],
+    ['active', 'Status: Active'],
+    ['down', 'Status: Down']
+  ] as const)('renders cloud gateway state %s as %s', async (dashboardGatewayState, expected) => {
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        cloud: {
+          discover: vi.fn().mockResolvedValue({
+            agents: [
+              {
+                dashboardGatewayState,
+                dashboardUrl: 'https://agent.example.com',
+                id: 'agent-1',
+                name: 'Cloud Agent',
+                status: 'active'
+              }
+            ],
+            org: null
+          }),
+          status: vi.fn().mockResolvedValue({ portalBaseUrl: 'https://portal.nousresearch.com', signedIn: true })
+        },
+        getConnectionConfig,
+        saveConnectionConfig
+      }
+    })
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'cloud',
+      remoteUrl: 'https://portal.nousresearch.com'
+    })
+
+    render(<GatewaySettings />)
+
+    // ListRow renders its description as the sibling after the title block.
+    const titleBlock = (await screen.findByText('Cloud Agent')).parentElement!
+    expect(titleBlock.nextElementSibling?.textContent ?? null).toBe(expected)
+  })
 })

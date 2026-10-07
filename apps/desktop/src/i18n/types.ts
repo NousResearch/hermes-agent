@@ -1222,7 +1222,7 @@ export interface Translations extends NoticeTranslations {
       cloudConnectedPill: string
       cloudConnectedTo: (name: string) => string
       cloudAgentProvisioning: string
-      cloudStatusLabel: (status: string) => string
+      cloudStatusLabel: (status: 'active' | 'degraded' | 'down') => string
       remoteUrlTitle: string
       remoteUrlDesc: string
       probing: string

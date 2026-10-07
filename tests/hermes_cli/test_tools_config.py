@@ -617,6 +617,69 @@ def test_vision_picker_warns_when_all_curated_models_text_only():
     assert config["auxiliary"]["vision"]["model"] == "my/custom-vision-model"
 
 
+def test_vision_picker_aggregator_full_slug_uses_real_capabilities():
+    """Verify aggregator full-slug 'lab/model' identifiers resolve through real get_model_capabilities."""
+    import hermes_cli.tools_config as tc
+    from agent.models_dev import get_model_capabilities
+
+    fake_mdev = {
+        "openrouter": {
+            "models": {
+                "anthropic/claude-3-opus": {
+                    "attachment": True,
+                    "tool_call": True,
+                    "reasoning": False,
+                    "limit": {"context": 200000, "output": 4096},
+                },
+                "meta-llama/llama-3-8b-instruct": {
+                    "attachment": False,
+                    "tool_call": True,
+                    "reasoning": False,
+                    "limit": {"context": 8192, "output": 2048},
+                },
+            }
+        }
+    }
+    with patch("agent.models_dev.fetch_models_dev", return_value=fake_mdev):
+        caps_vision = get_model_capabilities("openrouter", "anthropic/claude-3-opus")
+        assert caps_vision is not None
+        assert caps_vision.supports_vision is True
+
+        caps_text = get_model_capabilities("openrouter", "meta-llama/llama-3-8b-instruct")
+        assert caps_text is not None
+        assert caps_text.supports_vision is False
+
+        # End-to-end picker filtering with real get_model_capabilities
+        rows = [
+            {
+                "slug": "openrouter",
+                "name": "OpenRouter",
+                "models": [
+                    "anthropic/claude-3-opus",
+                    "meta-llama/llama-3-8b-instruct",
+                ],
+            }
+        ]
+        picked = []
+
+        def _pick(question, choices, default=0):
+            picked.append(choices)
+            return 0
+
+        config = {"auxiliary": {"vision": {}}}
+        with (
+            patch("hermes_cli.inventory.build_aux_picker_rows", return_value=rows),
+            patch.object(tc, "_prompt_choice", side_effect=_pick),
+            patch.object(tc, "save_config"),
+        ):
+            tc._configure_vision_provider_model(config, config["auxiliary"]["vision"])
+
+        assert picked[1] == [
+            "anthropic/claude-3-opus",
+            "Type a custom model id…",
+        ]
+
+
 
 
 # ─── provider_readiness_status ────────────────────────────────────────────────

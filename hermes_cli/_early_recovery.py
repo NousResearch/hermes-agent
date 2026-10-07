@@ -785,9 +785,14 @@ def _lsof_cwds(lsof: str, pids: list[str]) -> dict[str, str] | None:
 
 
 def _still_running(pid: int) -> bool:
-    import psutil
-
-    return psutil.pid_exists(pid)
+    """POSIX only (the lsof branch never runs on Windows); stdlib, as this launch-time repair must be."""
+    try:
+        os.kill(pid, 0)  # windows-footgun: ok — lsof/ps branch is macOS/BSD only, Windows never reaches it
+    except ProcessLookupError:
+        return False
+    except OSError:  # EPERM: alive, another user's
+        return True
+    return True
 
 
 def _ps_git_holder(lsof: str, git_dir: Path, root: Path, any_git: bool) -> _Holder | bool | None:

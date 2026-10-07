@@ -523,12 +523,55 @@ def _new_recording_path(ext: str) -> str:
     return os.path.join(_TEMP_DIR, f"recording_{time.strftime('%Y%m%d_%H%M%S')}.{ext}")
 
 
+# WAV path -> live STT session that heard the same take (``stt.streaming``). transcribe_recording
+# pops it, so every consumer of a recorder's WAV gets the live transcript with no call-site change.
+_LIVE_SESSIONS: Dict[str, Any] = {}
+_LIVE_SESSIONS_MAX = 8
+_LIVE_LOCK = threading.Lock()
+
+
+def _park_live_session(wav_path: Optional[str], session: Any) -> None:
+    if session is None:
+        return
+    if not wav_path:
+        session.cancel()
+        return
+    session.end_audio()  # the provider flushes while the caller is still handling the WAV
+    with _LIVE_LOCK:
+        _LIVE_SESSIONS[wav_path] = session
+        while len(_LIVE_SESSIONS) > _LIVE_SESSIONS_MAX:
+            _LIVE_SESSIONS.pop(next(iter(_LIVE_SESSIONS))).cancel()
+
+
+def _take_live_session(wav_path: str) -> Any:
+    with _LIVE_LOCK:
+        return _LIVE_SESSIONS.pop(wav_path, None)
+
+
 class _RecorderBase:
     """Lock, recording flag, start time and live RMS shared by both recorder backends."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._recording, self._start_time, self._current_rms = False, 0.0, 0
+        # Live STT (``stt.streaming``): hosts set ``on_live_partial`` to render partial text.
+        self.on_live_partial: Optional[Callable[[str], None]] = None
+        self._live: Any = None
+
+    def _open_live_session(self, sample_rate: int) -> None:
+        from tools.transcription_streaming import open_streaming_session
+        try:
+            self._live = open_streaming_session(on_partial=self.on_live_partial)
+        except Exception:  # noqa: BLE001 — live STT is an accelerator; the WAV path still runs
+            logger.debug("Live STT session did not open", exc_info=True)
+            self._live = None
+        if self._live is not None:
+            self._live.set_input_rate(sample_rate)
+            logger.info("Live STT streaming (%s)", self._live.provider)
+
+    def _detach_live(self) -> Any:
+        live, self._live = self._live, None
+        return live
 
     @property
     def is_recording(self) -> bool:
@@ -723,6 +766,9 @@ class AudioRecorder(_RecorderBase):
 
     def _on_audio_block(self, np, indata) -> None:
         self._frames.append(indata.copy())
+        live = self._live
+        if live is not None:
+            live.push_audio(indata.tobytes())
         rms = int(_rms(np, indata))
         self._current_rms = rms
         self._peak_rms = max(self._peak_rms, rms)
@@ -802,6 +848,7 @@ class AudioRecorder(_RecorderBase):
             self._on_silence_stop = on_silence_stop
         self._sample_rate = _default_input_samplerate(sd)
         self._ensure_stream()
+        self._open_live_session(self._sample_rate)
         with self._lock:
             self._recording = True
         logger.info("Voice recording started (rate=%d, channels=%d)", self._sample_rate, CHANNELS)
@@ -829,6 +876,11 @@ class AudioRecorder(_RecorderBase):
 
     def stop(self) -> Optional[str]:
         """Stop recording (stream stays alive) and return the WAV path, or None if unusable."""
+        wav_path = self._stop_capture()
+        _park_live_session(wav_path, self._detach_live())
+        return wav_path
+
+    def _stop_capture(self) -> Optional[str]:
         with self._lock:
             if not self._recording:
                 return None
@@ -843,16 +895,22 @@ class AudioRecorder(_RecorderBase):
             if len(audio_data) < int(self._sample_rate * 0.3):
                 logger.debug("Recording too short (%d samples), discarding", len(audio_data))
                 return None
-            # Peak RMS, not the average (which trailing silence dilutes).
-            if self._peak_rms < SILENCE_RMS_THRESHOLD:
+            # Peak RMS, not the average (which trailing silence dilutes). Same
+            # configured floor as the VAD above — the hardcoded module default
+            # here discarded valid speech on low-threshold setups (mic peaking
+            # at RMS ~160 with voice.silence_threshold: 80, #84046).
+            if self._peak_rms < self._silence_threshold:
                 logger.info("Recording too quiet (peak RMS=%d < %d), discarding",
-                            self._peak_rms, SILENCE_RMS_THRESHOLD)
+                            self._peak_rms, self._silence_threshold)
                 return None
             return self._write_wav(audio_data, sample_rate=self._sample_rate)
 
     def _discard(self) -> None:
         with self._lock:
             self._recording, self._frames, self._on_silence_stop, self._current_rms = False, [], None, 0
+        live = self._detach_live()
+        if live is not None:
+            live.cancel()
 
     def cancel(self) -> None:
         """Stop recording and discard all captured audio (stream stays alive)."""
@@ -880,17 +938,31 @@ def create_audio_recorder() -> AudioRecorder | TermuxAudioRecorder:
 
 
 # ── STT dispatch ──
+def _live_result(wav_path: str) -> Optional[Dict[str, Any]]:
+    """The live session's transcript for this take, or None to transcribe the WAV instead.
+
+    A failed or empty live result falls back to the file: an empty live transcript over a take the
+    recorder accepted as speech is more likely a dropped socket than silence."""
+    session = _take_live_session(wav_path)
+    if session is None:
+        return None
+    result = session.finalize()
+    if result.get("success") and (result.get("transcript") or "").strip():
+        return result
+    logger.info("Live STT gave no transcript (%s); transcribing the recording",
+                result.get("error") or "empty")
+    return None
+
+
 def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str, Any]:
     """Transcribe a WAV via ``transcribe_audio()``, filtering Whisper hallucinations;
     returns ``{success, transcript[, error]}``."""
-    from tools.transcription_common import MAX_FILE_SIZE
     from tools.transcription_tools import transcribe_audio
 
-    result = transcribe_audio(wav_path, model=model, source="voice_mode")
-    # Only chunk when the provider itself reports "File too large" — local
-    # providers have no upload cap and never return this error.
-    if not result.get("success") and "File too large" in result.get("error", ""):
-        result = _transcribe_wav_in_chunks(wav_path, model=model, max_file_size=MAX_FILE_SIZE)
+    result = _live_result(wav_path)
+    if result is None:
+        # transcribe_audio fits oversized recordings under the provider's upload cap itself.
+        result = transcribe_audio(wav_path, model=model, source="voice_mode")
     # A configured stop phrase always survives: "bye"/"okay" overlap the
     # hallucination blocklist, and swallowing them would make "bye" fail to end the chat.
     if result.get("success"):
@@ -903,67 +975,6 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     if result.get("no_speech"):
         return {"success": True, "transcript": "", "no_speech": True}
     return result
-
-
-def _transcribe_wav_in_chunks(wav_path: str, *, model: Optional[str], max_file_size: int) -> Dict[str, Any]:
-    """Split an oversized WAV into provider-sized chunks and join transcripts."""
-    from tools.transcription_tools import transcribe_audio
-
-    chunk_paths, transcripts = [], []
-    try:
-        chunk_paths = _split_wav_for_transcription(wav_path, max_file_size=max_file_size)
-        if not chunk_paths:
-            return {"success": False, "transcript": "", "error": "No audio chunks were created"}
-        logger.info("Transcribing oversized WAV in %d chunks: %s", len(chunk_paths), wav_path)
-        for index, chunk_path in enumerate(chunk_paths, start=1):
-            result = transcribe_audio(chunk_path, model=model, source="voice_mode")
-            if not result.get("success"):
-                error = result.get("error", "Unknown transcription error")
-                return {"success": False, "transcript": "",
-                        "error": f"Chunk {index}/{len(chunk_paths)} failed: {error}"}
-            transcript = result.get("transcript", "").strip()
-            if transcript and not is_whisper_hallucination(transcript):
-                transcripts.append(transcript)
-        return {"success": True, "transcript": " ".join(transcripts).strip(),
-                "provider": result.get("provider"), "chunks": len(chunk_paths)}
-    except Exception as e:
-        logger.error("Chunked transcription failed for %s: %s", wav_path, e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Chunked transcription failed: {e}"}
-    finally:
-        for chunk_path in chunk_paths:
-            _unlink_quietly(chunk_path)
-
-
-def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[str]:
-    """Write WAV chunks small enough to pass the shared STT file-size gate."""
-    os.makedirs(_TEMP_DIR, exist_ok=True)
-    chunk_paths: List[str] = []
-    with wave.open(wav_path, "rb") as source:
-        params = source.getparams()
-        block_align = max(1, params.nchannels * params.sampwidth)
-        max_data_bytes = max_file_size - 64 * 1024  # header reserve
-        if max_data_bytes < block_align:
-            raise ValueError("STT max_file_size is too small for WAV chunking")
-        frames_per_chunk = max(1, max_data_bytes // block_align)
-        index = 0
-        while True:
-            frames = source.readframes(frames_per_chunk)
-            if not frames:
-                break
-            index += 1
-            with tempfile.NamedTemporaryFile(
-                    prefix=f"{os.path.splitext(os.path.basename(wav_path))[0]}_chunk{index:03d}_",
-                    suffix=".wav", dir=_TEMP_DIR, delete=False) as temp:
-                chunk_path = temp.name
-            try:
-                with wave.open(chunk_path, "wb") as chunk:
-                    chunk.setparams(params._replace(nframes=0))
-                    chunk.writeframes(frames)
-                chunk_paths.append(chunk_path)
-            except Exception:
-                _unlink_quietly(chunk_path)
-                raise
-    return chunk_paths
 
 
 # ── Audio playback (interruptable) ──
@@ -1482,6 +1493,7 @@ _NATIVE_STT_LABELS = {
     "mistral": "Mistral Voxtral",
     "xai": "xAI Grok STT",
     "elevenlabs": "ElevenLabs Scribe",
+    "deepinfra": "DeepInfra",
 }
 
 

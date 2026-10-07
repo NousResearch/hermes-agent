@@ -635,7 +635,6 @@ class TestFollowProfileConfigRuntimeOverrides:
         known = set(server._sessions)
         try:
             with (
-                patch("hermes_cli.model_switch.parse_model_flags", return_value=("glm-5.1", None, False, False, None)),
                 patch("hermes_cli.model_switch.resolve_persist_behavior", return_value=False),
                 patch("hermes_cli.model_switch.switch_model", return_value=result),
                 server._profile_build_scope(secondary),

@@ -17,6 +17,7 @@ from urllib.parse import unquote, urlsplit
 
 from hermes_cli.update_channel import STABLE_TAG_RE
 from scripts.releases.draft_warning import strip_draft_warning
+from scripts.releases.versioning import tag_record
 SHA = re.compile(r"[a-f0-9]{40}")
 DIGEST = re.compile(r"[a-f0-9]{64}")
 DESKTOP_TARGETS = ("windows/x64", "windows/arm64", "macos/x64", "macos/arm64")
@@ -400,8 +401,8 @@ def validate_claim(metadata: object, *, version: str, attempt: int, commit: str)
 
 def _claim_metadata(raw: str, *, version: str, attempt: int, commit: str) -> dict:
     try:
-        metadata = json.loads(raw)
-    except (TypeError, json.JSONDecodeError) as error:
+        metadata = tag_record(raw)
+    except (TypeError, AttributeError, json.JSONDecodeError) as error:
         raise ValueError("Stable claim metadata is invalid") from error
     return validate_claim(metadata, version=version, attempt=attempt, commit=commit)
 
@@ -538,7 +539,7 @@ def final_context(env: dict, run=output) -> tuple[str, str, dict]:
         version=admitted["version"], attempt=admitted["attempt"], commit=commit,
     )
     final = validate_final(
-        json.loads(run(["git", "tag", "-l", tag, "--format=%(contents)"])),
+        tag_record(run(["git", "tag", "-l", tag, "--format=%(contents)"])),
         version=admitted["version"], commit=commit, claim_tag=claim_tag,
         claim_object=claim_object, claim=claim,
     )
@@ -777,7 +778,7 @@ def ensure_final_tag(tag: str, commit: str, claim: dict, *, candidate_manifest_s
         else:
             if (run(["git", "cat-file", "-t", local_object]) != "tag"
                     or run(["git", "rev-parse", f"{ref}^{{commit}}"]) != commit
-                    or json.loads(run(["git", "tag", "-l", tag, "--format=%(contents)"])) != expected):
+                    or tag_record(run(["git", "tag", "-l", tag, "--format=%(contents)"])) != expected):
                 raise ValueError("Local final tag collision")
         run(["git", "push", "origin", ref])
         remote_raw = run(["git", "ls-remote", "origin", ref, f"{ref}^{{}}"])
@@ -792,7 +793,7 @@ def ensure_final_tag(tag: str, commit: str, claim: dict, *, candidate_manifest_s
         local_object = run(["git", "rev-parse", ref])
     if local_object != tag_object or run(["git", "cat-file", "-t", local_object]) != "tag":
         raise ValueError("Final stable tag object differs from the verified remote")
-    metadata = json.loads(run(["git", "tag", "-l", tag, "--format=%(contents)"]))
+    metadata = tag_record(run(["git", "tag", "-l", tag, "--format=%(contents)"]))
     if metadata != expected:
         raise ValueError("Final stable tag metadata differs from the accepted artifacts")
     return tag_object

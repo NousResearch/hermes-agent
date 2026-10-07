@@ -1,5 +1,5 @@
 import type { ModelOptionProvider } from '@hermes/shared'
-import { DEFAULT_REASONING_EFFORT, isReasoningEffort, REASONING_EFFORT_VALUES } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -24,6 +24,7 @@ import type {
   AuxiliaryTaskAssignment,
   MoaConfigResponse,
   MoaModelSlot,
+  ModelAssignmentRequest,
   StaleAuxAssignment
 } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -31,6 +32,7 @@ import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { findCatalogProvider } from '@/lib/model-options'
+import { composerServiceTier } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { $customModels, withCustomModels } from '@/store/custom-models'
 import { setMainModelAssignment } from '@/store/model-assignment'
@@ -41,12 +43,18 @@ import { hermesConfigCacheWriter, invalidateHermesConfig, useHermesConfigRecord 
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
+import {
+  AUX_FOLLOW_BASE,
+  AuxFollowBaseButton,
+  auxMainRoute,
+  AuxTaskRouteSummary,
+  useAuxTaskRows
+} from './aux-task-rows'
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
 import { ModelSelect, withActive } from './model-select'
 import { ListRow, ListRowSkeleton, Pill, SectionHeading, SectionHeadingSkeleton } from './primitives'
 import { dismissStaleAux, readStaleAuxDismissal, staleAuxFingerprint } from './stale-aux-dismissal'
-import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
 // the provider/model catalog loads, instead of collapsing to a centered
@@ -84,14 +92,7 @@ export function ModelSettingsSkeleton({ subpage }: Pick<ModelSettingsProps, 'sub
   )
 }
 
-// agent.service_tier stores "fast"/"priority"/"on" for fast; anything else is
-// normal (mirrors tui_gateway _load_service_tier).
-const isFastTier = (tier: unknown): boolean =>
-  ['fast', 'priority', 'on'].includes(
-    String(tier ?? '')
-      .trim()
-      .toLowerCase()
-  )
+type SpeedTier = 'fast' | 'normal' | 'ultrafast'
 
 // A provider row is "ready" to pick a model from when it reports models. The
 // backend now surfaces the full `hermes model` universe (every canonical
@@ -100,29 +101,6 @@ const isFastTier = (tier: unknown): boolean =>
 function isProviderReady(p?: ModelOptionProvider): boolean {
   return !!p && (p.authenticated !== false || (p.models?.length ?? 0) > 0)
 }
-
-// Mirrors `_AUX_TASK_SLOTS` in hermes_cli/web_server.py. Friendly labels and
-// hints make the assignments readable; raw task keys (vision, mcp, …) are
-// opaque to most users.
-interface AuxTaskMeta {
-  key: string
-}
-
-const AUX_TASKS: readonly AuxTaskMeta[] = [
-  { key: 'vision' },
-  { key: 'compression' },
-  { key: 'skills_hub' },
-  { key: 'approval' },
-  { key: 'mcp' },
-  { key: 'title_generation' },
-  { key: 'review' },
-  // Same three canonical slots the backend serves but the list below used to
-  // omit (#97297): triage_specifier, kanban_decomposer, profile_describer.
-  { key: 'triage_specifier' },
-  { key: 'kanban_decomposer' },
-  { key: 'profile_describer' },
-  { key: 'curator' }
-]
 
 const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
 
@@ -277,14 +255,6 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // place — mirrors the onboarding ApiKeyForm but scoped to the model picker.
   const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [activating, setActivating] = useState(false)
-
-  // Deep link from the vision Capabilities detail (?tab=config:model&aux=vision):
-  // scroll the auxiliary task row into view and flash it once the list loads.
-  useDeepLinkHighlight({
-    elementId: task => `aux-task-${task}`,
-    param: 'aux',
-    ready: task => showAuxiliary && !loading && AUX_TASKS.some(meta => meta.key === task)
-  })
 
   // Every profile-scoped async here captures this and bails before writing back,
   // so a request in flight when the user switches profiles can't paint profile
@@ -591,7 +561,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     [m.loadFailed, scopeProfile, setCaughtError]
   )
 
-  const auxiliaryTaskLabel = useCallback((key: string) => m.tasks[key]?.label ?? key, [m.tasks])
+  const { auxRows, auxiliaryTaskLabel } = useAuxTaskRows(auxiliary?.tasks, { loading, visible: showAuxiliary })
 
   const persistentStaleAux = useMemo<StaleAuxAssignment[]>(
     () => staleAuxAssignments(auxiliary?.tasks ?? [], mainModel?.provider ?? ''),
@@ -625,6 +595,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
   const reasoningSupported = mainCaps?.reasoning ?? true
   const fastSupported = mainCaps?.fast ?? false
+  const ultrafastSupported = mainCaps?.ultrafast ?? false
 
   // Hand-written `reasoning_effort: false`/`off` reaches us as boolean false
   // ("false" once stringified) — show it as Off, not an empty select.
@@ -634,7 +605,11 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
   const effortValue = rawEffort === 'false' || rawEffort === 'disabled' ? 'none' : rawEffort || DEFAULT_REASONING_EFFORT
 
-  const fastOn = isFastTier(getNested(config ?? {}, 'agent.service_tier'))
+  // One profile-default speed: Standard, Fast (Priority) or Ultrafast. Ultrafast
+  // only shows as a choice on models that offer it.
+  const tier = composerServiceTier(getNested(config ?? {}, 'agent.service_tier'))
+  const fastOn = tier === 'priority'
+  const speedValue: SpeedTier = fastOn ? 'fast' : tier === 'ultrafast' ? 'ultrafast' : 'normal'
 
   // Persist a single agent.* default as a sparse patch (PUT /api/config
   // deep-merges onto disk). Never send the whole cached record: it is a
@@ -642,7 +617,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // surface changed meanwhile — a CLI-pinned auxiliary slot came back as
   // provider "auto" / model "" (#95460). Optimistic, with rollback on failure.
   const writeAgentDefault = useCallback(
-    async (key: string, value: string) => {
+    async (key: string, value: boolean | string) => {
       if (!config) {
         return
       }
@@ -801,26 +776,13 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     [providers]
   )
 
-  const setAuxiliaryToMain = useCallback(
-    async (task: string) => {
-      if (!mainModel) {
-        return
-      }
-
+  const assignAuxiliary = useCallback(
+    async (task: string, route: Omit<ModelAssignmentRequest, 'scope' | 'task'>) => {
       setApplying(true)
       setError('')
 
       try {
-        await setModelAssignment(
-          {
-            model: mainModel.model,
-            provider: mainModel.provider,
-            scope: 'auxiliary',
-            task,
-            ...endpointForProvider(mainModel.provider)
-          },
-          scopeProfile
-        )
+        await setModelAssignment({ ...route, scope: 'auxiliary', task }, scopeProfile)
         await refresh()
       } catch (err) {
         setCaughtError(err, m.loadFailed)
@@ -828,7 +790,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         setApplying(false)
       }
     },
-    [endpointForProvider, m.loadFailed, mainModel, refresh, scopeProfile, setCaughtError]
+    [m.loadFailed, refresh, scopeProfile, setCaughtError]
   )
 
   const applyAuxiliaryDraft = useCallback(
@@ -1019,7 +981,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                 : `${selectedProviderRow?.name} signs in through your browser — Hermes runs the flow for you.`}
             </p>
           )}
-          {config && mainModel && (reasoningSupported || fastSupported) && (
+          {config && mainModel && (reasoningSupported || fastSupported || ultrafastSupported) && (
             <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
               <span className="text-xs text-muted-foreground">{m.defaultsLabel}</span>
               {reasoningSupported && (
@@ -1042,17 +1004,36 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                   </Select>
                 </div>
               )}
-              {fastSupported && (
-                <label className="flex items-center gap-2 text-xs">
-                  {t.shell.modelOptions.fast}
-                  <Switch
-                    checked={fastOn}
-                    onCheckedChange={checked =>
-                      void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')
-                    }
-                    size="xs"
-                  />
-                </label>
+              {ultrafastSupported ? (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="shrink-0 whitespace-nowrap">{m.speed}</span>
+                  <Select
+                    onValueChange={value => void writeAgentDefault('agent.service_tier', value)}
+                    value={speedValue}
+                  >
+                    <SelectTrigger aria-label={m.speed} className={cn('min-w-28', CONTROL_TEXT)}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="normal">{m.speedStandard}</SelectItem>
+                      {fastSupported && <SelectItem value="fast">{t.shell.modelOptions.fast}</SelectItem>}
+                      <SelectItem value="ultrafast">{t.shell.modelOptions.ultrafast}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : (
+                fastSupported && (
+                  <label className="flex items-center gap-2 text-xs">
+                    {t.shell.modelOptions.fast}
+                    <Switch
+                      checked={fastOn}
+                      onCheckedChange={checked =>
+                        void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')
+                      }
+                      size="xs"
+                    />
+                  </label>
+                )
               )}
             </div>
           )}
@@ -1101,8 +1082,8 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
             </div>
           )}
           <div className="grid gap-1">
-            {AUX_TASKS.map(meta => {
-              const copy = m.tasks[meta.key] ?? { label: meta.key, hint: meta.key }
+            {auxRows.map(meta => {
+              const copy = m.tasks[meta.key] ?? { label: meta.label ?? meta.key, hint: meta.hint ?? meta.key }
               const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
               const isAuto = !current || !current.provider || current.provider === 'auto'
               const isEditing = editingAuxTask === meta.key
@@ -1113,9 +1094,18 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                     action={
                       !isEditing && (
                         <div className="flex shrink-0 items-center gap-1.5">
+                          {meta.inheritFrom && !isAuto && (
+                            <AuxFollowBaseButton
+                              baseLabel={auxiliaryTaskLabel(meta.inheritFrom)}
+                              disabled={applying}
+                              onFollow={() => void assignAuxiliary(meta.key, AUX_FOLLOW_BASE)}
+                            />
+                          )}
                           <Button
                             disabled={!mainModel || applying}
-                            onClick={() => void setAuxiliaryToMain(meta.key)}
+                            onClick={() =>
+                              mainModel && void assignAuxiliary(meta.key, auxMainRoute(mainModel, endpointForProvider))
+                            }
                             size="sm"
                             variant="text"
                           >
@@ -1202,22 +1192,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                       )
                     }
                     description={
-                      <span className="font-mono text-[0.68rem]">
-                        {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
-                        {!isAuto && current.base_url && (
-                          <span className="text-muted-foreground"> · {current.base_url}</span>
-                        )}
-                        {current?.reasoning_effort && (
-                          <span className="text-muted-foreground">
-                            {' · '}
-                            {current.reasoning_effort === 'none'
-                              ? `${m.reasoning} ${m.reasoningOff}`
-                              : isReasoningEffort(current.reasoning_effort)
-                                ? t.shell.modelOptions[current.reasoning_effort]
-                                : current.reasoning_effort}
-                          </span>
-                        )}
-                      </span>
+                      <AuxTaskRouteSummary
+                        current={current}
+                        inheritLabel={meta.inheritFrom ? auxiliaryTaskLabel(meta.inheritFrom) : undefined}
+                      />
                     }
                     title={
                       <span className="flex items-baseline gap-2">

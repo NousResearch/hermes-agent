@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from tools.arg_coercion import coerce_tool_args
+
 
 def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> Dict[str, str]:
     """Identity kwargs every tool hook/middleware call carries (all coerced to ``""``)."""
@@ -232,7 +234,7 @@ def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
 
 
 # Order is the historical if/elif order of ``execute_tool_calls_sequential``.
-INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
+_RAW_INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     "todo_list": _tool(
         "tools.todo_tool", "todo_tool", ("todos", "todos"), ("merge", "merge", False),
         store=lambda agent, ctx: agent._todo_store,
@@ -246,9 +248,7 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     "session_search": _session_search,
     "memory": _memory,
     "clarify": _tool(
-        "tools.clarify_tool", "clarify_tool",
-        ("question", "question", ""), ("choices", "choices"), ("multi_select", "multi_select", False),
-        ("questions", "questions"),
+        "tools.clarify_tool", "clarify_tool", ("questions", "questions"),
         callback=lambda agent, ctx: agent.clarify_callback,
     ),
     "read_terminal": _callback_tool(
@@ -277,6 +277,17 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     "manage_catalog": _manage_catalog,
     "setup_mcp": _setup_mcp_shim,
     "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
+}
+
+
+def _coerced(name: str, executor: InlineToolExecutor) -> InlineToolExecutor:
+    def _exec(agent, args: dict, ctx: InlineToolContext) -> Any:
+        return executor(agent, coerce_tool_args(name, args), ctx)
+    return _exec
+
+
+INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
+    name: _coerced(name, executor) for name, executor in _RAW_INLINE_TOOL_EXECUTORS.items()
 }
 
 # ``invoke_tool`` (concurrent path) consults the memory manager right after these three

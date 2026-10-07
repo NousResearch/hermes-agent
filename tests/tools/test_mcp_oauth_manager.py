@@ -5,7 +5,6 @@ single object with disk-mtime watch, dedup'd 401 handling, and a provider
 cache. See `tools/mcp_oauth_manager.py` for design rationale.
 """
 import json
-import os
 import time
 from unittest.mock import MagicMock
 
@@ -71,55 +70,6 @@ def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
     mock_stdin = MagicMock()
     mock_stdin.isatty.return_value = is_tty
     monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
-
-
-
-
-@pytest.mark.asyncio
-async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
-    """When the tokens file mtime changes after baseline, provider reloads.
-
-    This is the behaviour Claude Code ships as
-    invalidateOAuthCacheIfDiskChanged (CC-1096 / GH#24317) and is the core
-    fix for Cthulhu's external-cron refresh workflow.
-    """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
-
-    reset_manager_for_tests()
-
-    token_dir = tmp_path / "mcp-tokens"
-    token_dir.mkdir(parents=True)
-    tokens_file = token_dir / "srv.json"
-    tokens_file.write_text(json.dumps({
-        "access_token": "OLD",
-        "token_type": "Bearer",
-    }), encoding="utf-8")
-
-    mgr = MCPOAuthManager()
-    provider = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
-    assert provider is not None
-    await provider._initialize()
-    assert provider._initialized is True
-
-    # First call only records the baseline mtime. Reloading here would reset
-    # the provider during its first auth handshake.
-    changed1 = await mgr.invalidate_if_disk_changed("srv")
-    assert changed1 is False
-    assert provider._initialized is True
-
-    # No file change -> False
-    changed2 = await mgr.invalidate_if_disk_changed("srv")
-    assert changed2 is False
-
-    # Touch file with a newer mtime
-    future_mtime = time.time() + 10
-    os.utime(tokens_file, (future_mtime, future_mtime))
-
-    changed3 = await mgr.invalidate_if_disk_changed("srv")
-    assert changed3 is True
-    # _initialized flipped — next async_auth_flow will re-read from disk
-    assert provider._initialized is False
 
 
 

@@ -268,7 +268,12 @@ def _resolve_child_credential_pool(
             if parent_pool is not None and parent_provider == "custom" and parent_key is not None and parent_key == child_key:
                 return parent_pool
             return _loaded_pool(child_key)
-        if parent_pool is not None and effective_provider == parent_provider:
+        if effective_provider == parent_provider:
+            # A same-provider parent with no pool is using a fixed credential.
+            # Loading a separate provider pool here can replace the inherited
+            # endpoint and key when the child acquires its startup lease (#71424).
+            if parent_pool is None:
+                return None
             if not effective_base_url or _pool_serves_endpoint(parent_pool, effective_provider, effective_base_url):
                 return parent_pool
             logger.debug("Parent %s pool has no entry for child endpoint %s; not sharing it",

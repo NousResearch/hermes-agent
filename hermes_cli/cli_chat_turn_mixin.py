@@ -257,14 +257,18 @@ class CLIChatTurnMixin:
             threading.Thread(target=self._voice_full_duplex_listener, daemon=True).start()
 
         # Streaming TTS: any working provider speaks sentence-by-sentence as tokens arrive.
+        # Availability is check_tts_requirements() ALONE: the speaker side picks its own
+        # output route per platform (PortAudio stream where usable, tempfile -> afplay on
+        # macOS — sounddevice is deliberately never imported for output on Darwin, see
+        # tts_tool_speaker._device_usable), so probing it here disabled streaming TTS on
+        # macOS via the bare except below (#84046).
         if self._voice_tts:
             try:
-                from tools.tts_tool import _import_sounddevice, check_tts_requirements
+                from tools.tts_tool import check_tts_requirements
                 from tools.tts_tool_speaker import stream_tts_to_speaker
-                _import_sounddevice()
                 turn.use_streaming_tts = check_tts_requirements()
             except Exception:
-                pass
+                logging.debug("streaming TTS arm check failed", exc_info=True)
 
         if turn.use_streaming_tts:
             turn.text_queue = queue.Queue()
@@ -327,6 +331,7 @@ class CLIChatTurnMixin:
             reset_current_session_key = None  # type: ignore[assignment]
             _approval_session_token = None
         agent_message = turn.voice_prefix + message if turn.voice_prefix else message
+        self.agent._voice_turn_pending = bool(turn.voice_prefix)  # auxiliary.voice_chat route
         # One-shot /model and /reload-skills notes; _prepend_note_to_message also handles
         # multimodal content-part lists (string concat raised TypeError with an image).
         for _note_attr in ("_pending_model_switch_note", "_pending_skills_reload_note"):

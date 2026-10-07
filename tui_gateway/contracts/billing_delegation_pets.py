@@ -138,11 +138,11 @@ class BillingAutoReload(Result):
 
 class BillingStateResult(Result):
     """``_serialize_billing_state`` (money as strings); the ``except`` fallback emits only
-    ``ok / logged_in / free_tier / error``, so everything else is optional."""
+    ``ok / logged_in / free_tier_account / error``, so everything else is optional."""
 
     ok: bool
     logged_in: bool
-    free_tier: bool = False
+    free_tier_account: bool = False
     free_tier_model: str | None = None
     org_name: str | None = None
     org_slug: str | None = None

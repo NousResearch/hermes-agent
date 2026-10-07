@@ -5,14 +5,15 @@ gateways fight over one bot (standalone) or blocks ``hermes gateway migrate --mu
 duplicate-credential finding per platform.
 
 The inventory is OWNERSHIP-based and evaluated in the SOURCE profile's plugin scope: every adapter
-(built-in ``Platform`` member or plugin registered under the source's ``HERMES_HOME``) owns the env
+(built-in ``Platform`` member, a platform that left core — its ``LEFT_CORE`` row, plugin installed or
+not — or a plugin registered under the source's ``HERMES_HOME``) owns the env
 keys it declares outright (``required_env``, allowlist / allow-all / home-channel names, the gateway
 env-override table ``gateway.config_env._ENV_STEPS`` / ``_ENV_ENABLE_CREDENTIALS``) plus every key
 under its canonical ``<PLATFORM>_`` prefix and its historical alias prefixes. Gateway-wide channel
 policy (``GATEWAY_ALLOW_ALL_USERS`` / ``GATEWAY_ALLOWED_USERS``) and relay enrollment identity
 (``GATEWAY_RELAY_*``) are channel settings too. A prefix an adapter SHARES with a non-channel
-capability (``HASS_*`` is also the Home Assistant tool, ``TWILIO_*`` the telephony skill, ``EMAIL_*``
-mail-sending scripts) is stripped only when the source actually runs that adapter — the credential is
+capability (``TWILIO_*`` is also the telephony skill, ``EMAIL_*`` mail-sending scripts, and a plugin
+platform's ``shared_env_prefixes`` its own tools) is stripped only when the source actually runs that adapter — the credential is
 then the bot's identity; otherwise it is a tool key and survives. Model/provider keys, tool keys,
 memory and general config are never touched.
 """
@@ -32,7 +33,6 @@ logger = logging.getLogger(__name__)
 # ``<PLATFORM>_`` prefix (``WECOM_DM_POLICY`` and ``SMS_WEBHOOK_PORT`` are wecom / sms keys too).
 _PLATFORM_ENV_PREFIX_ALIASES: dict[str, tuple[str, ...]] = {
     "email": ("EMAIL_",),
-    "homeassistant": ("HASS_",),
     "qqbot": ("QQ_",),
     "relay": ("GATEWAY_RELAY_",),
     "sms": ("TWILIO_",),
@@ -46,7 +46,6 @@ _GATEWAY_POLICY_KEYS = ("GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS")
 # Prefixes a messaging adapter shares with a NON-channel capability. Their credentials belong to the
 # channel only while the source runs that adapter; the adapter's policy keys are channel-only always.
 _SHARED_WITH_TOOLS: dict[str, tuple[str, ...]] = {
-    "homeassistant": ("HASS_",),   # tools/homeassistant_tool.py reads HASS_TOKEN / HASS_URL
     "sms": ("TWILIO_",),           # telephony skill reads TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN
     "email": ("EMAIL_",),          # mail-sending skills read EMAIL_ADDRESS / EMAIL_PASSWORD / EMAIL_SMTP_*
 }
@@ -89,11 +88,32 @@ def _registry_entries() -> list:
     return []
 
 
+def _left_core_platforms() -> list:
+    """Rows of platforms that left core for a catalog plugin (``hermes_cli.left_core_migration``).
+    Their channel ownership comes from the row, so it holds while the plugin is absent."""
+    from hermes_cli.left_core_migration import LEFT_CORE
+    return [feature for feature in LEFT_CORE if feature.platform]
+
+
+def _shared_with_tools(source_dir: Optional[Path] = None) -> Dict[str, Tuple[str, ...]]:
+    """``_SHARED_WITH_TOOLS``, left-core platforms' prefixes, and every plugin platform's
+    ``shared_env_prefixes`` in ``source_dir``'s scope."""
+    shared = dict(_SHARED_WITH_TOOLS)
+    shared.update({f.platform: f.channel_env_prefixes for f in _left_core_platforms() if f.channel_env_prefixes})
+    with _plugin_scope(source_dir):
+        for entry in _registry_entries():
+            prefixes = tuple(getattr(entry, "shared_env_prefixes", ()) or ())
+            if prefixes:
+                shared[entry.name] = prefixes
+    return shared
+
+
 def platform_ids(source_dir: Optional[Path] = None) -> List[str]:
-    """Every messaging platform id: built-in ``Platform`` members plus the plugin adapters registered
-    in ``source_dir``'s scope (ambient scope when ``None``)."""
+    """Every messaging platform id: built-in ``Platform`` members, platforms that left core, plus the
+    plugin adapters registered in ``source_dir``'s scope (ambient scope when ``None``)."""
     from gateway.config import Platform
     ids = {m.value for m in Platform.__members__.values() if m.value != "local"}
+    ids.update(feature.platform for feature in _left_core_platforms())
     with _plugin_scope(source_dir):
         ids.update(entry.name for entry in _registry_entries())
     return sorted(ids)
@@ -141,6 +161,8 @@ def declared_channel_env_keys(source_dir: Optional[Path] = None) -> Dict[str, st
     fields, the gateway env-override table) plus gateway-wide channel policy. Prefix matching covers
     the rest."""
     keys: Dict[str, str] = dict.fromkeys(_GATEWAY_POLICY_KEYS, GATEWAY_POLICY_ID)
+    for feature in _left_core_platforms():
+        keys.update(dict.fromkeys(feature.enable_env, feature.platform))
     with _plugin_scope(source_dir):
         for entry in _registry_entries():
             for name in (*entry.required_env, entry.allowed_users_env, entry.allow_all_env, entry.cron_deliver_env_var):
@@ -187,6 +209,8 @@ def credential_env_keys() -> Dict[str, str]:
     flags, URLs and hosts are excluded: two profiles pointing at one Mattermost server collide only
     when they also share the token."""
     keys: Dict[str, str] = {}
+    for feature in _left_core_platforms():
+        keys.update(dict.fromkeys(feature.enable_env, feature.platform))
     for entry in _registry_entries():
         keys.update(dict.fromkeys(entry.required_env, entry.name))
     with contextlib.suppress(Exception):
@@ -227,12 +251,12 @@ def _explicit_enabled(raw: dict, pid: str) -> Optional[bool]:
     return None
 
 
-def _shared_adapters_active(source_dir: Optional[Path]) -> Set[str]:
+def _shared_adapters_active(source_dir: Optional[Path], shared: Dict[str, Tuple[str, ...]]) -> Set[str]:
     """Shared-prefix platforms the SOURCE runs as a channel: explicitly enabled in its config.yaml, or
     auto-enabled by a complete credential set in its ``.env`` and not explicitly disabled — the same
     gate ``gateway.config_env._Cred`` applies at gateway start."""
     if source_dir is None:
-        return set(_SHARED_WITH_TOOLS)  # no source to consult: the historical (strip) behaviour
+        return set(shared)  # no source to consult: the historical (strip) behaviour
     raw: dict = {}
     if (source_dir / "config.yaml").is_file():
         from hermes_cli.config import read_user_config_raw
@@ -244,11 +268,13 @@ def _shared_adapters_active(source_dir: Optional[Path]) -> Set[str]:
         from gateway import config_env
         for platform, names in config_env._ENV_ENABLE_CREDENTIALS.items():
             creds_by_platform[platform.value] = set(names)
+    for feature in _left_core_platforms():
+        creds_by_platform.setdefault(feature.platform, set(feature.enable_env))
     with _plugin_scope(source_dir):
         for entry in _registry_entries():
             creds_by_platform.setdefault(entry.name, set(entry.required_env))
     active: Set[str] = set()
-    for pid in _SHARED_WITH_TOOLS:
+    for pid in shared:
         explicit = _explicit_enabled(raw, pid)
         if explicit is not None:
             if explicit:
@@ -269,9 +295,11 @@ class ChannelKeyIndex:
         self.platforms = platform_ids(source_dir)
         self.declared = declared_channel_env_keys(source_dir)
         self.policy = _policy_env_keys(source_dir)
-        self.shared_active = _shared_adapters_active(source_dir)
+        self.shared = _shared_with_tools(source_dir)
+        self.shared_active = _shared_adapters_active(source_dir, self.shared)
         self._prefixes: List[Tuple[str, str]] = sorted(
-            ((prefix, pid) for pid in self.platforms for prefix in platform_env_prefixes(pid)),
+            ((prefix, pid) for pid in self.platforms
+             for prefix in dict.fromkeys((*platform_env_prefixes(pid), *self.shared.get(pid, ())))),
             key=lambda item: -len(item[0]),  # longest prefix wins: WECOM_CALLBACK_ before WECOM_
         )
 
@@ -279,7 +307,7 @@ class ChannelKeyIndex:
         pid = self.declared.get(key) or next((pid for prefix, pid in self._prefixes if key.startswith(prefix)), None)
         if pid is None:
             return None
-        shared = _SHARED_WITH_TOOLS.get(pid)
+        shared = self.shared.get(pid)
         if shared and key.startswith(shared) and pid not in self.shared_active and not self._is_policy(key):
             return None  # a tool credential the source never used as a bot: keep it
         return pid
@@ -341,7 +369,7 @@ def strip_channel_config(config_path: Path, index: Optional[ChannelKeyIndex] = N
     """Remove platform sections from a raw ``config.yaml`` in place. Returns the dotted paths removed."""
     if not config_path.is_file():
         return []
-    from hermes_cli.config import atomic_config_write, read_user_config_raw
+    from hermes_cli.config import atomic_config_replace, read_user_config_raw
     index = index or ChannelKeyIndex()
     raw = read_user_config_raw(config_path)
     paths = _channel_config_paths(raw, index.platforms)
@@ -354,7 +382,7 @@ def strip_channel_config(config_path: Path, index: Optional[ChannelKeyIndex] = N
         node.pop(path[-1], None)
     if isinstance(raw.get("gateway"), dict) and not raw["gateway"]:
         raw.pop("gateway")
-    atomic_config_write(config_path, raw)
+    atomic_config_replace(config_path, raw)
     return [".".join(path) for path in paths]
 
 

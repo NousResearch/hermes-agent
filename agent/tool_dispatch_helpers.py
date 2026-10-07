@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agent.compression_marker import _COMPRESSION_MARKER_RE
+from agent.compression_marker import _COMPRESSION_MARKER_ARTIFACT_RE
 from agent.message_metadata import stamp_message_timestamp
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
@@ -32,9 +32,6 @@ _NEVER_PARALLEL_TOOLS = frozenset({"clarify", "manage_connections", "manage_cata
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({
     "connectors__execute",  # pure remote batches have per-dispatch idempotency keys
-    "ha_get_state",
-    "ha_list_entities",
-    "ha_list_services",
     "image_generate",
     "read_file",
     "search_files",
@@ -72,9 +69,9 @@ _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
 def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
     """Paths whose values contain model-visible context-compression artifacts.
 
-    The compressor's current marker carries numeric omitted/total counts. Match
-    that rendered shape rather than the prefix alone so Hermes can still edit
-    source/docs that mention the compression marker constant or its template.
+    A minted marker is identified by its prefix plus the first rendered numeric
+    count. This catches a marker cut short before its fixed sentence while still
+    letting Hermes edit source/docs that mention the bare prefix or template.
     Unknown/plugin/MCP tools stay effect-capable by default; known read-only
     tools may inspect or quote compressed history.
     """
@@ -85,7 +82,7 @@ def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
 
     def _walk(value: Any, path: str) -> None:
         if isinstance(value, str):
-            if _COMPRESSION_MARKER_RE.search(value):
+            if _COMPRESSION_MARKER_ARTIFACT_RE.search(value):
                 found.append(path)
             return
         if isinstance(value, dict):
@@ -512,8 +509,17 @@ def _detect_upstream_elision(content: Any) -> bool:
 
 
 def _maybe_append_elision_notice(name: str, content: Any) -> Any:
-    """Append the incompleteness notice to untrusted string results with elision markers."""
-    if _is_untrusted_tool(name) and _detect_upstream_elision(content):
+    """Append the incompleteness notice to untrusted results with elision markers. A multimodal part list (an MCP
+    result that also carries images) is judged by its first text part, which is where the notice goes."""
+    if not _is_untrusted_tool(name):
+        return content
+    if isinstance(content, list):
+        idx = next((i for i, item in enumerate(content) if _is_text_item(item)), None)
+        if idx is not None and _detect_upstream_elision(content[idx]["text"]):
+            return [*content[:idx], {**content[idx], "text": content[idx]["text"] + _UPSTREAM_ELISION_NOTICE},
+                    *content[idx + 1:]]
+        return content
+    if _detect_upstream_elision(content):
         return content + _UPSTREAM_ELISION_NOTICE
     return content
 

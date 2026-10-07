@@ -189,22 +189,20 @@ requires trust in that plugin and its dependencies.
 
 ## Optional security tools
 
-PM owns the pinned `bws`, `tirith`, and `iron-proxy` packages in
+PM owns the pinned `bws` and `iron-proxy` packages in
 `pm/security_packages.py`. Their versions, artifact URLs, and SHA-256 hashes
 come from `pm/lock.json`. Downloads and publication use the shared tool store,
 not private installers under `$HERMES_HOME/bin`.
 
-For Tirith and iron-proxy, PM also acquires pinned signature files and checks
-that the release checksums cover the pinned archive. Package staging calls the
-integration's signature checker. Cosign and GPG checks remain conditional on
-available executables. Locked provenance files must still be available and
+For iron-proxy, PM also acquires pinned signature files and checks that the
+release checksums cover the pinned archive. Package staging calls the
+integration's signature checker. The GPG check remains conditional on an
+available executable. Locked provenance files must still be available and
 match their hashes. An explicit signature rejection aborts installation.
 External executables remain outside PM's hash and signature guarantees.
 
 `bws` and iron-proxy honor an executable on `PATH` before checking PM selection.
-Tirith honors `security.tirith_path`, then uses `PATH` before its PM selection
-for the default name. An explicit Tirith path never triggers a replacement
-download. Lazy installation obeys PM policy. Explicit install commands check
+Lazy installation obeys PM policy. Explicit install commands check
 and repair managed entries, including requests with `--force`.
 
 ## Developer workflow {#developer-workflow}
@@ -315,12 +313,14 @@ Then activate it; there is no separate setup command to remember:
 | Shell | Enter | Leave |
 |---|---|---|
 | Bash | `source ./activate` | `deactivate` |
+| fish | `source ./activate.fish` | `deactivate` |
 | PowerShell | `. .\activate.ps1` | `deactivate` |
 
 The leading dot and space in PowerShell are required. Executing
 `.\activate.ps1` without dot-sourcing does not provide the same session scope.
-The POSIX script uses Bash syntax. Use Bash for this recipe rather than `sh`,
-fish, or assuming that a Zsh startup file has Bash semantics.
+`activate` uses Bash syntax. Use Bash for this recipe rather than `sh`, or
+assuming that a Zsh startup file has Bash semantics; fish has its own
+`activate.fish`, which behaves the same.
 
 Each activation invokes PM's install/sync path and trusts the recorded tool
 digest instead of re-hashing every entry. PM still installs a missing tool and
@@ -341,6 +341,17 @@ Start in a clean shell rather than nesting this inside another venv.
 `deactivate` restores the environment values captured by the activation script,
 and removes the function and the prompt prefix.
 It does not uninstall packages or stop processes that you started.
+
+To run one command or script in that environment without activating a shell,
+prefix it with `scripts/run-in-hermes-env`. It applies the same environment to
+that command only, syncing first when there is none to inherit or the inherited
+one is stale, and leaves your shell untouched. `scripts/run_tests.sh` re-runs
+itself this way, and the repo's Python scripts hand themselves to it from their
+shebang.
+
+```bash
+scripts/run-in-hermes-env python scripts/release.py --help
+```
 
 Verify the interpreter and source before doing work:
 
@@ -418,7 +429,7 @@ before starting another Python process.
 ### Syncing after you edit pyproject.toml
 
 1. Edit `pyproject.toml`. Pin every dependency as the
-   [Dependency Pinning Policy](https://github.com/NousResearch/hermes-agent/blob/main/AGENTS.md#dependency-pinning-policy)
+   [Dependency Pinning Policy](https://github.com/NousResearch/hermes-agent/blob/main/pm/AGENTS.md#dependency-pinning-policy)
    requires. Express platform limits with PEP 508 markers, or gate a whole
    extra in `[tool.hermes.extras-platforms]`.
 2. Relock:

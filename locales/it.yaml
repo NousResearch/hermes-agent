@@ -179,11 +179,13 @@ gateway:
     label_normal: "NORMALE"
     status_fast: "veloce"
     status_normal: "normale"
-    picker_title: "⚡ **Priority Processing**\\n\\nModalità attuale: `{mode}`\\n\\nScegli un\\'opzione:"
+    picker_title: "⚡ **Priority Processing**\n\nModalità attuale: `{mode}`\n\nScegli un\\'opzione:"
     choice_fast: "fast — Priority Processing attivo"
     choice_normal: "normal — elaborazione standard"
     choice_auto: "auto — veloce nei primi secondi di ogni turno"
     choice_cold: "cold — veloce solo nel primo turno di una sessione"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, prezzo x6)"
+    ultrafast_not_supported: "⚡ Ultrafast è disponibile solo per GPT-6 Astra (modello attuale: `{model}`)."
   footer:
     status: "📎 Footer di runtime: **{state}**\nCampi: `{fields}`\nPiattaforma: `{platform}`"
     usage: "Uso: `/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` non è supportato. Usa `/reasoning <level> --global` per cambiare il valore predefinito globale."
     reset_done: "🧠 ✓ Override di reasoning della sessione cancellato; ripristino della configurazione globale."
     unknown_arg: "⚠️ Argomento sconosciuto: `{arg}`\n\n**Livelli validi:** none, minimal, low, medium, high, xhigh, max, ultra\n**Visualizzazione:** show, hide\n**Persistenza:** aggiungi `--global` per salvare oltre questa sessione"
-    picker_title: "🧠 **Impostazioni di reasoning**\\n\\n**Sforzo:** `{level}`\\n**Ambito:** {scope}\\n**Visualizzazione:** {display}\\n\\nScegli un\\'opzione:"
+    picker_title: "🧠 **Impostazioni di reasoning**\n\n**Sforzo:** `{level}`\n**Ambito:** {scope}\n**Visualizzazione:** {display}\n\nScegli un\\'opzione:"
     choice_none: "none — disattiva il reasoning"
     choice_reset: "reset — cancella l'override di sessione"
     choice_show: "mostra il reasoning nelle risposte"
@@ -653,6 +655,7 @@ gateway:
     cancelled: "↩️ Chiarimento annullato — il tuo messaggio verrà gestito come follow-up."
     expired: "⏳ Questa richiesta è scaduta — invia una nuova richiesta."
     native_stream_placeholder: "💬 In attesa della tua scelta..."
+    skip_hint: 'Rispondi "skip" per saltare questa domanda.'
   errors:
     rate_limited: "⏱️ Il servizio del modello AI sta limitando le richieste. Attendi un momento, poi usa /retry."
     auth_failed: "⚠️ Accesso al servizio del modello AI non riuscito. Usa /login per accedere di nuovo, oppure chiedi a chi gestisce questo bot di eseguire `hermes doctor` sull'host."
@@ -844,6 +847,9 @@ gateway:
     db_fts_corrupt: "⚠️ Il database delle sessioni ha segnalato un errore di corruzione limitato all'indice di ricerca (FTS5); le tabelle dei messaggi non sono danneggiate. I messaggi potrebbero non essere salvati finché non viene riparato: esegui `hermes {profile_arg}doctor --fix`, poi riavvia il gateway. Non eseguire strumenti di ripristino né ripristinare un backup a meno che `hermes {profile_arg}doctor` non confermi il danno."
     db_then_restart: "{action} Poi `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Database delle sessioni non disponibile — i messaggi potrebbero non essere salvati e /resume sarà vuoto. Causa: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ L'archivio cron {store} non è scrivibile ({error}) dal {since}. I job pianificati vengono saltati finché non accetta di nuovo scritture. Soluzione: {fix}."
+    recovered: "✅ L'archivio cron {store} è di nuovo scrivibile; {skipped} esecuzione/i saltata/e, ogni job viene recuperato una volta."
   whoami:
     scope_dm: "DM"
     scope_group: "gruppo/canale"
@@ -1445,8 +1451,6 @@ platform:
   irc:
     quit_message: "Hermes Agent in arresto"
     standalone_quit: "consegnato"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Approva una volta"
     confirm_always_approve: "Approva sempre"
@@ -1597,7 +1601,7 @@ slash:
   reasoning:
     description: "Gestisci lo sforzo di ragionamento e la sua visualizzazione"
   fast:
-    description: "Modalità veloce — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Modalità veloce — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Mostra o cambia la skin/tema di visualizzazione"
   indicator:
@@ -2032,7 +2036,6 @@ cli:
     clarify_other_type_below: "Altro (digita sotto)"
     clarify_other_type_answer: "Altro (digita la tua risposta)"
     clarify_guidance: "Digita la tua risposta nel prompt qui sotto, poi premi Invio."
-    clarify_question_truncated: "… (domanda troncata)"
     picker_title_provider: "⚙ Selettore modelli — Scegli il provider"
     picker_provider_row_one: "{name} ({count} modello)"
     picker_provider_row_other: "{name} ({count} modelli)"
@@ -2077,7 +2080,6 @@ cli:
     hint_vault_username: "visibile mentre digiti · Invio per continuare"
     hint_clarify_freetext: "digita la tua risposta e premi Invio"
     hint_clarify_batch: "↑/↓ per selezionare, Invio per bloccare, Tab domanda successiva"
-    hint_clarify_choice: "↑/↓ per selezionare, Invio per confermare"
     hint_input_disabled: "input temporaneamente disattivato"
     hint_input_queues: "l'input resta attivo; Invio mette in coda"
     hint_command_running: "{frame} comando in corso · {detail}"
@@ -2260,7 +2262,6 @@ cli:
   clarify:
     bell_context: "chiarimento"
     label: "Chiarimento"
-    timed_out_agent_decides: "(chiarimento scaduto dopo {timeout}s — deciderà l'agente)"
     timed_out_locked_answers: "(chiarimento scaduto dopo {timeout}s — restituite le risposte bloccate)"
   connect:
     bell_context: "configurazione connessione"
@@ -2355,6 +2356,7 @@ cli:
     removed: "Rimosso l'elemento {index} della coda: {preview}"
     item_not_found: "Elemento {index} della coda non trovato. Dimensione attuale: {size}"
     usage_edit: "Uso: /queue edit <number> <new prompt>"
+    usage_remove: "Uso: /queue rm <number>"
     updated: "Aggiornato l'elemento {index} della coda: {preview}"
     usage_move: "Uso: /queue move <from> <to>"
     move_out_of_range: "Spostamento fuori dai limiti della coda. Dimensione attuale: {size}"
@@ -2393,6 +2395,7 @@ cli:
     session_not_found: "Sessione non trovata: {session_id}"
     compressed_into: "La sessione {session_id} è stata compressa in {descendant}; riprendo la sessione discendente con la tua trascrizione."
     cannot_resume: "Impossibile riprendere la sessione: {error}"
+    kanban_owned: "⛔ La sessione {session_id} è la trascrizione di un worker Kanban. Riprenderla qui creerebbe uno scrittore che la board Kanban non può osservare né supervisionare — invece riprova o sblocca la card sulla board, così il dispatcher possiede la prossima esecuzione."
     cannot_resume_prefix: "Impossibile riprendere la sessione:"
     resumed_session: "↻ Sessione ripresa"
     counts_one: "({count} messaggio utente, {total} messaggi in totale)"
@@ -2427,7 +2430,6 @@ cli:
     run_model_to_retry: "Esegui 'hermes model' per riprovare."
     provider_configured: "✓ Provider configurato — sei pronto per chattare."
     provider_setup_incomplete: "La configurazione del provider non è stata completata. Esegui 'hermes model' per riprovare."
-    tirith_unavailable: "⚠ scanner di sicurezza tirith attivo ma non disponibile — la scansione dei comandi userà solo il pattern matching"
     unknown_toolsets: "Avviso: toolset sconosciuti: {names}"
     stdin_unusable: "\nErrore: stdin non è utilizzabile ({error}).\nPuò succedere con alcune installazioni di Python (es. cPython gestito da uv su macOS)\nin cui kqueue non riesce a registrare il fd 0.\nProva a reinstallare Python tramite pyenv o Homebrew, poi esegui di nuovo: hermes setup"
     warning: "Avviso: {warning}"
@@ -2653,7 +2655,9 @@ cli:
       feature_generic: "Modalità veloce"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Uso: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast è disponibile solo per GPT-6 Astra (modello attuale: {model})."
+      usage: "Uso: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} impostato su {value} {scope}"
     hatch:
@@ -2718,6 +2722,7 @@ cli:
       restored: "Stato ripristinato da: {snapshot_id}"
       restart_recommended: "Riavvio consigliato per i processi gateway/dashboard affinché rilevino le modifiche a state.db."
       not_found: "Snapshot non trovato: {snapshot_id}"
+      restore_incomplete: "Lo snapshot {snapshot_id} non è stato ripristinato completamente; alcuni file sono stati rifiutati (vedi i log)"
       usage_prune: "Uso: /snapshot prune [keep-count]"
       pruned: "Eliminati {deleted} snapshot vecchi (conservati: {keep})."
     export:
@@ -3285,6 +3290,7 @@ cli:
     shallow_clone_keeping: "⚠ Clone shallow — impossibile verificare lo stato del push, mantengo: {path}"
     next_session_deepens: "La prossima sessione `hermes -w` approfondisce il clone ed elimina automaticamente i worktree già uniti."
     unpushed_keeping: "⚠ Il worktree ha commit non inviati, mantengo: {path}"
+    uncommitted_keeping: "⚠ Il worktree ha modifiche non committate, mantengo: {path}"
     clean_up_manually: "Per pulire manualmente: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree pulito: {path}"
 display:
@@ -3641,7 +3647,7 @@ tips:
   t167: "L'approvazione dei comandi pericolosi ha 4 livelli: una volta, sessione, sempre (allowlist permanente), nega."
   t168: "La modalità di approvazione smart usa un LLM per approvare automaticamente i comandi sicuri e segnalare quelli pericolosi."
   t169: "La protezione SSRF blocca reti private, loopback, link-local e indirizzi dei metadati cloud."
-  t170: "La scansione pre-esecuzione di Tirith rileva lo spoofing di URL con omoglifi e i pattern pipe-verso-interprete."
+  t170: "Gli ID di sessione hanno un prefisso timestamp (20250305_091523_abcd), così l'ordinamento funziona naturalmente in ls e jq."
   t171: "I sottoprocessi MCP ricevono un ambiente filtrato: passano solo le variabili di sistema sicure."
   t172: "I file di contesto (.hermes.md, AGENTS.md) vengono controllati per prompt injection prima del caricamento."
   t173: "command_allowlist in config.yaml approva in modo permanente pattern specifici di comandi shell."
@@ -3671,7 +3677,7 @@ tips:
   t197: "Il salvataggio delle traiettorie (--save-trajectories) cattura tracce complete dell'uso degli strumenti per l'addestramento dei modelli."
   t198: "Tre tipi di plugin: generali (strumenti/hook), provider di memoria e motori di contesto."
   t199: "hermes plugins install owner/repo installa i plugin direttamente da GitHub."
-  t200: "Provider di memoria esterni: Honcho, OpenViking e Mem0 sono inclusi; Hindsight e altri tramite hermes plugins install."
+  t200: "Provider di memoria esterni: Honcho, Hindsight, Mem0, OpenViking e altri tramite hermes plugins install."
   t201: "Gli hook dei plugin includono pre/post_tool_call, pre/post_llm_call e transform_terminal_output per la canonicalizzazione dell'output."
   t202: "Il prompt caching (Anthropic) riduce i costi riutilizzando i prefissi del prompt di sistema in cache."
   t203: "L'agente genera automaticamente i titoli delle sessioni in un thread in background — nessun impatto sulla latenza."
@@ -3846,12 +3852,9 @@ tips:
   t372: "image_gen.model in config.yaml sceglie il modello FAL: flux-2/klein, gpt-image-2, nano-banana-pro e altri."
   t373: "image_gen.provider instrada la generazione di immagini attraverso un plugin (OpenAI Images, Codex, FAL) invece del predefinito."
   t374: "AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY puntano l'analisi visiva a qualsiasi endpoint compatibile OpenAI."
-  t375: "security.tirith_fail_open: false fa sì che Hermes blocchi i comandi quando lo scanner tirith stesso va in errore."
-  t376: "La variabile d'ambiente TIRITH_FAIL_OPEN sovrascrive la configurazione tirith_fail_open — un interruttore rapido senza modificare config.yaml."
+  t375: "API_SERVER_MODEL_NAME personalizza il nome del modello su /v1/models — essenziale per configurazioni Open WebUI multi-profilo."
+  t376: "I plugin della dashboard vengono serviti da /dashboard-plugins/<name>/ — metti i file in ~/.hermes/dashboard-plugins/."
   t377: "Le chat --source tool sono escluse da hermes sessions list per impostazione predefinita — imposta --source esplicitamente per vederle."
-  t378: "Gli ID di sessione hanno un prefisso timestamp (20250305_091523_abcd), così l'ordinamento funziona naturalmente in ls e jq."
-  t379: "API_SERVER_MODEL_NAME personalizza il nome del modello su /v1/models — essenziale per configurazioni Open WebUI multi-profilo."
-  t380: "I plugin della dashboard vengono serviti da /dashboard-plugins/<name>/ — metti i file in ~/.hermes/dashboard-plugins/."
   placeholder:
     p01: "Chiedi qualsiasi cosa, o digita / per i comandi…"
     p02: "Riassumi cosa c'è in questa cartella"

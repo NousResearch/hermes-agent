@@ -7,6 +7,7 @@ to match the claim-time fingerprint is not proof of death. Terminal states are i
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import sqlite3
@@ -22,6 +23,8 @@ from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM
 from hermes_cli.observability.shared_metrics_gateway import record_cron_finish
+
+logger = logging.getLogger(__name__)
 
 # Optional test override. Production resolves the path at transaction time so dashboard operations
 # that temporarily enter another profile cannot leak that profile's records into the import-time
@@ -319,6 +322,16 @@ _OWNER_WEDGED_REASON = (
 )
 
 
+def settle_unstarted_execution(execution_id: str, job_id: str, error: str) -> None:
+    """Close the receipt of a run that never started: a ``claimed`` row never resolves. Best-effort
+    so a ledger write cannot mask the failure the caller logs or re-raises."""
+    try:
+        finish_execution(execution_id, success=False, error=error)
+    except (sqlite3.Error, OSError) as record_err:
+        logger.error("Job '%s': failed to close execution receipt %s (%s): %s",
+                     job_id, execution_id, error, record_err)
+
+
 def recover_interrupted_executions() -> int:
     """Mark abandoned attempts unknown without scheduling retries: rows whose owner is provably
     dead, plus rows whose live owner holds a claim older than the derived stale bound (the
@@ -386,6 +399,61 @@ def recover_interrupted_executions() -> int:
     return changed
 
 
+def terminalize_dead_owner(execution_id: str, *, reason: str) -> bool:
+    """Record one attempt as ``unknown`` with a cause this process actually observed.
+
+    ``recover_interrupted_executions`` sweeps every attempt whose owner is provably
+    dead, and knows nothing but that absence — so all it can write is
+    ``_OWNER_GONE_REASON``, which asserts a scheduler restart. A waiter that held the
+    worker's ``Popen`` knows more: the owner was that external worker, and it exited
+    with a known status. Without this, a manual run whose worker dies is filed as
+    "Scheduler restarted ..." (a restart that never happened) and, because the sweep
+    leaves the row terminal, the waiter reports success and never records the run —
+    the job's ``fire_claim`` then blocks the next manual fire for the whole lease
+    (#128509).
+
+    The attempt stays ``unknown``, not ``failed``: whether side effects ran is still
+    unknown. Only the CAUSE becomes truthful. Returns False — leaving the caller to
+    fall back to the generic sweep — when the row is absent, already terminal, owned by
+    this process, inside the handoff adoption grace, or owned by a live process: a
+    worker that is still running must never be terminalized out from under itself.
+    """
+    now = _hermes_now().isoformat()
+    with _transaction() as conn:
+        row = conn.execute(
+            """SELECT id, status, process_id, pid, process_started_at,
+                      handoff_pending, handoff_started_at
+               FROM executions WHERE id=?""",
+            (execution_id,),
+        ).fetchone()
+        if row is None or row["status"] not in ("claimed", "running"):
+            return False
+        if row["process_id"] == _PROCESS_ID:
+            return False
+        if _owner_is_live(int(row["pid"]), row["process_started_at"]):
+            return False
+        handoff_started_at = row["handoff_started_at"]
+        if (
+            row["handoff_pending"]
+            and handoff_started_at is not None
+            and time.time() - float(handoff_started_at) < HANDOFF_ADOPTION_GRACE_SECONDS
+        ):
+            return False
+        cur = conn.execute(
+            """UPDATE executions
+               SET status='unknown', finished_at=?, error=?,
+                   handoff_pending=0, handoff_started_at=NULL
+               WHERE id=? AND status=? AND process_id=? AND pid=?""",
+            (now, reason, row["id"], row["status"], row["process_id"], row["pid"]),
+        )
+        if cur.rowcount != 1:
+            return False
+        record = _fetch(conn, execution_id)
+        _prune_unlocked(conn)
+    _emit_execution_state(record)
+    return True
+
+
 def list_executions(
     *, job_id: Optional[str] = None, limit: int = 50, before_claimed_at: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
@@ -425,6 +493,21 @@ def get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
 def latest_execution(job_id: str) -> Optional[Dict[str, Any]]:
     rows = list_executions(job_id=job_id, limit=1)
     return rows[0] if rows else None
+
+
+def live_inflight_execution(job_id: str) -> Optional[Dict[str, Any]]:
+    """The job's latest attempt while it is still claimed/running under a LIVE owner, else ``None``.
+
+    This is scheduler OWNERSHIP, not recent activity: a run inside a long tool call writes no
+    heartbeat yet stays owned, while a run whose process died (watchdog kill, crash) does not.
+    Read-only — unlike ``recover_interrupted_executions`` it never rewrites a row.
+    """
+    record = latest_execution(job_id)
+    if not record or record.get("status") not in ("claimed", "running"):
+        return None
+    if not _owner_is_live(int(record["pid"]), record.get("process_started_at")):
+        return None
+    return record
 
 
 def latest_executions(job_ids: List[str]) -> Dict[str, Dict[str, Any]]:

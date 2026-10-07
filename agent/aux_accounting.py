@@ -64,9 +64,9 @@ def record_aux_usage(
         if raw_usage is None:
             return
 
-        from agent.usage_pricing import estimate_usage_cost, normalize_usage
+        from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
 
-        usage = normalize_usage(raw_usage, provider=provider)
+        usage = with_served_service_tier(normalize_usage(raw_usage, provider=provider), response)
         if not (
             usage.input_tokens or usage.output_tokens
             or usage.cache_read_tokens or usage.cache_write_tokens

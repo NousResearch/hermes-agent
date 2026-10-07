@@ -182,11 +182,13 @@ gateway:
     label_normal: "NORMÁL"
     status_fast: "gyors"
     status_normal: "normál"
-    picker_title: "⚡ **Priority Processing**\\n\\nJelenlegi mód: `{mode}`\\n\\nVálassz egy opciót:"
+    picker_title: "⚡ **Priority Processing**\n\nJelenlegi mód: `{mode}`\n\nVálassz egy opciót:"
     choice_fast: "fast — Priority Processing bekapcsolva"
     choice_normal: "normal — normál feldolgozás"
     choice_auto: "auto — gyors minden kör első másodperceiben"
     choice_cold: "cold — gyors csak a munkamenet első körében"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, hatszoros ár)"
+    ultrafast_not_supported: "⚡ Az Ultrafast csak a GPT-6 Astra modellhez érhető el (jelenlegi modell: `{model}`)."
   footer:
     status: "📎 Futási idejű lábléc: **{state}**\nMezők: `{fields}`\nPlatform: `{platform}`"
     usage: "Használat: `/footer [on|off|status]`"
@@ -283,7 +285,7 @@ gateway:
     reset_global_unsupported: "⚠️ A `/reasoning reset --global` nem támogatott. Használd a `/reasoning <level> --global` parancsot a globális alapérték módosításához."
     reset_done: "🧠 ✓ A munkamenet gondolkodási felülbírálása törölve; visszaállás a globális konfigurációra."
     unknown_arg: "⚠️ Ismeretlen argumentum: `{arg}`\n\n**Érvényes szintek:** none, minimal, low, medium, high, xhigh, max, ultra\n**Megjelenítés:** show, hide\n**Megőrzés:** add hozzá a `--global` opciót a munkameneten túli mentéshez"
-    picker_title: "🧠 **Gondolkodási beállítások**\\n\\n**Erőfeszítés:** `{level}`\\n**Hatókör:** {scope}\\n**Megjelenítés:** {display}\\n\\nVálassz egy opciót:"
+    picker_title: "🧠 **Gondolkodási beállítások**\n\n**Erőfeszítés:** `{level}`\n**Hatókör:** {scope}\n**Megjelenítés:** {display}\n\nVálassz egy opciót:"
     choice_none: "none — gondolkodás kikapcsolása"
     choice_reset: "reset — munkameneti felülbírálás törlése"
     choice_show: "gondolkodás megjelenítése a válaszokban"
@@ -663,6 +665,7 @@ gateway:
     cancelled: "↩️ Pontosítás megszakítva — az üzenetedet folytatásként kezelem."
     expired: "⏳ Ez a kérdés lejárt — küldj új kérést."
     native_stream_placeholder: "💬 Várom a választásodat..."
+    skip_hint: 'Válaszolj „skip” szóval a kérdés kihagyásához.'
   errors:
     rate_limited: "⏱️ Az AI-modellszolgáltatás korlátozza a kérések számát. Várj egy kicsit, majd használd a /retry parancsot."
     auth_failed: "⚠️ Nem sikerült bejelentkezni az AI-modellszolgáltatásba. Jelentkezz be újra a /login paranccsal, vagy kérd meg a bot üzemeltetőjét, hogy futtassa a `hermes doctor` parancsot a gépen."
@@ -856,6 +859,9 @@ gateway:
     db_fts_corrupt: "⚠️ A munkamenet-adatbázis a keresőindexre (FTS5) korlátozódó sérülési hibát jelzett; az üzenettáblák nem sérültek. A javításig az üzenetek mentése sikertelen lehet: futtasd a `hermes {profile_arg}doctor --fix` parancsot, majd indítsd újra az átjárót. Ne futtass helyreállító eszközöket, és ne állíts vissza biztonsági mentést, hacsak a `hermes {profile_arg}doctor` nem igazol sérülést."
     db_then_restart: "{action} Ezután: `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ A munkamenet-adatbázis nem érhető el — az üzenetek mentése sikertelen lehet, és a /resume üres lesz. Ok: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ A(z) {store} cron tároló {since} óta nem írható ({error}). Az ütemezett feladatok kimaradnak, amíg újra el nem fogadja az írást. Javítás: {fix}."
+    recovered: "✅ A(z) {store} cron tároló újra írható; {skipped} kihagyott futás, minden feladat egyszer pótlódik."
   whoami:
     scope_dm: "DM"
     scope_group: "csoport/csatorna"
@@ -1462,8 +1468,6 @@ platform:
   irc:
     quit_message: "Hermes Agent leáll"
     standalone_quit: "kézbesítve"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Jóváhagyás egyszer"
     confirm_always_approve: "Mindig jóváhagy"
@@ -1614,7 +1618,7 @@ slash:
   reasoning:
     description: "Gondolkodási erőfeszítés és megjelenítés kezelése"
   fast:
-    description: "Gyors mód — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Gyors mód — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "A megjelenítési skin/téma megjelenítése vagy módosítása"
   indicator:
@@ -2049,7 +2053,6 @@ cli:
     clarify_other_type_below: "Egyéb (írd be lent)"
     clarify_other_type_answer: "Egyéb (írd be a válaszodat)"
     clarify_guidance: "Írd be a válaszodat az alábbi mezőbe, majd nyomj Entert."
-    clarify_question_truncated: "… (a kérdés csonkolva)"
     picker_title_provider: "⚙ Modellválasztó — Válassz szolgáltatót"
     picker_provider_row_one: "{name} ({count} modell)"
     picker_provider_row_other: "{name} ({count} modell)"
@@ -2094,7 +2097,6 @@ cli:
     hint_vault_username: "gépelés közben látható · Enter a folytatáshoz"
     hint_clarify_freetext: "írd be a válaszodat, és nyomj Entert"
     hint_clarify_batch: "↑/↓ a választáshoz, Enter rögzít, Tab a következő kérdés"
-    hint_clarify_choice: "↑/↓ a választáshoz, Enter a megerősítéshez"
     hint_input_disabled: "a bevitel átmenetileg le van tiltva"
     hint_input_queues: "a bevitel aktív marad; az Enter sorba állít"
     hint_command_running: "{frame} parancs folyamatban · {detail}"
@@ -2277,7 +2279,6 @@ cli:
   clarify:
     bell_context: "pontosítás"
     label: "Pontosítás"
-    timed_out_agent_decides: "(a pontosítás {timeout} mp után lejárt — az ügynök dönt)"
     timed_out_locked_answers: "(a pontosítás {timeout} mp után lejárt — a rögzített válaszok visszaküldve)"
   connect:
     bell_context: "kapcsolat beállítása"
@@ -2372,6 +2373,7 @@ cli:
     removed: "A(z) {index}. sorelem eltávolítva: {preview}"
     item_not_found: "A(z) {index}. sorelem nem található. Jelenlegi méret: {size}"
     usage_edit: "Használat: /queue edit <number> <new prompt>"
+    usage_remove: "Használat: /queue rm <number>"
     updated: "A(z) {index}. sorelem frissítve: {preview}"
     usage_move: "Használat: /queue move <from> <to>"
     move_out_of_range: "A mozgatás kívül esik a soron. Jelenlegi méret: {size}"
@@ -2410,6 +2412,7 @@ cli:
     session_not_found: "A munkamenet nem található: {session_id}"
     compressed_into: "A(z) {session_id} munkamenet a(z) {descendant} munkamenetbe lett tömörítve; a leszármazottat folytatom az átiratoddal."
     cannot_resume: "A munkamenet nem folytatható: {error}"
+    kanban_owned: "⛔ A(z) {session_id} munkamenet egy Kanban-worker átirata. Itt folytatva egy olyan írót hozna létre, amelyet a Kanban-tábla nem tud megfigyelni vagy felügyelni — ehelyett próbáld újra vagy oldd fel a kártyát a táblán, hogy a dispatcher legyen a következő futás tulajdonosa."
     cannot_resume_prefix: "A munkamenet nem folytatható:"
     resumed_session: "↻ Munkamenet folytatva"
     counts_one: "({count} felhasználói üzenet, összesen {total} üzenet)"
@@ -2444,7 +2447,6 @@ cli:
     run_model_to_retry: "Újrapróbáláshoz: 'hermes model'"
     provider_configured: "✓ Szolgáltató beállítva — kezdődhet a beszélgetés."
     provider_setup_incomplete: "A szolgáltató beállítása nem fejeződött be. Újrapróbáláshoz: 'hermes model'"
-    tirith_unavailable: "⚠ A tirith biztonsági szkenner be van kapcsolva, de nem érhető el — a parancsellenőrzés csak mintaillesztést használ"
     unknown_toolsets: "Figyelem: ismeretlen eszközkészletek: {names}"
     stdin_unusable: "\nHiba: az stdin nem használható ({error}).\nEz bizonyos Python-telepítéseknél fordulhat elő (pl. uv által kezelt cPython macOS-en),\nahol a kqueue nem tudja regisztrálni a 0. fd-t.\nPróbáld újratelepíteni a Pythont pyenv-vel vagy Homebrew-val, majd futtasd újra: hermes setup"
     warning: "Figyelem: {warning}"
@@ -2670,7 +2672,9 @@ cli:
       feature_generic: "Gyors mód"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Használat: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Az Ultrafast csak a GPT-6 Astra modellhez érhető el (jelenlegi modell: {model})."
+      usage: "Használat: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} beállítva: {value} {scope}"
     hatch:
@@ -2735,6 +2739,7 @@ cli:
       restored: "Állapot visszaállítva innen: {snapshot_id}"
       restart_recommended: "Az átjáró/dashboard folyamatok újraindítása ajánlott, hogy átvegyék a state.db változásait."
       not_found: "A pillanatkép nem található: {snapshot_id}"
+      restore_incomplete: "A(z) {snapshot_id} pillanatkép nem állt vissza teljesen; néhány fájl elutasítva (lásd a naplókat)"
       usage_prune: "Használat: /snapshot prune [megtartandó-darabszám]"
       pruned: "{deleted} régi pillanatkép törölve ({keep} megtartva)."
     export:
@@ -3302,6 +3307,7 @@ cli:
     shallow_clone_keeping: "⚠ Sekély klón — a push állapota nem ellenőrizhető, megtartva: {path}"
     next_session_deepens: "A következő `hermes -w` munkamenet mélyíti a klónt, és automatikusan eltávolítja a beolvasztott worktree-ket."
     unpushed_keeping: "⚠ A worktree-ben feltöltetlen commitok vannak, megtartva: {path}"
+    uncommitted_keeping: "⚠ A worktree-ben nem commitolt változások vannak, megtartva: {path}"
     clean_up_manually: "Kézi takarításhoz: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree eltakarítva: {path}"
 display:
@@ -3658,7 +3664,7 @@ tips:
   t167: "A veszélyes parancsok jóváhagyásának 4 szintje van: egyszer, munkamenet, mindig (állandó engedélylista), elutasítás."
   t168: "Az intelligens jóváhagyási mód LLM-mel hagyja jóvá automatikusan a biztonságos parancsokat, és jelöli meg a veszélyeseket."
   t169: "Az SSRF-védelem blokkolja a privát hálózatokat, a loopback és link-local címeket, valamint a felhő metaadat-címeit."
-  t170: "A Tirith futtatás előtti vizsgálata felismeri a homográf URL-hamisítást és a pipe-to-interpreter mintákat."
+  t170: "A munkamenet-azonosítók időbélyeggel kezdődnek (20250305_091523_abcd), így ls-ben és jq-ban természetesen rendeződnek."
   t171: "Az MCP alfolyamatok szűrt környezetet kapnak – csak a biztonságos rendszerváltozók jutnak át."
   t172: "A kontextusfájlokat (.hermes.md, AGENTS.md) betöltés előtt a rendszer prompt injection ellen átvizsgálja."
   t173: "A config.yaml command_allowlist beállítása véglegesen jóváhagy adott shell parancsmintákat."
@@ -3688,7 +3694,7 @@ tips:
   t197: "A trajektóriamentés (--save-trajectories) rögzíti a teljes eszközhasználati nyomokat a modelltanításhoz."
   t198: "Három plugintípus van: általános (eszközök/hookok), memóriaszolgáltatók és kontextusmotorok."
   t199: "A hermes plugins install owner/repo közvetlenül a GitHubról telepít plugint."
-  t200: "Külső memóriaszolgáltatók: a Honcho, az OpenViking és a Mem0 beépített; a Hindsight és mások a hermes plugins install parancson keresztül."
+  t200: "Külső memóriaszolgáltatók: a Honcho, a Hindsight, a Mem0, az OpenViking és mások a hermes plugins install parancson keresztül."
   t201: "A plugin hookok közé tartozik a pre/post_tool_call, a pre/post_llm_call és a transform_terminal_output a kimenet egységesítésére."
   t202: "A prompt-gyorsítótárazás (Anthropic) a rendszerprompt gyorsítótárazott előtagjainak újrahasznosításával csökkenti a költségeket."
   t203: "Az ügynök háttérszálon generálja a munkamenetek címét – nincs hatása a késleltetésre."
@@ -3863,12 +3869,9 @@ tips:
   t372: "Az image_gen.model a config.yaml-ban választja ki a FAL-modellt: flux-2/klein, gpt-image-2, nano-banana-pro és mások."
   t373: "Az image_gen.provider egy pluginon (OpenAI Images, Codex, FAL) át irányítja a képgenerálást az alapértelmezett helyett."
   t374: "Az AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY bármely OpenAI-kompatibilis végpontra irányítja a képelemzést."
-  t375: "A security.tirith_fail_open: false hatására a Hermes blokkolja a parancsokat, ha maga a tirith-ellenőrző hibázik."
-  t376: "A TIRITH_FAIL_OPEN környezeti változó felülírja a tirith_fail_open konfigurációt — gyors kapcsoló a config.yaml szerkesztése nélkül."
+  t375: "Az API_SERVER_MODEL_NAME testreszabja a modellnevet a /v1/models végponton — többprofilos Open WebUI felállásoknál elengedhetetlen."
+  t376: "A dashboard-pluginok a /dashboard-plugins/<name>/ útvonalról szolgálódnak ki — másold a fájlokat a ~/.hermes/dashboard-plugins/ mappába."
   t377: "A --source tool chatek alapból nem szerepelnek a hermes sessions list kimenetében — add meg a --source kapcsolót kifejezetten, hogy lásd őket."
-  t378: "A munkamenet-azonosítók időbélyeggel kezdődnek (20250305_091523_abcd), így ls-ben és jq-ban természetesen rendeződnek."
-  t379: "Az API_SERVER_MODEL_NAME testreszabja a modellnevet a /v1/models végponton — többprofilos Open WebUI felállásoknál elengedhetetlen."
-  t380: "A dashboard-pluginok a /dashboard-plugins/<name>/ útvonalról szolgálódnak ki — másold a fájlokat a ~/.hermes/dashboard-plugins/ mappába."
   placeholder:
     p01: "Kérdezz bármit, vagy írj / jelet a parancsokhoz…"
     p02: "Foglald össze, mi van ebben a mappában"

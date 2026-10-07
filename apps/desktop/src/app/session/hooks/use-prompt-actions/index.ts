@@ -65,6 +65,7 @@ import {
   durableRowIdsForRebind,
   finalizeStoppedMessages,
   planConfirmedEdit,
+  laterVisibleUserTurns,
   planConfirmedReload,
   planEdit,
   planRestore,
@@ -1224,7 +1225,8 @@ export function usePromptActions({
 
       const forced = planned && forceDeep ? { ...planned, confirmDeepTruncate: true } : planned
 
-      if (!sessionId || !forced) {
+      // A confirm is a wait of user length: an answer given after a session switch is not for this one.
+      if (!sessionId || !forced || activeSessionIdRef.current !== sessionId) {
         return
       }
 
@@ -1294,6 +1296,8 @@ export function usePromptActions({
       } catch (err) {
         let surfaced: unknown = err
         let unavailable = isCompressedAwayError(err)
+        // Whether the submit that produced *surfaced* carried a deep-cut confirm.
+        let surfacedConfirmed = plan.confirmDeepTruncate
 
         // Stale target after compression/resume drift (the cached rowId and
         // ordinal address the pre-compression segment): reload server history,
@@ -1311,10 +1315,17 @@ export function usePromptActions({
 
             const refreshed = $messages.get()
             const retryPlan = planEdit(refreshed, edited)
-            // planEdit, not planConfirmedEdit: the user already answered for this edit; the retry only
-            // re-addresses the same turn after a history refresh.
+            // planEdit, not planConfirmedEdit: the retry only re-addresses the same turn after a history
+            // refresh. The user's deep-cut answer covers the later turns they saw; if the refresh shows
+            // more, it goes unconfirmed and the server gate decides (a 4033 asks again below).
+            const retryConfirmed =
+              plan.confirmDeepTruncate &&
+              retryPlan !== null &&
+              laterVisibleUserTurns(refreshed, retryPlan.sourceIndex) ===
+                laterVisibleUserTurns(messages, plan.sourceIndex)
 
             if (retryPlan && !retryPlan.isFailedTurn) {
+              surfacedConfirmed = retryConfirmed
               const survivorRowIds = await submitRewindPrompt(
                 sessionId,
                 retryPlan.text,
@@ -1324,7 +1335,7 @@ export function usePromptActions({
                 retryPlan.truncateRowId,
                 retryPlan.sourceText,
                 durableRowIdsForRebind(refreshed),
-                plan.confirmDeepTruncate
+                retryConfirmed
               )
 
               applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1354,11 +1365,12 @@ export function usePromptActions({
           messages
         }))
 
-        if (!isDeepTruncateRefusal(surfaced) || plan.confirmDeepTruncate) {
+        if (!isDeepTruncateRefusal(surfaced) || surfacedConfirmed) {
           notifyError(surfaced, unavailable ? copy.editTurnUnavailable : copy.editFailed)
         } else if ((await confirmDeep()) && activeSessionIdRef.current === sessionId) {
           // Re-run from the top: the session is re-read and re-validated after this wait. The answer
-          // belongs to this session: a switch during the dialog drops it.
+          // belongs to this session (a switch during the dialog drops it) and to *planning*: after a
+          // refresh the transcript differs, so the re-run asks once more.
           await runEditRef.current(edited, planning)
         }
       }

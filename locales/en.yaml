@@ -798,6 +798,9 @@ gateway:
     ack_task: "Planning: {task}"
     ack_conversation: "Planning from this conversation's context…"
 
+  initiate_setup:
+    ack: "Starting setup…"
+
   init:
     start_failed: "Could not start /init — please try again."
     ack_update: "Updating AGENTS.md from a project scan…"
@@ -873,6 +876,9 @@ gateway:
     db_fts_corrupt: "⚠️ Session database reported a corruption error confined to the search index (FTS5); the message tables are not damaged. Messages may not be persisted until it is repaired: run `hermes {profile_arg}doctor --fix`, then restart the gateway. Do not run recovery tools or restore a backup unless `hermes {profile_arg}doctor` confirms damage."
     db_then_restart: "{action} Then `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Session database unavailable — messages may not be saved and /resume will be empty. Cause: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ Cron store {store} is not writable ({error}) since {since}. Scheduled jobs are being skipped until it accepts writes again. Fix: {fix}."
+    recovered: "✅ Cron store {store} is writable again; {skipped} skipped run(s), catching up once per job."
 
   whoami:
     scope_dm: "DM"
@@ -1519,8 +1525,6 @@ platform:
     quit_message: "Hermes Agent shutting down"
     standalone_quit: "delivered"
 
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Approve Once"
     confirm_always_approve: "Always Approve"
@@ -1626,6 +1630,8 @@ slash:
     description: "Re-run a prompt on a recurring interval in this session"
   plan:
     description: "Write a markdown implementation plan to .hermes/plans/ without executing anything"
+  initiate-setup:
+    description: "Run the first-run setup: learn about you and set Hermes up around you"
   moa:
     description: "Run one prompt through the default Mixture of Agents preset, then restore your model"
   subgoal:
@@ -2455,6 +2461,7 @@ cli:
     removed: "Removed queue item {index}: {preview}"
     item_not_found: "Queue item {index} not found. Current size: {size}"
     usage_edit: "Usage: /queue edit <number> <new prompt>"
+    usage_remove: "Usage: /queue rm <number>"
     updated: "Updated queue item {index}: {preview}"
     usage_move: "Usage: /queue move <from> <to>"
     move_out_of_range: "Queue move out of range. Current size: {size}"
@@ -2494,6 +2501,7 @@ cli:
     compressed_into: "Session {session_id} was compressed into {descendant}; resuming the descendant with your transcript."
     cannot_resume: "Cannot resume session: {error}"
     cannot_resume_prefix: "Cannot resume session:"
+    kanban_owned: "⛔ Session {session_id} is a Kanban worker transcript. Resuming it here would create a writer the Kanban board cannot observe or supervise — retry or unblock the card on the board instead, so the dispatcher owns the next run."
     resumed_session: "↻ Resumed session"
     counts_one: "({count} user message, {total} total messages)"
     counts_other: "({count} user messages, {total} total messages)"
@@ -2527,7 +2535,6 @@ cli:
     run_model_to_retry: "Run 'hermes model' to try again."
     provider_configured: "✓ Provider configured — you're ready to chat."
     provider_setup_incomplete: "Provider setup didn't complete. Run 'hermes model' to retry."
-    tirith_unavailable: "⚠ tirith security scanner enabled but not available — command scanning will use pattern matching only"
     unknown_toolsets: "Warning: Unknown toolsets: {names}"
     stdin_unusable: "\nError: stdin is not usable ({error}).\nThis can happen with certain Python installations (e.g. uv-managed cPython on macOS)\nwhere kqueue cannot register fd 0.\nTry reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
     warning: "Warning: {warning}"
@@ -2820,6 +2827,7 @@ cli:
       restored: "Restored state from: {snapshot_id}"
       restart_recommended: "Restart recommended for gateway/dashboard processes to pick up state.db changes."
       not_found: "Snapshot not found: {snapshot_id}"
+      restore_incomplete: "Snapshot {snapshot_id} was not fully restored; some files were refused (see logs)"
       usage_prune: "Usage: /snapshot prune [keep-count]"
       pruned: "Pruned {deleted} old snapshot(s) (keeping {keep})."
     export:
@@ -3011,6 +3019,8 @@ cli:
     plan:
       planning: "📋 Planning: {task}"
       from_conversation: "📋 Planning from this conversation's context..."
+    initiate_setup:
+      starting: "🧭 Starting setup..."
     init:
       updating: "⚡ Updating AGENTS.md from a project scan..."
       generating: "⚡ Generating AGENTS.md from a project scan..."
@@ -3758,7 +3768,7 @@ tips:
   t167: "Dangerous command approval has 4 tiers: once, session, always (permanent allowlist), deny."
   t168: "Smart approval mode uses an LLM to auto-approve safe commands and flag dangerous ones."
   t169: "SSRF protection blocks private networks, loopback, link-local, and cloud metadata addresses."
-  t170: "Tirith pre-exec scanning detects homograph URL spoofing and pipe-to-interpreter patterns."
+  t170: "Session IDs are timestamp-prefixed (20250305_091523_abcd) so sorting works naturally in ls and jq."
   t171: "MCP subprocesses receive a filtered environment — only safe system vars pass through."
   t172: "Context files (.hermes.md, AGENTS.md) are security-scanned for prompt injection before loading."
   t173: "command_allowlist in config.yaml permanently approves specific shell command patterns."
@@ -3788,7 +3798,7 @@ tips:
   t197: "Trajectory saving (--save-trajectories) captures full tool-use traces for model training."
   t198: "Three plugin types: general (tools/hooks), memory providers, and context engines."
   t199: "hermes plugins install owner/repo installs plugins directly from GitHub."
-  t200: "External memory providers: Honcho, OpenViking, Mem0 bundled; Hindsight and more via hermes plugins install."
+  t200: "External memory providers: Honcho, Hindsight, Mem0, OpenViking and more via hermes plugins install."
   t201: "Plugin hooks include pre/post_tool_call, pre/post_llm_call, and transform_terminal_output for output canonicalization."
   t202: "Prompt caching (Anthropic) reduces costs by reusing cached system prompt prefixes."
   t203: "The agent auto-generates session titles in a background thread — zero latency impact."
@@ -3963,12 +3973,9 @@ tips:
   t372: "image_gen.model in config.yaml picks the FAL model: flux-2/klein, gpt-image-2, nano-banana-pro, and more."
   t373: "image_gen.provider routes image generation through a plugin (OpenAI Images, Codex, FAL) instead of the default."
   t374: "AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY point vision analysis at any OpenAI-compatible endpoint."
-  t375: "security.tirith_fail_open: false makes Hermes block commands when the tirith scanner itself errors out."
-  t376: "TIRITH_FAIL_OPEN env var overrides the tirith_fail_open config — a quick toggle without editing config.yaml."
+  t375: "API_SERVER_MODEL_NAME customizes the model name on /v1/models — essential for multi-profile Open WebUI setups."
+  t376: "Dashboard plugins are served from /dashboard-plugins/<name>/ — drop files into ~/.hermes/dashboard-plugins/."
   t377: "--source tool chats are excluded from hermes sessions list by default — set --source explicitly to see them."
-  t378: "Session IDs are timestamp-prefixed (20250305_091523_abcd) so sorting works naturally in ls and jq."
-  t379: "API_SERVER_MODEL_NAME customizes the model name on /v1/models — essential for multi-profile Open WebUI setups."
-  t380: "Dashboard plugins are served from /dashboard-plugins/<name>/ — drop files into ~/.hermes/dashboard-plugins/."
   # Empty-composer example prompts (TUI). Generic on purpose: Hermes is not coding-only.
   placeholder:
     p01: "Ask anything, or type / for commands…"

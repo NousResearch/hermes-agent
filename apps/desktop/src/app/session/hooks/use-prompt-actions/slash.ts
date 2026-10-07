@@ -168,6 +168,19 @@ interface SlashCommandDeps {
 }
 
 /** The /slash command dispatcher, extracted from usePromptActions. */
+type CommandDispatch = NonNullable<ReturnType<typeof parseCommandDispatch>>
+
+function dispatchDisplayText(dispatch: CommandDispatch, message: string): string | undefined {
+  const projected = 'display' in dispatch ? dispatch.display?.trim() : ''
+
+  return projected || skillInvocationText(message) || undefined
+}
+
+const BUSY_KICKOFF_TEXT = {
+  queued: 'session busy — message queued to send when the current turn finishes',
+  busy: 'session busy — stop the current reply first (Stop button or Esc), then send this command'
+} as const
+
 export function useSlashCommand(deps: SlashCommandDeps) {
   const {
     activeSessionIdRef,
@@ -193,7 +206,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
-    async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean; typed?: boolean }) => {
+    async (
+      rawCommand: string,
+      options?: { hidden?: boolean; sessionId?: string; recordInput?: boolean; typed?: boolean }
+    ) => {
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime
       // session, and per-session state (`/goal`, `/usage`, `/status`) is keyed by
@@ -358,8 +374,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // model-facing scaffolding. Never render it; the bubble shows the
           // invocation the gateway projected, or one read from the payload
           // when the backend is older than this app.
-          const projected = 'display' in dispatch ? dispatch.display?.trim() : ''
-          const displayText = projected || skillInvocationText(message) || undefined
+          const displayText = dispatchDisplayText(dispatch, message)
 
           // Gate on the TARGET session's own busy state, not the foreground
           // view's — see isTargetSessionBusy. `busyRef` mirrors whatever chat
@@ -379,11 +394,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           })
 
           if (queued !== 'idle') {
-            renderSlashOutput(
-              queued === 'queued'
-                ? 'session busy — message queued to send when the current turn finishes'
-                : 'session busy — stop the current reply first (Stop button or Esc), then send this command'
-            )
+            renderSlashOutput(BUSY_KICKOFF_TEXT[queued])
 
             return
           }
@@ -396,7 +407,14 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // its kickoff as a user message into whatever conversation was on
           // screen. Every other target the dispatcher serves (tile, background
           // queue drain, a session created by this very call) had the same leak.
-          await submitPromptText(message, { sessionId, storedSessionId, displayText })
+          // `hidden` (the first-run `/initiate-setup`) types the saved user row hidden: no bubble, live
+          // or after a reload.
+          await submitPromptText(message, {
+            sessionId,
+            storedSessionId,
+            displayText,
+            ...(options?.hidden && { displayKind: 'hidden' as const })
+          })
         }
 
         try {
@@ -1178,11 +1196,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           await runExec(ctx)
         },
-        // /browser connect|disconnect|status manages the live CDP connection on
-        // the gateway host, mirroring the TUI's browser.manage RPC. It mutates
+        // /browser connect|disconnect manages the live CDP connection on the
+        // gateway host, mirroring the TUI's browser.manage RPC. It mutates
         // BROWSER_CDP_URL (and may launch Chrome) in the gateway process — only
-        // meaningful when that process runs on this machine, so it's gated to
-        // local connections. A remote gateway would act on the wrong host.
+        // meaningful when that process runs on this machine, so those two are
+        // gated to local connections. `status` and `use [off]` (the profile's
+        // browser.backend, applied to new chats) are right on any backend.
         browser: async ctx => {
           const resolved = await withSlashOutput(ctx)
 
@@ -1191,22 +1210,29 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           const { render: renderSlashOutput, sessionId } = resolved
+          const [rawAction = 'status', ...rest] = ctx.arg.trim().split(/\s+/).filter(Boolean)
+          const cmdAction = rawAction.toLowerCase()
 
-          if ($connection.get()?.mode === 'remote') {
+          if (!['connect', 'disconnect', 'status', 'use'].includes(cmdAction)) {
             renderSlashOutput(
-              '/browser manages a Chromium-family browser on the gateway host — only available when connected to a local gateway.'
+              'usage: /browser [connect|disconnect|status|use] [url] · persistent: set browser.cdp_url in config.yaml'
             )
 
             return
           }
 
-          const [rawAction = 'status', ...rest] = ctx.arg.trim().split(/\s+/).filter(Boolean)
-          const cmdAction = rawAction.toLowerCase()
-
-          if (!['connect', 'disconnect', 'status'].includes(cmdAction)) {
+          if ((cmdAction === 'connect' || cmdAction === 'disconnect') && $connection.get()?.mode === 'remote') {
             renderSlashOutput(
-              'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml'
+              '/browser connect manages a Chromium-family browser on the gateway host — only available when connected to a local gateway.'
             )
+
+            return
+          }
+
+          const mode = cmdAction === 'use' ? (rest[0] ?? 'on').toLowerCase() : undefined
+
+          if (mode && mode !== 'on' && mode !== 'off') {
+            renderSlashOutput('usage: /browser use [off]')
 
             return
           }
@@ -1221,12 +1247,24 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             const result = await requestGateway<BrowserManageResponse>('browser.manage', {
               action: cmdAction,
               session_id: sessionId,
-              ...(url && { url })
+              ...(url && { url }),
+              ...(mode && { enabled: mode === 'on' })
             })
 
             // Without a streamed session subscription, the gateway bundles its
             // progress lines into `messages` — flush them inline.
             result?.messages?.forEach(message => renderSlashOutput(message))
+
+            if (cmdAction === 'use') {
+              renderSlashOutput(
+                mode === 'on'
+                  ? 'Browser Use mode enabled — browser_exec via the Browser Use CLI 3.0'
+                  : 'Browser Use mode disabled — built-in browser tools restored'
+              )
+              renderSlashOutput('applies to new chats — this one keeps its current tools (/new to start one)')
+
+              return
+            }
 
             if (cmdAction === 'status') {
               renderSlashOutput(
@@ -1234,6 +1272,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
                   ? `browser connected: ${result.url || '(url unavailable)'}`
                   : 'browser not connected (try /browser connect <url> or set browser.cdp_url in config.yaml)'
               )
+
+              if (result?.browser_use) {
+                renderSlashOutput('Browser: Browser Use mode (browser_exec via the Browser Use CLI 3.0)')
+              }
 
               return
             }

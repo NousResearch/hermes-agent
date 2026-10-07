@@ -155,6 +155,13 @@ def _is_single_query_approval_context() -> bool:
     return is_truthy_value(_session_env("HERMES_SINGLE_QUERY_SESSION"))
 
 
+def _no_user_can_answer() -> bool:
+    """True in single-query (-q), cron and unattended-platform sessions. `hermes chat -q` still registers the
+    CLI panel callback, so a prompt that only checks for a callback would wait the full timeout for nobody."""
+    return (_is_single_query_approval_context() or _is_cron_approval_context()
+            or _is_unattended_platform_approval_context())
+
+
 def _is_gateway_approval_context() -> bool:
     """True inside a gateway/API session that can answer an approval.
 
@@ -304,18 +311,6 @@ def _get_unattended_approval_mode() -> str:
     deny — an unattended session never silently runs a flagged action unless the
     operator explicitly trusts it."""
     return _binary_approval_mode("unattended_mode")
-
-
-def _tirith_fail_open() -> bool:
-    """``security.tirith_fail_open`` (default True; True when config is unreadable).
-    False means the operator opted into fail-closed: an un-importable scanner
-    must not silently grant access."""
-    try:
-        from hermes_cli.config import load_config_readonly
-        _sec = (load_config_readonly() or {}).get("security", {}) or {}
-        return bool(_sec.get("tirith_fail_open", True)) if _sec.get("tirith_enabled", True) else True
-    except Exception:
-        return True
 
 
 def _get_approval_transport_config() -> tuple[str, str | None]:

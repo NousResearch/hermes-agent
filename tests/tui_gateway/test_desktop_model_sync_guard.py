@@ -60,6 +60,24 @@ def test_config_sync_still_adopts_when_persisted_model_matches_default(monkeypat
     assert calls == ["new/model --provider nous"]
 
 
+def test_config_sync_adopts_new_default_for_unpinned_persisted_chat(monkeypatch):
+    _patch_config_model(monkeypatch, "new/model", provider="nous")
+    db = types.SimpleNamespace(get_session=lambda key: {"model": "old/model"})
+    session = {
+        "agent": types.SimpleNamespace(model="old/model", provider="nous", _session_db=db),
+        "session_key": "session-key",
+        "source": "cli",
+        "config_model_seen": ("old/model", "nous"),
+    }
+    calls = []
+    monkeypatch.setattr(server, "_apply_model_switch",
+                        lambda sid, sess, raw, **kw: calls.append(raw))
+
+    server._sync_agent_model_with_config("sid", session)
+
+    assert calls == ["new/model --provider nous"]
+
+
 def test_config_sync_still_adopts_when_db_unreadable(monkeypatch):
     _patch_config_model(monkeypatch, "new/model", provider="nous")
     session = {

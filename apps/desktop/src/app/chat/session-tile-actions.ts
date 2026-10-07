@@ -52,7 +52,7 @@ import {
   applyBranchVisibility,
   applyReloadOptimistic,
   applyRewindOptimistic,
-  deepReloadConfirmRequest,
+  deepCutConfirmRequest,
   durableRowIdsForRebind,
   finalizeStoppedMessages,
   planConfirmedEdit,
@@ -558,11 +558,13 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         return
       }
 
-      const plan = await planConfirmedReload(state.messages, parentId, () =>
-        confirm(deepReloadConfirmRequest(t.assistant.thread))
-      )
+      const confirmDeep = () => confirm(deepCutConfirmRequest(t.assistant.thread))
+      const plan = await planConfirmedReload(state.messages, parentId, confirmDeep)
+      const after = readState()
 
-      if (!plan) {
+      // The confirm is a wait of user length: a turn that started or output that landed meanwhile
+      // makes the plan (and the rollback snapshot) stale, so drop it rather than cut a live turn.
+      if (!plan || !after || after.busy || after.messages !== state.messages) {
         return
       }
 
@@ -588,7 +590,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
                 confirmed
               ),
             plan.confirmDeepTruncate,
-            () => confirm(deepReloadConfirmRequest(t.assistant.thread))
+            confirmDeep
           )
         )
       } catch (err) {
@@ -704,10 +706,12 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
   const editMessage = useCallback(
     async (edited: AppendMessage) => {
       const messages = readMessages()
-      const confirmDeep = () => confirm(deepReloadConfirmRequest(t.assistant.thread))
+      const confirmDeep = () => confirm(deepCutConfirmRequest(t.assistant.thread))
       const plan = await planConfirmedEdit(messages, edited, confirmDeep)
 
-      if (!plan) {
+      // Edit interrupts a live turn on purpose; only output that landed during the confirm makes
+      // the plan's index and rollback snapshot stale.
+      if (!plan || (plan.confirmDeepTruncate && readMessages() !== messages)) {
         return
       }
 

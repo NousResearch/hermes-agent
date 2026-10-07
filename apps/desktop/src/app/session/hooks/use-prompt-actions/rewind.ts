@@ -544,8 +544,8 @@ export function planReload(messages: ChatMessage[], parentId: null | string): nu
   }
 }
 
-/** Regenerate reuses the restore checkpoint confirm copy for a deep cut. */
-export const deepReloadConfirmRequest = (copy: {
+/** A deep cut (regenerate or edit of an older turn) reuses the restore checkpoint confirm copy. */
+export const deepCutConfirmRequest = (copy: {
   restoreBody: string
   restoreConfirm: string
   restoreTitle: string
@@ -570,12 +570,21 @@ export async function planConfirmedReload(
 ): Promise<null | ReloadPlan> {
   const plan = planReload(messages, parentId)
 
-  if (
-    !plan ||
-    plan.truncateOrdinal === undefined ||
-    !messages.some((m, i) => i > plan.userIndex && isVisibleUserMessage(m))
-  ) {
-    return plan
+  return plan && confirmIfDeepCut(messages, plan, plan.userIndex, confirmDeep)
+}
+
+/**
+ * A cut at *anchorIndex* that keeps a later user turn archives it: ask first and mark the plan
+ * confirmed, or null when declined. A plan with no truncation address (failed turn) cuts nothing.
+ */
+async function confirmIfDeepCut<P extends { truncateOrdinal: number | undefined }>(
+  messages: ChatMessage[],
+  plan: P,
+  anchorIndex: number,
+  confirmDeep: () => Promise<boolean>
+): Promise<null | (P & { confirmDeepTruncate: boolean })> {
+  if (plan.truncateOrdinal === undefined || !messages.some((m, i) => i > anchorIndex && isVisibleUserMessage(m))) {
+    return { ...plan, confirmDeepTruncate: false }
   }
 
   return (await confirmDeep()) ? { ...plan, confirmDeepTruncate: true } : null
@@ -751,15 +760,7 @@ export async function planConfirmedEdit(
 ): Promise<null | (EditPlan & { confirmDeepTruncate: boolean })> {
   const plan = planEdit(messages, edited)
 
-  if (!plan) {
-    return null
-  }
-
-  if (plan.truncateOrdinal === undefined || !messages.some((m, i) => i > plan.sourceIndex && isVisibleUserMessage(m))) {
-    return { ...plan, confirmDeepTruncate: false }
-  }
-
-  return (await confirmDeep()) ? { ...plan, confirmDeepTruncate: true } : null
+  return plan && confirmIfDeepCut(messages, plan, plan.sourceIndex, confirmDeep)
 }
 
 /** Optimistic rewind-to state for restore/edit: drop everything after the

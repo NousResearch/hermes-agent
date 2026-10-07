@@ -61,7 +61,7 @@ import {
   applyBranchVisibility,
   applyReloadOptimistic,
   applyRewindOptimistic,
-  deepReloadConfirmRequest,
+  deepCutConfirmRequest,
   durableRowIdsForRebind,
   finalizeStoppedMessages,
   planConfirmedEdit,
@@ -249,6 +249,11 @@ interface RestoreMessageTarget {
   text?: string
   userOrdinal?: number | null
 }
+
+const currentMessages = (sessionId: string) => $sessionStates.get()[sessionId]?.messages ?? $messages.get()
+
+const isStaleAfterConfirm = (sessionId: string, planned: ChatMessage[]) =>
+  Boolean($sessionStates.get()[sessionId]?.busy) || currentMessages(sessionId) !== planned
 
 const isStaleTargetError = (err: unknown) =>
   /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
@@ -1010,12 +1015,12 @@ export function usePromptActions({
       // Active sessions publish their transcript into $sessionStates[runtimeId];
       // the global $messages mirror is empty/divergent for them (#68734).
       const messages = (sessionId ? $sessionStates.get()[sessionId]?.messages : null) ?? $messages.get()
+      const confirmDeep = () => confirm(deepCutConfirmRequest(t.assistant.thread))
+      const plan = await planConfirmedReload(messages, parentId, confirmDeep)
 
-      const plan = await planConfirmedReload(messages, parentId, () =>
-        confirm(deepReloadConfirmRequest(t.assistant.thread))
-      )
-
-      if (!plan) {
+      // The confirm is a wait of user length: a turn that started or output that landed meanwhile
+      // makes the plan (and the rollback snapshot) stale, so drop it rather than cut a live turn.
+      if (!plan || isStaleAfterConfirm(sessionId, messages)) {
         return
       }
 
@@ -1037,7 +1042,7 @@ export function usePromptActions({
               confirmed
             ),
           plan.confirmDeepTruncate,
-          () => confirm(deepReloadConfirmRequest(t.assistant.thread))
+          confirmDeep
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1204,10 +1209,12 @@ export function usePromptActions({
       // Same dual-store read as reloadFromMessage (#68734).
       const messages = (sessionId ? $sessionStates.get()[sessionId]?.messages : null) ?? $messages.get()
 
-      const confirmDeep = () => confirm(deepReloadConfirmRequest(t.assistant.thread))
+      const confirmDeep = () => confirm(deepCutConfirmRequest(t.assistant.thread))
       const plan = sessionId ? await planConfirmedEdit(messages, edited, confirmDeep) : null
 
-      if (!sessionId || !plan) {
+      // Edit interrupts a live turn on purpose; only output that landed during the confirm makes
+      // the plan's index and rollback snapshot stale.
+      if (!sessionId || !plan || (plan.confirmDeepTruncate && currentMessages(sessionId) !== messages)) {
         return
       }
 

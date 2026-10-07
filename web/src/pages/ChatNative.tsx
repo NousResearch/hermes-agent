@@ -26,6 +26,15 @@ function toNativeMessages(messages: SessionMessage[]): NativeMessage[] {
   }));
 }
 
+function transcriptMarkdown(messages: NativeMessage[]): string {
+  return messages
+    .map((m) => {
+      const head = m.role === "user" ? "## You" : `## ${m.role}`;
+      return `${head}\n\n${m.text}`;
+    })
+    .join("\n\n---\n\n");
+}
+
 function deltaText(payload: unknown): string {
   if (!payload || typeof payload !== "object") return "";
   const text = (payload as { text?: unknown }).text;
@@ -253,8 +262,20 @@ export default function ChatNative() {
     );
   }, [gw, gwSessionId, sending]);
 
-  const lastMessage = messages.at(-1);
-  const canRetry =
+  const exportChat = useCallback(() => {
+    if (messages.length === 0) return;
+    const blob = new Blob([transcriptMarkdown(messages)], {
+      type: "text/markdown",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `chat-${activeSessionId ?? "new"}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [messages, activeSessionId]);
+
+  const lastMessage = messages.at(-1);  const canRetry =
     !sending &&
     !!gwSessionId &&
     !!lastUserTextRef.current &&
@@ -300,6 +321,16 @@ export default function ChatNative() {
         )}
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="flex shrink-0 justify-end">
+          <button
+            type="button"
+            onClick={exportChat}
+            disabled={messages.length === 0}
+            className="rounded border border-current/20 px-2 py-1 text-xs text-text-secondary hover:text-midground disabled:opacity-50"
+          >
+            Export .md
+          </button>
+        </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {error && (
             <div className="px-2 py-2 text-xs text-destructive">{error}</div>

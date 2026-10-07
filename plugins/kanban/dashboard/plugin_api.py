@@ -17,7 +17,7 @@ import re
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, suppress
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
@@ -938,7 +938,7 @@ def list_active_workers(board: Optional[str] = _BOARD_Q):
             fingerprint = kanban_db._row_get(row, "worker_started_at")
             pid_alive: Optional[bool] = None
             if row["worker_pid"] is not None:
-                with contextlib.suppress(Exception):
+                with suppress(Exception):
                     pid_alive = bool(kanban_db._worker_alive(row["worker_pid"], fingerprint))
             worker["liveness"] = kprog.classify_liveness(
                 now=now,

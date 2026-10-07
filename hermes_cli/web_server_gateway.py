@@ -20,6 +20,22 @@ from hermes_cli.config import get_hermes_home
 _log = logging.getLogger("hermes_cli.web_server")
 
 
+# Defense against a hostile/compromised upstream serving an unbounded body to
+# the dashboard's JSON readers: refuse to buffer past this size.
+_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES = 1024 * 1024
+
+
+def _read_dashboard_json_response(response) -> Any:
+    """Read a JSON HTTP response body with a hard size cap (issue #54808)."""
+    raw = response.read(_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES + 1)
+    if len(raw) > _DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES:
+        raise ValueError(
+            "dashboard HTTP JSON response exceeded "
+            f"{_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES} bytes"
+        )
+    return json.loads(raw.decode("utf-8"))
+
+
 def _probe_gateway_health() -> tuple[bool, dict | None]:
     """Probe the gateway's HTTP health endpoint (cross-container). Blocking — run in an executor.
 
@@ -31,12 +47,18 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     if not _GATEWAY_HEALTH_URL:
         return False, None
     base = re.sub(r"/health(/detailed)?$", "", _GATEWAY_HEALTH_URL.rstrip("/"))
+    # Bearer credential for an auth-protected gateway (issue #76051): sent to the
+    # authenticated /health/detailed probe ONLY — never to the public /health fallback,
+    # which is unauthenticated by design.
+    api_key = os.environ.get("API_SERVER_KEY", "").strip()
     for path in (f"{base}/health/detailed", f"{base}/health"):
         try:
             req = urllib.request.Request(path, method="GET")
+            if api_key and path.endswith("/health/detailed"):
+                req.add_header("Authorization", f"Bearer {api_key}")
             with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
                 if resp.status == 200:
-                    return True, json.loads(resp.read())
+                    return True, _read_dashboard_json_response(resp)
         except Exception:
             continue
     return False, None
@@ -146,9 +168,9 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     platform maps per live gateway, an internal aggregation input never exposed directly.
     """
     try:
-        from hermes_cli.profiles import _check_gateway_running, profiles_to_serve
+        from hermes_cli.profiles import _check_gateway_running, profiles_to_serve, profile_is_parked
         from gateway.status import read_runtime_status
-        homes = profiles_to_serve(True, include_standalone=True)
+        homes = profiles_to_serve(True, include_standalone=True, include_parked=True)
     except Exception:
         _log.debug("profile/gateway topology enumeration failed", exc_info=True)
         return {"profiles": [], "gateway_mode": "unknown", "gateways": [], "profile_platforms": {}}
@@ -156,9 +178,12 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     gateways: List[Dict[str, Any]] = []
     profile_platforms: Dict[str, dict] = {}
     multiplex = False
+    standalone_reason: Optional[str] = None
     for name, home in homes:
         try:
-            if not _check_gateway_running(home):
+            # A served profile's liveness is the multiplexer's: listing it here showed one phantom
+            # gateway per served profile beside the host.
+            if not (_check_gateway_running(home) if name == "default" else _has_own_gateway(home)):
                 continue
         except Exception:
             continue
@@ -169,12 +194,17 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
         served = [str(p) for p in ((runtime or {}).get("served_profiles") or [])]
         if name == "default" and len(served) > 1:
             multiplex = True
+        if (runtime or {}).get("multiplex_standalone_reason"):
+            standalone_reason = str(runtime["multiplex_standalone_reason"])
         plats = (runtime or {}).get("platforms")
+        owned: dict = {}
         if isinstance(plats, dict) and plats:
             owned = _owned_profile_platforms(_profile_gateway_writer_identity(home, runtime), plats)
             if owned:
                 profile_platforms[name] = owned
-        entry: Dict[str, Any] = {"profile": name, "ports": _profile_platform_ports(home, runtime)}
+        # Ports from the OWNED entries too: a platform entry a previous process left "connected"
+        # reported a port the live gateway does not bind.
+        entry: Dict[str, Any] = {"profile": name, "ports": _profile_platform_ports(home, {"platforms": owned})}
         if served:
             entry["served_profiles"] = served
         gateways.append(entry)
@@ -183,9 +213,16 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
         mode = "multiplex"
     else:
         mode = {0: "none", 1: "single"}.get(len(gateways), "multiple")
+    # A guard refusal on a multi-profile host is what the dashboard banner shows; a single-profile
+    # install has nothing unserved and gets no banner.
+    from hermes_cli.gateway_multiplex_mode import SINGLE_PROFILE_REASON
+    if standalone_reason == SINGLE_PROFILE_REASON or len(homes) < 2:
+        standalone_reason = None
     return {
         "profiles": [name for name, _home in homes],
+        "parked_profiles": [name for name, home in homes if name != "default" and profile_is_parked(home)],
         "gateway_mode": mode,
+        "multiplex_standalone_reason": standalone_reason,
         "gateways": gateways,
         "profile_platforms": profile_platforms}
 
@@ -291,38 +328,6 @@ def _terminate_desktop_managed_gateway() -> None:
         pass  # exited between poll() and terminate()
 
 
-def _dashboard_spawn_executable() -> str:
-    """Interpreter for detached dashboard actions: the install's venv python when it differs
-    from ``sys.executable``, else ``sys.executable``.
-
-    Under an SSH remote backend the server runs on the uv BASE interpreter with the venv's
-    site-packages injected into sys.path at startup, so ``sys.executable`` is dependency-less and
-    a detached child dies on its first third-party import; the venv launcher resolves the same
-    dependency set on its own. Paths are compared UNRESOLVED: the venv python is typically a
-    symlink to the base interpreter, so resolving would make them compare equal (exactly the
-    case this fixes), and pyvenv.cfg discovery keys off argv0's unresolved location. On Windows
-    the console python plus ``windows_detach_flags()`` keeps the action invisible without
-    pythonw.exe (which makes every console descendant flash its own conhost).
-
-    See #90026.
-    Falls back to ``sys.executable`` when no venv interpreter exists next to the install (in-process dev
-    runs, exotic layouts). See #54220, #56747.
-    """
-    from hermes_cli.web_server import PROJECT_ROOT
-    exe = Path(sys.executable)
-    try:
-        for rel in ("venv/bin/python", "venv/Scripts/python.exe"):
-            candidate = PROJECT_ROOT / rel
-            if candidate.is_file():
-                if os.path.normcase(os.path.normpath(str(candidate))) == (
-                    os.path.normcase(os.path.normpath(str(exe)))):
-                    return sys.executable
-                return str(candidate)
-    except OSError:
-        pass
-    return sys.executable
-
-
 def _named_profile_from_action(subcommand: List[str]) -> Optional[str]:
     """Return the named-profile selector that :func:`_profile_cli_args` puts in front of an action.
 
@@ -334,6 +339,24 @@ def _named_profile_from_action(subcommand: List[str]) -> Optional[str]:
     if subcommand and str(subcommand[0]).startswith("--profile="):
         return str(subcommand[0]).split("=", 1)[1].strip() or None
     return None
+
+
+def _is_host_gateway_spawn(subcommand: List[str]) -> bool:
+    """True when *subcommand* starts the host multiplexer, not a named profile's own gateway.
+
+    ``hermes gateway restart`` and ``hermes -p default gateway restart`` are the host.
+    ``hermes -p coder gateway stop`` is not.
+    """
+    profile = _named_profile_from_action(subcommand)
+    if profile not in (None, "default"):
+        return False
+    args = list(subcommand)
+    if profile is not None:
+        if args and args[0] in {"-p", "--profile"}:
+            args = args[2:]
+        elif args and str(args[0]).startswith("--profile="):
+            args = args[1:]
+    return bool(args) and args[0] == "gateway"
 
 
 def _profile_action_environment(
@@ -350,11 +373,16 @@ def _profile_action_environment(
     Named-profile actions therefore start from Hermes' standard scrubbed subprocess env, then drop
     the profile-managed keys plus every key declared by the dashboard/default profile dotenv files
     and their hydrated secret sources, and pin ``HERMES_HOME`` to the target profile. The child's
-    normal startup then loads that profile's own ``.env``. Actions without a profile selector keep
+    normal startup then loads that profile's own ``.env``. A host-gateway verb (bare ``gateway``
+    or ``-p default gateway``) starts from ``host_gateway_child_env`` so a named-profile dashboard
+    cannot donate its dotenv to the multiplexer. Other actions without a profile selector keep
     the historical environment exactly.
     """
     profile = _named_profile_from_action(subcommand)
-    if profile is None:
+    if _is_host_gateway_spawn(subcommand):
+        from tools.environments.local import host_gateway_child_env
+        action_env = host_gateway_child_env()
+    elif profile is None:
         action_env = dict(os.environ)
     else:
         from hermes_cli.env_loader import (
@@ -451,9 +479,19 @@ def _spawn_hermes_action(
     from hermes_cli.web_server import PROJECT_ROOT
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = open(_ACTION_LOG_DIR / _ACTION_LOG_FILES[name], "ab", buffering=0)
-    log_file.write(f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode())
+    # The header carries the action id durably: the update's completion marker lands in the ROOT
+    # update.log every profile shares, and only this id ties one to the action THIS log started.
+    action_id = (env_overrides or {}).get("HERMES_ACTION_ID")
+    stamp = time.strftime('%Y-%m-%d %H:%M:%S') + (f" {action_id}" if action_id else "")
+    log_file.write(f"\n=== {name} started {stamp} ===\n".encode())
+    if action_id:
+        # ...and a sidecar keeps it once build output pushes the header past the status route's
+        # bounded tail, or the log rotates: a restarted dashboard still knows which action it ran.
+        from hermes_cli.runtime_state import _atomic_bytes
+        _atomic_bytes(_ACTION_LOG_DIR / f"{name}.action_id", action_id.encode("ascii"))
 
-    cmd = [_dashboard_spawn_executable(), "-m", "hermes_cli.main", *subcommand]
+    from hermes_cli._launchers import runtime_command
+    cmd = runtime_command(PROJECT_ROOT, subcommand)
     if _action_targets_system_gateway(subcommand):
         # A system-scope lifecycle verb spawned as the dashboard's own user can only ever write
         # "System gateway <verb> requires root" into this log, so the button never worked on a
@@ -487,7 +525,6 @@ def _spawn_hermes_action(
     _ACTION_RESULTS.pop(name, None)
     _ACTION_COMMANDS[name] = tuple(subcommand)
     _ACTION_PROCS[name] = proc
-    action_id = (env_overrides or {}).get("HERMES_ACTION_ID")
     if action_id:
         _ACTION_IDS[name] = action_id
     else:
@@ -496,15 +533,17 @@ def _spawn_hermes_action(
 
 
 def _own_profile_selector(profile: Optional[str]) -> Optional[str]:
-    """The profile a lifecycle verb addresses: the explicit selector, else the process's own named
+    """The profile a lifecycle verb addresses: the explicit selector, else the process's own
     profile (a pooled Desktop ``hermes --profile X serve`` answers ``/api/gateway/*`` without
-    ``?profile=``; an unscoped verb there is about X, not about the default home)."""
+    ``?profile=``; an unscoped verb there is about X). The default home resolves to the literal
+    ``"default"`` selector, never to a bare argv: a selector-less child re-reads the sticky
+    ``active_profile`` and would act on another profile's gateway (and skips the named-target
+    env scrub). ``None`` is reserved for a home that is not a profile home at all."""
     requested = (profile or "").strip()
     if requested:
         return requested
     from hermes_constants import get_process_hermes_home, profile_name_for_home
-    own = profile_name_for_home(get_process_hermes_home())
-    return own if own and own != "default" else None
+    return profile_name_for_home(get_process_hermes_home()) or None
 
 
 def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
@@ -513,13 +552,15 @@ def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
     that actually serves X — a ``-p X gateway restart`` child only exits 78 into the action log while the
     UI reports "restarted"); ``start``/``stop`` are refused by the caller (``multiplexed_profile_refusal``).
     The multiplexer is addressed as ``-p default`` explicitly: a bare ``gateway restart`` spawned from a
-    pooled ``--profile X serve`` would inherit X's ``HERMES_HOME`` and hit the same exit-78 refusal."""
+    pooled ``--profile X serve`` would inherit X's ``HERMES_HOME`` and hit the same exit-78 refusal. The
+    selector is explicit for the default home too: a bare child re-reads the sticky ``active_profile``
+    and would restart another profile's gateway."""
     from hermes_cli.web_server_profiles import _profile_cli_args
     profile = _own_profile_selector(profile)
     args = _profile_cli_args(profile)
     if profile and verb == "restart" and multiplexed_profile_refusal(profile, verb) is not None:
-        from hermes_constants import get_process_hermes_home, profile_name_for_home
-        args = [] if profile_name_for_home(get_process_hermes_home()) == "default" else ["-p", "default"]
+        # A served profile's restart targets the multiplexer, addressed as ``-p default``.
+        args = ["-p", "default"]
     return args + ["gateway", verb]
 
 
@@ -528,18 +569,37 @@ def _profile_is_multiplexed(profile: str) -> bool:
     return named_profile_served_by_running_multiplexer(profile)
 
 
+def _has_own_gateway(profile_dir: Path) -> bool:
+    """A live gateway of the profile's OWN (a ``--force``-started separate one), not the multiplexer that
+    serves it. Gateway liveness reports a served profile as running on the multiplexer's PID (#97120),
+    so reading liveness alone made every served profile look self-hosted and the refusal below never
+    fired while a multiplexer was live, which is the only time it is needed."""
+    from gateway.status import get_running_pid, multiplexer_liveness_for_profile, resolve_gateway_liveness
+    from hermes_cli.profiles import _check_gateway_running
+    if not _check_gateway_running(profile_dir):
+        return False
+    served = multiplexer_liveness_for_profile(profile_dir)
+    if served is None:
+        return True
+    liveness = resolve_gateway_liveness(
+        profile_dir=profile_dir, use_cache=False,
+        pid_probe=lambda path: get_running_pid(path, cleanup_stale=False))
+    return liveness.running and liveness.pid != served[0]
+
+
 def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[str]:
     """Refusal text for ``gateway start``/``stop`` on a named profile with no gateway of its own (a
-    ``--force``-started separate one is managed normally), else None. ``stop`` is refused only when the
-    live default multiplexer serves the profile; ``start`` is refused for every named profile — one
-    host gateway serves every profile, so a new per-profile gateway is never the answer (the CLI twin
-    ``_named_profile_refused_under_multiplexer`` exits 78 into an action log nobody reads while the UI
-    shows the verb as done)."""
+    ``--force``-started separate one is managed normally), else None. A profile the live host
+    multiplexer serves is parked by ``stop`` and a parked one is unparked by ``start`` (the spawned
+    ``hermes -p X gateway <verb>`` runs ``gateway_profile_lifecycle``), so neither is refused;
+    ``start`` on an unparked named profile is — one host gateway serves every profile, so a new
+    per-profile gateway is never the answer (the CLI twin ``_named_profile_refused_under_multiplexer``
+    exits 78 into an action log nobody reads while the UI shows the verb as done)."""
     requested = _own_profile_selector(profile) or ""
     if not requested or requested.lower() in {"current", "default"}:
         return None
     served = _profile_is_multiplexed(requested)
-    from hermes_cli.profiles import profile_is_standalone
+    from hermes_cli.profiles import profile_is_parked, profile_is_standalone
     from hermes_cli.web_server_profiles import _resolve_profile_dir
     profile_dir = _resolve_profile_dir(requested)
     standalone = profile_is_standalone(profile_dir)
@@ -550,12 +610,17 @@ def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[s
             return None
         from gateway.host_attach import standalone_rescan_message
         return standalone_rescan_message(requested)
+    if verb == "start" and profile_is_parked(profile_dir):
+        from gateway.host_attach import host_gateway
+        if host_gateway() is not None:
+            return None  # a live host unparks it; with no host the refusal below still applies
     if not served and verb != "start":
         return None
-    from hermes_cli.profiles import _check_gateway_running
-    if _check_gateway_running(profile_dir):
+    if _has_own_gateway(profile_dir):
         return None
     if served:
+        if verb == "stop":
+            return None  # parks the profile inside the host
         return (f"The default gateway already serves profile '{requested}' as a multiplexer; "
                 f"{verb} it from the default profile instead of a separate gateway for this profile.")
     from hermes_cli.gateway_migrate import _installed_services

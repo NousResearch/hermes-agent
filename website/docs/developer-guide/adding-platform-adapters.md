@@ -150,12 +150,12 @@ def register(ctx):
         # ACTIVE installer (optional) — only for platforms with a
         # lazy-installable SDK.  create_adapter() calls it when check_fn
         # returns False, right before the gateway connects the platform.
-        # Typically wraps tools.lazy_deps.ensure_and_bind(...).  Omit it
+        # Typically wraps pm.extras.ensure_and_bind(...).  Omit it
         # and a False check_fn is a hard block.
         # ensure_deps_fn=ensure_requirements,
         validate_config=validate_config,
         required_env=["MY_PLATFORM_TOKEN"],
-        install_hint="pip install my-platform-sdk",
+        install_hint="Declare my-platform-sdk in this plugin's Python dependencies, then retry hermes plugins enable my-platform",
         # Env-driven auto-configuration — seeds PlatformConfig.extra from
         # env vars before adapter construction. See "Env-Driven Auto-
         # Configuration" section below.
@@ -224,11 +224,52 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | System prompt hints | `platform_hint` injected into LLM context |
 | Message chunking | `max_message_length` for smart splitting |
 | PII redaction | `pii_safe` flag |
-| `hermes status` | Shows plugin platforms with `(plugin)` tag |
+| `hermes status` | Lists plugin platforms alongside built-ins, one row each, using the gateway's own configured check |
 | `hermes gateway setup` | Plugin platforms appear in setup menu |
 | `hermes tools` / `hermes skills` | Plugin platforms in per-platform config |
 | Token lock (multi-profile) | Use `acquire_scoped_lock()` in your `connect()` |
 | Orphaned config warning | Descriptive log when plugin is missing |
+| Service-event authorization | `trusted_inbound=True` skips user allowlists/pairing (see below) |
+| Display defaults | `display_tier` picks the built-in tool-progress/streaming tier |
+| Profile clone credential strip | `shared_env_prefixes` keeps tool-shared keys when the adapter is not in use |
+
+### Service adapters: `trusted_inbound`, `display_tier`, `shared_env_prefixes`
+
+Three optional `ctx.register_platform(...)` / `PlatformEntry` fields exist for adapters that bridge a
+service rather than a chat network. The [Home Assistant plugin](https://github.com/NousResearch/hermes-homeassistant)
+is the reference consumer.
+
+| Field | Type / default | Effect |
+|---|---|---|
+| `trusted_inbound` | `bool = False` | Every inbound event comes from the service the adapter authenticated to with its own credential; there is no human sender. The gateway's user allowlists and DM pairing do not apply to this platform. Home Assistant's event bus is the consumer. **Never set it for a chat platform** — it would let anyone who can message the bot drive the agent. |
+| `display_tier` | `str = ''` | One of `'high'`, `'medium'`, `'low'`, `'minimal'`: the built-in per-platform display defaults tier (tool progress, streaming, interim messages) used when the user has no `display.platforms.<name>` override. Empty keeps the generic plugin default. Home Assistant uses `'minimal'`. |
+| `shared_env_prefixes` | `tuple[str, ...] = ()` | Env prefixes the platform shares with a non-channel capability, such as the same plugin's tools (Home Assistant: `('HASS_',)`). [Profile clones](../user-guide/profiles.md) strip keys under these prefixes only when the source profile actually runs the adapter, so a profile that only uses the tools keeps its credentials. |
+
+```python
+import dataclasses
+
+def register(ctx):
+    kwargs = dict(
+        name="my_service",
+        label="My Service",
+        adapter_factory=MyServiceAdapter,
+        check_fn=check_requirements,
+    )
+    # Feature-detect: older cores reject unknown register_platform kwargs.
+    from gateway.platform_registry import PlatformEntry
+    known = {f.name for f in dataclasses.fields(PlatformEntry)}
+    for key, value in (
+        ("trusted_inbound", True),
+        ("display_tier", "minimal"),
+        ("shared_env_prefixes", ("MY_SERVICE_",)),
+    ):
+        if key in known:
+            kwargs[key] = value
+    ctx.register_platform(**kwargs)
+```
+
+Feature-detect these fields with `dataclasses.fields(PlatformEntry)` as above so the plugin stays loadable on
+older Hermes cores that predate them.
 
 ## Standalone send-path extensions
 
@@ -759,6 +800,21 @@ async def _handle_callback(self, request):
 ```
 
 For platforms with tight response deadlines (e.g., WeCom's 5-second limit), always acknowledge immediately and deliver the agent's reply proactively via API later. Agent sessions run 3–30 minutes — inline replies within a callback response window are not feasible.
+
+### Inbound Deduplication
+
+Platforms redeliver: websocket resumes replay recent events, webhooks retry, and an unacknowledged poll batch comes back. Drop repeats with the shared helper, keyed on the platform's message ID:
+
+```python
+from gateway.platforms.helpers import MessageDeduplicator
+
+self._dedup = MessageDeduplicator(ttl_seconds=600)  # in __init__
+
+if self._dedup.is_duplicate(msg_id):  # in the inbound handler
+    return
+```
+
+When the gateway's reconnect watcher replaces a failed adapter with a new instance, it copies every `MessageDeduplicator` attribute's live IDs from the old instance to the new one, so a replay right after the reconnect is still dropped. A cache kept in another structure (a plain dict or set) starts empty on the new instance.
 
 ### Token Locks
 

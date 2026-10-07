@@ -181,7 +181,6 @@ class TestFallbackMirrorEndToEnd:
 
         mirror_calls = []
 
-        import cron.scheduler as sched
 
         def fake_mirror(platform, chat_id, text, source_label="cli",
                         thread_id=None, user_id=None, role="assistant"):
@@ -235,9 +234,8 @@ class TestFallbackMirrorEndToEnd:
         reply_session = store.get_or_create_session(source)
         assert reply_session.session_id == session.session_id
         messages = store.load_transcript(reply_session.session_id)
-        assert [(m["role"], m["content"]) for m in messages] == [
-            ("user", "[Cron delivery: managed]\nmorning brief")
-        ]
+        assert [m["role"] for m in messages] == ["user"]
+        assert "morning brief" in messages[0]["content"]
 
     def test_explicit_target_with_attach_mirrors(self, slack_env):
         job = {

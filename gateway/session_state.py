@@ -49,7 +49,9 @@ class ConversationState:
     last_resolved_model: str = ""  # last successfully-resolved non-empty model
     queued_events: List[Any] = field(default_factory=list)  # /queue overflow FIFO (head in adapter)
     sidecar_notes: List[str] = field(default_factory=list)  # one-shot must-deliver notes
-    ephemeral_pin: Optional[Tuple[Any, ...]] = None  # pinned session-context (change_key, text)
+    ephemeral_pin: Optional[Tuple[Any, ...]] = None  # pinned session-context (change_key, text, redact_pii)
+    # (channel_prompt, parent_chat_id) of the last non-internal turn; internal events reuse it
+    channel_pin: Optional[Tuple[Optional[str], Optional[str]]] = None
     vc_last: Optional[str] = None  # last voice-channel context delivered
 
     def clear(self) -> None:

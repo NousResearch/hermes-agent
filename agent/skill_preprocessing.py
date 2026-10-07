@@ -6,6 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from agent.compression_marker import elide
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 
 logger = logging.getLogger(__name__)
@@ -81,9 +82,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
         # rc!=0 with no output at all is indistinguishable from a legit empty result; it is the
         # "interpreter never ran the command" signature (WSL stub without a distro) — say so.
         return f"[inline-shell exit {completed.returncode} with no output: {command}]"
-    if len(output) > _INLINE_SHELL_MAX_OUTPUT:
-        output = output[:_INLINE_SHELL_MAX_OUTPUT] + "...[truncated]"
-    return output
+    return elide(output, _INLINE_SHELL_MAX_OUTPUT)
 
 
 def expand_inline_shell(content: str, skill_dir: Path | None, timeout: int) -> str:
@@ -94,6 +93,39 @@ def expand_inline_shell(content: str, skill_dir: Path | None, timeout: int) -> s
         cmd = match.group(1).strip()
         return run_inline_shell(cmd, skill_dir, timeout) if cmd else ""
     return _INLINE_SHELL_RE.sub(_replace, content)
+
+
+def _is_community_hub_skill(skill_dir: Path | None) -> bool:
+    """Whether *skill_dir* is a hub-installed skill the scan gate classifies as community trust.
+
+    The hub's INSTALL_POLICY blocks a community install on a caution/dangerous verdict — but
+    ``--force`` (or a pre-scanner install) puts that skill on disk anyway, and the inline-shell
+    DSL scans as high severity, so auto-executing it on view would re-arm exactly what the
+    gate refused (#63307). Provenance is the hub lock entry (trusted/builtin entries expand;
+    anything without one — bundled-synced, user-created, project/external — keeps the flag's
+    contract). A lock read failure skips the gate, like every other provenance consumer.
+    """
+    if skill_dir is None:
+        return False
+    try:
+        from tools.skills_tool import _skills_dir
+        from tools.skills_hub import HubLockFile
+        installed = HubLockFile().load().get("installed") or {}
+        for entry in installed.values():
+            if not (isinstance(entry, dict) and entry.get("trust_level") == "community"):
+                continue
+            rel = str(entry.get("install_path") or "")
+            if not rel:
+                continue
+            try:
+                if skill_dir.resolve() == (_skills_dir() / rel).resolve():
+                    return True
+            except (OSError, ValueError):
+                continue
+        return False
+    except Exception:
+        logger.debug("Could not read hub lock for inline-shell trust scoping", exc_info=True)
+        return False
 
 
 def preprocess_skill_content(
@@ -108,6 +140,6 @@ def preprocess_skill_content(
     cfg = skills_cfg if isinstance(skills_cfg, dict) else load_skills_config()
     if cfg.get("template_vars", True):
         content = substitute_template_vars(content, skill_dir, session_id)
-    if cfg.get("inline_shell", False):
+    if cfg.get("inline_shell", False) and not _is_community_hub_skill(skill_dir):
         content = expand_inline_shell(content, skill_dir, int(cfg.get("inline_shell_timeout", 10) or 10))
     return content

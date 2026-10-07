@@ -19,7 +19,6 @@ import {
   ZOOM_REASSERT_MAX_SETTLE_CHECKS,
   ZOOM_REASSERT_SETTLE_DELAY_MS,
   ZOOM_RESIZE_REASSERT_DELAY_MS,
-  ZOOM_STEP,
   ZOOM_STORAGE_KEY,
   zoomLevelToPercent,
   zoomReassertWindowEvents,
@@ -28,12 +27,6 @@ import {
 
 test('storage key stays stable so persisted zoom survives upgrades', () => {
   assert.equal(ZOOM_STORAGE_KEY, 'hermes:desktop:zoomLevel')
-})
-
-test('default zoom matches the Appearance 90% preset', () => {
-  assert.equal(ZOOM_STEP, 0.1)
-  assert.equal(zoomLevelToPercent(DEFAULT_ZOOM_LEVEL), 90)
-  assert.equal(DEFAULT_ZOOM_LEVEL, percentToZoomLevel(90))
 })
 
 test('clampZoomLevel rejects garbage and enforces bounds', () => {
@@ -77,7 +70,7 @@ test('extreme percentages clamp to the level bounds', () => {
   assert.equal(percentToZoomLevel(1_000_000), 9)
 })
 
-test('installZoomReassertOnWindowEvents wires show, restore, focus, resize, and cross-display moves on macOS and Windows', () => {
+test('installZoomReassertOnWindowEvents wires Windows maximize transitions in addition to normal lifecycle events', () => {
   const handlers = new Map()
 
   const win = {
@@ -100,33 +93,15 @@ test('installZoomReassertOnWindowEvents wires show, restore, focus, resize, and 
   handlers.get('show')()
   handlers.get('restore')()
   handlers.get('focus')()
+  handlers.get('maximize')()
+  handlers.get('unmaximize')()
   handlers.get('resized')()
   handlers.get('moved')()
-  assert.equal(calls, 5)
+  assert.equal(calls, 7)
 })
 
-test('focus event reasserts zoom immediately without debounce on Windows (high-DPI alt-tab, #50837)', () => {
-  const handlers = new Map()
-
-  const win = {
-    isDestroyed: () => false,
-    on(event, listener) {
-      handlers.set(event, listener)
-    }
-  }
-
-  let calls = 0
-  installZoomReassertOnWindowEvents(
-    win,
-    () => {
-      calls += 1
-    },
-    'win32'
-  )
-
-  // focus on Windows triggers immediate reassert — no timer involved
-  handlers.get('focus')()
-  assert.equal(calls, 1)
+test('zoomReassertWindowEvents does not add Windows-only maximize events on macOS', () => {
+  assert.deepEqual(zoomReassertWindowEvents('darwin'), ['show', 'restore', 'focus', 'resized', 'moved'])
 })
 
 test('isDebouncedReassertEvent debounces focus only on Linux, not Windows/macOS', () => {

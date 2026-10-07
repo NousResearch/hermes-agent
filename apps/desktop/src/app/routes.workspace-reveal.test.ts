@@ -16,11 +16,9 @@ import { host } from '@/sdk'
 
 import {
   $workspaceIsPage,
-  AGENTS_ROUTE,
   appViewForPath,
   ARTIFACTS_ROUTE,
   CAPABILITIES_ROUTE,
-  CRON_ROUTE,
   MESSAGING_ROUTE,
   navigateToWorkspacePage,
   NEW_CHAT_ROUTE,
@@ -88,7 +86,6 @@ describe('classification of targets carrying a query', () => {
   // last one. Unstripped, they parsed as SESSION ids and read as 'chat'.
   it.each([
     [`${CAPABILITIES_ROUTE}?tab=skills`, 'capabilities'],
-    [`${CAPABILITIES_ROUTE}?tab=toolsets`, 'capabilities'],
     [`${CAPABILITIES_ROUTE}?tab=connectors&server=ctx7`, 'capabilities'],
     [`${SETTINGS_ROUTE}?tab=keys`, 'settings']
   ])('%s is not a session route', (to, view) => {
@@ -140,9 +137,7 @@ describe('syncWorkspaceRoute', () => {
     ['a session route', sessionRoute('sess-a')],
     ['the new-chat route', NEW_CHAT_ROUTE],
     ['an overlay', SETTINGS_ROUTE],
-    ['an overlay with a query', `${SETTINGS_ROUTE}?tab=keys`],
-    ['another overlay', CRON_ROUTE],
-    ['yet another overlay', AGENTS_ROUTE]
+    ['an overlay with a query', `${SETTINGS_ROUTE}?tab=keys`]
   ])('leaves the tab alone on %s', (_label, to) => {
     syncWorkspaceRoute(to)
 
@@ -159,24 +154,6 @@ describe('navigateToWorkspacePage', () => {
 
     expect(navigate).toHaveBeenCalledWith(CAPABILITIES_ROUTE, undefined)
     expect(fronted()).toBe(true)
-  })
-
-  it.each([
-    `${CAPABILITIES_ROUTE}?tab=skills`,
-    `${CAPABILITIES_ROUTE}?tab=toolsets`,
-    `${CAPABILITIES_ROUTE}?tab=connectors&server=ctx7`
-  ])('fronts for the palette target %s', to => {
-    navigateToWorkspacePage(vi.fn(), to)
-
-    expect(fronted()).toBe(true)
-  })
-
-  it('passes navigation options through', () => {
-    const navigate = vi.fn()
-
-    navigateToWorkspacePage(navigate, ARTIFACTS_ROUTE, { replace: true })
-
-    expect(navigate).toHaveBeenCalledWith(ARTIFACTS_ROUTE, { replace: true })
   })
 
   it('navigates without fronting for chat and overlay targets', () => {

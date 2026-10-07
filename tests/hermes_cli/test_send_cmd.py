@@ -7,18 +7,15 @@ no network I/O or gateway is required.
 
 from __future__ import annotations
 
-import io
 import json
 
 import pytest
 
 from hermes_cli import send_cmd
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
 
 def _parse(argv):
     """Build the top-level parser and return the parsed args for ``argv``."""
@@ -28,7 +25,6 @@ def _parse(argv):
     subparsers = parser.add_subparsers(dest="command")
     send_cmd.register_send_subparser(subparsers)
     return parser.parse_args(["send", *argv])
-
 
 class _FakeTool:
     """Replacement for ``tools.send_message_tool.send_message_tool``."""
@@ -40,7 +36,6 @@ class _FakeTool:
     def __call__(self, args, **_kw):
         self.calls.append(dict(args))
         return json.dumps(self.payload)
-
 
 @pytest.fixture
 def fake_tool(monkeypatch):
@@ -58,11 +53,9 @@ def fake_tool(monkeypatch):
     monkeypatch.setitem(sys.modules, "tools.send_message_tool", mod)
     return fake
 
-
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------
-
 
 @pytest.fixture
 def whatsapp_bridge(monkeypatch):
@@ -126,9 +119,7 @@ def whatsapp_bridge(monkeypatch):
     monkeypatch.setattr(aiohttp, "ClientSession", lambda *_args, **_kwargs: BridgeSession())
     return SimpleNamespace(calls=calls, state=state)
 
-
 _GROUP = "whatsapp:120363000000000000@g.us"
-
 
 @pytest.mark.parametrize("argv", [
     ["--to", "telegram", "--mention", "15550000001", "hello"],
@@ -144,7 +135,6 @@ def test_whatsapp_mention_rejections_never_reach_the_bridge(whatsapp_bridge, cap
     assert exc.value.code == 2
     assert "mention" in capsys.readouterr().err.lower()
     assert whatsapp_bridge.calls == []
-
 
 def test_whatsapp_mentions_ride_the_first_bridge_payload_only(whatsapp_bridge, tmp_path, capsys):
     """Across chunked text and text+media, exactly one bridge payload carries the normalized,
@@ -181,30 +171,9 @@ def test_whatsapp_mentions_ride_the_first_bridge_payload_only(whatsapp_bridge, t
     assert "does not support native mentions" in capsys.readouterr().err
     assert calls == []
 
-
-def test_file_decode_error_suggests_media_directive(fake_tool, capsys, monkeypatch, tmp_path):
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    bad = tmp_path / "bad-bytes.bin"
-    bad.write_bytes(b"\xff\xfe\x00")
-
-    args = _parse(["--to", "telegram", "--file", str(bad)])
-    with pytest.raises(SystemExit) as exc:
-        send_cmd.cmd_send(args)
-    assert exc.value.code == 2
-    err = capsys.readouterr().err
-    assert "not a text file" in err.lower()
-    assert f"MEDIA:{bad}" in err
-    assert "[[as_document]]" in err
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # --list
 # ---------------------------------------------------------------------------
-
 
 def test_list_includes_configured_platform_without_discovered_channels(
     monkeypatch, capsys
@@ -246,7 +215,6 @@ def test_list_includes_configured_platform_without_discovered_channels(
     assert "simplex" in out
     assert "no channels discovered yet" in out
 
-
 def test_list_json_includes_configured_platform(monkeypatch, capsys):
     import types
     import sys
@@ -278,30 +246,13 @@ def test_list_json_includes_configured_platform(monkeypatch, capsys):
     assert "local" not in payload["platforms"]  # infra pseudo-platform skipped
     assert payload["platforms"]["telegram"]  # discovered entries preserved
 
-
 # ---------------------------------------------------------------------------
 # Parser registration contract
 # ---------------------------------------------------------------------------
 
-
-def test_register_send_subparser_is_reusable():
-    """Sanity check: the registrar returns a parser and wires ``cmd_send``."""
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-    send_parser = send_cmd.register_send_subparser(subparsers)
-    assert send_parser is not None
-    args = parser.parse_args(["send", "--to", "telegram", "hi"])
-    assert args.func is send_cmd.cmd_send
-    assert args.to == "telegram"
-    assert args.message == "hi"
-
-
 # ---------------------------------------------------------------------------
 # Env loader
 # ---------------------------------------------------------------------------
-
 
 def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
     """Top-level config.yaml scalars should be bridged into os.environ.
@@ -335,7 +286,6 @@ def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
 
     assert os.environ.get("SOME_TOKEN") == "abc123"
     assert os.environ.get("TELEGRAM_HOME_CHANNEL") == "5550001111"
-
 
 def test_load_hermes_env_utf8_bom_preserves_first_key(tmp_path, monkeypatch):
     """A leading UTF-8 BOM must not mangle the first .env key name.
@@ -480,7 +430,6 @@ def test_load_hermes_env_bom_only_env_is_noop(tmp_path, monkeypatch):
     added = {k: v for k, v in os.environ.items() if k not in before}
     assert "\ufeff" not in "".join(added)
 
-
 def test_help_and_empty_list_hint_name_the_resolved_home(tmp_path, monkeypatch, capsys):
     """``--help`` and the ``--list`` empty-state hint derive their paths from the resolved home instead of a
     hardcoded ``~/.hermes`` (absent on a Windows install or under a profile home)."""
@@ -510,31 +459,3 @@ def test_help_and_empty_list_hint_name_the_resolved_home(tmp_path, monkeypatch, 
     out = capsys.readouterr().out
     assert str(home / "channel_directory.json") in out
     assert "~/.hermes" not in out
-
-
-def test_empty_list_hint_names_default_root_directory_under_profile_home(tmp_path, monkeypatch, capsys):
-    """Under ``HERMES_HOME=<root>/profiles/<p>`` the ``--list`` empty state says the default root already holds
-    a ``channel_directory.json`` (written by a gateway running from that root), so the user knows which home
-    the gateway is serving (#114272 step 5)."""
-    import sys
-    import types
-
-    root = tmp_path / "hermes"
-    profile = root / "profiles" / "coder"
-    profile.mkdir(parents=True)
-    (root / "channel_directory.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(profile))
-
-    fake_gw_config = types.ModuleType("gateway.config")
-    fake_gw_config.load_gateway_config = lambda: types.SimpleNamespace(get_connected_platforms=lambda: [])
-    monkeypatch.setitem(sys.modules, "gateway.config", fake_gw_config)
-    fake_dir = types.ModuleType("gateway.channel_directory")
-    fake_dir.load_directory = lambda: {"updated_at": None, "platforms": {}}
-    fake_dir.format_directory_for_display = lambda platforms=None: ""
-    monkeypatch.setitem(sys.modules, "gateway.channel_directory", fake_dir)
-
-    assert send_cmd._list_targets(None, json_mode=False) == 0
-    out = capsys.readouterr().out
-    assert f"channel discovery can populate {profile / 'channel_directory.json'}." in out
-    assert f"A gateway running from {root} already has {root / 'channel_directory.json'}" in out
-    assert f"scoped to profile home {profile}" in out

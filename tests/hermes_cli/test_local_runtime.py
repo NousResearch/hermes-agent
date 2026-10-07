@@ -14,17 +14,30 @@ import logging
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 
 import pytest
 
-from hermes_cli.local_runtime.binaries import (
-    AssetPlan,
-    BinaryResolutionError,
-    resolve_assets,
-    select_backend,
-)
+from hermes_cli.local_runtime.binaries import select_backend
 from hermes_cli.local_runtime.detect import DetectedServer, probe_port
+
+
+def _write_current_process_state(path: Path, *, base_url: str, api_key: str) -> None:
+    """Publish a modern state record for the process hosting the test stub."""
+    import psutil
+
+    proc = psutil.Process()
+    parent = proc.parent()
+    assert parent is not None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "base_url": base_url,
+        "api_key": api_key,
+        "pid": proc.pid,
+        "create_time": proc.create_time(),
+        "executable": proc.exe(),
+        "owner_pid": parent.pid,
+        "owner_create_time": parent.create_time(),
+    }), encoding="utf-8")
 
 
 # ── stub llama-server ────────────────────────────────────────
@@ -176,55 +189,6 @@ def test_probe_dead_port_returns_none():
 # ── binary resolver (Rollout 2) ──────────────────────────────
 
 
-@pytest.mark.parametrize("os_name,arch,backend,ok", [
-    ("win", "x64", "cuda", True),
-    ("win", "x64", "vulkan", True),
-    ("win", "x64", "cpu", True),
-    ("win", "arm64", "cpu", True),
-    ("win", "arm64", "cuda", True),      # upstream ships these since ~b1036x (CUDA 13.4)
-    ("win", "arm64", "vulkan", False),
-    ("macos", "arm64", "metal", True),
-    ("ubuntu", "x64", "vulkan", True),
-    ("ubuntu", "x64", "cpu", True),
-    ("ubuntu", "x64", "cuda", False),    # no prebuilt linux CUDA
-])
-def test_resolver_platform_matrix(os_name, arch, backend, ok):
-    if ok:
-        plan = resolve_assets("b10290", backend, os_name=os_name, arch=arch)
-        assert plan.assets, "resolvable combination must yield assets"
-        # Invariant: every asset names the tag or is a paired runtime zip.
-        for asset in plan.assets:
-            assert "b10290" in asset or asset.startswith("cudart-")
-    else:
-        with pytest.raises(BinaryResolutionError):
-            resolve_assets("b10290", backend, os_name=os_name, arch=arch)
-
-
-def test_windows_cuda_pairs_cudart():
-    """Windows CUDA must ship the runtime zip — users have no toolkit."""
-    plan = resolve_assets("b10290", "cuda", os_name="win", arch="x64")
-    assert any(a.startswith("cudart-") for a in plan.assets)
-
-
-def test_windows_cuda_arm64_pairs_cudart_on_its_own_version():
-    """arm64 CUDA rides its own CUDA line (13.4 at b10362, verified live):
-    both zips must agree on version and name the arch."""
-    plan = resolve_assets("b10362", "cuda", os_name="win", arch="arm64")
-    assert len(plan.assets) == 2
-    assert all("arm64" in a for a in plan.assets)
-    versions = {a.split("cuda-")[1].split("-")[0] for a in plan.assets}
-    assert len(versions) == 1, f"paired zips disagree on CUDA version: {plan.assets}"
-    assert any(a.startswith("cudart-") for a in plan.assets)
-    assert any(a.startswith("llama-") for a in plan.assets)
-
-
-def test_install_dir_is_profile_scoped(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    plan = AssetPlan(tag="b10290", backend="cuda")
-    assert str(tmp_path) in str(plan.install_dir)
-    assert "runtimes" in plan.install_dir.parts
-
-
 @pytest.mark.parametrize("vendor,os_name,expected", [
     ("NVIDIA GeForce RTX 5090", "win", "cuda"),
     ("nvidia", "ubuntu", "cuda"),
@@ -239,26 +203,20 @@ def test_backend_selection(vendor, os_name, expected):
     assert select_backend(vendor, os_name=os_name) == expected
 
 
-def test_sha256_mismatch_rejects(tmp_path, monkeypatch):
-    """A pinned hash that doesn't match the download must hard-fail."""
-    from hermes_cli.local_runtime import binaries
+@pytest.mark.parametrize(("gpu_class", "expected"), [
+    ("intel", "intel"),
+    ("amd", "amd"),
+    ("none", None),
+    ("unknown", None),
+])
+def test_auto_vendor_detection_uses_host_gpu_class(monkeypatch, gpu_class, expected):
+    from hermes_cli.local_runtime import bootstrap, hardware
+    from hermes_platform.host import facts
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    # Pre-place a wrong-content "download" so no network is touched. The
-    # asset name is host-dependent (win/.zip, ubuntu/.tar.gz, macos/.zip)
-    # — resolve it the way the installer will, so the poisoned file is the
-    # one it verifies on every CI platform.
-    plan = binaries.resolve_assets("b10290", "cpu")
-    asset = plan.assets[0]
-    downloads = binaries.runtimes_root() / "downloads"
-    downloads.mkdir(parents=True)
-    (downloads / asset).write_bytes(b"not the real archive")
-    with pytest.raises(BinaryResolutionError, match="sha256 mismatch"):
-        binaries.ensure_runtime_installed(
-            "b10290", "cpu",
-            expected_sha256={asset: "0" * 64})
-    # The poisoned download must not survive for a retry to trust.
-    assert not (downloads / asset).exists()
+    monkeypatch.setattr(hardware, "_cached_nvidia_gpu_query", lambda: None)
+    monkeypatch.setattr(facts, "gpu_class", lambda: gpu_class)
+
+    assert bootstrap._detect_gpu_vendor() == expected
 
 
 # ── supervisor contracts (stubbed; no GPU) ───────────────────
@@ -269,7 +227,7 @@ def _make_supervisor(tmp_path, port):
     from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
     sup = LlamaServerSupervisor(
-        install_dir=tmp_path, models_dir=tmp_path, port=port)
+        binary=tmp_path / "llama-server", models_dir=tmp_path, port=port)
     return sup
 
 
@@ -357,13 +315,8 @@ def test_llamacpp_endpoint_resolution_prefers_managed(tmp_path, monkeypatch, stu
     from hermes_cli.local_runtime import endpoint as ep
     from hermes_cli.local_runtime.supervisor import state_path
 
-    state_path().parent.mkdir(parents=True, exist_ok=True)
-    state_path().write_text(json.dumps({
-        # A LIVE pid: the ownership guard treats health-200 + dead recorded
-        # pid as a foreign server on our stable port (scratch-profile
-        # collision), so claiming this test process models "our server".
-        "base_url": f"http://127.0.0.1:{port}/v1", "api_key": "sk-managed", "pid": os.getpid(),
-    }), encoding="utf-8")
+    _write_current_process_state(
+        state_path(), base_url=f"http://127.0.0.1:{port}/v1", api_key="sk-managed")
     resolved = ep.resolve_llamacpp_endpoint()
     assert resolved == {"base_url": f"http://127.0.0.1:{port}/v1", "api_key": "sk-managed"}
 
@@ -448,7 +401,8 @@ def test_llamacpp_endpoint_starting_server_resolves(tmp_path, monkeypatch):
         "base_url": f"http://127.0.0.1:{not_listening}/v1",
         "api_key": "sk-starting", "pid": 4242,
     }), encoding="utf-8")
-    monkeypatch.setattr(ep, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.recovery.legacy_recorded_process", lambda state: object())
     resolved = ep.resolve_llamacpp_endpoint()
     assert resolved is not None
     assert resolved["api_key"] == "sk-starting"
@@ -469,7 +423,8 @@ def test_llamacpp_endpoint_waits_for_boot_in_flight(tmp_path, monkeypatch):
 
     # Boot is in flight: runtime enabled + binary installed.
     monkeypatch.setattr(ep, "_boot_in_flight", lambda config: True)
-    monkeypatch.setattr(ep, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.recovery.legacy_recorded_process", lambda state: object())
     # Nothing detected externally.
     monkeypatch.setattr("hermes_cli.local_runtime.detect.DEFAULT_PROBE_PORTS", ())
 
@@ -507,7 +462,8 @@ def test_resolution_kicks_boot_when_no_thread_is_booting(tmp_path, monkeypatch):
     from hermes_cli.local_runtime.supervisor import state_path
 
     monkeypatch.setattr(ep, "_boot_in_flight", lambda config: True)
-    monkeypatch.setattr(ep, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.recovery.legacy_recorded_process", lambda state: object())
     monkeypatch.setattr("hermes_cli.local_runtime.detect.DEFAULT_PROBE_PORTS", ())
 
     def _fake_ensure(config, force=False):
@@ -528,24 +484,24 @@ def test_resolution_kicks_boot_when_no_thread_is_booting(tmp_path, monkeypatch):
 def test_boot_in_flight_real_gate(tmp_path, monkeypatch):
     """_boot_in_flight exercised FOR REAL (the previous regression test
     monkeypatched it — and the real one threw TypeError on every call,
-    silently disabling the boot wait). Enabled + verified manifest on
-    disk -> True; either missing -> False."""
+    silently disabling the boot wait). Enabled + an installed PM engine for
+    the CONFIGURED backend -> True; either missing -> False."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli.local_runtime import endpoint as ep
-    from hermes_cli.local_runtime.binaries import runtimes_root
+    installed: set[str] = set()
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine",
+                        lambda backend="auto", **_: object() if backend in installed else None)
 
     enabled = {"local_runtime": {"enabled": True}}
-    # Not installed yet -> False.
     assert ep._boot_in_flight(enabled) is False
-    # Verified install manifest -> True.
-    install = runtimes_root() / "b10290" / "cuda"
-    install.mkdir(parents=True)
-    (install / "manifest.json").write_text(
-        json.dumps({"tag": "b10290", "verified_version": "5015 (abc)"}),
-        encoding="utf-8")
+    installed.add("auto")
     assert ep._boot_in_flight(enabled) is True
     # Disabled -> False even when installed.
     assert ep._boot_in_flight({"local_runtime": {"enabled": False}}) is False
+    # An explicit backend is the engine that boots: only the Vulkan build installed must count.
+    installed.clear()
+    installed.add("vulkan")
+    assert ep._boot_in_flight({"local_runtime": {"enabled": True, "backend": "vulkan"}}) is True
 
 
 def test_idle_sweep_unloads_idle_models(tmp_path, monkeypatch, stub_server):
@@ -681,7 +637,7 @@ def test_bootstrap_skips_boot_with_no_staged_models(tmp_path, monkeypatch):
         called["spawn"] = True
         raise AssertionError("must not reach install/spawn")
 
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.ensure_runtime_installed", _boom)
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine", _boom)
     result = bs.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert result is None
     assert called["spawn"] is False
@@ -740,13 +696,8 @@ def test_switch_model_explicit_llamacpp_provider(tmp_path, monkeypatch, stub_ser
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli.local_runtime.supervisor import state_path
 
-    state_path().parent.mkdir(parents=True, exist_ok=True)
-    state_path().write_text(json.dumps({
-        "base_url": f"http://127.0.0.1:{port}/v1",
-        # Live pid: ownership guard rejects health-200 + dead recorded pid
-        # (foreign server on our stable port).
-        "api_key": "sk-managed", "pid": os.getpid(),
-    }), encoding="utf-8")
+    _write_current_process_state(
+        state_path(), base_url=f"http://127.0.0.1:{port}/v1", api_key="sk-managed")
 
     from hermes_cli.model_switch import switch_model
 
@@ -769,13 +720,8 @@ def test_runtime_provider_seam_llamacpp_alias(tmp_path, monkeypatch, stub_server
     port, handler = stub_server
     from hermes_cli.local_runtime.supervisor import state_path
 
-    state_path().parent.mkdir(parents=True, exist_ok=True)
-    state_path().write_text(json.dumps({
-        # A LIVE pid: the ownership guard treats health-200 + dead recorded
-        # pid as a foreign server on our stable port (scratch-profile
-        # collision), so claiming this test process models "our server".
-        "base_url": f"http://127.0.0.1:{port}/v1", "api_key": "sk-managed", "pid": os.getpid(),
-    }), encoding="utf-8")
+    _write_current_process_state(
+        state_path(), base_url=f"http://127.0.0.1:{port}/v1", api_key="sk-managed")
 
     from hermes_cli.runtime_provider import _resolve_named_custom_runtime
 
@@ -895,16 +841,6 @@ def test_external_server_on_a_configured_detect_port_is_used(tmp_path, monkeypat
     assert result.base_url == f"http://127.0.0.1:{port}/v1"
 
 
-def test_local_runtime_config_defaults_shape():
-    """Contract: the section exists, is off by default, and carries no
-    context/VRAM knobs (design: constants, not knobs)."""
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
-
-    cfg = DEFAULT_CONFIG["local_runtime"]
-    assert cfg["enabled"] is False
-    assert isinstance(cfg["tag"], str) and cfg["tag"].startswith("b")
-    forbidden = [k for k in cfg if "context" in k or "ctx" in k or "vram" in k or "kv" in k]
-    assert forbidden == [], f"policy constants leaked into config: {forbidden}"
 
 
 # ── bootstrap contracts ──────────────────────────────────────
@@ -936,7 +872,7 @@ def test_bootstrap_reuses_running_server(tmp_path, monkeypatch, stub_server):
 
     called = []
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
+        "hermes_cli.local_runtime.binaries.installed_engine",
         lambda *a, **k: called.append(1))
     assert bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}}) is None
     assert called == []
@@ -950,12 +886,15 @@ def test_bootstrap_failure_never_raises(tmp_path, monkeypatch):
 
     monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
     monkeypatch.setattr(bootstrap, "_detect_gpu_vendor", lambda: None)
+    models = bootstrap.models_dir()
+    models.mkdir(parents=True, exist_ok=True)
+    (models / "test.gguf").touch()
 
     def boom(*a, **k):
         raise RuntimeError("no network")
 
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_runtime_installed", boom)
+        "hermes_cli.local_runtime.binaries.installed_engine", boom)
     result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert result is None  # no exception escaped
 
@@ -979,10 +918,9 @@ def test_ensure_local_runtime_serializes_racing_callers(tmp_path, monkeypatch):
     monkeypatch.setattr(bootstrap, "_generate_presets", lambda *a, **k: None)
     monkeypatch.setattr(bootstrap, "_presets_stale", lambda: False)
     monkeypatch.setattr(bootstrap, "_detect_gpu_vendor", lambda: None)
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b1"])
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.default_tag", lambda: "b1")
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.ensure_runtime_installed",
-                        lambda tag, backend: tmp_path / "install")
+    from hermes_cli.local_runtime.binaries import Engine
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine",
+                        lambda backend: Engine("cpu", "b1", tmp_path / "llama-server"))
 
     spawns = []
 
@@ -999,11 +937,10 @@ def test_ensure_local_runtime_serializes_racing_callers(tmp_path, monkeypatch):
         def start(self, timeout_s=120):
             spawns.append(1)
             _time.sleep(0.3)  # widen the window the other caller races into
-            path = sup_mod.state_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({
-                "base_url": self.base_url, "api_key": self.api_key, "pid": os.getpid(),
-            }), encoding="utf-8")
+            # A bare legacy ``{pid}`` record is no longer adoptable (a live PID is not evidence);
+            # publish what a real router publishes so the second caller can adopt it.
+            _write_current_process_state(
+                sup_mod.state_path(), base_url=self.base_url, api_key=self.api_key)
 
     monkeypatch.setattr(sup_mod, "LlamaServerSupervisor", _FakeSupervisor)
 
@@ -1039,7 +976,7 @@ def test_ensure_local_runtime_proceeds_when_boot_lock_is_unwritable(tmp_path, mo
     blocker.write_text("", encoding="utf-8")
     monkeypatch.setattr(bootstrap, "runtimes_root", lambda: blocker / "runtimes")  # mkdir -> OSError
     monkeypatch.setattr("hermes_cli.local_runtime.endpoint._state_endpoint", lambda: None)
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_tags", lambda: [])
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine", lambda backend: None)
 
     with caplog.at_level(logging.WARNING, logger=bootstrap.logger.name):
         result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})
@@ -1048,14 +985,41 @@ def test_ensure_local_runtime_proceeds_when_boot_lock_is_unwritable(tmp_path, mo
     assert any("boot lock unavailable" in rec.getMessage() for rec in caplog.records)
 
 
-def test_manifest_verified_tolerates_non_dict_manifest(tmp_path):
-    """A parseable-but-non-object manifest used to raise AttributeError out of
-    manifest_verified (the .get ran inside a try that only caught decode/OSError),
-    breaking any() scans over install dirs."""
-    from hermes_cli.local_runtime.binaries import manifest_verified
+def test_boot_prices_the_engine_it_serves(tmp_path, monkeypatch):
+    """The managed server is shared by every profile the process hosts: its budget is priced on the
+    engine being booted, never re-read from whichever profile's config the thread happens to see."""
+    from types import SimpleNamespace
 
-    m = tmp_path / "manifest.json"
-    m.write_text('"oops"', encoding="utf-8")
-    assert manifest_verified(m) is False
-    m.write_text(json.dumps({"verified_version": "5015 (abc)"}), encoding="utf-8")
-    assert manifest_verified(m) is True
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import bootstrap, hardware
+
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    monkeypatch.setattr(bootstrap, "_SERVING_ENGINE", None)
+    models = bootstrap.models_dir()
+    models.mkdir(parents=True, exist_ok=True)
+    (models / "test.gguf").touch()
+    vulkan = SimpleNamespace(backend="vulkan", tag="b1", binary=tmp_path / "llama-server")
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine",
+                        lambda backend="auto": vulkan if backend == "vulkan" else None)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly",
+                        lambda: {"local_runtime": {"backend": "cpu"}})  # another profile's config
+    priced: list = []
+    monkeypatch.setattr(bootstrap, "_generate_presets",
+                        lambda mdir, path: priced.append(hardware._configured_engine()) or path)
+    monkeypatch.setattr(bootstrap, "_admitted_models_max", lambda mdir, configured: configured)
+
+    class _NoStart:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("health timeout")
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr("hermes_cli.local_runtime.supervisor.LlamaServerSupervisor", _NoStart)
+
+    assert bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True, "backend": "vulkan"}}) is None
+    assert priced == [vulkan]
+    assert bootstrap.serving_engine() is None  # a failed boot serves nothing

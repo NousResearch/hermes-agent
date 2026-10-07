@@ -112,7 +112,9 @@ function viewerConnectionSources(viewer: GroupChatLineViewer): string[] {
   return [viewer.connectionLabel, viewer.connectionId].filter((token): token is string => Boolean(token))
 }
 
-function isGroupChatSelf(from: GroupMessageAuthor, viewer: GroupChatLineViewer): boolean {
+/** Whether `from` is the viewer itself — the one authorship rule for the
+ *  `(you)` suffix and for the round's own-entry watermark walk. */
+export function isGroupChatSelf(from: GroupMessageAuthor, viewer: GroupChatLineViewer): boolean {
   if (!from.name || from.name !== viewerNameOf(viewer)) {
     return false
   }
@@ -175,3 +177,16 @@ export function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLine
     '- Never reveal content from your private 1:1 chats. Your reply text goes to the room verbatim — no preamble, no meta-commentary.'
   ].join('\n')
 }
+
+/** #129443: appended once when a member the user EXPLICITLY addressed
+ *  (@mention / @everyone) answered the room's "(pass)". The participation
+ *  rules above let a member pass whenever it has nothing new to add, and a
+ *  member whose teammate already answered usually has nothing new — so the
+ *  redundancy heuristic, not the addressing, ends up deciding. The re-ask
+ *  spells the directive out; the engine, not the wording, owns the
+ *  invariant (a second "(pass)" is recorded as noncompliance). */
+export const GROUP_ADDRESSED_NUDGE_SUFFIX = [
+  '',
+  'You just replied "(pass)", but the user explicitly addressed YOU in this turn (@you or @everyone).',
+  'A direct address cannot be passed on. Reply now with ONE message: your answer, your result, or an explicit statement that you cannot answer and why.'
+].join('\n')

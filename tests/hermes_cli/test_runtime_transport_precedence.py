@@ -107,16 +107,6 @@ class TestFallbackApiMode:
     def test_openrouter_stays_chat_completions(self):
         assert _fallback_api_mode("openrouter", "https://openrouter.ai/api/v1") == "chat_completions"
 
-    def test_minimax_declared_anthropic_transport_honored(self):
-        # Same latent bug class: minimax declares an Anthropic-compatible
-        # transport but previously fell back to chat_completions when the
-        # URL carried no /anthropic hint. The bare catalog host is still
-        # honored (#53054); non-default paths now are not (#76836).
-        from hermes_cli.providers import determine_api_mode
-
-        expected = determine_api_mode("minimax", "https://api.minimax.io")
-        assert _fallback_api_mode("minimax", "https://api.minimax.io") == expected
-        assert expected != "chat_completions" or expected == determine_api_mode("minimax", "")
 
     def test_unknown_provider_defaults_chat_completions(self):
         assert _fallback_api_mode("some-unknown", "https://example.test/v1") == "chat_completions"

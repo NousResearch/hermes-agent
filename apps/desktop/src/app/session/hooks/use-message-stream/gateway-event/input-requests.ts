@@ -1,6 +1,7 @@
 import type { ConnectionRequestPayload, ConnectionUpdatePayload, GatewayEvent } from '@hermes/shared'
 
 import { applyAccountConnectionUpdate } from '@/app/capabilities/connectors/data/account-operations'
+import { abortPreviewTyping } from '@/app/chat/right-rail/preview-typing-abort'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-connection'
 import { translateNow } from '@/i18n'
@@ -50,6 +51,13 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, occurredAt } = ctx
 
   if (isConnectionRequestEvent(event)) {
+    // An interrupted/deleted session's runtime has no turn left to consent to a
+    // connection; the backend withdraws its request on the same boundary. Drop
+    // the frame rather than parking a stale consent card (#75587).
+    if (sessionId && deps.sessionInterrupted(sessionId)) {
+      return true
+    }
+
     // Park per-session and upsert a stable tool row so the card renders even if tool.start was missed.
     const request = normalizeConnectionRequest(event.payload, sessionId ?? null)
 
@@ -97,6 +105,10 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   if (!id) {
     return true
   }
+
+  // preview.act has no card. A timeout or interrupt still has to stop keystrokes
+  // already queued for that type.
+  abortPreviewTyping(id, typeof payload?.reason === 'string' ? payload.reason : 'interrupted')
 
   forgetServerRequest(id)
 
@@ -160,6 +172,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     }
   } else if ($sudoRequests.get()[key]?.requestId === id) {
     clearSudoRequest(sessionId, id)
+  } else if ($sudoRequests.get()['']?.requestId === id) {
+    clearSudoRequest(null, id) // the app-level Bot Screen install card: not owned by any chat
   } else if ($secretRequests.get()[key]?.requestId === id) {
     clearSecretRequest(sessionId, id)
   } else if ($vaultCodeRequests.get()[key]?.requestId === id) {

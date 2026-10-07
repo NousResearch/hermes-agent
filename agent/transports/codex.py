@@ -14,7 +14,7 @@ from agent.reasoning_effort import (
     CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
     XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
-    # per-model — "max" is gpt-5.6-only, "minimal"/"ultra" always rejected (live-verified, #68365).
+    # per-model — "max" availability varies; "minimal"/"ultra" clamp to a listed level.
     codex_supported_efforts,
 )
 from agent.transports.base import ProviderTransport
@@ -274,6 +274,8 @@ def _alias_wire_tools(
 
 # Models already warned that an explicit disable has no wire form on their route (one warning per process).
 _UNPROJECTABLE_DISABLE_WARNED: set[str] = set()
+# request_overrides is static config: warn about a dropped prompt_cache_options once, not every turn.
+_PROMPT_CACHE_OPTIONS_DROP_WARNED = False
 
 
 def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
@@ -395,9 +397,9 @@ def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: boo
 def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url: Any) -> None:
     """Astra's official-API contract, applied AFTER ``request_overrides`` so an override can't put a
     rejected field back on the wire: ``reasoning.effort`` is ``low..max`` only (``none``/``minimal``
-    400), sampling and logprob knobs are rejected, and cache lifetime is fixed server-side
-    (``prompt_cache_options.ttl`` accepts only its ``30m`` default, so nothing is sent for it and the
-    pre-5.6 ``prompt_cache_retention`` knob is dropped)."""
+    400), sampling and logprob knobs are rejected, and cache lifetime is fixed server-side (the
+    pre-5.6 ``prompt_cache_retention`` knob is dropped here; ``prompt_cache_options`` is already
+    stripped on every route by ``build_kwargs``)."""
     if not _is_official_openai_responses_route(model, base_url):
         return
     reasoning = kwargs.get("reasoning")
@@ -589,7 +591,15 @@ def _reasoning_fields(
     elif enabled:
         if is_github_responses:
             if params.get("github_reasoning_extra") is not None:
-                fields["reasoning"] = params["github_reasoning_extra"]
+                # Request a reasoning summary so the Responses API actually returns
+                # reasoning text. Without ``summary: "auto"`` the GitHub/Copilot
+                # /responses endpoint returns reasoning items with no summary, so Hermes
+                # persists empty reasoning/thinking content for every Copilot model on
+                # the Responses API (gpt-5.4, gpt-5, ...) — the same loss the non-GitHub
+                # branch below already avoids. Verified against api.githubcopilot.com
+                # /responses: the summary is only emitted when summary="auto" is sent.
+                # See #46527.
+                fields["reasoning"] = {**params["github_reasoning_extra"], "summary": "auto"}
         else:
             fields["reasoning"] = {"effort": effort, "summary": "auto"}
             fields["include"] = include
@@ -753,6 +763,20 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs.update(request_overrides)
             kwargs["model"] = wire_model
 
+        # ``prompt_cache_options`` is not a Responses.create() kwarg in the OpenAI SDK, so a
+        # top-level copy (e.g. from request_overrides) fails the call with TypeError before any
+        # request is sent, on every route. Endpoints that manage cache lifetime own it
+        # server-side; a proxy that accepts the field gets it via request_overrides
+        # ``extra_body``, which the SDK merges into the body post-transform.
+        if kwargs.pop("prompt_cache_options", None) is not None:
+            global _PROMPT_CACHE_OPTIONS_DROP_WARNED
+            if not _PROMPT_CACHE_OPTIONS_DROP_WARNED:
+                _PROMPT_CACHE_OPTIONS_DROP_WARNED = True
+                logger.warning(
+                    "Dropped prompt_cache_options: not a Responses.create() kwarg "
+                    "(use request_overrides={'extra_body': ...} for wire-only fields)."
+                )
+
         _sanitize_astra_request_kwargs(kwargs, model, params.get("base_url"))
 
         _bound_prompt_cache_key_field(kwargs)
@@ -886,13 +910,3 @@ class ResponsesApiTransport(ProviderTransport):
 from agent.transports import register_transport  # noqa: E402
 
 register_transport("codex_responses", ResponsesApiTransport)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-from typing import List  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

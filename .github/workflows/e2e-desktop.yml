@@ -25,7 +25,7 @@ jobs:
     outputs:
       review_status: ${{ steps.review-status.outputs.review_status }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       # ── System deps for Electron on headless Ubuntu ───────────────────
       # Electron needs GTK, NSS,atk, etc. even under xvfb. Playwright's
@@ -39,15 +39,13 @@ jobs:
             libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
             xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
 
-      # ── Node ───────────────────────────────────────────────────────────
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - name: Set up the locked desktop toolchain
+        uses: ./.github/actions/setup-pm
         with:
-          node-version: 26
-          cache: npm
-
-      - name: grab npm 12
-        run: |
-          npm i -g npm@12
+          toolchain: all
+          extras: '["all"]'
+          test-environment: 'true'
+          prune-python-cache: true
 
       # Full npm ci (not --ignore-scripts): electron's postinstall
       # downloads the binary we launch, and node-pty's native build is
@@ -55,30 +53,6 @@ jobs:
       - uses: ./.github/actions/retry
         with:
           command: npm ci
-
-      # ── Python (for the hermes serve backend) ──────────────────────────
-      - name: Install uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
-        with:
-          # Pin the uv version: unpinned, setup-uv resolves "latest" by
-          # fetching a manifest from raw.githubusercontent.com on EVERY job —
-          # a transient fetch failure fails the whole job (2026-07-28 slice-5
-          # incident). Pinned, the binary downloads directly; no manifest hop.
-          version: '0.9.28'
-          enable-cache: true
-          cache-dependency-glob: |
-            pyproject.toml
-            uv.lock
-
-      - name: Set up Python 3.11
-        uses: ./.github/actions/retry
-        with:
-          command: uv python install 3.11
-
-      - name: Install Python dependencies
-        uses: ./.github/actions/retry
-        with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev
 
       # ── Build desktop app ─────────────────────────────────────────────
       # The Playwright step below runs `npm run build` before testing so
@@ -92,7 +66,7 @@ jobs:
       # cache to avoid cold starts on unrelated PRs.
       - name: Restore visual baseline screenshots
         id: restore-baselines
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/desktop/e2e/*-snapshots
           key: visual-baselines-${{ github.ref_name }}
@@ -127,7 +101,7 @@ jobs:
       # ── Save updated baselines to cache (main only) ───────────────────
       - name: Save updated baselines to cache
         if: github.ref_name == 'main' && always()
-        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/desktop/e2e/*-snapshots
           key: visual-baselines-main
@@ -179,7 +153,6 @@ jobs:
           python3 ../../scripts/ci/e2e_screenshot_status.py \
             --results-dir test-results \
             --manifest-output /tmp/e2e-screenshot-manifest.json \
-            --evidence-dir /tmp/e2e-evidence \
             --artifact-url "$RESULTS_URL" \
             --output /tmp/e2e-review-status.json
           {
@@ -199,19 +172,6 @@ jobs:
           retention-days: 1
           overwrite: true
           if-no-files-found: ignore
-
-      # The trusted workflow_run publisher consumes only this flat, bounded
-      # artifact. It turns selected images into GitHub attachment URLs; it
-      # never checks out or runs this PR's code.
-      - name: Upload inline E2E evidence
-        if: always() && github.ref_name != 'main'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: e2e-evidence-${{ github.sha }}
-          path: /tmp/e2e-evidence
-          retention-days: 14
-          overwrite: true
-          if-no-files-found: error
 
       # ── Generate step summary with visual diff info ───────────────────
       # Parse the JSON report + scan for diff images, then post a summary

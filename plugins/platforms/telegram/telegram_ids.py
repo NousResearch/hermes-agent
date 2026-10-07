@@ -29,14 +29,3 @@ def parse_telegram_username_target(target_ref: Any) -> Union[str, None]:
     """Return the value when it is an ``@username`` target, else ``None``."""
     value = str(target_ref).strip()
     return value if looks_like_telegram_username(value) else None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def telegram_chat_id_key(chat_id: Any) -> str:
-    """Stable string key for a chat_id (for dict keys / persisted state)."""
-    return str(normalize_telegram_chat_id(chat_id))
-# ---- END PLUGIN-COMPAT ----

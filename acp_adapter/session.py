@@ -103,7 +103,7 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
 def _expand_acp_enabled_toolsets(toolsets: List[str] | None = None,
                                  mcp_server_names: List[str] | None = None) -> List[str]:
     """Return ACP toolsets plus explicit MCP server toolsets for this session."""
-    names = [n for n in (toolsets or ["hermes-acp"]) if n]
+    names = [n for n in (["hermes-acp"] if toolsets is None else toolsets) if n]
     names += [f"mcp-{s}" for s in (mcp_server_names or []) if s]
     return list(dict.fromkeys(names))
 
@@ -273,6 +273,34 @@ class SessionManager:
         if state is not None:
             self._persist(state)
 
+    def end_all_sessions(self, end_reason: str = "acp_disconnect") -> int:
+        """Stamp ``ended_at`` on every live session (#118216).
+
+        ACP v0.9 has no per-session destroy, so the stdio shutdown that ends
+        this process is the session end: the client that drove the
+        conversation is gone. Without this writer, source='acp' rows keep
+        ``ended_at`` NULL forever and the ended-session guard shared by
+        prune/archive (``hermes_state_maintenance``) can never reach them.
+        A later load/resume reopens the row (see ``_restore``), the same
+        contract the TUI gateway's resume path uses. Best-effort: teardown
+        must never raise. Returns the number of sessions ended.
+        """
+        db = self._get_db()
+        if db is None:
+            return 0
+        with self._lock:
+            session_ids = list(self._sessions.keys())
+        ended = 0
+        for session_id in session_ids:
+            try:
+                db.end_session(session_id, end_reason)
+                ended += 1
+            except Exception:
+                logger.debug("Failed to end ACP session %s", session_id, exc_info=True)
+        if ended:
+            logger.info("Ended %d ACP session(s) on shutdown (%s)", ended, end_reason)
+        return ended
+
     # ---- persistence via SessionDB ------------------------------------------
 
     def _install_state(self, session_id: str, agent: Any, cwd: str, model: str,
@@ -428,6 +456,15 @@ class SessionManager:
         if row is None or row.get("source") != "acp":
             return None
 
+        # A previous adapter process stamped the row ended at its stdio
+        # shutdown (#118216); resuming the conversation reopens it, the same
+        # contract the TUI gateway's cold-resume path uses.
+        if row.get("ended_at") is not None:
+            try:
+                db.reopen_session(session_id)
+            except Exception:
+                logger.debug("Failed to reopen ACP session %s", session_id, exc_info=True)
+
         meta = _parse_model_config(row.get("model_config"))
         cwd, model = meta.get("cwd", "."), row.get("model") or None
 
@@ -458,13 +495,15 @@ class SessionManager:
                     requested_provider: str | None = None, base_url: str | None = None, api_mode: str | None = None,
                     enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None):
         """``enabled_toolsets``/``disabled_toolsets`` carry a live session's toolsets into a rebuild; ``None`` derives
-        them from the config-declared MCP servers (fresh session)."""
+        them from config (fresh session)."""
         if self._agent_factory is not None:
             return self._agent_factory()
 
         from run_agent import AIAgent
+        from agent.skill_utils import parse_config_string_list
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names
         from hermes_constants import resolve_reasoning_config
 
         config = load_config()
@@ -475,17 +514,19 @@ class SessionManager:
         elif isinstance(model_cfg, str):
             default_model = model_cfg.strip()
 
-        from tools.mcp_tool_common import mcp_server_enabled
-
-        configured_mcp_servers = [
-            name for name, cfg in (config.get("mcp_servers") or {}).items()
-            if not isinstance(cfg, dict) or mcp_server_enabled(cfg)
-        ]
+        if enabled_toolsets is None:
+            # The same per-platform resolver as the gateway/cron/api_server: platform_toolsets.acp wins, else
+            # hermes-acp; its MCP half (every enabled server, a listed-name allowlist, or none for ``no_mcp``)
+            # comes back as bare server names, which ACP keys as ``mcp-<server>`` like its session servers.
+            resolved = _get_platform_tools(config, "acp")
+            mcp_servers = resolved & enabled_mcp_server_names(config)
+            enabled_toolsets = _expand_acp_enabled_toolsets(sorted(resolved - mcp_servers), sorted(mcp_servers))
         kwargs = {
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
-            "enabled_toolsets": (list(enabled_toolsets) if enabled_toolsets is not None
-                                 else _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers)),
-            "disabled_toolsets": list(disabled_toolsets) if disabled_toolsets is not None else None,
+            "enabled_toolsets": list(enabled_toolsets),
+            # agent.disabled_toolsets is subtracted at tool granularity by the agent, as on the CLI/gateway/cron.
+            "disabled_toolsets": (list(disabled_toolsets) if disabled_toolsets is not None
+                                  else parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets")) or None),
             "model": model or default_model,
             "cwd": cwd,
             # Same chokepoint as the CLI/gateway/TUI/cron: without it ``agent.reasoning_effort: none`` never
@@ -503,6 +544,10 @@ class SessionManager:
                 "credential_pool": runtime.get("credential_pool"),
                 "command": runtime.get("command"), "args": list(runtime.get("args") or []),
             })
+            # The resolved provider's request body (a custom entry's extra_body); an explicit base_url pointing
+            # elsewhere is another endpoint, which must not inherit it.
+            if runtime.get("request_overrides") and (not base_url or base_url == runtime.get("base_url")):
+                kwargs["request_overrides"] = runtime["request_overrides"]
         except Exception as exc:
             resolve_error = exc
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
@@ -534,11 +579,3 @@ class SessionManager:
         # ACP stdio: stdout is protocol-only JSON-RPC; agent chatter goes to stderr.
         agent._print_fn = _acp_stderr_print
         return agent
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from threading import Lock  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

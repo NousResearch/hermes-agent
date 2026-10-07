@@ -54,3 +54,11 @@ optional_env:
     description: "Display name for the Teams home channel"
     prompt: "Home channel display name"
     password: false
+  - name: TEAMS_INCOMING_WEBHOOK_URL
+    description: "Incoming-webhook URL for meeting-summary delivery in webhook mode (the URL is the credential)"
+    prompt: "Incoming webhook URL (or empty)"
+    password: true
+  - name: TEAMS_GRAPH_ACCESS_TOKEN
+    description: "Microsoft Graph access token for meeting-summary delivery in graph mode"
+    prompt: "Graph access token (or empty)"
+    password: true

@@ -24,8 +24,8 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
 )
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from agent.i18n import t
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
     EGRESS_DECLINE_CODE,
@@ -108,6 +108,10 @@ def _profile_from_session_key(session_key: str) -> Optional[str]:
 
 class RelayAdapter(BasePlatformAdapter):
     """Generic relay adapter advertising a connector-negotiated capability profile."""
+
+    # Connector egress splits against negotiated max_message_length, so the
+    # gateway-level cap must not pre-truncate relay deliveries.
+    splits_long_messages = True
 
     def __init__(
         self,
@@ -227,6 +231,12 @@ class RelayAdapter(BasePlatformAdapter):
     def _chat_platform(self, chat_id: str) -> Optional[str]:
         """The chat's underlying platform as seen inbound, else the primary's."""
         return self._platform_by_chat.get(str(chat_id)) or self.descriptor.platform
+
+    def _metrics_platform(self, chat_id: str) -> Optional[str]:
+        """The platform a chat's shared metrics carry: the inbound's, else the primary's only when this
+        socket fronts one platform (a multi-platform connector's unknown chat stays unlabelled)."""
+        fronted = {p for p, _ in (getattr(self._transport, "_identities", None) or ())}
+        return self._platform_by_chat.get(str(chat_id)) or (self.descriptor.platform if len(fronted) <= 1 else None)
 
     def warning_notifications_enabled(self, logical_platform=None, *, chat_id=None, metadata=None) -> bool:
         platform = (logical_platform or (metadata or {}).get("_relay_logical_platform")
@@ -725,7 +735,7 @@ class RelayAdapter(BasePlatformAdapter):
         """
         merged_meta = self._task_card_metadata(reply_to, metadata)
         result = await self._card_frame(
-            chat_id, "task_card", reply_to, merged_meta, chunks=[dict(t) for t in tasks]
+            chat_id, "task_card", reply_to, merged_meta, chunks=[dict(task) for task in tasks]
         )
         if isinstance(result, SendResult):
             return result
@@ -2024,8 +2034,6 @@ class RelayAdapter(BasePlatformAdapter):
 
     _PROMPT_UNAVAILABLE = SendResult(success=False, error="relay prompt op unavailable")
 
-    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n\n"
-    _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
     _EA_CMD_BUDGET = 1500
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
@@ -2052,9 +2060,9 @@ class RelayAdapter(BasePlatformAdapter):
         """Three-button slash-command confirmation over the relay (resolves via
         tools.slash_confirm.resolve; success=False falls back to text-intercept)."""
         options = [
-            {"id": "once", "label": "Approve Once", "style": "primary"},
-            {"id": "always", "label": "Always Approve"},
-            {"id": "cancel", "label": "Cancel", "style": "danger"},
+            {"id": "once", "label": t("platform.relay.confirm_approve_once"), "style": "primary"},
+            {"id": "always", "label": t("platform.relay.confirm_always_approve")},
+            {"id": "cancel", "label": t("platform.relay.confirm_cancel"), "style": "danger"},
         ]
         result = await self._mint_and_send_prompt(
             "slash_confirm", {"session_key": session_key, "confirm_id": confirm_id}, chat_id,
@@ -2079,7 +2087,7 @@ class RelayAdapter(BasePlatformAdapter):
         back to base."""
         if choices and self.descriptor.supports_op("prompt"):
             options = [{"id": f"c{i}", "label": str(choice)[:75]} for i, choice in enumerate(choices)]
-            options.append({"id": "other", "label": "✏️ Other (type your answer)"})
+            options.append({"id": "other", "label": t("platform.relay.prompt_other")})
             result = await self._mint_and_send_prompt(
                 "clarify",
                 {
@@ -2214,8 +2222,7 @@ class RelayAdapter(BasePlatformAdapter):
             return
         self._send_lifecycle_ack(
             chat_id,
-            "⌛ That prompt is no longer waiting for an answer. "
-            "Send your reply as a normal message.",
+            t("platform.relay.prompt_expired"),
             self._prompt_reply_metadata(event),
         )
 
@@ -2401,11 +2408,3 @@ _PROMPT_RESOLVERS = {
     "slash_confirm": RelayAdapter._resolve_slash_confirm,
     "clarify": RelayAdapter._resolve_clarify,
 }
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import cast  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

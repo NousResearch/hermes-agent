@@ -10,12 +10,63 @@ import importlib.machinery
 import importlib.util
 import logging
 import sys
+import threading
+import time
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
 _log = logging.getLogger(__name__)
 
 _PLUGINS_ROOT = Path(__file__).parent
+_MODULE_LOAD_LOCKS: dict[str, threading.RLock] = {}
+_MODULE_LOAD_LOCKS_GUARD = threading.Lock()
+# Inside bounded_load_wait(), how long a second caller waits for another thread's in-flight load of
+# the same module. Past it the module is marked stalled (a hung import) and later bounded callers
+# refuse at once until it finishes. Other callers (agent builds) wait for the load to finish.
+_CONCURRENT_LOAD_WAIT_SECS = 10.0
+_BOUNDED_WAIT: ContextVar[bool] = ContextVar("plugin_load_bounded_wait", default=False)
+_STALLED_LOADS: set[str] = set()
+_LOAD_OWNERS: dict[str, int] = {}  # module -> thread id running its load
+_LOAD_WAITERS: dict[int, str] = {}  # thread id -> module whose load it waits for
+
+
+def _waits_for(tid: int) -> set:
+    """Threads *tid* is blocked on: a loader lock owner, or an importlib module-lock owner."""
+    owners = {_LOAD_OWNERS.get(_LOAD_WAITERS.get(tid, ""))}
+    blocked = getattr(importlib._bootstrap, "_blocking_on", {}).get(tid)  # list on 3.12+, lock on 3.11
+    owners.update(getattr(lk, "owner", None) for lk in (blocked if isinstance(blocked, list) else [blocked]))
+    return owners - {None}
+
+
+def _load_would_deadlock(me: int) -> bool:
+    """Whether the wait graph (loader locks + importlib's module locks) leads back to *me*.
+    importlib cannot see the loader lock in its own deadlock check, so walk both kinds here."""
+    seen, todo = set(), list(_waits_for(me))
+    while todo:
+        tid = todo.pop()
+        if tid == me:
+            return True
+        if tid not in seen:
+            seen.add(tid)
+            todo.extend(_waits_for(tid))
+    return False
+
+
+@contextlib.contextmanager
+def bounded_load_wait():
+    """For per-turn callers that must not stall on another thread's hung plugin import: their
+    loads give up (None) after ``_CONCURRENT_LOAD_WAIT_SECS`` instead of waiting it out."""
+    token = _BOUNDED_WAIT.set(True)
+    try:
+        yield
+    finally:
+        _BOUNDED_WAIT.reset(token)
+
+
+def _module_load_lock(module_name: str) -> threading.RLock:
+    with _MODULE_LOAD_LOCKS_GUARD:
+        return _MODULE_LOAD_LOCKS.setdefault(module_name, threading.RLock())
 
 
 def register_synthetic_package(name: str, search_locations: List[str]) -> None:
@@ -56,9 +107,10 @@ def iter_plugin_dirs(root: Path) -> List[Path]:
 def read_plugin_description(plugin_dir: Path) -> str:
     """Return ``description`` from ``plugin.yaml`` (empty string if absent/unreadable)."""
     try:
-        import yaml
+        from utils import fast_safe_load
+
         with open(plugin_dir / "plugin.yaml", encoding="utf-8-sig") as f:
-            meta = yaml.safe_load(f) or {}
+            meta = fast_safe_load(f) or {}
         return meta.get("description", "")
     except Exception:
         return ""
@@ -98,6 +150,48 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
         return None
+    if synthetic_namespace:  # user code: never imported in-process under plugins.isolation: host
+        from hermes_cli.plugin_isolation import in_process_import_refusal
+        refusal = in_process_import_refusal(f"plugin {plugin_dir.name!r} (loaded as {module_name})")
+        if refusal:
+            logger.warning("%s", refusal)
+            return None
+    # _new_module publishes a package shell before executing it so sibling relative
+    # imports work. Serialize the complete load so another thread cannot observe
+    # that half-built shell as a loaded plugin.
+    # The wait polls for a cross-thread cycle through importlib's module locks; in a cycle, accept the
+    # partial module like importlib does. It is bounded only inside bounded_load_wait() (per-turn callers).
+    lock, me = _module_load_lock(module_name), threading.get_ident()
+    deadline = float("inf") if not _BOUNDED_WAIT.get() else time.monotonic() + (
+        0 if module_name in _STALLED_LOADS else _CONCURRENT_LOAD_WAIT_SECS)
+    _LOAD_WAITERS[me] = module_name
+    try:
+        while not lock.acquire(timeout=0.05):
+            if _load_would_deadlock(me):
+                logger.debug("Concurrent circular load of %s; using the partial module", module_name)
+                return sys.modules.get(module_name)
+            if time.monotonic() >= deadline:
+                _STALLED_LOADS.add(module_name)
+                logger.warning("Skipping plugin %s: another thread's load of it has not finished "
+                               "(import still running after %.0fs)", module_name, _CONCURRENT_LOAD_WAIT_SECS)
+                return None
+    finally:
+        _LOAD_WAITERS.pop(me, None)
+    outermost = module_name not in _LOAD_OWNERS  # the RLock re-enters on this thread's recursive loads
+    _LOAD_OWNERS.setdefault(module_name, me)
+    try:
+        return _load_plugin_module_locked(module_name, plugin_dir, init_file, parents, logger,
+                                          synthetic_namespace)
+    finally:
+        if outermost:
+            _LOAD_OWNERS.pop(module_name, None)
+            _STALLED_LOADS.discard(module_name)
+        lock.release()
+
+
+def _load_plugin_module_locked(module_name: str, plugin_dir: Path, init_file: Path,
+                               parents: Tuple[str, ...], logger: logging.Logger,
+                               synthetic_namespace: Optional[str]) -> Optional[Any]:
     # A synthetic package shell has no __file__; only reuse modules loaded from disk.
     cached = sys.modules.get(module_name)
     if cached is not None and getattr(cached, "__file__", None):

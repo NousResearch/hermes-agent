@@ -87,37 +87,3 @@ async def resolve(session_key: str, confirm_id: str, choice: str,
         logger.error("Slash-confirm handler for /%s raised: %s", command, exc, exc_info=True)
         return f"❌ Error handling confirmation: {exc}"
     return result if isinstance(result, str) else None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import asyncio  # noqa: F401,E402
-
-def resolve_sync_compat(
-    loop: asyncio.AbstractEventLoop,
-    session_key: str,
-    confirm_id: str,
-    choice: str,
-) -> Optional[str]:
-    """Synchronous helper: schedule resolve() on a loop and wait for the result.
-
-    Used by platform callback paths that run on a different thread than the
-    event loop (e.g. Discord's button click handler in some configurations).
-    Prefer the async ``resolve()`` from an async context.
-    """
-    try:
-        from agent.async_utils import safe_schedule_threadsafe
-        fut = safe_schedule_threadsafe(
-            resolve(session_key, confirm_id, choice), loop,
-            logger=logger,
-            log_message="resolve_sync_compat scheduling failed",
-        )
-        if fut is None:
-            return None
-        return fut.result(timeout=30)
-    except Exception as exc:
-        logger.error("resolve_sync_compat failed: %s", exc)
-        return None
-# ---- END PLUGIN-COMPAT ----

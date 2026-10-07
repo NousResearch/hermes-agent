@@ -36,12 +36,20 @@ def desktop_userdata_dir() -> Path:
 
 def source_built_gui_artifacts(hermes_home: Path) -> "list[Path]":
     """GUI build artifacts produced by ``hermes desktop`` inside the checkout (same ``hermes-agent/`` layout
-    install.sh uses). The Python agent runs from source + venv and never needs the Electron build output or
-    node_modules (the workspace-root node_modules only carries Electron, ~200MB)."""
+    install.sh uses). The workspace-root node_modules is shared with the TUI, dashboard and other
+    workspaces, so only the desktop workspace's own dependencies belong to GUI removal."""
     agent_root = hermes_home / "hermes-agent"
     desktop_dir = agent_root / "apps" / "desktop"
     return [desktop_dir / "dist", desktop_dir / "release", desktop_dir / "node_modules",
-            agent_root / "node_modules", hermes_home / "desktop-build-stamp.json"]
+            hermes_home / "desktop-build-stamp.json"]
+
+
+def desktop_install_record() -> Path:
+    """Where ``hermes update`` records the installed ``Hermes.app`` copies it keeps current. The apps
+    are machine-wide, so the record sits under the default root whichever profile runs; deleting it
+    is what stops an uninstalled app from being put back by the next update."""
+    from hermes_constants import get_default_hermes_root  # noqa: PLC0415
+    return get_default_hermes_root() / "desktop-installed-apps.json"
 
 
 def packaged_gui_app_paths() -> "list[Path]":
@@ -59,11 +67,14 @@ def packaged_gui_app_paths() -> "list[Path]":
             [Path(program_files) / "Hermes"] if program_files else [])
     # Linux: an AppImage lives wherever the user put it and deb/rpm files belong to the package manager
     # (see the hint in ``uninstall_gui``), so only the desktop entry + hicolor icons are cleaned here.
-    from hermes_cli.linux_desktop_entry import desktop_entry_path
+    from hermes_cli.linux_desktop_entry import LEGACY_DESKTOP_ENTRY_NAME, desktop_entry_path
     data_base = _env_dir("XDG_DATA_HOME", home / ".local" / "share")
     icons = data_base / "icons" / "hicolor"
     # "scalable" plus every fixed-size dir the installer may have written (panel sizes + older native copies).
-    return [desktop_entry_path(), data_base / "applications" / "Hermes.desktop"] + [
+    # The legacy entry is a hidden alias of the app-id entry since #124492 — remove it with the real one.
+    return [desktop_entry_path(),
+            data_base / "applications" / LEGACY_DESKTOP_ENTRY_NAME,
+            data_base / "applications" / "Hermes.desktop"] + [
         icons / size / "apps" / "hermes.png"
         for size in ("scalable", "24x24", "32x32", "48x48", "256x256", "512x512", "1024x1024")]
 
@@ -75,19 +86,36 @@ def agent_is_installed(hermes_home: Path) -> bool:
 
 
 def gui_is_installed(hermes_home: Path) -> bool:
-    """Return True when any desktop GUI artifact exists (built or packaged)."""
-    return any(p.exists() for p in (*source_built_gui_artifacts(hermes_home), *packaged_gui_app_paths(), desktop_userdata_dir()))
+    """Return True when any desktop GUI artifact or install record exists."""
+    return any(p.exists() for p in (
+        *source_built_gui_artifacts(hermes_home), *packaged_gui_app_paths(),
+        desktop_userdata_dir(), desktop_install_record(),
+    ))
 
 
 def gui_install_summary(hermes_home: "Path | None" = None) -> dict:
     """JSON-serializable snapshot of what's installed, for the desktop UI to render via IPC."""
     home: Path = hermes_home if hermes_home is not None else get_hermes_home()
     userdata = desktop_userdata_dir()
-    return {"hermes_home": str(home), "agent_installed": agent_is_installed(home),
-            "gui_installed": gui_is_installed(home),
-            "source_built_artifacts": [str(p) for p in source_built_gui_artifacts(home) if p.exists()],
-            "packaged_app_paths": [str(p) for p in packaged_gui_app_paths() if p.exists()],
-            "userdata_dir": str(userdata), "userdata_exists": userdata.exists(), "platform": sys.platform}
+    # Steward facts, so the UI can gate its destructive options on the same
+    # ladder the CLI uninstaller uses: only a git checkout may have its code
+    # removed; sealed trees (nix / desktop-app / docker) get data-only.
+    from hermes_cli import steward as steward_mod
+
+    steward, code_removal_allowed = steward_mod.classify_install(home / "hermes-agent")
+
+    return {
+        "hermes_home": str(home),
+        "agent_installed": agent_is_installed(home),
+        "gui_installed": gui_is_installed(home),
+        "source_built_artifacts": [str(p) for p in source_built_gui_artifacts(home) if p.exists()],
+        "packaged_app_paths": [str(p) for p in packaged_gui_app_paths() if p.exists()],
+        "userdata_dir": str(userdata),
+        "userdata_exists": userdata.exists(),
+        "platform": sys.platform,
+        "steward": steward,
+        "code_removal_allowed": code_removal_allowed,
+    }
 
 
 def _remove_path(path: Path) -> bool:
@@ -120,7 +148,7 @@ def uninstall_gui(hermes_home: "Path | None" = None, *, remove_userdata: bool = 
                 removed.append(path)
         return found
     log_info("Removing built GUI artifacts (renderer, release, node_modules)...")
-    _remove_existing(source_built_gui_artifacts(home))
+    _remove_existing([*source_built_gui_artifacts(home), desktop_install_record()])
     log_info("Removing installed desktop app...")
     if not _remove_existing(packaged_gui_app_paths()):
         log_info("No packaged desktop app found in standard locations")

@@ -72,3 +72,21 @@ def test_partial_plugin_metadata_preserves_unknowns_and_catalog_fields(monkeypat
     assert unknown.context_window == 48000
     assert unknown.supports_reasoning is None and unknown.supports_vision is None
     assert catalog == original
+
+
+def test_provider_wide_vision_flag_gates_tool_results_not_attachments(monkeypatch):
+    """``ProviderProfile.supports_vision`` is a provider-wide tool-result wire capability; per-model attachment
+    routing comes only from ``model_capabilities``. Relays (``router``) set the flag over mixed catalogs, so
+    honouring it for attachments sent images to text-only models (reverted in 08feaa98b5b)."""
+    from agent.image_routing import decide_image_input_mode
+    from tools.vision_tools import _supports_media_in_tool_results
+
+    _isolated_registry(monkeypatch)
+    monkeypatch.setattr(models_dev, "_load_model_overrides", lambda: {})
+    providers.register_provider(ProviderProfile(
+        name="fixture-relay", supports_vision=True,
+        model_capabilities={"seeing": {"supports_vision": True}}))
+
+    assert _supports_media_in_tool_results("fixture-relay", "undeclared") is True
+    assert decide_image_input_mode("fixture-relay", "undeclared", {}) == "text"
+    assert decide_image_input_mode("fixture-relay", "seeing", {}) == "native"

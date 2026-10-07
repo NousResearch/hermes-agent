@@ -107,26 +107,3 @@ class LateState:
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<LateState {object.__getattribute__(self, '_name')} -> {self._target()!r}>"
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def get_dashboard_health():
-    """The ``DASHBOARD_HEALTH`` singleton owned by web_server."""
-    return _server().DASHBOARD_HEALTH
-
-def get_session_token() -> str:
-    """Current dashboard session token (``web_server._SESSION_TOKEN``)."""
-    return _server()._SESSION_TOKEN
-
-def has_valid_session_token(request) -> bool:
-    """Late-bound alias for ``web_server._has_valid_session_token``."""
-    return _server()._has_valid_session_token(request)
-
-def late_attr(name: str) -> Any:
-    """Read ``web_server.<name>`` right now (for non-callable state reads)."""
-    return getattr(_server(), name)
-# ---- END PLUGIN-COMPAT ----

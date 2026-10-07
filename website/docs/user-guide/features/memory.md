@@ -171,17 +171,16 @@ When you try to add an entry that would exceed the limit, the tool returns an er
 ```json
 {
   "success": false,
-  "error": "Memory at 2,100/2,200 chars. Adding this entry (250 chars) would exceed the limit. Consolidate now: use 'replace' to merge overlapping entries into shorter ones or 'remove' stale or less important entries (see current_entries below), then retry this add — all in this turn.",
+  "error": "Memory at 2,100/2,200 chars; adding this entry (250 chars) would exceed the limit by 153 chars. Retry as ONE 'operations' batch that removes or shortens (replace) stale entries from current_entries below to free at least 153 chars AND adds this entry — the limit is checked only on the batch result.",
   "current_entries": ["..."],
   "usage": "2,100/2,200"
 }
 ```
 
-The agent should then:
-1. Read the current entries (shown in the error response)
-2. Identify entries that can be removed or consolidated
-3. Use `replace` to merge related entries into shorter versions
-4. Then `add` the new entry
+The agent then reissues one `operations` batch that frees at least the stated number of
+characters (removes, or `replace`s with shorter versions) and adds the new entry; the limit
+is checked only on the batch's final result. A `replace`/`remove` whose `old_text` matches no
+entry fails the same way, with the entries it most resembles under `closest_entries`.
 
 **Best practice:** When memory is above 80% capacity (visible in the system prompt header), consolidate entries before adding new ones. For example, merge three separate "project uses X" entries into one comprehensive project description entry.
 
@@ -257,7 +256,7 @@ Beyond viewing, the journey is also where you **prune and correct** what Hermes 
 
 | Command | What it does |
 |---------|--------------|
-| `hermes journey list` | List node ids — skill names and `memory:<source>:<index>` ids for memory chunks. |
+| `hermes journey list` | List node ids — skill names and `memory:<source>:<index>:<fingerprint>` ids for memory chunks (pass one back exactly as printed). |
 | `hermes journey delete <node> [-y]` | Delete a node. Skills are **archived** (restorable), memory chunks are removed. `-y` skips the confirmation. |
 | `hermes journey edit <node>` | Open the node's content (a skill's `SKILL.md` or the memory chunk) in `$EDITOR`. |
 
@@ -316,6 +315,14 @@ Review staged writes from the CLI or any messaging platform:
 This is the answer to "the agent saved a wrong assumption about me": set
 `write_approval: true`, and every save — especially the unprompted background
 ones — waits for your yes/no before it ever enters your profile.
+
+A staged `replace` or `remove` (the background review stages these even with the
+gate off) records the full entry it targets, and `/memory pending` shows it.
+Approval applies to exactly that entry: if it changed after the write was staged,
+the write is refused and stays pending for you to reject. A `replace`/`remove`
+staged before this pinning existed has no verifiable target and is refused too:
+reject it and recreate the change. `/memory approve` lists the full text of
+every entry it overwrote or removed.
 
 ## Background review notifications (`display.memory_notifications`)
 
@@ -499,7 +506,7 @@ Full details in [Gating agent skill writes](./skills.md#gating-agent-skill-write
 
 ## External Memory Providers
 
-For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 7 external memory provider plugins — Honcho, OpenViking, Mem0, Holographic, RetainDB, ByteRover, and Supermemory — and more, such as Hindsight, are available from the [plugin catalog](plugins.md) via `hermes plugins install <name>`.
+For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 3 external memory provider plugins — Holographic, RetainDB and ByteRover — and more, such as Honcho, Hindsight, Supermemory, Mem0 and OpenViking, are available from the [plugin catalog](plugins.md) via `hermes plugins install <name>`.
 
 External providers run **alongside** built-in memory (never replacing it) and add capabilities like knowledge graphs, semantic search, automatic fact extraction, and cross-session user modeling.
 

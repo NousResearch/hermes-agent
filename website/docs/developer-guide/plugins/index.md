@@ -25,6 +25,7 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | A **video-generation backend** | [Video Generation Provider Plugins](../video-gen-provider-plugin.md) |
 | A **web-search / extract backend** | [Web Search Provider Plugins](../web-search-provider-plugin.md) |
 | A **cloud browser backend** (Browserbase-style CDP session provider) | [Browser Provider Plugins](../browser-provider-plugin.md) |
+| A **computer-use driver** (desktop control behind the `computer_use` tool) | [Computer-use backend plugins](#computer-use-backend-plugins) — `ctx.register_computer_use_provider()` |
 | A **secret-manager backend** (vault / password manager / OS keystore) | [Secret Source Plugins](../secret-source-plugin.md) |
 | A **dashboard OIDC/auth provider** | [Web Dashboard — custom providers](../../user-guide/features/web-dashboard.md#custom-providers) — `ctx.register_dashboard_auth_provider()` |
 | A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](../../user-guide/features/tts.md#custom-command-providers) — config-driven, no Python needed |
@@ -145,6 +146,15 @@ The compatibility rules are:
   format must still replay. Do not add version literals to unrelated callback
   or context values.
 
+The contract covers documented surfaces only. Replacing or wrapping core
+functions, methods, module attributes or private tables at runtime (assigning
+`AIAgent.<method>`, `setattr` on a Hermes module, writing into
+`sys.modules` or a core dict) is not a supported extension point. It breaks
+whenever the internals move, and it collides with every other plugin patching
+the same seam. The plugin catalog refuses it at admission (`hermes plugins
+validate`, `no core override` check). If a public hook you need is missing,
+open an issue describing it.
+
 ### Deprecation policy
 
 A documented native plugin behavior may be deprecated only with all of the
@@ -168,20 +178,17 @@ from an isolated `HERMES_HOME`. Those tests load and invoke the plugin through
 `PluginManager`; they assert real registration and callback outcomes rather
 than internal symbol lists or source-code shape.
 
-### Sep 2026 module decomposition: old import paths end 2026-09-14
+### Sep 2026 module decomposition: old import paths removed
 
 Hermes's internals were split into `<stem>_<topic>` sibling modules in Sep 2026 (PR #102117). **Internal
-import paths were never part of the plugin contract** above, but many plugins used them. Every moved name
-still resolves from its old module until **2026-09-14**, then the compatibility layer is removed.
+import paths were never part of the plugin contract** above. A temporary compatibility layer kept the old
+paths resolving until 2026-09-14; it has been removed, so a plugin that still imports an old path fails to
+load with an `ImportError` (the reason shows in `hermes plugins list`).
 
-- **Check your plugin:** `hermes plugins compat /path/to/your/plugin` lists every `file:line` with the
-  old path and the new one, and exits 1 while any remain. `COMPAT_MANIFEST.md` in the repo is the full map.
-- **What users see:** a notice under the CLI banner, in `hermes doctor` and after `hermes update`, and a
-  one-time Desktop dialog naming the plugin. Each resolution through an old path also emits a
-  `HermesPluginCompatWarning` once per process.
-- **From 2026-09-14:** plugins that still import old paths are **not loaded** (the reason shows in
-  `hermes plugins list`). Users can force-load with `plugins.allow_deprecated_imports: true` until the
-  layer is actually removed, at which point the old paths raise `ImportError`.
+To fix such a plugin, import the name from the module that defines it now, or better, use `ctx` and the
+documented ABCs instead of internals. The full old-to-new map is the
+[`COMPAT_MANIFEST.md`](https://github.com/NousResearch/hermes-agent/blob/5912ed81ed9/COMPAT_MANIFEST.md)
+from the last commit that shipped the layer.
 
 ## What you're building
 
@@ -306,12 +313,13 @@ this Hermes understands still loads with a warning.
 | `manifest_version` | int | Manifest **file-format** version. Absent = `1`. Current max: `2`. Independent from `api_version`. |
 | `api_version` | int | Runtime **plugin API generation** the plugin targets (ctx surface / hook signatures). Deliberately a separate axis from `manifest_version` — an `api_version: 1` plugin can use a v2 manifest. |
 | `requires_plugins` | list | Inter-plugin dependencies: `- id: other-plugin` with optional `version_range: ">=1.0,<2"`. **Advisory**: a missing dependency logs a clear warning but the plugin still loads — probe at runtime with `ctx.has_plugin("other-plugin")`. Load **order** honors these edges: when A requires B, B's `register()` runs before A's (topological sort, alphabetical tiebreak; cycles warn and fall back to alphabetical order). |
-| `python_dependencies` | list of str | PEP 508 requirements (e.g. `"requests>=2.0,<3"`). Installed into Hermes' venv on `hermes plugins install` / `enable` and **re-applied after every `hermes update`** (see [Python dependencies](#python-dependencies)). A `pyproject.toml` beside `plugin.yaml` with `[project].dependencies` is the equivalent, preferred form. |
+| `python_dependencies` | list of str | Declared Python requirements (e.g. `"requests>=2.0,<3"`). Installation requests consent; enabling admits the candidate through PM with the existing core, extras, and enabled-plugin union. Successful preparation publishes the environment and configuration transactionally; failure preserves the previous selection and enabled set. Declining leaves the installed plugin disabled. Pin upper bounds. |
 | `python_runtime` | str | `external` — the plugin manages its own interpreter/venv (sidecar pattern); Hermes installs nothing and leaves any `pyproject.toml` alone. |
 | `config_schema` | mapping | JSON-schema-ish description of keys under `plugins.entries.<id>.settings`: `api_url: {type: str, default: "", description: "...", required: false}`. Validated at load; mismatches log actionable warnings naming the key and expected type — never load failures. Types: `str`, `int`, `float`, `bool`, `list`, `dict` (plus JSON-schema aliases) and `secret`. Also drives the settings form in the Desktop Plugins tab — see [Settings form in the Desktop](#settings-form-in-the-desktop). |
 | `license` | str | SPDX-style license id (e.g. `MIT`). |
 | `homepage` | str | Project URL. |
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
+| `provides_locales` | list | Language pack declaration: ids (`- pl`) or `{id, endonym, rtl}` mappings whose `locales/<id>[.tui\|.desktop].yaml` the loader registers automatically — see [Ship a language pack](#ship-a-language-pack). |
 
 ```yaml
 # plugin.yaml — manifest v2 example
@@ -326,10 +334,21 @@ requires_plugins:
   - id: other-plugin
     version_range: ">=1.0,<2"
 python_dependencies:
-  - "somepkg>=1.0,<2"     # installed on install/enable, re-applied after hermes update
+  - "somepkg>=1.0,<2"     # consent before PM admission
 config_schema:
   api_url: {type: str, default: "", description: "Service endpoint"}
 ```
+
+:::note Shared dependency admission
+Plugin installation requests Python dependency consent. Enabling the plugin
+prepares its requirements with core dependencies, extras, and enabled plugins
+through PM. Pack enables use the same admission transaction. Reinstalling an
+active plugin requests consent against its staged declaration before publication.
+A refusal preserves the installed plugin and selected environment.
+
+The installer and PM admission reject unsupported `manifest_version` values
+and unmet `requires_hermes` constraints before publication.
+:::
 
 ### Python dependencies
 
@@ -349,34 +368,63 @@ dependencies = [
 
 When both exist the `pyproject.toml` wins. What Hermes does with them:
 
-- **Install / enable** — the declared packages are installed into Hermes' venv with
-  `uv pip install` (pip fallback) under a **constraints file built from Hermes' own pinned
-  dependencies**, so a plugin can never move a core package (httpx, pydantic, …) off the version
-  Hermes was tested with. Environment markers (`; sys_platform == "win32"`) are honoured.
-- **Conflict = refusal, never a silent drop** — before the plugin tree is moved into place, its
-  dependencies are dry-run resolved together with every already-enabled plugin's. A candidate that
-  cannot resolve is *not installed* and the error names the conflict; existing plugins are untouched.
-- **`hermes update` re-applies them** — the update's `uv sync` rebuilds the venv from Hermes' lock
-  and strips anything else. Afterwards Hermes walks every profile's enabled plugins and reinstalls
-  their declared dependencies. If the union no longer resolves (a core pin moved), non-memory
-  plugins are dropped one at a time until it does; each dropped plugin is **disabled with a loud
-  message** naming it, and memory providers are kept over everything else, because a Hermes that
-  boots without memory looks like data loss.
-- **`hermes plugins update`** re-runs the install for whatever the new revision declares.
-- **`--no-deps`** on `hermes plugins install` skips all of this for one plugin (no conflict gate,
-  nothing installed) when you would rather manage its packages yourself.
-- **Opt out with `python_runtime: external`** — plugins that keep a heavy runtime (torch, native
-  extensions) in their own sidecar venv and talk to it over a subprocess declare this in
-  `plugin.yaml`; Hermes then installs nothing and the plugin never joins the shared resolution.
-- **Nothing to load is an error** — `hermes plugins validate` (and the catalog CI) fail a
-  `plugin.yaml` with no `__init__.py`, `desktop/plugin.js` or `plugin.json` beside it. A pip-layout
-  package whose code sits under `src/` behind an entry point needs a thin directory-plugin wrapper
-  whose `pyproject.toml` depends on the package.
-- `security.allow_lazy_installs: false` disables all of this; the plugin installs, its dependencies
-  do not, and the loader warns at import.
+- **Install / enable** — PM resolves core, selected extras, and the enabled plugin union
+  across every profile sharing the dependency home, including custom `HERMES_HOME` roots.
+  A new plugin is downloaded disabled; Python dependency consent precedes enablement.
+  `pyproject.toml` takes precedence over `python_dependencies` and legacy `pip_dependencies`.
+- **Atomic publication** — PM prepares a fresh environment generation before publishing
+  an enablement or an active plugin replacement. Resolution, download, or build failure
+  preserves the previous environment and plugin selection; no existing plugin is sacrificed.
+- **Updates retain the union** — `hermes update` includes enabled plugins while preparing
+  its new generation. There is no post-update pip reinstall. `hermes plugins update` prepares
+  active replacements before swapping their code and dependency generation together.
+- **Requirement hygiene** — malformed PEP 508 requirements are refused. Environment markers
+  remain intact for the target interpreter to evaluate. `hermes-agent` self-dependencies are
+  omitted because the checkout supplies Hermes. Direct-URL requirements are not managed;
+  use a plugin-owned external runtime for them.
+- **`--no-deps`** downloads a new plugin without dependency consent and leaves it disabled,
+  even with `--enable`. It cannot bypass PM admission when replacing an active plugin.
+- **`--yes-deps`** answers the dependency question up front, so a headless install (CI, SSH
+  automation, a container entrypoint) prepares the declared dependencies instead of being refused.
+  It is mutually exclusive with `--no-deps`.
+- **`python_runtime: external`** keeps a sidecar's dependencies out of the shared union.
+  Hermes does not install that Python runtime or modify its declaration.
+- **Nothing to load is an error** — `hermes plugins validate` rejects `plugin.yaml` without
+  `__init__.py`, `desktop/plugin.js`, or `plugin.json` beside it. Pip-layout packages need
+  a directory-plugin wrapper.
+- `security.allow_lazy_installs: false` blocks on-demand acquisition. Explicit dependency
+  consent and explicit enablement authorize PM preparation; discovery never installs.
 
 `HERMES_HOME/plugins/` survives `hermes update` and Desktop updates: the updater only rebuilds the
 venv and the checkout, never the home directory.
+
+### Dependency security policy
+
+Hermes quarantines **its own** dependencies: the checkout's `[tool.uv] exclude-newer = "14 days"`
+keeps a freshly published release of any package Hermes itself depends on out of `hermes update`
+and the built-in lazy installs for two weeks, so a hijacked upload is caught upstream before it
+reaches users. **That quarantine does not apply to your plugin's dependencies.** When Hermes
+resolves your plugin into its environment, the cutoff stays on the packages Hermes itself locks
+and nowhere else, so a plugin can floor on a release published yesterday and install today — and the
+plugin's author, not Hermes, is responsible for what that pulls in. (A plugin that needs a newer
+version of a package Hermes itself depends on still waits out that package's window.)
+
+Set your own policy and hold yourself to it. Strongly recommended:
+
+- **Upper bounds on every dependency** — `>=floor,<next_major` for stable packages,
+  `>=0.29,<0.32` for pre-1.0 ones. A bare `>=X.Y` adopts every future release unreviewed.
+- **Floor on the oldest API-compatible version**, not the release of the week. A floor on a
+  fresh wheel forces every installer onto it the day it appears; `>=old,!=broken,<next` keeps the
+  wide range and skips the one bad release.
+- **Adopt a new-release quarantine of your own** — wait ~14 days before floors move to a new
+  release, and resolve with `uv --exclude-newer "14 days"` (or `UV_EXCLUDE_NEWER`) in your own CI so
+  the lock you test is the one users get.
+- **Pin your lock, review your bumps.** Treat a dependency bump as a code change: read the
+  upstream diff, then re-pin.
+
+The plugin catalog review reads your dependency list at the pinned SHA (`plugin.yaml` or
+`pyproject.toml`) and flags bare floors and missing bounds; an entry is not held for a floor that
+is merely recent.
 
 ## Step 3: Write the tool schemas
 
@@ -629,8 +677,9 @@ Config and state have different owners: settings are user-visible behavior in
 
 ### Settings form in the Desktop
 
-Every key you declare in the manifest's `config_schema` renders as a field in the
-Desktop app's **Capabilities → Plugins** tab (the gear on the plugin's row). No
+Every key you declare in the manifest's `config_schema` renders as a row on the
+plugin's own page under the Desktop app's **Settings → Plugins** (the gear on the
+plugin's Capabilities → Plugins row opens it). No
 Desktop code is needed: the backend's `plugins.manage list` returns the schema
 plus each key's current value, and saving writes through the same writer as
 `ctx.set_config()`, so `plugins.entries.<id>.settings.<key>` is what your plugin
@@ -644,8 +693,9 @@ reads back. The form is table-driven by `type`:
 | `list`, `dict` | JSON editor | |
 | `secret` | masked input | `env: MY_PLUGIN_TOKEN` — the `.env` variable it is stored under (default `<PLUGIN_ID>_<KEY>` upper-snaked) |
 
-Every entry also accepts `label` (shown instead of the key), `description`
-(help text under the field), `default` and `required`.
+Every entry also accepts `label` (or `title`; without one the key is shown in
+sentence case, `maps_api_key` → "Maps API key"), `description` (help text under
+the label), `default` and `required` (marks the row **Required**).
 
 ```yaml
 config_schema:
@@ -746,12 +796,13 @@ Put any files in your plugin directory and read them at import time:
 ```python
 # In tools.py or __init__.py
 from pathlib import Path
+from ruamel.yaml import YAML
 
 _PLUGIN_DIR = Path(__file__).parent
 _DATA_FILE = _PLUGIN_DIR / "data" / "languages.yaml"
 
 with open(_DATA_FILE) as f:
-    _DATA = yaml.safe_load(f)
+    _DATA = YAML(typ="safe").load(f)
 ```
 
 That's for files you *ship*. State you *write* is different — see the next
@@ -822,6 +873,55 @@ skill_view("my-workflow")              # → built-in version (unchanged)
 The old `shutil.copy2` pattern (copying a skill into `~/.hermes/skills/`) still works but creates name collision risk with built-in skills. Prefer `ctx.register_skill()` for new plugins.
 :::
 
+### Ship a language pack
+
+A plugin can add a UI language or override the wording of an existing one for every surface at once —
+Python (`agent.i18n.t()`: approval prompts, gateway replies, tool verbs, tips), the `hermes --tui`
+interface and the Desktop app. Declare `provides_locales` and ship the YAML; **no Python is needed**:
+
+```
+~/.hermes/plugins/hermes-lang-pl/
+├── plugin.yaml
+└── locales/
+    ├── pl.yaml            # core (Python) strings — same key tree as the bundled locales/en.yaml
+    ├── pl.tui.yaml        # optional: TUI strings (keys in locales/_keys.tui.json)
+    └── pl.desktop.yaml    # optional: Desktop strings (keys in locales/_keys.desktop.json)
+```
+
+```yaml
+name: hermes-lang-pl
+version: 1.0.0
+description: Polish language pack
+provides_locales:
+  - id: pl              # lowercase BCP-47-style id: pl, pt-br, zh-hant
+    endonym: Polski     # what language switchers show
+    rtl: false
+```
+
+When `provides_locales` is declared the loader calls `ctx.register_locale_dir(<plugin>/locales)` before
+`register()` (a manifest-only pack with no `__init__.py` loads like a manifest-only Desktop plugin).
+Catalogs are **layered and partial**: pack → user overlay (`<HERMES_HOME>/locales/`) → bundled →
+English → key; a pack only needs the keys it changes, and the last pack loaded wins per key.
+Core values keep English's named `{placeholders}`; TUI/Desktop entries whose English value is a
+function are written as strings with positional `{0}`, `{1}` placeholders.
+
+Plugins with code can register programmatically — the handles are `PluginRegistration`s, so unloading
+the plugin removes the layer, and registration never changes `display.language`:
+
+```python
+def register(ctx):
+    here = Path(__file__).parent
+    ctx.register_locale("pl", here / "locales" / "pl.yaml", endonym="Polski")        # YAML path
+    ctx.register_locale("pl", {"approval": {"denied": "      ✗ Odrzucono"}})          # mapping, nested or flat
+    ctx.register_locale("pl", here / "locales" / "pl.tui.yaml", surface="tui")       # core | tui | desktop
+    ctx.register_locale_dir(here / "locales")                                         # every <lang>[.surface].yaml
+```
+
+`hermes plugins validate` checks each declared id has a parseable, text-only `locales/<id>.yaml`
+(a non-text leaf is an error) and **warns** with the names of keys absent from the English catalog of
+that surface. Renderers fetch the pack layer through the `i18n.languages` / `i18n.catalog` RPCs.
+User-facing guide: [Language Packs](../../user-guide/features/language-packs.md).
+
 ### Gate on environment variables
 
 If your plugin needs an API key:
@@ -858,32 +958,50 @@ Both formats can be mixed in the same list. Already-set variables are skipped si
 
 ### Lazy-install optional Python dependencies
 
-If your plugin wraps an SDK that not every user will have installed (a vendor SDK, a heavy ML lib, a platform-specific package), don't `import` it at the top of the module. Use the `tools.lazy_deps.ensure(...)` helper inside the tool handler — Hermes will install the package on first use, gated by the user's `security.allow_lazy_installs` config.
+For an SDK covered by a Hermes project extra, use `pm.ensure_import` at the
+operation that needs it. Use `pm.available` for a read-only availability check.
+Do not install dependencies from a frequently polled `check_fn`.
+
+This example requests the existing `bedrock` extra:
 
 ```python
-# tools.py
-from tools.lazy_deps import ensure, FeatureUnavailable
+from pm import InstallError, ensure_import
 
 def my_tool_handler(args, **kwargs):
     try:
-        ensure("my-plugin.my-backend")   # key must be in LAZY_DEPS
-    except FeatureUnavailable as exc:
+        ensure_import("bedrock")
+    except InstallError as exc:
         return {"error": str(exc)}
 
-    import my_backend_sdk   # safe now
-    ...
+    import boto3
+    # Use the SDK here.
 ```
 
-Two rules from the security model in `tools/lazy_deps.py`:
+The argument is a `pyproject.toml` extra name. It is not an arbitrary package
+specification or a plugin-qualified key. The old `LAZY_DEPS` registry and
+`FeatureUnavailable` exception no longer exist.
 
-| Rule | Why |
-|---|---|
-| Your feature key must appear in the in-tree `LAZY_DEPS` allowlist | Prevents a malicious config from coaxing Hermes into installing arbitrary packages — only specs Hermes itself ships are eligible |
-| Specs are PyPI-by-name only | No `--index-url`, `git+https://`, or file: paths. Pin versions with PEP 440 (`"my-sdk>=1.2,<2"`) inside the allowlist entry |
+If a new environment is selected, the helper can report a required restart.
+Return that error instead of importing from a second environment inside the
+running process. Already available dependencies need no installation, even
+when `security.allow_lazy_installs` is false.
 
-For third-party plugins distributed via pip, declare the optional deps as `[project.optional-dependencies]` extras in your own `pyproject.toml` and tell users to `pip install your-plugin[backend]` — that path doesn't go through `lazy_deps`. The lazy-install dance is most useful for **bundled** plugins where shipping a hard dependency on every install would bloat the base Hermes footprint.
+For a directory plugin's own Python dependencies, declare `dependencies` under
+`[project]` in its `pyproject.toml`. Without an authored project file, PM combines
+legacy `pip_dependencies` and `python_dependencies` lists from `plugin.yaml` or
+`plugin.yml`. Old PM-generated project files do not override these lists.
+Consent, workspace membership, and currency checks use the same declaration.
+PM prepares their dependencies together with core requirements before enabling
+the plugin. The generated workspace does not rewrite the plugin directory or
+the shipped lockfile. Dependency conflicts refuse admission and preserve the
+previous selection. PM does not automatically disable other plugins.
 
-When `security.allow_lazy_installs: false` is set globally, `ensure()` raises `FeatureUnavailable` immediately with a remediation hint — your plugin should catch it and degrade gracefully (return an error result, not crash the tool loop).
+Dependencies installed manually with pip are not durable PM declarations.
+A later environment replacement need not retain them. Wrapper plugins whose
+Python runtimes remain outside PM can use the
+[memory-provider survival contract](../memory-provider-plugin.md#hermes_home-survival-contract-what-wrappers-can-rely-on).
+See [Package management](../../reference/package-management.md) for the
+runtime layout and lazy-install policy.
 
 
 
@@ -928,7 +1046,7 @@ def reset_client():
     _slot.reset()
 ```
 
-Both serialize concurrent first calls with double-checked locking and run the factory at most once. If the factory raises, nothing is cached and the next call retries. The honcho memory plugin (`plugins/memory/honcho/client.py`) is the reference consumer.
+Both serialize concurrent first calls with double-checked locking and run the factory at most once. If the factory raises, nothing is cached and the next call retries. The [Honcho memory plugin](https://github.com/plastic-labs/honcho/tree/main/hermes-plugin-honcho) (`client.py`) is the reference consumer.
 
 > Rule of thumb: any time you write `global _something` followed by a `is None` check and a build, reach for one of these instead.
 
@@ -1348,6 +1466,75 @@ def register(ctx):
 
 For running a full `hermes <subcommand>` (e.g. `hermes kanban show`), shell out with the `terminal` tool via `ctx.dispatch_tool("terminal", {"command": "hermes kanban show ..."})` — there is no in-process slash-command bridge for headless worker sessions, and tools are the supported way to drive Hermes from a hook.
 
+### Send raw CDP commands to the agent's browser
+
+A plugin that must drive the agent's browser below the browser tools can get a
+CDP handle pinned to a task's live supervisor connection with
+`SUPERVISOR_REGISTRY.capture(task_id)` and send commands with
+`call(method, params=None, *, session_id=None, timeout=10.0)`. The handle
+raises `CapturedCDPInvalid` once that connection is gone and never retargets a
+newer one. Use it instead of reading or writing `CDPSupervisor` private
+attributes, which the catalog rejects. It is trusted in-process transport only:
+it performs no origin, consent or ownership checks for you. Full contract:
+[Browser CDP Supervisor](../browser-supervisor.md#trusted-plugin-cdp-access).
+
+### Know which cron run you are in
+
+`ctx.current_cron_execution()` returns the scheduled run the current code executes inside, or `None` outside cron. It works from any hook that fires during the run (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, ...) and from tool handlers. The value is a frozen `CronExecution`:
+
+| Field | Meaning |
+|---|---|
+| `job_id`, `job_name` | The cron job. |
+| `execution_id` | This run's row in the executions ledger (`hermes cron runs`). |
+| `source` | Which path fired the run: `"builtin"` (the built-in scheduler), `"direct"` (a run fired outside it, e.g. `hermes cron run`), or an external scheduler's name. |
+| `scheduled_instant` | The schedule occurrence this run fires. `None` for a manual or other off-schedule run, so check this field to tell a scheduled run from a manual one. |
+| `started_at` | When the run started. |
+| `profile` | The profile that owns the job. |
+
+The scheduler sets it only after the run has won its execution claim, and clears it when the run ends. It is per-run, so two jobs or profiles firing at the same time never see each other's value. The model cannot forge it: hook arguments come from Hermes, and tool subprocesses (terminal, `execute_code`) run in a separate interpreter. Subagents spawned with `delegate_task` get `None` because they are not the scheduled run itself.
+
+```python
+def register(ctx):
+    def guard(*, tool_name, args, **kw):
+        run = ctx.current_cron_execution()
+        if tool_name == "deploy" and (run is None or run.scheduled_instant is None):
+            return {"action": "block", "message": "deploy only runs from its scheduled cron job"}
+    ctx.register_hook("pre_tool_call", guard)
+```
+
+### Add Automation Blueprints
+
+`ctx.register_automation_blueprint(key, *, title, description, schedule_template, prompt_template, category="general", slots=(), deliver_default="origin", skills=(), tags=())` adds a fill-in-the-blanks automation to the [Automation Blueprints catalog](../../reference/automation-blueprints-catalog.mdx). It appears next to the built-ins in `/blueprint` (CLI, TUI, messengers), the dashboard's Blueprints tab, and the Desktop Cron page, labelled with your plugin's name. The arguments are the fields of the built-in `AutomationBlueprint` (`cron/blueprint_catalog.py`); each slot is a dict of `BlueprintSlot` fields.
+
+```python
+def register(ctx):
+    ctx.register_automation_blueprint(
+        "standup",
+        title="Team standup digest",
+        description="Every weekday, summarize what changed in a repo since yesterday.",
+        category="work",
+        schedule_template="{minute} {hour} * * 1-5",
+        prompt_template="Summarize yesterday's commits and open PRs for {repo} as a short standup digest.",
+        slots=[
+            {"name": "repo", "type": "text", "label": "Which repo?", "default": "acme/app"},
+            {"name": "time", "type": "time", "label": "What time?", "default": "09:15"},
+            {"name": "deliver", "type": "enum", "label": "Where to deliver?", "default": "origin",
+             "options": ["origin", "local"], "strict": False},
+        ],
+        tags=["work", "daily"],
+    )
+```
+
+Users then run `/blueprint teamtools:standup` (or just `/blueprint standup`) or pick it in the Desktop/dashboard form.
+
+- **Keys are namespaced.** The catalog key is `<plugin>:<key>` (`teamtools:standup`), so a plugin can never replace a built-in or another plugin's blueprint. Pass the bare key; a key containing `:` is rejected.
+- **Slots and templates.** Slot `type` is `time` (`HH:MM`), `enum`, `weekdays`, or `text`. `prompt_template` may use any slot as `{name}`. `schedule_template` may use slot names plus `{minute}`/`{hour}` (from a slot named `time`) and `{dow}` (from a `recurrence`/`day` slot, else `*`). A slot named `deliver` gets the profile's real delivery targets in the Desktop and dashboard forms.
+- **Validated at registration.** An unknown placeholder, bad slot type, duplicate key, or schedule that does not parse logs a warning and skips that blueprint; the rest of your plugin still loads. When every slot has a default, Hermes fills the blueprint once at load, so a broken template fails then instead of on the user's first *Schedule it*.
+- **Per profile.** Plugins load per profile, so the blueprint is listed only in profiles where your plugin is enabled.
+- **Jobs outlive the plugin.** Scheduling a blueprint creates an ordinary cron job with the prompt and schedule already filled in. Disabling or uninstalling the plugin removes the blueprint from the catalog but leaves those jobs running. If a job's `skills` name a skill your plugin bundles, the job skips that skill (and logs it) while the plugin is disabled.
+
+This needs no manifest capability. It also works under plugin host isolation, because slots are plain dicts.
+
 ### Handle Slack Block Kit button clicks
 
 Plugins that post Block Kit messages with interactive elements (buttons, overflow menus, datepickers, etc.) can register the click handlers directly with the Slack adapter — no monkey-patching of `slack_bolt.AsyncApp` required.
@@ -1688,6 +1875,90 @@ description: Custom image generation backend
 
 **Reference examples:** `plugins/image_gen/openai/` (DALL-E / GPT-Image via OpenAI SDK), `plugins/image_gen/openai-codex/`, `plugins/image_gen/xai/` (Grok image gen).
 
+### Computer-use backend plugins
+
+The `computer_use` tool talks to exactly one **driver** through the `ComputerUseBackend` ABC
+(`tools/computer_use/backend.py`). `computer_use.backend` in `config.yaml` picks it; the default is the
+built-in cua-driver, which ships as an ordinary provider at `plugins/computer_use/cua/`. Another driver
+is a provider plugin in `~/.hermes/plugins/<name>/` whose `register(ctx)` calls
+`ctx.register_computer_use_provider()`. The directory name is the value you put in `computer_use.backend`.
+Computer-use providers are single-select, like memory providers and context engines:
+
+```python
+# ~/.hermes/plugins/my-driver/__init__.py
+from tools.computer_use.backend import (
+    ActionResult, CaptureResult, ComputerUseBackend, ComputerUseProvider,
+)
+
+class MyBackend(ComputerUseBackend):
+    def start(self): ...                    # open the driver session
+    def stop(self): ...                     # tear it down (also called at exit)
+    def is_available(self): return True
+    def capture(self, mode="som", app=None, pid=None, window_id=None):
+        return CaptureResult(mode=mode, width=1920, height=1080, png_b64=...)
+    def click(self, **kw): return ActionResult(ok=True, action="click")
+    def drag(self, **kw): return ActionResult(ok=True, action="drag")
+    def scroll(self, **kw): return ActionResult(ok=True, action="scroll")
+    def type_text(self, text, **kw): return ActionResult(ok=True, action="type")
+    def key(self, keys, **kw): return ActionResult(ok=True, action="key")
+    def list_apps(self): return []
+    def focus_app(self, app, raise_window=False): return ActionResult(ok=True, action="focus_app")
+    def set_value(self, value, element=None):
+        # A driver that can't do an action says so per call; the tool schema never changes.
+        return ActionResult(ok=False, action="set_value", code="unsupported_action",
+                            message="my-driver has no accessibility value setter")
+
+class MyDriverProvider(ComputerUseProvider):
+    name = "my-driver"
+    display_name = "My driver"
+
+    def create_backend(self, *, permission_mode):
+        return MyBackend()                  # permission_mode: standard | bounded | unrestricted
+
+    def is_available(self):                 # gates the tool; cheap, no network
+        return True
+
+    def doctor(self):                       # optional: `hermes computer-use doctor`
+        print("my-driver: ok")
+        return 0
+
+def register(ctx):
+    ctx.register_computer_use_provider(MyDriverProvider())
+```
+
+```yaml
+# ~/.hermes/plugins/my-driver/plugin.yaml
+name: my-driver
+version: 1.0.0
+description: Alternative computer-use driver   # shown in the picker
+```
+
+Select it in `hermes tools` → Computer Use (installed providers are listed under cua-driver, in the
+CLI and in the Desktop toolset panel), or set it directly. No `plugins.enabled` entry is needed:
+
+```yaml
+# config.yaml
+computer_use:
+  backend: my-driver     # default: cua
+```
+
+Rules:
+
+- **One provider is active at a time.** Only the selected one is imported and instantiated. Installed
+  providers that aren't selected stay on disk and are only listed (from `plugin.yaml`) as options. A
+  provider never activates itself.
+- **Selection is per profile and read when a session starts its driver.** If the configured name
+  doesn't resolve, the call fails with an error naming it and the installed providers. Hermes never
+  falls back to another driver.
+- **The model-facing schema is the same for every provider**, so the prompt cache survives a driver
+  swap. Report gaps per action with `ActionResult(ok=False, code="unsupported_action", ...)`.
+- Approval gating, the Bot Desktop lease, screenshot dedup, element caps and vision routing all run
+  in the tool, above the backend. The backend only drives the screen.
+- `hermes computer-use status`/`doctor`/`permissions` run cua-driver checks only when `cua` is
+  selected. For any other provider they report its `is_available()` and run its `doctor()` if it has one.
+- Providers return live driver sessions, so they load in-process only. Under
+  `plugins.isolation: host`, a user provider is refused and the call reports that it could not be loaded.
+
 ## Non-Python extension surfaces
 
 Hermes also accepts extensions that aren't Python plugins at all. These are shown in the [Pluggable interfaces table](../../user-guide/features/plugins.md#pluggable-interfaces--where-to-go-for-each); the sections below sketch each authoring style briefly.
@@ -1794,10 +2065,13 @@ For sharing plugins publicly, add an entry point to your Python package:
 my-plugin = "my_plugin_package"
 ```
 
-```bash
-pip install hermes-plugin-calculator
-# Plugin auto-discovered on next hermes startup
-```
+Entry-point discovery remains supported when the distribution is present in the
+environment supplied by the installation owner (for example, a Nix derivation).
+It is discovery, not permission to inject packages into a PM-selected generation.
+For managed installs, distribute a directory plugin with `pyproject.toml` or
+manifest Python requirements and use `hermes plugins install` / `enable` so PM
+can admit it transactionally. Restart Hermes after a new environment is selected.
+`hermes pm install` accepts managed tool names, not arbitrary PyPI packages.
 
 ## Distribute for NixOS
 
@@ -1811,7 +2085,7 @@ NixOS users can install your plugin declaratively if you provide a `pyproject.to
 ```nix
 # User's configuration.nix
 services.hermes-agent.extraPythonPackages = [
-  (pkgs.python312Packages.buildPythonPackage {
+  (config.services.hermes-agent.package.python.pkgs.buildPythonPackage {
     pname = "my-plugin";
     version = "1.0.0";
     src = pkgs.fetchFromGitHub {
@@ -1821,7 +2095,7 @@ services.hermes-agent.extraPythonPackages = [
       hash = "sha256-...";  # nix-prefetch-url --unpack
     };
     format = "pyproject";
-    build-system = [ pkgs.python312Packages.setuptools ];
+    build-system = [ config.services.hermes-agent.package.python.pkgs.setuptools ];
   })
 ];
 ```

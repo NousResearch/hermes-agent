@@ -29,8 +29,8 @@ import {
   queryClient,
   relativeTime,
   RowButton,
-  Switch,
   Tip,
+  ToggleRow,
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
@@ -496,13 +496,12 @@ function GroupChatSettingsDialog({
             value={name}
           />
         </form>
-        <label className="flex items-center justify-between gap-3 text-sm">
-          <span>
-            <span className="block">{b.group.holdDetection}</span>
-            <span className="block text-xs text-(--ui-text-tertiary)">{b.group.holdDetectionHint}</span>
-          </span>
-          <Switch checked={holdDetection} onCheckedChange={setHoldDetection} />
-        </label>
+        <ToggleRow
+          checked={holdDetection}
+          description={b.group.holdDetectionHint}
+          label={b.group.holdDetection}
+          onChange={setHoldDetection}
+        />
         {(members || []).length > 0 ? (
           <ul className="flex flex-col gap-1" data-testid="group-settings-members">
             {(members || []).map(member => {
@@ -622,6 +621,124 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       ...current,
       pendingAttachments: typeof value === 'function' ? value(current.pendingAttachments || {}) : value
     }))
+
+  // Browser Comment Mode can live in its own Electron pop-out on another
+  // monitor. The ordinary composer bus is window-local and this room uses its
+  // own New Thread composer anyway, so accept only batches explicitly pinned to
+  // THIS room + THIS renderer. Packaged Electron windows use the preload IPC
+  // relay; BroadcastChannel stays only as a browser/dev fallback. The protocol
+  // strings remain literal here to preserve the plugin fence (Bot Mode imports
+  // only the SDK + its own files). A stale route gets no ACK, leaving the
+  // annotations intact.
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const desktopBridge = window.hermesDesktop?.windowRelay
+
+    const channel =
+      !desktopBridge && typeof BroadcastChannel !== 'undefined'
+        ? new BroadcastChannel('hermes.desktop.preview-annotate-handoff.v1')
+        : null
+
+    if (!desktopBridge && !channel) {
+      return
+    }
+
+    const send = (payload: unknown) => {
+      if (desktopBridge) {
+        desktopBridge.send(payload)
+      } else {
+        channel?.postMessage(payload)
+      }
+    }
+
+    const onMessage = (data: unknown) => {
+      if (!data || typeof data !== 'object') {
+        return
+      }
+
+      const request = data as {
+        count?: unknown
+        destination?: { composerKey?: unknown; group?: unknown; kind?: unknown; windowId?: unknown }
+        images?: unknown
+        prompt?: unknown
+        requestId?: unknown
+        type?: unknown
+      }
+
+      const destination = request.destination
+      const sourceWindowId = window.sessionStorage.getItem('hermes.desktop.previewAnnotate.windowId')?.trim()
+
+      if (
+        !sourceWindowId ||
+        request.type !== 'preview-annotate-handoff' ||
+        typeof request.requestId !== 'string' ||
+        typeof request.prompt !== 'string' ||
+        !Array.isArray(request.images) ||
+        destination?.kind !== 'group' ||
+        destination.windowId !== sourceWindowId ||
+        destination.group !== group ||
+        destination.composerKey !== composerKeyRef.current
+      ) {
+        return
+      }
+
+      try {
+        const prompt = request.prompt
+
+        const attachments: Attachment[] = request.images
+          .filter((image): image is { dataUrl: string; name: string; number?: number } =>
+            Boolean(
+              image &&
+              typeof image === 'object' &&
+              typeof (image as { dataUrl?: unknown }).dataUrl === 'string' &&
+              typeof (image as { name?: unknown }).name === 'string'
+            )
+          )
+          .map(image => ({ data: image.dataUrl, kind: 'image' as const, name: image.name }))
+
+        const next = updateGroupComposerDraft(composerKeyRef.current, current => ({
+          ...current,
+          activeReplyThread: null,
+          main: current.main.trim() ? `${current.main.trimEnd()}\n\n${prompt}` : prompt,
+          pendingAttachments: {
+            ...(current.pendingAttachments || {}),
+            main: [...(current.pendingAttachments?.main || []), ...attachments]
+          }
+        }))
+
+        setComposerDraft(next)
+        host.notify({
+          kind: 'success',
+          message: `${Number(request.count) || attachments.length} Browser comment${Number(request.count) === 1 ? '' : 's'} added to ${group}. Review the New Thread draft before sending.`
+        })
+        send({
+          ok: true,
+          requestId: request.requestId,
+          type: 'preview-annotate-handoff-ack'
+        })
+      } catch (error) {
+        send({
+          error: error instanceof Error ? error.message : String(error),
+          ok: false,
+          requestId: request.requestId,
+          type: 'preview-annotate-handoff-ack'
+        })
+      }
+    }
+
+    const stopDesktop = desktopBridge?.onMessage(onMessage)
+    const onBroadcast = (event: MessageEvent<unknown>) => onMessage(event.data)
+    channel?.addEventListener('message', onBroadcast)
+
+    return () => {
+      stopDesktop?.()
+      channel?.removeEventListener('message', onBroadcast)
+      channel?.close()
+    }
+  }, [composerKey, group])
 
   const [confirmDisband, setConfirmDisband] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -881,7 +998,6 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           aria-expanded={activityOpen}
           className="flex min-w-0 flex-1 items-center gap-1.5 px-2.5 py-1 text-left text-[0.7rem] text-(--ui-text-quaternary) transition-colors hover:text-foreground"
           onClick={() => setActivityOpen(prev => !prev)}
-          title={activityOpen ? b.group.hideActivity : b.group.showActivity}
         >
           <Codicon className="shrink-0 text-[0.65rem]" name={activityOpen ? 'chevron-down' : 'chevron-right'} />
           <span className="shrink-0 font-medium">{b.group.activity}</span>
@@ -1204,7 +1320,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             ) : null}
           </div>
           <div
-            className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:overflow-x-auto" // The app shell sets user-select: none globally; message bodies opt
+            className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere" // The app shell sets user-select: none globally; message bodies opt
             // back in so drag-select and ⌘C work in group chat logs.
             data-selectable-text="true"
             data-slot="group-chat-message-content"
@@ -1315,6 +1431,10 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   return (
     <div
       className="relative flex h-full flex-col"
+      data-preview-annotate-composer-key={composerKey}
+      data-preview-annotate-destination="group"
+      data-preview-annotate-group={group}
+      data-preview-annotate-owner-key={groupWorkspaceOwnerKey(group)}
       onDragLeave={event => {
         // Only clear when leaving the room container itself, not when the
         // cursor moves between its children. React types relatedTarget as a

@@ -12,7 +12,6 @@ import copy
 from tools.schema_sanitizer import (
     sanitize_tool_schemas,
     strip_pattern_and_format,
-    strip_slash_enum,
 )
 
 
@@ -223,7 +222,6 @@ def test_items_sanitized_in_array_schema():
 
 def test_strip_responses_mixed_formats():
     """Mixed list of OpenAI-format and Responses-format tools should both be sanitized."""
-    from tools.schema_sanitizer import strip_pattern_and_format
 
     tools = [
         # OpenAI-format: {"function": {"parameters": {...}}}
@@ -284,7 +282,7 @@ def test_strip_responses_mixed_formats():
 # in the tools array 400s the whole request on Anthropic/Bedrock/Vertex/Azure.
 # ---------------------------------------------------------------------------
 
-from tools.schema_sanitizer import sanitize_property_key, unrename_tool_args
+from tools.schema_sanitizer import sanitize_property_key
 
 
 def test_sanitize_property_key_empty_falls_back():
@@ -578,11 +576,6 @@ def test_normalize_mcp_input_schema_still_repairs_declared_objects():
     assert bare["properties"] == {} and bare["required"] == []
 
 
-def test_collapse_is_deterministic():
-    schema = {"anyOf": [{"const": "b"}, {"const": "a"}]}
-    first = collapse_const_unions(copy.deepcopy(schema))
-    second = collapse_const_unions(copy.deepcopy(schema))
-    assert first == second == {"type": "string", "enum": ["b", "a"]}
 
 
 def test_builtin_tool_without_required_gets_empty_required_list():
@@ -598,3 +591,42 @@ def test_builtin_tool_without_required_gets_empty_required_list():
         "properties": {"opts": {"type": "object", "properties": {"k": {"type": "string"}}}},
     })])[0]["function"]["parameters"]
     assert nested["properties"]["opts"]["required"] == []
+
+
+# ---------------------------------------------------------------------------
+# #131278: llama.cpp's json-schema-to-grammar rejects bounded repetition >= 2000
+# ---------------------------------------------------------------------------
+
+
+def _walk_schema(node):
+    if isinstance(node, dict):
+        yield node
+        for v in node.values():
+            yield from _walk_schema(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _walk_schema(v)
+
+
+def test_clarify_schema_has_no_unbounded_repetition_keyword():
+    """The clarify schema must not carry a length bound llama.cpp's grammar converter rejects."""
+    from tools.clarify_tool import CLARIFY_SCHEMA
+    for node in _walk_schema(CLARIFY_SCHEMA["parameters"]):
+        for key in ("maxLength", "minLength"):
+            assert node.get(key, 0) < 2000, f"{key}={node[key]} breaks llama.cpp grammar parsing"
+
+
+def test_registered_tool_schemas_stay_inside_llama_cpp_repetition_limit():
+    """No built-in tool may ship a length/count bound of 2000+ (llama.cpp rejects the whole request)."""
+    import model_tools  # noqa: F401 — registers built-in tools
+    from tools.registry import registry
+    offenders = []
+    for name in registry.get_all_tool_names():
+        entry = registry.get_entry(name)
+        schema = getattr(entry, "schema", None) or {}
+        for node in _walk_schema(schema.get("parameters", {})):
+            for key in ("maxLength", "minLength", "maxItems", "minItems"):
+                val = node.get(key)
+                if isinstance(val, int) and val >= 2000:
+                    offenders.append((name, key, val))
+    assert not offenders, offenders

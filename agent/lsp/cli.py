@@ -80,6 +80,7 @@ def _status_for(server_id: str) -> str:
 
 def _cmd_status(emit_json: bool) -> int:
     from agent.lsp import get_service
+    from agent.lsp.servers import UNTRUSTED_SAFE_SERVERS
     servers = _all_servers()
     svc = get_service()
     info = svc.get_status() if svc is not None else {"enabled": False}
@@ -104,6 +105,9 @@ def _cmd_status(emit_json: bool) -> int:
             out += [f"    - {b}" for b in broken]
         if disabled := info.get("disabled_servers"):
             out.append(f"  disabled in cfg: {', '.join(disabled)}")
+        if untrusted := info.get("untrusted_skipped"):
+            out.append(f"  untrusted skips: {len(untrusted)} (add the workspace to lsp.trusted_workspaces)")
+            out += [f"    - {sid:20s} root={root}" for sid, root in untrusted]
     # Sidecar gaps the registry table can't show (bash-language-server -> shellcheck).
     if backend_warnings := _backend_warnings():
         out += ["", "Backend warnings", "================"] + [f"  ! {line}" for line in backend_warnings]
@@ -115,7 +119,8 @@ def _cmd_status(emit_json: bool) -> int:
             ext_summary += f", … (+{len(s.extensions) - 5})"
         out.append(f"  {_STATUS_MARKERS.get(status, ' ')} {s.server_id:24s} [{status:11s}] {ext_summary}")
         if s.description:
-            out.append(f"      {s.description}")
+            gate = "" if s.server_id in UNTRUSTED_SAFE_SERVERS else "  [trusted workspaces only]"
+            out.append(f"      {s.description}{gate}")
     sys.stdout.write("\n".join(out) + "\n")
     return 0
 

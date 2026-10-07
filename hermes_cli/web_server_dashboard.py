@@ -1,6 +1,7 @@
 """Dashboard UI assets: SPA mount, theme normalisation/bootstrap CSS, dashboard-plugin discovery and the plugins-hub merge.
 """
 
+import asyncio
 import logging
 import importlib.util
 import json
@@ -8,14 +9,23 @@ import os
 import sys
 import threading
 import time
-import yaml
-from fastapi import FastAPI, Request
+import hermes_yaml as yaml
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
 from hermes_cli.config import cfg_get, get_process_hermes_home
 from utils import env_var_enabled
+
+# Serve assets with explicit MIME types: the host's map (on Windows the
+# registry can map .js -> text/plain) must not decide the Content-Type of
+# dashboard bundles (#28987). Runs before any StaticFiles/FileResponse below
+# serves a request, and is idempotent.
+from hermes_cli.web_asset_mime_types import normalize_web_asset_mime_types
+
+normalize_web_asset_mime_types()
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -146,7 +156,7 @@ def mount_spa(application: FastAPI):
         and /api/ws (ticket vs token).
         """
         try:
-            html = (WEB_DIST / "index.html").read_text(encoding="utf-8")
+            html = (WEB_DIST / "index.html").read_text(encoding="utf-8-sig")
         except OSError:
             # Partial build / wiped dist / permissions: same JSON 404 as a fully-missing dist.
             return JSONResponse({"error": "Frontend not built. Run: cd web && npm run build"}, status_code=404)
@@ -191,7 +201,7 @@ def mount_spa(application: FastAPI):
         if not css_path.is_file() or not css_path.resolve().is_relative_to(WEB_DIST.resolve()):
             return JSONResponse({"error": "not found"}, status_code=404)
         prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
-        css = css_path.read_text(encoding="utf-8")
+        css = css_path.read_text(encoding="utf-8-sig")
         if prefix:
             for asset_dir in ("/fonts/", "/fonts-terminal/", "/ds-assets/", "/assets/"):
                 for quote in ("", '"', "'"):
@@ -423,7 +433,7 @@ def _discover_user_themes() -> list:
     result = []
     for f in sorted(themes_dir.glob("*.yaml")):
         try:
-            data = yaml.safe_load(f.read_text(encoding="utf-8"))
+            data = yaml.safe_load(f.read_text(encoding="utf-8-sig"))
         except Exception:
             continue
         normalised = _normalise_theme_definition(data)
@@ -564,7 +574,7 @@ def _discover_dashboard_plugins() -> list:
             try:
                 if not child.is_dir() or not manifest_file.exists():
                     continue
-                data = json.loads(manifest_file.read_text(encoding="utf-8"))
+                data = json.loads(manifest_file.read_text(encoding="utf-8-sig"))
                 name = data.get("name", child.name)
                 if name in seen_names:
                     continue
@@ -584,16 +594,15 @@ def _strip_dashboard_manifest(p: Dict[str, Any]) -> Dict[str, Any]:
 
 
 _PLUGINS_HUB_CACHE_TTL_SECONDS = 5.0
-_plugins_hub_cache: Optional[Dict[str, Any]] = None
-_plugins_hub_cache_expires_at = 0.0
+_plugins_hub_cache: Dict[str, Dict[str, Any]] = {}
+_plugins_hub_cache_expires_at: Dict[str, float] = {}
 _plugins_hub_cache_lock = threading.Lock()
 
 
 def _invalidate_plugins_hub_cache() -> None:
-    global _plugins_hub_cache, _plugins_hub_cache_expires_at
     with _plugins_hub_cache_lock:
-        _plugins_hub_cache = None
-        _plugins_hub_cache_expires_at = 0.0
+        _plugins_hub_cache.clear()
+        _plugins_hub_cache_expires_at.clear()
 
 
 _plugins_hub_probe_inflight: set = set()
@@ -668,12 +677,15 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     from hermes_cli.web_server_memory import _discover_memory_provider_statuses, _normalize_memory_provider_name
     from hermes_cli.web_server import _get_dashboard_plugins
     from hermes_cli.config import get_hermes_home, load_config
-    global _plugins_hub_cache, _plugins_hub_cache_expires_at
+    from hermes_constants import hermes_home_key
+
+    cache_key = hermes_home_key(get_hermes_home())
     now = time.monotonic()
     if not force_refresh:
         with _plugins_hub_cache_lock:
-            if _plugins_hub_cache is not None and now < _plugins_hub_cache_expires_at:
-                return _plugins_hub_cache
+            cached = _plugins_hub_cache.get(cache_key)
+            if cached is not None and now < _plugins_hub_cache_expires_at.get(cache_key, 0.0):
+                return cached
 
     started_at = time.monotonic()
     from hermes_cli.plugins_cmd import (
@@ -765,8 +777,8 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
             "plugins/hub rebuilt in %.3fs (plugins=%d memory_options=%d)", duration, len(rows), len(memory_providers)
         )
     with _plugins_hub_cache_lock:
-        _plugins_hub_cache = payload
-        _plugins_hub_cache_expires_at = time.monotonic() + _PLUGINS_HUB_CACHE_TTL_SECONDS
+        _plugins_hub_cache[cache_key] = payload
+        _plugins_hub_cache_expires_at[cache_key] = time.monotonic() + _PLUGINS_HUB_CACHE_TTL_SECONDS
     return payload
 
 
@@ -783,6 +795,63 @@ def _plugin_api_mount_skip_reason(plugin: Dict[str, Any], enabled_set: set, disa
         return "explicitly disabled"
     if source == "user" and plugin_name not in enabled_set:
         return "not in plugins.enabled"
+    return None
+
+
+async def _plugin_route_secret_scope(profile: Optional[str] = None):
+    """Home + secret scope for one ``/api/plugins/<name>/`` request: the launch profile's, or the
+    ``?profile=``-requested one — the same ``_config_profile_scope`` seam the built-in routers use.
+    Without it plugin handlers ran unscoped, so under multi-profile hosting every ``get_secret``
+    / ``resolve_runtime_provider`` failed closed with ``UnscopedSecretError`` (#120310; the bundled
+    kanban plugin's Decompose / Specify / Estimate aux-LLM calls, #123372). ``async`` on purpose:
+    a sync yield-dependency's setup and teardown run on different threadpool threads, so the
+    scope token would be reset in a foreign context; sync handlers still see the scope because
+    ``run_in_threadpool`` copies the request context into the worker."""
+    from hermes_cli.web_server_profiles import _config_profile_scope
+    with _config_profile_scope(profile):
+        yield
+
+
+def _mount_hosted_plugin_api(app, plugin: dict, api_file_name: str) -> None:
+    """``plugins.isolation: host``: the plugin's router runs in the requesting profile's plugin host;
+    this process only forwards each ``/api/plugins/<name>/`` request to it (auth and the profile
+    scope still apply here first). Responses are buffered: streaming and websockets need in-process."""
+    name = plugin["name"]
+
+    async def forward(request: Request, path: str = "") -> Response:
+        # Resolve the plugin again in the REQUESTING profile (the route is mounted once, from the
+        # launch profile): its own copy, gated by its own plugins.enabled, served by its own host.
+        target = await asyncio.to_thread(_hosted_plugin_for_request, name)
+        if target is None:
+            return JSONResponse({"detail": f"plugin {name!r} is not enabled in this profile"}, status_code=404)
+        host, dashboard_dir, api_file = target
+        result = await asyncio.to_thread(
+            host.asgi_request, name, dashboard_dir, api_file, request.method, "/" + path,
+            request.url.query, [(k, v) for k, v in request.headers.items() if k.lower() != "host"],
+            await request.body())
+        response = Response(content=result["body"], status_code=int(result["status"]))
+        for key, value in result["headers"]:  # a list, so repeated headers (Set-Cookie) all survive
+            if key.lower() not in {"content-length", "transfer-encoding", "connection"}:
+                response.headers.append(key, value)
+        return response
+
+    app.add_api_route(f"/api/plugins/{name}/{{path:path}}", forward, include_in_schema=False,
+                      methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+                      dependencies=[Depends(_plugin_route_secret_scope)])
+    _log.info("Mounted plugin API routes via the plugin host: /api/plugins/%s/", name)
+
+
+def _hosted_plugin_for_request(name: str) -> Optional[tuple]:
+    """``(plugin host, dashboard dir, api file)`` for plugin ``name`` in the active profile, or None
+    when that profile has no enabled user copy of it."""
+    from hermes_cli.plugins import get_plugin_manager
+    from hermes_cli.plugins_cmd import _get_disabled_set, _get_enabled_set
+    for plugin in _discover_dashboard_plugins():
+        if plugin.get("name") != name or not plugin.get("_api_file") or plugin.get("source") != "user":
+            continue
+        if _plugin_api_mount_skip_reason(plugin, _get_enabled_set(), _get_disabled_set()):
+            return None
+        return get_plugin_manager()._plugin_host(), str(plugin["_dir"]), str(plugin["_api_file"])
     return None
 
 
@@ -818,6 +887,11 @@ def _mount_plugin_api_routes():
         if skip:
             _log.debug("Plugin %s: skipping API mount (%s)", plugin.get("name", ""), skip)
             continue
+        if plugin.get("source") not in ("bundled", "project"):
+            from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+            if isolation_mode() == ISOLATION_HOST:
+                _mount_hosted_plugin_api(app, plugin, api_file_name)
+                continue
         if plugin.get("source") == "project":
             _log.warning(
                 "Plugin %s: ignoring backend api=%s (project plugins may "
@@ -859,7 +933,11 @@ def _mount_plugin_api_routes():
             if router is None:
                 _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])
                 continue
-            app.include_router(router, prefix=f"/api/plugins/{plugin['name']}")
+            app.include_router(
+                router,
+                prefix=f"/api/plugins/{plugin['name']}",
+                dependencies=[Depends(_plugin_route_secret_scope)],
+            )
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)

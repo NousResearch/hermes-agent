@@ -31,6 +31,17 @@ def home(tmp_path, monkeypatch):
     return hermes_home
 
 
+@pytest.fixture(autouse=True)
+def _commit_plugin_selection_without_building_an_environment(monkeypatch):
+    """These tests cover selection keys; PM's real publication path has its own integration tests."""
+    def admit(enabled, disabled, **_kwargs):
+        cfg = load_config()
+        cfg["plugins"] = {"enabled": sorted(enabled), "disabled": sorted(disabled)}
+        save_config(cfg)
+
+    monkeypatch.setattr("hermes_cli.plugins_admission.admit_plugin_set_change", admit)
+
+
 def _lists():
     plugins = load_config().get("plugins") or {}
     return set(plugins.get("enabled") or []), set(plugins.get("disabled") or [])
@@ -93,3 +104,44 @@ def test_status_reports_bundled_defaults_and_the_live_memory_provider(home):
     # An explicit disable still wins over both defaults.
     assert plugins_cmd._plugin_status("fakemem", enabled, {"fakemem"}, key="fakemem", source="user",
                                       active=active) == "disabled"
+
+
+def test_status_matches_the_loader_for_a_user_installed_model_provider(home):
+    """``gate_manifest`` loads a model provider from any source without a ``plugins.enabled`` entry, so
+    status (and the Desktop Plugins switch) must not report a user-installed one as "not enabled"; a
+    user standalone plugin stays opt-in."""
+    _write_plugin(home / "plugins", "fakeprov", "fakeprov", "kind: model-provider\n")
+    _write_plugin(home / "plugins", "fakestand", "fakestand", "")
+    enabled, disabled = plugins_cmd._get_enabled_set(), plugins_cmd._get_disabled_set()
+    by_key = {e[5]: e for e in plugins_cmd._discover_all_plugins()}
+    status = {}
+    for key in ("fakeprov", "fakestand"):
+        name, _v, _d, source, dir_path, _k = by_key[key]
+        status[key] = plugins_cmd._plugin_status(name, enabled, disabled, key=key, source=source, dir_path=dir_path)
+    assert status == {"fakeprov": "enabled", "fakestand": "not enabled"}
+    name, _v, _d, source, dir_path, _k = by_key["fakeprov"]
+    assert plugins_cmd._plugin_status(name, enabled, {"fakeprov"}, key="fakeprov", source=source,
+                                      dir_path=dir_path) == "disabled"
+
+
+def test_status_enables_a_user_model_provider_only_where_provider_discovery_imports_it(home):
+    """providers/ discovery imports every ``plugins/model-providers/<name>/`` child, but a flat
+    ``plugins/<name>/`` one only when it declares exactly ``kind: model-provider``. A provider in a
+    category directory, or flat with a differently-cased kind, never loads, so status must not call
+    it enabled. A non-provider under ``model-providers/`` is imported but never registered."""
+    import providers
+
+    for rel, kind in (("flatprov", "model-provider"), ("model-providers/subprov", "model-provider"),
+                      ("model-providers/subcaps", "MODEL-PROVIDER"), ("custom/nestedprov", "model-provider"),
+                      ("model-providers/substand", "standalone"), ("capsprov", "MODEL-PROVIDER")):
+        d = _write_plugin(home / "plugins", rel, rel.rsplit("/", 1)[-1], f"kind: {kind}\n")
+        (d / "__init__.py").write_text(f"open({str(d / 'imported')!r}, 'w').close()\n", encoding="utf-8")
+    providers._scan_home_layer(providers._HomeLayer(), str(home))
+
+    rows = {e[5]: e for e in plugins_cmd._discover_all_plugins() if e[3] == "user"}
+    imported = {key: (row[4] / "imported").exists() for key, row in rows.items()}
+    assert imported == {"flatprov": True, "model-providers/subprov": True, "model-providers/subcaps": True,
+                        "model-providers/substand": True, "custom/nestedprov": False, "capsprov": False}
+    status = {key: plugins_cmd._plugin_status(row[0], set(), set(), key=key, source=row[3], dir_path=row[4])
+              == "enabled" for key, row in rows.items()}
+    assert status == {**imported, "model-providers/substand": False}

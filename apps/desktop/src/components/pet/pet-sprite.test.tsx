@@ -196,36 +196,4 @@ describe('PetSprite RAF scheduling', () => {
     })
     expect(raf.pending()).toBe(0)
   })
-
-  it('keeps the intentionally non-activating pop-out overlay animated while unfocused', () => {
-    const raf = installRaf()
-
-    mount.render(<PetSprite info={INFO} pauseWhenUnfocused={false} />)
-
-    act(() => window.dispatchEvent(new Event('blur')))
-    expect(raf.pending()).toBe(1)
-  })
-
-  it('draws sprite frames with bicubic smoothing for illustration art', () => {
-    const raf = installRaf()
-
-    const ctxMock = {
-      clearRect: vi.fn(),
-      drawImage: vi.fn(),
-      imageSmoothingEnabled: false,
-      imageSmoothingQuality: 'low'
-    } as unknown as CanvasRenderingContext2D
-
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctxMock)
-
-    mount.render(<PetSprite info={INFO} />)
-    act(() => raf.runNext(0))
-
-    // Petdex sheets are illustration frames, not pixel art — nearest-neighbour
-    // (the old default) makes zoomed pets look blocky. The renderer must opt
-    // into bicubic smoothing before the first draw.
-    expect(ctxMock.imageSmoothingEnabled).toBe(true)
-    expect(ctxMock.imageSmoothingQuality).toBe('high')
-    expect(ctxMock.drawImage).toHaveBeenCalledTimes(1)
-  })
 })

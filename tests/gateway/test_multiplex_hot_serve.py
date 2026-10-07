@@ -7,6 +7,7 @@ profiles' live adapters. The cron ticker's live enumerator is covered in ``tests
 """
 import asyncio
 import json
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -112,6 +113,137 @@ async def test_opt_out_rescans_and_opt_in_waits_for_own_gateway_to_stop(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_stalled_own_gateway_probe_never_wedges_the_loop_or_serves(tmp_path, monkeypatch, caplog):
+    """#132547: the pre-serve own-gateway probe can end in a control-socket read that has no
+    timeout of its own (a Windows named pipe stalls there until its peer answers); inline on
+    the loop thread it parked shutdown_watchdog liveness probes until the multiplexer was
+    hard-killed with exit 75. A stalled probe must leave the event loop turning, keep the
+    profile unserved for that cycle, and the profile must serve once the probe answers."""
+    from gateway import run_profile_reconcile as reconcile_mod
+
+    runner, home = _runner(tmp_path, monkeypatch)
+    _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+
+        released = threading.Event()
+
+        def _stalling_probe(profile_home):
+            released.wait(timeout=10)  # the control pipe that never answers
+            return None
+
+        monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", _stalling_probe)
+        monkeypatch.setattr(reconcile_mod, "_OWN_GATEWAY_PROBE_TIMEOUT_SECS", 0.2)
+
+        _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
+
+        async def _liveness_probe():
+            # shutdown_watchdog stand-in: the loop must keep turning while the probe is stalled.
+            for _ in range(4):
+                await asyncio.sleep(0.05)
+
+        heartbeat = asyncio.ensure_future(_liveness_probe())
+        # On the unfixed code an inline probe parks the loop for the full ``released`` wait
+        # and this wait_for times out instead of returning a reconcile result.
+        result = await asyncio.wait_for(runner.reconcile_served_profiles(reason="watcher"), timeout=2.0)
+        assert result["added"] == []
+        assert _served_record(home) == ["default", "alpha"]
+        messages = [r.getMessage() for r in caplog.records]
+        assert [m for m in messages if "probe for profile 'gamma' timed out" in m]
+        assert not [m for m in messages if "still runs its own gateway" in m]
+        assert "gamma" not in (runner._profile_own_gateway_warned or set())
+        await asyncio.wait_for(heartbeat, timeout=1.0)
+
+        # A peer that stays wedged must not re-WARN on every 30 s watcher cycle.
+        result = await runner.reconcile_served_profiles(reason="watcher")
+        assert result["added"] == []
+        stalled_warnings = [r for r in caplog.records if r.levelname == "WARNING"
+                            and "probe for profile 'gamma' timed out" in r.getMessage()]
+        assert len(stalled_warnings) == 1
+
+        released.set()
+        result = await runner.reconcile_served_profiles(reason="watcher")
+        assert result["added"] == ["gamma"]
+        assert _served_record(home) == ["default", "alpha", "gamma"]
+
+
+@pytest.mark.asyncio
+async def test_parked_profile_boot_and_reconcile(tmp_path, monkeypatch, caplog):
+    runner, home = _runner(tmp_path, monkeypatch)
+    secondary = _mkprofile(home, "worker")
+    marker = secondary / "gateway.parked"
+    marker.touch()
+    # Boot uses the real directory enumerator and config loaders, no bot/network.
+    del runner._start_one_profile_adapters
+    runner._register_config_hooks = lambda *a, **kw: None
+    caplog.set_level("INFO")
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        assert _served_record(home) == ["default"]
+        assert "profile 'worker' is parked (gateway.parked); not served by this gateway" in caplog.text
+        marker.unlink()
+        assert (await runner.reconcile_served_profiles())["added"] == ["worker"]
+        assert _served_record(home) == ["default", "worker"]
+        marker.touch()
+        assert (await runner.reconcile_served_profiles())["removed"] == ["worker"]
+        assert _served_record(home) == ["default"]
+
+
+@pytest.mark.asyncio
+async def test_profile_control_verbs_round_trip_and_refusals(tmp_path, monkeypatch):
+    from gateway import run_profile_reconcile as verbs
+    runner, home = _runner(tmp_path, monkeypatch)
+    secondary = _mkprofile(home, "worker", "DISCORD_BOT_TOKEN=worker-token\n")
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        stop = verbs.unserve_profile_verb(runner)
+        start = verbs.serve_profile_verb(runner)
+        for handler, name in [(stop, "default"), (stop, "missing"), (start, "missing"),
+                              (start, "worker"), (start, "default")]:
+            assert (await asyncio.to_thread(handler, {"name": name}))["error"]
+        old = runner._profile_adapters["worker"][Platform.DISCORD]
+        answer = await asyncio.to_thread(stop, {"name": "worker"})
+        assert answer["unserved"] == "worker"
+        assert answer["served_profiles"] == _served_record(home) == ["default"]
+        assert old.disconnected
+        marker = secondary / "gateway.parked"
+        marker.touch()
+        assert (await asyncio.to_thread(start, {"name": "worker"}))["error"]
+        marker.unlink()
+        (secondary / ".env").write_text("DISCORD_BOT_TOKEN=new-worker-token\n")
+        answer = await asyncio.to_thread(start, {"name": "worker"})
+        assert answer["served"] == "worker"
+        assert answer["served_profiles"] == _served_record(home) == ["default", "worker"]
+        assert runner._profile_adapters["worker"][Platform.DISCORD].token.endswith("new-worker-token\n")
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.asyncio
+async def test_profile_lifecycle_over_real_control_socket(tmp_path, monkeypatch):
+    from gateway.run import _start_gateway_start_control_socket
+    from gateway import control_socket
+    runner, home = _runner(tmp_path, monkeypatch)
+    secondary = _mkprofile(home, "worker")
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        server = await _start_gateway_start_control_socket(runner)
+        assert server is not None
+        try:
+            (secondary / "gateway.parked").touch()
+            stopped = await asyncio.to_thread(control_socket.request_unserve_profile, home, "worker")
+            assert stopped["unserved"] == "worker"
+            assert _served_record(home) == ["default"]
+            refused = await asyncio.to_thread(control_socket.request_serve_profile_hot, home, "worker")
+            assert "parked" in refused["error"]
+            (secondary / "gateway.parked").unlink()
+            started = await asyncio.to_thread(control_socket.request_serve_profile_hot, home, "worker")
+            assert started["served"] == "worker"
+            assert _served_record(home) == ["default", "worker"]
+        finally:
+            await server.stop()
+
+
+@pytest.mark.asyncio
 async def test_created_then_credentialed_profile_is_served_without_restart(tmp_path, monkeypatch):
     runner, home = _runner(tmp_path, monkeypatch)
     alpha_dir = _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
@@ -173,6 +305,90 @@ async def test_deleted_profile_is_torn_down_and_unrouted_others_untouched(tmp_pa
     assert _served_record(home) == ["default", "alpha"]
     assert runner._profile_adapters["alpha"][Platform.DISCORD] is alpha_adapter
     assert alpha_adapter.disconnected is False
+
+
+@pytest.mark.asyncio
+async def test_unserve_releases_gateway_held_log_and_mcp_handles(tmp_path, monkeypatch):
+    """#130244: the multiplexer process itself routes per-profile logs and owns the profile's
+    scoped MCP servers, so unserving must release BOTH here — the CLI-side delete only
+    releases the deleting process's copies and otherwise leaves the gateway holding
+    ``logs/.__agent.lock`` / ``logs/.__errors.lock`` / ``mcp-stderr.log`` (WinError 32)."""
+    import logging as _logging
+
+    import hermes_logging
+    from hermes_constants import (
+        hermes_home_key,
+        mark_named_profile_deleted,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    runner, home = _runner(tmp_path, monkeypatch)
+    alpha_dir = _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
+    gamma_dir = _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
+
+    def _holds_open_log_file(handler) -> bool:
+        # concurrent-log-handler (Windows) keeps the cross-process ``.__agent.lock``
+        # handle in ``stream_lock`` — what the deleter's rmtree actually trips over —
+        # and closes ``stream`` again after every write; stdlib (POSIX) keeps the log
+        # ``stream`` itself open between writes.
+        lock_stream = getattr(handler, "stream_lock", None)
+        if lock_stream is not None and not lock_stream.closed:
+            return True
+        stream = getattr(handler, "stream", None)
+        return stream is not None and not stream.closed
+
+    shutdowns = []
+    monkeypatch.setattr(
+        "tools.mcp_tool_lifecycle.shutdown_mcp_servers",
+        lambda **kw: shutdowns.append(kw.get("scope")),
+    )
+    hermes_logging._reset_queued_handlers()  # a prior test's routers would route to stale homes
+    try:
+        hermes_logging.setup_logging(hermes_home=home)
+        assert hermes_logging.enable_profile_log_routing([home, alpha_dir, gamma_dir]) is True
+        logger = _logging.getLogger("agent.unserve-handle-release")
+        for profile_home in (alpha_dir, gamma_dir):
+            token = set_hermes_home_override(profile_home)
+            try:
+                logger.warning("open routed handles for %s", profile_home.name)
+            finally:
+                reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+        routers = [
+            handler for handler in hermes_logging._queued_file_handlers
+            if isinstance(handler, hermes_logging._ProfileRoutingFileHandler)
+        ]
+        assert len(routers) == 2  # agent.log and errors.log, as in test_hermes_logging
+        assert all(gamma_dir.resolve() in handler._profile_handlers for handler in routers)
+        gamma_handlers = [handler._profile_handlers[gamma_dir.resolve()] for handler in routers]
+        alpha_handlers = [handler._profile_handlers[alpha_dir.resolve()] for handler in routers]
+        # Before the reconcile the deleted profile's routed handlers each hold an open fd into
+        # its home — the ``.__agent.lock`` lock handle on Windows, the log stream on POSIX.
+        assert all(_holds_open_log_file(handler) for handler in gamma_handlers)
+
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+            await runner._start_secondary_profile_adapters()
+            mark_named_profile_deleted(gamma_dir)  # what ``delete_profile`` does before rmtree
+            result = await runner.reconcile_served_profiles()
+
+        assert result["removed"] == ["gamma"]
+        # The gateway-side scoped MCP servers (whose children write mcp-stderr.log) are stopped
+        # for exactly the deleted profile's scope, never a sibling's.
+        assert shutdowns == [hermes_home_key(gamma_dir)]
+        # This process's routed log files for the deleted home are closed and forgotten while a
+        # still-served sibling keeps its handles.
+        assert all(gamma_dir.resolve() not in handler._profile_handlers for handler in routers)
+        assert all(gamma_dir.resolve() not in handler._profile_homes for handler in routers)
+        assert all(alpha_dir.resolve() in handler._profile_handlers for handler in routers)
+        # The popped handler's fd into the deleted home is actually closed — not just the
+        # routing entry removed — while a still-served sibling keeps its handles open.
+        assert not any(_holds_open_log_file(handler) for handler in gamma_handlers)
+        assert all(_holds_open_log_file(handler) for handler in alpha_handlers)
+        assert "open routed handles for alpha" in (alpha_dir / "logs" / "agent.log").read_text()
+    finally:
+        hermes_logging._reset_queued_handlers()
+        hermes_logging._logging_initialized = False
 
 
 @pytest.mark.asyncio

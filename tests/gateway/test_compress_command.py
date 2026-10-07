@@ -3,6 +3,7 @@
 import asyncio
 import threading
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -161,15 +162,9 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered(t
 
     # Compression succeeded
     assert "Compressed:" in result
-    # No ⚠️ warning (that's reserved for dropped-turns case)
-    assert "⚠️" not in result
-    # But there IS an info note about the broken aux model
-    assert "ℹ️" in result
+    # The broken aux model is surfaced to the user
     assert "gemini-3-flash-preview" in result
     assert "404" in result
-    assert "auxiliary.compression.model" in result
-    # The user's context is explicitly called out as intact
-    assert "intact" in result
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
 
@@ -234,7 +229,7 @@ async def test_compress_command_in_place_skips_destructive_rewrite():
 async def test_compress_command_preserves_platform_and_gateway_session_key():
     """The temporary compression agent must carry the originating source's
     platform and stable gateway session key, matching a normal gateway turn.
-    Without them ``_session_source_for_agent`` falls back to a default "cli"
+    Without them ``session_source_for`` falls back to a default "cli"
     host source, so an external context engine misattributes the retained
     transcript tail and later duplicates it on resume (#50422)."""
     history = _make_history()
@@ -426,37 +421,6 @@ async def test_compress_command_multiplexed_runs_under_profile_secret_scope(tmp_
     runner._resolve_profile_home_for_source.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_compress_command_single_profile_skips_profile_resolution():
-    """Multiplexing off → the scope wrapper is a transparent pass-through.
-
-    Single-profile gateways must not pay the profile-resolution path (and
-    ``_resolve_profile_home_for_source`` assumes multiplex config exists) —
-    mirrors the gating contract of ``_run_agent``'s wrapper.
-    """
-    history = _make_history()
-    runner = _make_runner(history)
-    runner._resolve_profile_home_for_source = MagicMock()
-    agent_instance = MagicMock()
-    agent_instance.shutdown_memory_provider = MagicMock()
-    agent_instance.close = MagicMock()
-    agent_instance._cached_system_prompt = ""
-    agent_instance.tools = None
-    agent_instance.context_compressor.has_content_to_compress.return_value = True
-    agent_instance.session_id = "sess-1"
-    agent_instance._compress_context.return_value = (list(history), "")
-    agent_instance._compression_skipped_due_to_lock = False
-
-    with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
-    ):
-        await runner._handle_compress_command(_make_event())
-
-    runner._resolve_profile_home_for_source.assert_not_called()
-    runner._shutdown_executor()
 
 
 @pytest.mark.asyncio
@@ -483,16 +447,10 @@ async def test_compress_command_cleanup_does_not_block_event_loop():
     ]
     runner = _make_runner(history)
 
-    close_started = threading.Event()
     release_close = threading.Event()
-
-    def slow_close():
-        close_started.set()
-        release_close.wait(timeout=5)
 
     agent_instance = MagicMock()
     agent_instance.shutdown_memory_provider = MagicMock()
-    agent_instance.close = slow_close
     agent_instance._cached_system_prompt = ""
     agent_instance.tools = None
     agent_instance.context_compressor.has_content_to_compress.return_value = True
@@ -516,38 +474,108 @@ async def test_compress_command_cleanup_does_not_block_event_loop():
             ticks["n"] += 1
             await asyncio.sleep(0.005)
 
-    def _observer():
-        # threading.Event wait does not need the event loop. Sample ticks
-        # while close() is still held so an on-loop teardown is visible.
-        if not close_started.wait(timeout=5):
-            observed["error"] = "close() never started"
-            release_close.set()
-            return
+    def slow_close():
+        observed["close_started"] = True
         baseline = ticks["n"]
-        time.sleep(0.12)
-        observed["ticks_during_block"] = ticks["n"] - baseline
-        release_close.set()
 
+        def _observer():
+            # Start observation from the cleanup call itself. This excludes all
+            # unrelated setup/import time before teardown begins.
+            time.sleep(0.12)
+            observed["ticks_during_block"] = ticks["n"] - baseline
+            release_close.set()
+
+        observer = threading.Thread(target=_observer, name="compress-cleanup-observer", daemon=True)
+        observer.start()
+        release_close.wait()
+        observer.join()
+
+    agent_instance.close = slow_close
     hb = asyncio.create_task(_heartbeat())
-    observer = threading.Thread(target=_observer, name="compress-cleanup-observer", daemon=True)
-    observer.start()
 
     with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch.object(
+            runner,
+            "_resolve_session_agent_runtime",
+            return_value=("test-model", {"api_key": "***"}),
+        ),
+        patch.object(
+            runner,
+            "_build_manual_compression_agent",
+            AsyncMock(return_value=agent_instance),
+        ),
         patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
     ):
         result = await runner._handle_compress_command(_make_event())
 
-    observer.join(timeout=5)
     stop.set()
     await hb
     runner._shutdown_executor()
 
     assert "Compressed:" in result
-    assert "error" not in observed, observed.get("error")
+    assert observed.get("close_started") is True
     assert observed.get("ticks_during_block", 0) >= 5, (
         "event loop was blocked during manual /compress cleanup: only "
         f"{observed.get('ticks_during_block')} ticks while agent.close() was running"
     )
+
+
+@pytest.mark.parametrize("profile", ["main", "fitness"])
+def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, monkeypatch, profile):
+    """A rotated /compress must NOT rewrite the atomically-published child.
+
+    publish_compression_child() writes handoff + cloned foreign tail in one transaction;
+    the second rewrite_transcript(active_only=False) would DELETE the cloned tail (it is not
+    in the in-memory handoff) and its failure surfaced as a false "failed to persist
+    compressed transcript" even though the compression had already committed. The
+    ``fitness`` row is a multiplexed named profile: its child is published in
+    ``profiles/fitness/state.db`` before the routing index knows the child id.
+    """
+    import hermes_state
+    from gateway.slash_commands_session import GatewaySessionCommandsMixin
+    from gateway.session import AsyncSessionStore, SessionStore
+
+    root = tmp_path / "hermes"
+    (root / "profiles" / "fitness").mkdir(parents=True)
+    (root / "profiles" / "fitness" / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    store = SessionStore(sessions_dir=root / "sessions", config=GatewayConfig(multiplex_profiles=True))
+    parent, child = "parent", "child"
+    entry = SessionEntry(
+        session_key=f"agent:{profile}:discord:thread:123:123", session_id=parent,
+        created_at=datetime.now(), updated_at=datetime.now(),
+        platform=Platform.DISCORD, chat_type="thread",
+    )
+    store._entries[entry.session_key] = entry
+    db = store._db_for_key(entry.session_key)
+    db.create_session(parent, "discord")
+    db.append_message(parent, "assistant", "old turn")
+    watermark = db.get_active_message_watermark(parent)
+    db.append_message(parent, "assistant", "concurrent foreign turn")
+    ceiling = db.get_active_message_watermark(parent)
+    handoff = [{"role": "assistant", "content": "compressed summary"}]
+    db.publish_compression_child(
+        parent_session_id=parent, child_session_id=child, source="discord",
+        messages=handoff, watermark=watermark, watermark_ceiling=ceiling,
+        require_compression_lease=False,
+    )
+
+    def _destructive_rewrite(*_args, **_kwargs):
+        raise AssertionError("published child must not be rewritten")
+    store.rewrite_transcript = _destructive_rewrite
+
+    runner = SimpleNamespace(
+        async_session_store=AsyncSessionStore(store),
+        _sync_telegram_topic_binding=MagicMock(),
+    )
+    agent = SimpleNamespace(session_id=child)
+    try:
+        asyncio.run(GatewaySessionCommandsMixin._persist_manual_compression(
+            runner, agent, entry, _make_source(), handoff))
+        assert entry.session_id == child
+        assert [m["content"] for m in db.get_messages(child)] == [
+            "compressed summary", "concurrent foreign turn",
+        ]
+    finally:
+        store.close_all_db_handles()

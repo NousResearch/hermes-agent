@@ -2677,9 +2677,12 @@ def clear_run_claim(job_id: str) -> bool:
     tick" invariant that the scheduler comment promises (#86522).
     """
     def apply(jobs, _i, job):
-        if job.get("schedule", {}).get("kind") != "once" or job.get("run_claim") is None:
-            return False  # recurring, or already cleared
-        job["run_claim"] = None
+        claim = job.get("run_claim")
+        if job.get("schedule", {}).get("kind") != "once" or claim in (None, {"outage": True}):
+            return False  # recurring, already cleared, or already reduced to the outage marker
+        # Keep the outage marker (no "at": a stale claim, so it re-dispatches) or the skipped
+        # one-shot, past its grace, is retired as missed on the next scan.
+        job["run_claim"] = {"outage": True} if isinstance(claim, dict) and claim.get("outage") else None
         save_jobs(jobs)
         return True
 
@@ -3159,7 +3162,11 @@ def _retire_expired_oneshot(d: _DueJob) -> bool:
     # Due during an outage of its store: it was skipped, not missed; fire it once on recovery.
     if store_health.outage_covers(_current_cron_store().cron_dir, d.next_run_dt.timestamp(), ONESHOT_GRACE_SECONDS):
         return False
-    if not (d.job.get("run_claim") or d.job.get("fire_claim")):
+    claim = d.job.get("run_claim")
+    # An outage-covered claim that never reached its fire claim never started: it stays covered.
+    if isinstance(claim, dict) and claim.get("outage") and not d.job.get("fire_claim"):
+        return False
+    if not (claim or d.job.get("fire_claim")):
         _write_missed_oneshot_diagnostic(d.job, d.next_run)
         d.scan.retire(d.job["id"])
         d.scan.on_saved.append(lambda job=d.job: record_cron_missed(job))
@@ -3286,6 +3293,8 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         # fixed window is not enough for a run that outlives a tick. The other process sees the
         # fresh claim and skips; mark_job_run() clears it. The TTL only covers a tick that DIES.
         claim = {"at": now.isoformat(), "by": _machine_id()}
+        if _elapsed_seconds(now, d.next_run_dt) > ONESHOT_GRACE_SECONDS:  # only an outage lets it through
+            claim["outage"] = True
         job["run_claim"] = claim
         scan.persist(job["id"], run_claim=claim)
 

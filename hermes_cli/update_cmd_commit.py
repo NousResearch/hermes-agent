@@ -180,7 +180,11 @@ def arm_commit_point(git_cmd, root: Path, expected_sha: str, **move) -> str | No
 
     ``None`` when both are durable; otherwise why not, with the obligations handed back
     (``disarm_commit_obligations``), and the caller must stop before git writes a file.
+    Linux/macOS gateways are paused first: this is every route's first checkout move.
     """
+    from hermes_cli.update_cmd_posix_pause import pause_at_commit_point
+    if refused := pause_at_commit_point():
+        return refused
     try:
         arm_commit_obligations(root, expected_sha)
         arm_tree_move(git_cmd, root, **move)

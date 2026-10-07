@@ -333,6 +333,53 @@ def _restored_python_paths(git_cmd: list[str], cwd: Path) -> tuple[str, ...] | N
     return tuple(sorted(paths))
 
 
+#: Closed allowlist of suffixes that no Python import can load or read during startup.
+#: Everything else (.py, .so/.pyd/.dll/.dylib, .pyc, .pth, .egg-link, data files such as
+#: .json/.yaml/.toml that modules read on import, extensionless files) keeps the import check.
+_NON_RUNTIME_SUFFIXES = frozenset({
+    ".md", ".mdx", ".rst", ".txt", ".adoc",
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
+})
+
+
+def _restore_is_non_runtime(git_cmd: list[str], cwd: Path, stash_ref: str) -> bool:
+    """True only when every path the stash restores is demonstrably unable to change an import.
+
+    The set is read from the stash commit itself (worktree and index changes against its base,
+    renames split into delete + add, plus its untracked tree), never from the working tree,
+    which also holds what the clean import probe wrote. Each path must have an allowlisted
+    suffix, must not be a symlink, and may only sit in a directory ``HEAD`` already tracks, so
+    the restore cannot create a namespace-package directory. Any Git failure counts as
+    runtime-affecting.
+    """
+    restored: set[str] = set()
+    for side in (stash_ref, f"{stash_ref}^2"):  # worktree, index
+        changed = _git_paths_z(
+            git_cmd, ["diff", "--name-only", "--no-renames", "-z", f"{stash_ref}^1", side, "--"], cwd)
+        if changed is None:
+            return False
+        restored |= changed
+    has_untracked = _git_quiet(git_cmd, ["rev-parse", "-q", "--verify", f"{stash_ref}^3"], cwd)
+    if has_untracked is None:
+        return False
+    if has_untracked.returncode == 0:
+        untracked = _git_paths_z(git_cmd, ["ls-tree", "-r", "--name-only", "-z", f"{stash_ref}^3"], cwd)
+        if untracked is None:
+            return False
+        restored |= untracked
+    if not restored:
+        return True
+    head_dirs = _git_paths_z(git_cmd, ["ls-tree", "-r", "-d", "--name-only", "-z", "HEAD"], cwd)
+    if head_dirs is None:
+        return False
+    for path in restored:
+        parent = Path(path).parent.as_posix()
+        if (Path(path).suffix.lower() not in _NON_RUNTIME_SUFFIXES or (cwd / path).is_symlink()
+                or (parent != "." and parent not in head_dirs)):
+            return False
+    return True
+
+
 def _reject_unsafe_stash_restore(
     git_cmd: list[str], cwd: Path, stash_ref: str, preexisting_untracked: set[str], failing_target: str,
     detail: str | None, *, checkout_move=None,
@@ -492,7 +539,13 @@ def _restore_stashed_changes(
     syntax_ok, failing_path, syntax_error = _validate_python_files_syntax(cwd, restored_python)
     if not syntax_ok:
         reject(failing_path or "restored Python source", syntax_error)
-    for module, error in _critical_module_import_failures(cwd, report_runtime_errors=True).items():
+    # Probe outcomes also move with install state between the two runs (launch preparation,
+    # dependency sync), so a restore that cannot affect an import (docs, images) must not be
+    # rejected on that difference (#130101). Anything else, including a native extension or
+    # bytecode that shadows a healthy module, is still compared.
+    non_runtime = _restore_is_non_runtime(git_cmd, cwd, stash_ref)
+    for module, error in (() if non_runtime else
+                          _critical_module_import_failures(cwd, report_runtime_errors=True).items()):
         if clean_import_failures.get(module) != error:
             reject(f"agent import {module or 'unknown'}", error[1])
             break

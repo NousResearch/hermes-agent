@@ -733,6 +733,17 @@ stage_repository() {
             || fail "commit $INSTALL_COMMIT is not on branch $BRANCH" commit_not_on_branch
         run_logged "Pinning $INSTALL_COMMIT" git -C "$INSTALL_DIR" checkout "$INSTALL_COMMIT" \
             || fail "could not pin commit $INSTALL_COMMIT" git_checkout_failed
+        # This bootstrap keeps running against the CHECKED-OUT tree, so the pin
+        # must satisfy the interfaces the later stages invoke: pm/lock.json (the
+        # bootstrap Python pin), pm.cli (dependency install) and the
+        # source-completion tail. A pre-PM revision passes the branch check above
+        # and would die mid-ladder on a half-prepared tree instead (#134733).
+        # Plain string accumulation: bash 3.2 unbound-empties arrays under set -u.
+        local _iface _missing=""
+        for _iface in pm/lock.json pm/cli.py hermes_cli/source_completion.py; do
+            [ -f "$INSTALL_DIR/$_iface" ] || _missing="$_missing $_iface"
+        done
+        [ -z "$_missing" ] || fail "commit $INSTALL_COMMIT predates the PM bootstrap this installer runs (missing:${_missing}); install that revision with its own installer, or pin a newer commit" commit_incompatible_with_bootstrap
     fi
 }
 

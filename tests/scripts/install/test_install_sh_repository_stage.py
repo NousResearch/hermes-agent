@@ -20,11 +20,24 @@ def _git(repo: Path, *args: str) -> str:
                           check=True, capture_output=True, text=True).stdout.strip()
 
 
-def _origin(path: Path, content: str = "one") -> Path:
+def _origin(path: Path, content: str = "one", *, bootstrap: bool = True) -> Path:
     path.mkdir()
     _git(path, "init", "-q", "-b", "main")
     (path / "README").write_text(content)
-    _git(path, "add", "README")
+    # The bootstrap-protocol interfaces the installer ladder invokes after the
+    # checkout: every hermes-agent revision this installer can complete has them.
+    # bootstrap=False builds a pre-PM stand-in for the #134733 gate.
+    if bootstrap:
+        (path / "pm").mkdir()
+        (path / "pm" / "lock.json").write_text(
+            '{"packages": {"python": {"version": "3.14.0"}}}'
+        )
+        (path / "pm" / "cli.py").write_text("")
+        (path / "hermes_cli").mkdir()
+        (path / "hermes_cli" / "source_completion.py").write_text("")
+        _git(path, "add", "README", "pm", "hermes_cli")
+    else:
+        _git(path, "add", "README")
     _git(path, "commit", "-qm", content)
     return path
 
@@ -144,6 +157,32 @@ def test_pinned_fresh_clone_publishes_nothing_when_the_pin_fails(tmp_path):
     assert "no checkout published" in failed.stdout + failed.stderr
     assert not (tmp_path / "install").exists()
     assert not list(tmp_path.glob(".hermes-clone-*"))
+
+
+def test_commit_pin_rejects_revisions_without_the_bootstrap_interfaces(tmp_path):
+    """#134733: --commit accepts any SHA on the branch, but this bootstrap then runs
+    against the CHECKED-OUT tree (pm/lock.json, `pm.cli`, source_completion.py).
+    A pre-PM revision passed the branch check and died mid-ladder during dependency
+    prep, leaving a half-prepared install; the gate fails closed at pin time instead."""
+    origin = _origin(tmp_path / "origin", "pre-pm", bootstrap=False)
+    pre_pm = _git(origin, "rev-parse", "HEAD")
+    (origin / "pm").mkdir()
+    (origin / "pm" / "lock.json").write_text(
+        '{"packages": {"python": {"version": "3.14.0"}}}'
+    )
+    (origin / "pm" / "cli.py").write_text("")
+    (origin / "hermes_cli").mkdir()
+    (origin / "hermes_cli" / "source_completion.py").write_text("")
+    _git(origin, "add", "pm", "hermes_cli")
+    _git(origin, "commit", "-qm", "pm era")
+    refused = _stage(tmp_path, origin, commit=pre_pm)
+    assert refused.returncode != 0
+    combined = refused.stdout + refused.stderr
+    assert "predates the PM bootstrap this installer runs" in combined
+    assert "pm/lock.json" in combined
+    assert pre_pm in combined  # the refusal names the pinned commit
+    pinned = _stage(tmp_path, origin, commit=_git(origin, "rev-parse", "HEAD"))
+    assert pinned.returncode == 0, pinned.stdout + pinned.stderr
 
 
 def test_commitless_checkout_is_moved_aside_and_recloned(tmp_path):

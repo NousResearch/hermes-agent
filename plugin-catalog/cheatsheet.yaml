@@ -1,6 +1,6 @@
 name: cheatsheet
 repo: https://github.com/Bonorinoa/hermes-cheatsheet
-sha: 285df5e3c5a19b9bc6fc72f93dd2de9710cb6f9e
+sha: 266d739701203713367ed72491b5564b1140527b
 subdir: ""
 description: "Title-bar cheatsheet. Live slash commands and plugins, plus cited passages from this install's docs. No runtime network. No self-update."
 maintainer: Bonorinoa

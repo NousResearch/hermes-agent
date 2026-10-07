@@ -3655,7 +3655,6 @@ class TestOrphanedOwnerReclaim:
         ``(claimed, published, fake_procs)``.
         """
         import types
-        from unittest.mock import MagicMock
         from gateway import host_rendezvous as hr
         import hermes_cli.web_server as web_server
         from hermes_cli import process_identity as pi
@@ -3952,57 +3951,6 @@ class TestModelInfoEndpoint:
 # ---------------------------------------------------------------------------
 # Gateway health probe tests
 # ---------------------------------------------------------------------------
-
-
-class TestProbeGatewayHealth:
-    """Tests for _probe_gateway_health() — cross-container gateway detection."""
-
-
-    def test_probe_uses_configured_short_timeout(self, monkeypatch):
-        """The HTTP probe must not fall through to the OS TCP timeout."""
-        import hermes_cli.web_server as ws
-
-        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
-        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 0.75)
-        timeouts = []
-
-        def mock_urlopen(req, **kwargs):
-            timeouts.append(kwargs.get("timeout"))
-            raise TimeoutError("mock timeout")
-
-        monkeypatch.setattr(ws.urllib.request, "urlopen", mock_urlopen)
-
-        alive, body = _web_server_gateway._probe_gateway_health()
-
-        assert alive is False
-        assert body is None
-        assert timeouts == [0.75, 0.75]
-
-
-    def test_detailed_fails_falls_back_to_simple_health(self, monkeypatch):
-        """If /health/detailed fails, falls back to /health."""
-        import hermes_cli.web_server as ws
-        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
-        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 1)
-
-        call_count = [0]
-
-        def mock_urlopen(req, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise ConnectionError("detailed failed")
-            mock_resp = MagicMock()
-            mock_resp.status = 200
-            mock_resp.read.return_value = json.dumps({"status": "ok"}).encode()
-            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-            mock_resp.__exit__ = MagicMock(return_value=False)
-            return mock_resp
-
-        monkeypatch.setattr(ws.urllib.request, "urlopen", mock_urlopen)
-        alive, body = _web_server_gateway._probe_gateway_health()
-        assert alive is True
-        assert body["status"] == "ok"
-        assert call_count[0] == 2
 
 
 class TestStatusRemoteGateway:

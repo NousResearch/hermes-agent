@@ -615,7 +615,12 @@ import {
   registerUpdateHoldIpc,
   waitForPoolUpdateClearance
 } from './update-hold-wiring'
-import { describeSkippedPrewrite, readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
+import {
+  describeSkippedPrewrite,
+  readLiveUpdateMarker,
+  updateHandoffConflict,
+  writeUpdateMarker
+} from './update-marker'
 import { heldWaitMessage, holdTicker } from './update-marker-gate'
 import { updateConnectionsBeforeLocal } from './update-order'
 import {

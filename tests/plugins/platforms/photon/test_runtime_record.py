@@ -97,6 +97,10 @@ class _HealthzClient:
         class _Resp:
             status_code = cls.status_code
 
+            @staticmethod
+            def json() -> dict:  # /healthz body
+                return {"ok": True}
+
         return _Resp()
 
 

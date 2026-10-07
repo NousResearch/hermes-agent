@@ -98,11 +98,50 @@ async def _aiter_ndjson_lines(response: Any) -> AsyncIterator[str]:
         yield pending
 
 
+class _PollClarify:
+    """A clarify rendered as a native poll; ``poll_id`` lands when ``/send-poll`` returns."""
+    __slots__ = ("clarify_id", "chat_id", "question", "choices", "poll_id", "sending")
+
+    def __init__(self, clarify_id: str, chat_id: str, question: str, choices: List[str]) -> None:
+        self.clarify_id, self.chat_id, self.question = clarify_id, chat_id, question
+        self.choices = [str(choice).strip() for choice in choices]
+        self.poll_id: Optional[str] = None
+        self.sending = True
+
+    def is_open(self) -> bool:
+        from tools import clarify_gateway as cg
+        with cg._lock:
+            entry = cg._entries.get(self.clarify_id)
+            return entry is not None and not entry.event.is_set()
+
+
 # -- Sidecar runtime record ----------------------------------------------------
 
 def _runtime_record_path() -> Path:
     from hermes_constants import get_hermes_home  # honors profile overrides
     return get_hermes_home() / "runtime" / _RUNTIME_RECORD_NAME
+
+
+def _poll_state_path() -> Path:
+    """Send-time poll option identifiers the sidecar keeps across restarts."""
+    from hermes_constants import get_hermes_home  # honors profile overrides
+    return get_hermes_home() / "photon" / "poll-seeds.json"
+
+
+def _warn_unapplied_poll_patch(health: Any) -> None:
+    """Votes from empty-title polls are dropped inside the SDK unless its poll patch applied."""
+    try:
+        payload = health.json()
+    except ValueError:  # non-JSON body from an unexpected responder
+        return
+    patches = payload.get("patches") if isinstance(payload, dict) else None
+    if not isinstance(patches, dict):  # sidecar predates patch reporting
+        return
+    unapplied = {name: state for name, state in patches.items()
+                 if (name.startswith("poll") or name == "spectrum") and state not in {"applied", "not-needed"}}
+    if unapplied:
+        logger.warning("[photon] Spectrum poll vote patch not applied (%s); native poll votes may be dropped",
+                       ", ".join(f"{name}={state}" for name, state in sorted(unapplied.items())))
 
 
 def _write_runtime_record(port: int, token: str, pid: int) -> None:
@@ -579,6 +618,10 @@ class PhotonAdapter(BasePlatformAdapter):
         self._recent_richlinks_by_chat: Dict[str, float] = {}  # coalesce preview-art attachments
         self._typing_last_sent: Dict[str, float] = {}
         self._pending_fffc: Dict[str, tuple[float, Any]] = {}  # chat_key → (timestamp, asyncio.Task)
+        self._clarify_polls: Dict[str, _PollClarify] = {}  # poll id → clarify (bounded; answers stale votes)
+        self._open_poll_clarifies: Dict[str, _PollClarify] = {}  # clarify id → still-open poll clarify
+        self._early_poll_votes: Dict[str, Dict[str, Tuple[str, str, bool]]] = {}  # poll id → latest voter states
+        self._sent_poll_ids: Dict[str, bool] = {}  # survives binding eviction; refreshed from sidecar seeds
         # Group-chat mention gating (parity with BlueBubbles); DMs are never gated.
         require_mention = extra.get("require_mention")
         if require_mention is None:
@@ -846,16 +889,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # gate: reacting to a non-wake-word group message is valid.
         self._record_last_inbound(space_id, message_id)
         if ctype == "poll_option":
-            # Native poll vote: a selection is forwarded as if typed (the gateway's
-            # pending-clarify intercept resolves it); a deselection is dropped.
-            if content.get("selected") is False:
-                logger.debug("[photon] ignoring poll deselection")
-                return
-            choice = (content.get("title") or "").strip()
-            if not choice:
-                logger.debug("[photon] ignoring poll vote with empty title")
-                return
-            await self.handle_message(_event(choice))
+            await self._dispatch_poll_vote(content, space_id, chat_type, _event)
             return
         # Mention gate BEFORE normalising: _normalize_content persists inline attachment
         # bytes to the media cache, and a dropped group message must not leave files behind.
@@ -872,6 +906,134 @@ class PhotonAdapter(BasePlatformAdapter):
             text = self._clean_mention_text(text)
         self._record_recent_richlink(space_id, _richlink_url_from_content(content) or text)
         await self.handle_message(_event(text, mtype, media_urls=media_urls, media_types=media_types))
+
+    async def _dispatch_poll_vote(self, content: Dict[str, Any], chat_id: str, chat_type: str,
+                                  make_event: Callable[..., MessageEvent]) -> None:
+        """Resolve the vote's own poll clarify, else forward it as gated, non-control info."""
+        poll_id = content.get("pollId") or None
+        if not poll_id:
+            logger.warning("[photon] poll vote without pollId; cannot answer a clarify")
+        choice = (content.get("title") or "").strip()
+        if not choice:
+            logger.debug("[photon] ignoring poll vote with empty title")
+            return
+        selected = content.get("selected") is not False
+        vote_event = make_event("", allow_gateway_control=False)
+        source = vote_event.source
+        authorized = (not getattr(source, "profile_route_rejected", False)
+                      and self._is_sender_authorized(source.user_id, chat_type, chat_id) is True)
+        self._prune_poll_clarifies()
+        binding = self._clarify_polls.get(poll_id) if poll_id else None
+        if binding is not None and binding.chat_id != chat_id:
+            binding = None
+        elif binding is None and poll_id not in self._clarify_polls:
+            binding = self._match_unbound_poll_vote(poll_id, chat_id, source.user_id, choice, selected, authorized)
+            if binding is self._BUFFERED:
+                return
+        if binding is not None and selected and authorized:
+            from tools.clarify_gateway import resolve_gateway_clarify
+            if resolve_gateway_clarify(binding.clarify_id, choice):
+                # The clarify result carries the answer; forwarding it too would be a second turn.
+                logger.info("[photon] poll vote answered clarify %s", binding.clarify_id)
+                self._prune_poll_clarifies()
+                return
+        if chat_type == "group" and self.require_mention:
+            logger.debug("[photon] ignoring group poll vote (require_mention=true; votes carry no mention)")
+            return
+        if chat_type != "group" and not selected:
+            return
+        # No gateway hook queues a user event without interrupting, so a busy session drops it.
+        if self._event_session_key(vote_event) in self._active_sessions:
+            logger.info("[photon] dropping poll vote while the agent is busy (poll %s)", poll_id or "unknown")
+            return
+        vote_event.text = self._poll_vote_text(content, choice, selected, binding, chat_type)
+        await self.handle_message(vote_event)
+
+    _BUFFERED: Any = object()
+
+    def _match_unbound_poll_vote(self, poll_id: Optional[str], chat_id: str, voter: str,
+                                 choice: str, selected: bool, authorized: bool) -> Any:
+        """Only the id returned by an in-flight send can claim an early vote."""
+        if not poll_id or poll_id in self._sent_poll_ids:
+            return None
+        sending = any(pending.chat_id == chat_id and pending.sending
+                      for pending in self._open_poll_clarifies.values())
+        if not sending:
+            logger.warning("[photon] stale poll vote for unmatched poll %s in chat %s", poll_id, chat_id)
+            return None
+        if not authorized:
+            return None
+        states = self._early_poll_votes.get(poll_id, {})
+        previous = states.get(voter)
+        # A removal of an old choice must not erase a newer selection.
+        if selected or previous is None or previous[1] == choice:
+            bounded_put(states, voter, (chat_id, choice, selected), 32)
+        bounded_put(self._early_poll_votes, poll_id, states, 50)
+        return self._BUFFERED
+
+    def _prune_poll_clarifies(self) -> None:
+        for clarify_id, pending in list(self._open_poll_clarifies.items()):
+            if not pending.is_open():
+                self._open_poll_clarifies.pop(clarify_id, None)
+        sending_chats = {pending.chat_id for pending in self._open_poll_clarifies.values() if pending.sending}
+        for poll_id, states in list(self._early_poll_votes.items()):
+            kept = {voter: state for voter, state in states.items() if state[0] in sending_chats}
+            if kept:
+                self._early_poll_votes[poll_id] = kept
+            else:
+                self._early_poll_votes.pop(poll_id, None)
+
+    async def _watch_poll_send(self, pending: _PollClarify) -> None:
+        while pending.sending and pending.is_open():
+            await asyncio.sleep(0.1)
+        self._prune_poll_clarifies()
+
+    def _refresh_sent_poll_ids(self) -> None:
+        try:
+            with _poll_state_path().open("rb") as stream:
+                raw = stream.read(1024 * 1024 + 1)
+            if len(raw) > 1024 * 1024:
+                logger.warning("[photon] ignoring oversized poll seed file")
+                return
+            saved = json.loads(raw)
+            ids = saved.get("sentPollIds", []) + [poll.get("id") for poll in saved.get("polls", [])
+                                                   if isinstance(poll, dict)]
+            for poll_id in ids:
+                if isinstance(poll_id, str) and poll_id.strip():
+                    bounded_put(self._sent_poll_ids, poll_id, True, 2000)
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError, AttributeError, TypeError) as exc:
+            logger.warning("[photon] ignoring unreadable poll seed file: %s", exc)
+
+    def _bind_poll_clarify(self, pending: _PollClarify, poll_id: Optional[str]) -> None:
+        if not poll_id:
+            logger.warning("[photon] /send-poll returned no messageId; clarify requires typed text")
+            return
+        from tools.clarify_gateway import resolve_gateway_clarify
+        pending.poll_id = poll_id
+        bounded_put(self._clarify_polls, poll_id, pending, 200)
+        bounded_put(self._sent_poll_ids, poll_id, True, 2000)
+        states = self._early_poll_votes.pop(poll_id, {})
+        for vote_chat, choice, selected in states.values():
+            if vote_chat == pending.chat_id and selected and resolve_gateway_clarify(pending.clarify_id, choice):
+                logger.info("[photon] early poll vote answered clarify %s", pending.clarify_id)
+                break
+
+    @staticmethod
+    def _poll_vote_text(content: Dict[str, Any], choice: str, selected: bool,
+                        binding: Optional[_PollClarify], chat_type: str) -> str:
+        poll_title = (content.get("pollTitle") or "").strip()
+        # The SDK patch substitutes "Poll" for Photon's empty titles; it names nothing.
+        question = binding.question if binding else poll_title if poll_title != "Poll" else ""
+        action = "poll vote" if selected else "poll vote removed"
+        text = f"[{action}] {choice}" + (f" (poll: {question})" if question else "")
+        tally = content.get("tally")
+        if chat_type == "group" and isinstance(tally, dict) and tally:
+            totals = ", ".join(f"{title}: {count}" for title, count in tally.items())
+            since = " (partial)" if content.get("partial") else ""
+            text += f"\nTotals{since}: {totals} ({content.get('voters', 0)} voters)"
+        return text
 
     # -- Sidecar lifecycle ---------------------------------------------------------
 
@@ -964,7 +1126,7 @@ class PhotonAdapter(BasePlatformAdapter):
             await asyncio.to_thread(_reinstall_sidecar_deps)
 
     async def _apply_spectrum_patch(self, hide_flags: int) -> None:
-        """Run the mixed-attachment patch script (best-effort, off the loop: up to 10s, every reconnect)."""
+        """Run the Spectrum SDK patch script (best-effort, off the loop: up to 10s, every reconnect)."""
         try:
             patch = await asyncio.to_thread(
                 subprocess.run,  # noqa: S603
@@ -976,7 +1138,7 @@ class PhotonAdapter(BasePlatformAdapter):
             if patch.stderr.strip():
                 logger.debug("[photon] %s", patch.stderr.strip())
         except Exception as exc:
-            logger.warning("[photon] failed to apply Spectrum mixed attachment patch: %s", exc)
+            logger.warning("[photon] failed to apply Spectrum SDK patch (mixed attachments, poll votes): %s", exc)
 
     async def _start_sidecar(self) -> None:
         if self._node_bin is None:
@@ -996,7 +1158,7 @@ class PhotonAdapter(BasePlatformAdapter):
         env.update({
             "PHOTON_PROJECT_ID": self._project_id, "PHOTON_PROJECT_SECRET": self._project_secret,
             "PHOTON_SIDECAR_PORT": str(self._sidecar_port), "PHOTON_SIDECAR_BIND": self._sidecar_bind,
-            "PHOTON_SIDECAR_TOKEN": self._sidecar_token,
+            "PHOTON_SIDECAR_TOKEN": self._sidecar_token, "PHOTON_POLL_STATE_FILE": str(_poll_state_path()),
             # Exit on stdin EOF so ANY gateway death (incl. SIGKILL) can't orphan it on the port.
             "PHOTON_SIDECAR_WATCH_STDIN": "1"})
         from hermes_cli._subprocess_compat import windows_hide_flags  # hide child console on Windows
@@ -1035,6 +1197,7 @@ class PhotonAdapter(BasePlatformAdapter):
                     resp = await client.post(self._sidecar_url("/healthz"), headers=self._sidecar_headers())
                     if resp.status_code == 200:  # let out-of-process senders (cron) reach this sidecar
                         _write_runtime_record(self._sidecar_port, self._sidecar_token, self._sidecar_proc.pid)
+                        _warn_unapplied_poll_patch(resp)
                         return
                 except httpx.RequestError as e:
                     last_err = e
@@ -1053,7 +1216,9 @@ class PhotonAdapter(BasePlatformAdapter):
                 line = await loop.run_in_executor(None, stdout.readline)
                 if not line:
                     break
-                logger.info("[photon-sidecar] %s", line.decode("utf-8", "replace").rstrip())
+                text = line.decode("utf-8", "replace").rstrip()
+                level = logging.WARNING if text.startswith("photon-sidecar: WARNING") else logging.INFO
+                logger.log(level, "[photon-sidecar] %s", text)
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[photon-sidecar] supervisor exited: %s", e)
         # A container/supervisor stop signals the whole process tree, so the sidecar (its own
@@ -1212,19 +1377,44 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
                            session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Multiple-choice renders as a native poll; the vote comes back as a `poll_option`
-        event that _dispatch_inbound turns into plain text, so the clarify is flipped into
-        text-capture mode like the base fallback."""
+        """Send the visible question before a native poll and bind votes to this clarify."""
         if not choices:  # open-ended: base plain-text behaviour is right
             return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
-        from tools.clarify_gateway import mark_awaiting_text
-        mark_awaiting_text(clarify_id)
-        result = await self._sidecar_send_poll(chat_id, question, list(choices))
-        if not result.success:
-            # Old sidecar without /send-poll or a send error: numbered-text clarify fallback
-            # (base also calls mark_awaiting_text; harmless).
-            logger.warning("[photon] poll clarify failed (%s); falling back to text list", result.error)
+        from tools import clarify_gateway as cg
+        with cg._lock:
+            multi_select = bool(getattr(cg._entries.get(clarify_id), "multi_select", False))
+        if multi_select:
+            # A poll tap resolves on the first selection; the numbered list takes several.
             return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
+        cg.mark_awaiting_text(clarify_id)
+        question_result = await self.send(chat_id, question, metadata=metadata)
+        if not question_result.success:
+            return question_result
+        # Registered before the send: a vote can stream in before /send-poll returns its id.
+        self._prune_poll_clarifies()
+        if not any(pending.sending for pending in self._open_poll_clarifies.values()):
+            self._refresh_sent_poll_ids()
+        pending = _PollClarify(clarify_id, chat_id, question, list(choices))
+        self._open_poll_clarifies[clarify_id] = pending
+        watcher = asyncio.create_task(self._watch_poll_send(pending))
+        try:
+            result = await self._sidecar_send_poll(chat_id, question, list(choices))
+            if result.success:
+                self._bind_poll_clarify(pending, result.message_id)
+        finally:
+            pending.sending = False
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
+            self._prune_poll_clarifies()
+        if not result.success:
+            self._open_poll_clarifies.pop(clarify_id, None)
+            # The question bubble already arrived; reuse the numbered fallback without it.
+            logger.warning("[photon] poll clarify failed (%s); falling back to text list", result.error)
+            from agent.i18n import t
+            numbered = [t("gateway.clarify.option_line", index=i, choice=choice)
+                        for i, choice in enumerate(choices, start=1)]
+            hint = t("gateway.clarify.hint_single")
+            return await self.send(chat_id, "\n".join([*numbered, "", hint]), metadata=metadata)
         return result
 
     # -- Outbound media (parity with BlueBubbles): URL-based helpers cache to a local path

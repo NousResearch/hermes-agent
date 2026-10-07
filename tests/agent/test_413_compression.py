@@ -7,8 +7,7 @@ Verifies that:
 """
 
 import pytest
-#pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
-
+# pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
 
 
 from types import SimpleNamespace
@@ -44,6 +43,7 @@ def _no_compression_sleep(monkeypatch):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_tool_defs(*names: str) -> list:
     return [
@@ -183,8 +183,6 @@ class TestHTTP413Compression:
         assert result["completed"] is True
         assert result["final_response"] == "Success after compression"
 
-
-
     def test_413_strips_vision_payloads_when_compression_cannot_reduce_messages(self, agent):
         """If compression leaves image payloads behind, strip them and retry.
 
@@ -295,7 +293,6 @@ class TestHTTP413Compression:
             "with conversation_history=None"
         )
 
-
     def test_400_context_length_triggers_compression(self, agent):
         """A 400 with 'maximum context length' should trigger compression, not abort as generic 4xx.
 
@@ -335,47 +332,62 @@ class TestHTTP413Compression:
         assert result["completed"] is True
         assert result["final_response"] == "Recovered after compression"
 
+    @pytest.mark.parametrize(
+        ("provider", "model", "base_url", "limit", "persisted"),
+        [
+            (
+                "gemini",
+                "gemini-3.5-flash",
+                "https://gemini-proxy.example/v1",
+                131_072,
+                None,
+            ),
+            (
+                "nvidia",
+                "deepseek-ai/deepseek-v4-pro",
+                "https://integrate.api.nvidia.com/v1",
+                262_144,
+                262_144,
+            ),
+        ],
+    )
+    def test_provider_context_limit_persistence_survives_recovery(
+        self, agent, provider, model, base_url, limit, persisted
+    ):
+        """The real error/retry path must not poison the next session through a Gemini proxy."""
+        from agent.model_metadata import get_cached_context_length
 
-    def test_provider_context_limit_is_cached_before_retry_succeeds(self, agent):
-        """A confirmed limit survives when the recovery response omits usage."""
-        err_400 = Exception(
-            "Error code: 400 - {'error': {'message': "
-            "\"This model's maximum context length is 262144 tokens. "
-            "However, your messages resulted in 271877 tokens.\", 'code': 400}}"
+        agent.model, agent.provider, agent.base_url = model, provider, base_url
+        agent.context_compressor.context_length = 1_048_576
+        agent.context_compressor.threshold_tokens = 900_000
+        error = Exception(
+            f"Error code: 400 - This endpoint's maximum context length is {limit} tokens. Please reduce the length of the messages."
         )
-        err_400.status_code = 400
-        # NVIDIA-compatible endpoints can omit usage. Before the fix, caching
-        # happened only in the successful-response usage block, so this lost
-        # the provider-confirmed limit across a restart.
-        ok_resp = _mock_response(
-            content="Recovered without usage metadata",
-            finish_reason="stop",
-            usage=None,
-        )
-        agent.model = "deepseek-ai/deepseek-v4-pro"
-        agent.provider = "nvidia"
-        agent.base_url = "https://integrate.api.nvidia.com/v1"
-        agent.context_compressor.update_model(
-            model=agent.model,
-            context_length=1_000_000,
-            base_url=agent.base_url,
-            api_key=agent.api_key,
-            provider=agent.provider,
-            api_mode=agent.api_mode,
-        )
-        agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
-
+        error.status_code = 400
+        agent.client.chat.completions.create.side_effect = [
+            error,
+            _mock_response(
+                content="Recovered",
+                usage={
+                    "prompt_tokens": 100,
+                    "completion_tokens": 10,
+                    "total_tokens": 110,
+                },
+            ),
+        ]
         with (
-            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(
+                agent,
+                "_compress_context",
+                return_value=(
+                    [{"role": "user", "content": "summary"}],
+                    "compressed prompt",
+                ),
+            ),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("agent.model_metadata.save_context_length") as mock_save,
         ):
-            mock_compress.return_value = (
-                [{"role": "user", "content": "compressed summary"}],
-                "compressed prompt",
-            )
             result = agent.run_conversation(
                 "continue",
                 conversation_history=[
@@ -385,12 +397,10 @@ class TestHTTP413Compression:
             )
 
         assert result["completed"] is True
-        mock_save.assert_called_once_with(
-            "deepseek-ai/deepseek-v4-pro",
-            "https://integrate.api.nvidia.com/v1",
-            262_144,
-        )
-
+        assert result["final_response"] == "Recovered"
+        assert agent.context_compressor.context_length == limit
+        assert get_cached_context_length(model, base_url) == persisted
+        assert agent.context_compressor._context_probe_persistable is False
 
     def test_context_length_retry_rebuilds_request_after_compression(self, agent):
         """Retry must send the compressed transcript, not the stale oversized payload."""
@@ -440,8 +450,6 @@ class TestHTTP413Compression:
             "role": "user",
             "content": "compressed summary",
         }
-
-
 
 
 class TestPreflightCompression:
@@ -1532,6 +1540,7 @@ class TestToolResultPreflightCompression:
 # ---------------------------------------------------------------------------
 # Disabled auto-compaction on overflow (port of anomalyco/opencode#30749)
 # ---------------------------------------------------------------------------
+
 
 class TestOverflowWithCompactionDisabled:
     """When ``compression.enabled`` is False, NO automatic compaction may

@@ -51,6 +51,7 @@ def _codex_jwt(subject: str) -> str:
 # Token estimation
 # =========================================================================
 
+
 class TestEstimateTokensRough:
     def test_empty_string(self):
         assert estimate_tokens_rough("") == 0
@@ -251,6 +252,7 @@ class TestEstimateRequestTokensRough:
 # Default context lengths
 # =========================================================================
 
+
 class TestDefaultContextLengths:
     def test_nvidia_deepseek_v4_pro_context_is_endpoint_scoped(self):
         """NVIDIA's 262K NIM window must not lower DeepSeek V4 globally."""
@@ -417,6 +419,7 @@ class TestDefaultContextLengths:
 # =========================================================================
 # Codex OAuth context-window resolution (provider="openai-codex")
 # =========================================================================
+
 
 class TestCodexOAuthContextLength:
     """ChatGPT Codex OAuth context windows come from the authenticated
@@ -848,7 +851,6 @@ def _streamed(response):
     ctx.__enter__.return_value = response
     return ctx
 
-
 class TestFetchEndpointModelMetadata:
     def setup_method(self):
         import agent.model_metadata as mm
@@ -951,6 +953,7 @@ class TestFetchEndpointModelMetadata:
 # =========================================================================
 # Nous Portal context-window resolution (provider="nous")
 # =========================================================================
+
 
 class TestNousPortalContextResolution:
     """Nous Portal /v1/models is authoritative for what Nous infra enforces
@@ -1082,6 +1085,7 @@ class TestNousPortalContextResolution:
 # =========================================================================
 # get_model_context_length — resolution order
 # =========================================================================
+
 
 class TestGetModelContextLength:
     @patch("agent.model_metadata.fetch_model_metadata")
@@ -1297,6 +1301,7 @@ class TestGetModelContextLength:
 # Bedrock context resolution — must run BEFORE custom-endpoint probe
 # =========================================================================
 
+
 class TestBedrockContextResolution:
     """Regression tests for Bedrock context-length resolution order.
 
@@ -1329,6 +1334,7 @@ class TestBedrockContextResolution:
 # =========================================================================
 # Bedrock context cache persistence — only a probe result may be persisted
 # =========================================================================
+
 
 class TestBedrockContextCachePersistence:
     """``_resolve_bedrock_context_length`` persisted whatever
@@ -1398,6 +1404,7 @@ class TestBedrockContextCachePersistence:
 # _strip_provider_prefix — Ollama model:tag vs provider:model
 # =========================================================================
 
+
 class TestStripProviderPrefix:
     def test_known_provider_prefix_is_stripped(self):
         assert _strip_provider_prefix("local:my-model") == "my-model"
@@ -1459,6 +1466,7 @@ class TestStripProviderPrefix:
 # =========================================================================
 # fetch_model_metadata — caching, TTL, slugs, failures
 # =========================================================================
+
 
 class TestFetchModelMetadata:
     def _reset_cache(self):
@@ -1550,6 +1558,7 @@ class TestFetchModelMetadata:
 # Context probe tiers
 # =========================================================================
 
+
 class TestContextProbeTiers:
     def test_tiers_descending(self):
         for i in range(len(CONTEXT_PROBE_TIERS) - 1):
@@ -1568,6 +1577,7 @@ class TestGetNextProbeTier:
 # =========================================================================
 # Error message parsing
 # =========================================================================
+
 
 class TestParseContextLimitFromError:
 
@@ -1635,6 +1645,7 @@ class TestParseContextLimitFromError:
 # =========================================================================
 # Persistent context length cache
 # =========================================================================
+
 
 class TestContextLengthCache:
 
@@ -1884,6 +1895,7 @@ class TestMoAContextLength:
 # Fallback diagnostic logging
 # =========================================================================
 
+
 class TestFallbackWarning:
     """When all 9 detection methods fail, the 10th fallback should log a
     warning so users with small-context models (8K, 32K) don't silently get
@@ -1992,6 +2004,7 @@ class TestFallbackWarning:
 # get_model_context_length — OpenRouter routing-variant suffixes
 # =========================================================================
 
+
 class TestOpenRouterRoutingVariantContextLength:
     """`:nitro`/`:floor`/`:exacto`/`:online` are request-time routing modifiers, not catalog
     models: /models lists only the base id and the variant runs the same model, so a variant
@@ -2052,3 +2065,54 @@ def test_endpoint_pricing_per_token_quotes_pass_through_unchanged():
     assert float(entry.input_cost_per_million) == pytest.approx(0.6)
     assert float(entry.output_cost_per_million) == pytest.approx(1.2)
     assert float(entry.request_cost) == pytest.approx(0.005)
+
+
+@pytest.mark.parametrize(
+    ("provider", "base_url", "protected"),
+    [
+        ("", "https://generativelanguage.googleapis.com/v1beta/openai", True),
+        ("gemini", "https://gemini-proxy.example/v1", True),
+        ("custom", "https://other-provider.example/v1", False),
+    ],
+)
+def test_gemini_cache_floor_preserves_route_isolation(provider, base_url, protected):
+    from agent import model_metadata as metadata
+
+    model = "gemini-3.5-flash"
+    floor = DEFAULT_CONTEXT_LENGTHS["gemini"]
+    save_context_length(model, base_url, floor, provider=provider)
+    save_context_length(model, base_url, floor // 8, provider=provider)
+    assert get_cached_context_length(model, base_url) == (
+        floor if protected else floor // 8
+    )
+
+    metadata._write_context_cache({f"{model}@{base_url}/": floor // 8})
+    with (
+        patch.object(metadata, "_resolve_endpoint_context_length", return_value=None),
+        patch.object(metadata, "_query_ollama_api_show", return_value=None),
+        patch.object(metadata, "_query_local_context_length", return_value=None),
+    ):
+        resolved = get_model_context_length(model, base_url=base_url, provider=provider)
+    assert resolved == (floor if protected else floor // 8)
+    assert get_cached_context_length(model, base_url) == (
+        None if protected else floor // 8
+    )
+
+
+def test_gemini_subfloor_write_evicts_only_stale_route():
+    from agent import model_metadata as metadata
+
+    model, base_url = "gemini-3.5-flash", "https://gemini-proxy.example/v1"
+    floor = DEFAULT_CONTEXT_LENGTHS["gemini"]
+    other = "different-model@https://other-provider.example/v1"
+    metadata._write_context_cache(
+        {f"{model}@{base_url}/": floor // 8, other: floor // 4}
+    )
+    save_context_length(model, base_url, floor // 8, provider="gemini")
+    assert get_cached_context_length(model, base_url) is None
+    assert (
+        get_cached_context_length(
+            "different-model", "https://other-provider.example/v1"
+        )
+        == floor // 4
+    )

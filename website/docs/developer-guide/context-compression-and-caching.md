@@ -36,6 +36,16 @@ This is Bedrock-specific, not the direct xAI API window. Existing compression
 rules still apply: without output reservation or an explicit token cap, the
 small-window 75% threshold floor yields a 375,000-token trigger at this window.
 
+## Gemini context window cache
+
+For Gemini models on the native Google endpoint or a route explicitly configured
+with provider `gemini`, persistent cache values below the known Gemini default
+are discarded. Low limits learned from provider errors can still guide recovery
+for the current turn, but do not poison later sessions or replace a valid larger
+cached window. This also applies when the native provider is behind a proxy.
+Explicit context-length overrides still win; third-party routes without native
+Gemini identity retain their own limits.
+
 ## Pluggable Context Engine
 
 Context management is built on the `ContextEngine` ABC (`agent/context_engine.py`). The built-in `ContextCompressor` is the default implementation, but plugins can replace it with alternative engines (e.g., Lossless Context Management).

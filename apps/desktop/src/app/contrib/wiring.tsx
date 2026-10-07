@@ -213,40 +213,21 @@ function useRouteRequestNavigation(navigate: ReturnType<typeof useNavigate>): vo
   }, [navigate, routeRequest])
 }
 
-export function ContribWiring({ children }: { children: ReactNode }) {
-  const queryClient = useQueryClient()
-  const location = useLocation()
+// Recovery actions raised by toast buttons (Restart Hermes, Open Billing, pool
+// caps, cron review) fire from stores with no router context. Each counter is
+// consumed here: the ref skips the initial mount value, and only a fresh
+// request navigates or recycles the backend.
+function useRecoveryRequestToasts(): void {
   const navigate = useNavigate()
-
-  const busyRef = useRef(false)
-  const creatingSessionRef = useRef(false)
-  // Billing recovery routes to Settings → Billing from surfaces without router
-  // context (the sticky toast). The shell owns `navigate`, so it consumes the
-  // intent counter here; the ref skips the initial mount value.
-  const billingSettingsSeenRef = useRef(0)
-  const poolLimitsSettingsSeenRef = useRef(0)
-  const backendRestartSeenRef = useRef(0)
-  const cronReviewSeenRef = useRef(0)
-  const activeTranscriptSignatureRef = useRef(new Map<string, string>())
-  const activeTranscriptRequestSequenceRef = useRef(0)
-  // Stable identity for the whole callback surface (see WiringActions). Mutated
-  // in place each render so memoized surfaces never re-render on churn.
-  const actionsRef = useRef<WiringActions | null>(null)
-
-  const gatewayState = useStore($gatewayState)
-  const activeSessionId = useStore($activeSessionId)
   const billingSettingsRequest = useStore($billingSettingsRequest)
   const poolLimitsSettingsRequest = useStore($poolLimitsSettingsRequest)
   const backendRestartRequest = useStore($backendRestartRequest)
   const cronReviewRequest = useStore($cronReviewRequest)
-  const currentCwd = useStore($currentCwd)
+  const billingSettingsSeenRef = useRef(0)
+  const poolLimitsSettingsSeenRef = useRef(0)
+  const backendRestartSeenRef = useRef(0)
+  const cronReviewSeenRef = useRef(0)
 
-  useRouteRequestNavigation(navigate)
-
-  // "Restart Hermes" from a toast: recycle the local backend the user is
-  // looking at (same IPC the Models page uses), then let the boot hook re-dial.
-  // A remote/cloud connection has no local process to recycle — there the
-  // only meaningful "restart" is re-dialing the connection.
   // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
   useEffect(() => {
     if (backendRestartRequest === backendRestartSeenRef.current) {
@@ -309,6 +290,28 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       navigate(CRON_ROUTE)
     }
   }, [cronReviewRequest, navigate])
+}
+
+export function ContribWiring({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient()
+  const location = useLocation()
+  const navigate = useNavigate()
+
+  const busyRef = useRef(false)
+  const creatingSessionRef = useRef(false)
+  const activeTranscriptSignatureRef = useRef(new Map<string, string>())
+  const activeTranscriptRequestSequenceRef = useRef(0)
+  // Stable identity for the whole callback surface (see WiringActions). Mutated
+  // in place each render so memoized surfaces never re-render on churn.
+  const actionsRef = useRef<WiringActions | null>(null)
+
+  const gatewayState = useStore($gatewayState)
+  const activeSessionId = useStore($activeSessionId)
+  const currentCwd = useStore($currentCwd)
+
+  useRouteRequestNavigation(navigate)
+  useRecoveryRequestToasts()
+
   const freshDraftReady = useStore($freshDraftReady)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
@@ -788,9 +791,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   })
 
   // Runs outside the selected ChatBar so queues belonging to background
-  // sessions continue once those sessions are idle.
+  // sessions continue once those sessions are idle. The session dispatcher
+  // routes each send to its owner; a disconnected foreground is not a global gate.
   useBackgroundQueueDrain({
-    enabled: gatewayState === 'open',
+    enabled: true,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     submitText

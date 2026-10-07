@@ -676,7 +676,11 @@ class ClientLifecycleMixin:
         exp, account = claims.get("exp"), claims.get("sub")
         if not account or not isinstance(exp, (int, float)) or exp - time.time() > self._NOUS_KEY_ADOPT_SKEW_S:
             return False
-        return self._try_refresh_nous_client_credentials(force=False, require_account=str(account))
+        try:
+            return self._try_refresh_nous_client_credentials(force=False, require_account=str(account))
+        except Exception:  # noqa: BLE001 — a failed adoption leaves the key in hand; the 401 path still heals
+            logger.debug("Nous key pre-expiry adoption failed", exc_info=True)
+            return False
 
 
     def _resolve_env_credentials(self) -> Optional[tuple]:

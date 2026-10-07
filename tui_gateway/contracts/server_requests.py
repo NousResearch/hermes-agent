@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pydantic import Field
 
+from tools.tour_presets import TourPreset
+
 from .base import JsonValue, Params, Payload, Result, WireEnum
 from .registry import event, server_request
 
@@ -199,6 +201,7 @@ class TourRequestParams(ServerRequestParams):
     side: str | None = None
     steps: list[TourStep] | None = None
     step_index: int | None = None
+    preset: TourPreset | None = None
 
 
 server_request("tour", params=TourRequestParams, result=ValueResult,

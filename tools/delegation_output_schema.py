@@ -58,7 +58,7 @@ def append_output_contract(context: Optional[str], schema: Dict[str, Any]) -> st
 
 
 def extract_json_candidate(text: str) -> str:
-    """Strip markdown fences and prose around the outermost ``{...}``/``[...]``."""
+    """Keep complete JSON values, or strip fences and prose around a container."""
     raw = (text or "").strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1]
@@ -67,6 +67,12 @@ def extract_json_candidate(text: str) -> str:
         raw = raw.strip()
         if raw.lower().startswith("json\n"):
             raw = raw.split("\n", 1)[1]
+    # Brackets inside a complete JSON string belong to its value, not a nested answer.
+    try:
+        json.loads(raw)
+        return raw
+    except ValueError:
+        pass
     # Try each bracket kind's outermost span, earliest opener first, and keep the first that parses:
     # checking "{" before "[" unconditionally sliced a fenced array down to its first..last object and
     # rejected every valid array answer.

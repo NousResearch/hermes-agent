@@ -121,6 +121,13 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
 
 def sanitize_gemini_tool_parameters(parameters: Any) -> Dict[str, Any]:
     """Normalize tool parameters to a valid Gemini object schema."""
+    if isinstance(parameters, dict):
+        # Legacy v1/Vertex schemas must resolve references BEFORE their unsupported
+        # keywords are stripped. Share the JSON pointer resolver with v1beta.
+        parameters = _inline_refs(
+            {key: value for key, value in parameters.items() if key not in {"$defs", "definitions"}},
+            parameters, [_MAX_REF_EXPANSIONS], legacy=True,
+        )
     return sanitize_gemini_schema(parameters) or {"type": "object", "properties": {}}
 
 
@@ -151,29 +158,39 @@ def _resolve_local_ref(root: Dict[str, Any], ref: str) -> Optional[Dict[str, Any
     return node if isinstance(node, dict) else None
 
 
-def _inline_refs(node: Any, root: Dict[str, Any], budget: List[int], stack: tuple = ()) -> Any:
+def _inline_refs(node: Any, root: Dict[str, Any], budget: List[int], stack: tuple = (), *, legacy: bool = False) -> Any:
     """Recursively inline same-document ``$ref`` nodes; ``ValueError`` on an unresolvable
-    or circular reference or an exhausted budget (the caller then keeps the original)."""
+    or circular reference or an exhausted budget (the caller then keeps the original).
+    Legacy schemas cannot carry refs: truncate cycles/over-budget refs to objects
+    and retain sibling metadata for unsupported refs instead of losing valid shapes.
+    """
     if isinstance(node, list):
-        return [_inline_refs(item, root, budget, stack) for item in node]
+        return [_inline_refs(item, root, budget, stack, legacy=legacy) for item in node]
     if not isinstance(node, dict):
         return node
     ref = node.get("$ref")
     if not isinstance(ref, str):
-        return {key: _inline_refs(value, root, budget, stack) for key, value in node.items()}
+        return {key: _inline_refs(value, root, budget, stack, legacy=legacy) for key, value in node.items()}
     if ref in stack:
-        raise ValueError(f"circular $ref {ref!r}")
-    budget[0] -= 1
-    if budget[0] < 0:
-        raise ValueError("$ref expansion budget exhausted")
-    target = _resolve_local_ref(root, ref)
-    if target is None:
-        raise ValueError(f"unresolvable $ref {ref!r}")
-    inlined = _inline_refs(target, root, budget, stack + (ref,))
+        if not legacy:
+            raise ValueError(f"circular $ref {ref!r}")
+        inlined = {"type": "object"}
+    else:
+        budget[0] -= 1
+        if budget[0] < 0:
+            if not legacy:
+                raise ValueError("$ref expansion budget exhausted")
+            inlined = {"type": "object"}
+        elif (target := _resolve_local_ref(root, ref)) is None:
+            if not legacy:
+                raise ValueError(f"unresolvable $ref {ref!r}")
+            inlined = {}
+        else:
+            inlined = _inline_refs(target, root, budget, stack + (ref,), legacy=legacy)
     # JSON Schema: siblings of $ref (description, default, ...) apply alongside the
     # referenced schema and win over it.
     siblings = {k: v for k, v in node.items() if k != "$ref"}
-    return {**inlined, **_inline_refs(siblings, root, budget, stack)} if siblings else inlined
+    return {**inlined, **_inline_refs(siblings, root, budget, stack, legacy=legacy)} if siblings else inlined
 
 
 def prepare_gemini_tool_parameters(parameters: Any) -> Dict[str, Any]:

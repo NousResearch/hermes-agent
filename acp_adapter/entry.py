@@ -93,6 +93,8 @@ def _load_env() -> None:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="hermes-acp", description="Run Hermes Agent as an ACP stdio server.")
+    parser.add_argument("--async-delivery", choices=("on", "off"), default="on",
+                        help="Allow detached delegation completions (default: on); off joins them inline.")
     parser.add_argument("--version", action="store_true", help="Print Hermes version and exit")
     parser.add_argument("--check", action="store_true", help="Verify ACP dependencies and adapter imports, then exit")
     parser.add_argument("--setup", action="store_true",
@@ -215,7 +217,7 @@ def main(argv: list[str] | None = None) -> None:
         except Exception:
             logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
 
-    agent = HermesACPAgent()
+    agent = HermesACPAgent(async_delivery=args.async_delivery == "on")
     try:
         asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
     except KeyboardInterrupt:

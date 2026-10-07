@@ -31,6 +31,8 @@ The hooks directory is a **trusted-by-placement** extension point — the docume
 
 Dropping the two files into the directory **is** the opt-in; removing (or renaming) `HOOK.yaml` or the directory is the opt-out. Anyone who can write into your profile home can already run code as you through `config.yaml` shell hooks or `plugins.enabled`, so the directory sits inside the same trust envelope as the rest of `~/.hermes/` — see [Trusted-by-placement extension points](../security.md#trusted-by-placement) on the security page. Review a hook's `handler.py` before you place it, exactly as you would a plugin before enabling it.
 
+The agent cannot place or edit hooks for you: `hooks/` (like `plugins/`) is refused to the file tools and read-only for agent-run commands, because a planted `handler.py` would run outside any sandbox on the next gateway start. Create hooks with your own editor or shell. See [Secret isolation](../security.md#secret-isolation).
+
 ### Creating a Hook
 
 Each hook is a directory under `~/.hermes/hooks/` containing two files:

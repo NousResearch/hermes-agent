@@ -66,6 +66,11 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
         # Reserve BEFORE enqueueing: a queued handler has accepted work even though no worker runs yet.
         if not retirement.acquire():
             return _err(req.get("id"), 5035, "backend is retiring; reconnect to continue")
+        # Exactly-once release: a normally-finished future releases via done_callback, while a
+        # wedged handler (pool rotation) releases here — both may fire for the same task if a
+        # wedged handler eventually finishes, so the count must not go below zero (a negative
+        # active count would falsely block backend retirement forever).
+        release = _PermitOnce(retirement.release)
         try:
             ctx = contextvars.copy_context()  # the pool worker must see the bound transport
             owner = normalized[2].get("owner")
@@ -79,12 +84,12 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
                     resp = _err(req.get("id"), -32000, f"handler error: {exc}")
                 if resp is not None:
                     t.write(resp)
-            future = _pool.submit(lambda: ctx.run(run))
+            future = _pool.submit(lambda: ctx.run(run), method=normalized[1], on_wedge=release)
         except BaseException:
-            retirement.release()
+            release()  # submit failed after acquire — must not leak the permit
             raise
         # Also releases cancelled queued futures; the worker's own finally would never execute.
-        future.add_done_callback(lambda _: retirement.release())
+        future.add_done_callback(lambda _: release())
         return None
     finally:
         reset_transport(token)

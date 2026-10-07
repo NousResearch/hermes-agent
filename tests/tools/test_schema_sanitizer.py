@@ -630,3 +630,45 @@ def test_registered_tool_schemas_stay_inside_llama_cpp_repetition_limit():
                 if isinstance(val, int) and val >= 2000:
                     offenders.append((name, key, val))
     assert not offenders, offenders
+
+
+class TestSchemaDepthBudget:
+    """Untrusted MCP/plugin schemas must not exhaust the Python stack (#132005): past the
+    depth budget the walker replaces the deeper fragment with a permissive schema."""
+
+    @staticmethod
+    def _deep(depth: int) -> dict:
+        node: dict = {"type": "string"}
+        for _ in range(depth):
+            node = {"type": "object", "properties": {"x": node}}
+        return node
+
+    def test_deeply_nested_schema_is_trimmed_not_crashed(self):
+        cleaned = sanitize_tool_schemas([_tool("deep", self._deep(1000))])
+        params = cleaned[0]["function"]["parameters"]
+        assert params["type"] == "object"
+        assert "x" in params["properties"]  # shallow levels survive
+        placeholder = {"type": "object", "properties": {}, "required": []}
+        node = params
+        for _ in range(120):
+            if node == placeholder:
+                break
+            node = node["properties"]["x"]
+        else:
+            raise AssertionError("permissive placeholder never appeared within 120 levels")
+
+    def test_schema_arrays_nested_in_arrays_are_bounded(self):
+        """``anyOf: [[[...]]]`` (arrays nested in arrays) walks the list branch too."""
+        nested: object = "DEEP"
+        for _ in range(1000):
+            nested = [nested]
+        cleaned = sanitize_tool_schemas(
+            [_tool("evil", {"type": "object", "properties": {"x": {"anyOf": nested}}})])
+        any_of = cleaned[0]["function"]["parameters"]["properties"]["x"]["anyOf"]
+        assert isinstance(any_of, list)
+
+    def test_shallow_schema_unaffected_by_budget(self):
+        cleaned = sanitize_tool_schemas(
+            [_tool("shallow", {"type": "object", "properties": {"a": {"type": "string"}}})])
+        params = cleaned[0]["function"]["parameters"]
+        assert params["properties"] == {"a": {"type": "string"}}

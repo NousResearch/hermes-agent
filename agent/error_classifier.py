@@ -1131,6 +1131,23 @@ def _oversized_message_content_rejection(body: Any) -> bool:
     return False
 
 
+# Structured codes a new-api-style distributor stamps on a 400 when ITS upstream
+# channel is gated — the same transient class as the 403 ``upstream_unavailable``
+# (#75388): the identical request succeeds minutes later, so it must reach the
+# retry budget instead of the format_error default (non-retryable, straight to the
+# fallback chain), which kills pinned routes that disable fallback for the storm's
+# duration. ``new_api_error`` is that gateway's GENERIC wrapper code (quota,
+# model-not-found and overflow 400s carry it too), so it only counts alongside
+# channel-gating prose; the specific ``channel_unavailable`` code stands alone.
+# Over-matching is bounded: ``overloaded`` sits in RETRYABLE_CLIENT_REASONS, so a
+# mis-hit still cascades to fallback after the backoff budget.
+_400_TRANSIENT_CODES = frozenset({"channel_unavailable"})
+_400_CHANNEL_GATING_PATTERNS = (
+    "channel has been suspension", "channel has been suspended",
+    "channel unavailable", "no available channel", "channel is disabled",
+)
+
+
 def _classify_400(c: _Ctx) -> Verdict:
     """400 Bad Request — image/tool shapes, request-shape rejections, overflow, or generic."""
     msg, code = c.msg, c.code
@@ -1174,6 +1191,16 @@ def _classify_400(c: _Ctx) -> Verdict:
         return _V_MALFORMED_TOOL_ARGS
     if any(p in msg for p in _ROLE_ALTERNATION_PATTERNS):
         return _V_ROLE_ALTERNATION
+    # Transient gateway channel gating before the validation rules: the measured
+    # incident body ("The channel has been suspension (ID: …)", code=new_api_error)
+    # fell through every rule to the generic format_error default, and variants
+    # carry validation-style wording the rules below would claim first. The
+    # generic wrapper code requires a gating-prose co-anchor (see the table);
+    # without either anchor a real fault keeps its validation/format_error path.
+    if code in _400_TRANSIENT_CODES or (
+        code == "new_api_error" and any(p in msg for p in _400_CHANNEL_GATING_PATTERNS)
+    ):
+        return _V_OVERLOADED
     # Before overflow: GPT-5's "Unsupported parameter: 'max_tokens'" contains it.
     if any(p in msg for p in _400_VALIDATION_PATTERNS) or code in _400_VALIDATION_CODES:
         return _V_FORMAT_ERROR

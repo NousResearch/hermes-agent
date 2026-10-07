@@ -614,3 +614,129 @@ def test_the_desktop_build_runs_in_checkout_custody(repo, tmp_path, monkeypatch)
     finally:
         lock.release()
     assert out.read_text(encoding="utf-8-sig").split() == ["yes"], "the desktop build ran without the checkout lock"
+
+
+
+# --- C3: the Windows build launcher returns only once the command's whole tree is gone ---------
+
+class _FakeWinCall:
+    def __init__(self, name, events, answer):
+        self.name, self.events, self.answer = name, events, answer
+        self.argtypes = self.restype = None
+
+    def __call__(self, *args):
+        import ctypes
+
+        self.events.append((self.name, *(a.value if isinstance(a, ctypes.c_void_p) else a for a in args)))
+        return self.answer(*args) if callable(self.answer) else self.answer
+
+
+def _run_join_launcher(monkeypatch, *, stray_polls: int, escaped: bool = False, rebind: int = 1):
+    """Execute the real ``_JOIN_JOB`` launcher source against a recording kernel32/ntdll and a
+    fake leader process. The command's job reports ``stray_polls`` live processes (a build
+    grandchild still writing) before its tree is empty. ``escaped``: the suspended command
+    starts outside the update job (Store Python's breakaway), and assigning it there answers
+    ``rebind``. Returns the ordered events."""
+    import ctypes
+    import types
+
+    from hermes_cli.update_custody import _JOIN_JOB
+
+    events = []
+    live = {"left": stray_polls}
+
+    def query(job, info_class, usage, size, _ret):
+        usage._obj.active = 1 if live["left"] > 0 else 0
+        live["left"] -= 1
+        return 1
+
+    placed = {"update job": not escaped}
+
+    def assign(job, proc):
+        if tuple(getattr(a, "value", a) for a in (job, proc)) != (11, 33):
+            return 1
+        placed["update job"] = bool(rebind)
+        return rebind
+
+    def in_job(proc, job, inside):
+        inside._obj.value = int(placed["update job"])
+        return 1
+
+    kernel32 = {"AssignProcessToJobObject": assign, "GetCurrentProcess": 7, "CloseHandle": 1, "CreateJobObjectW": 22,
+                "SetInformationJobObject": 1, "TerminateJobObject": 1, "QueryInformationJobObject": query,
+                "IsProcessInJob": in_job}
+    dlls = {"kernel32": types.SimpleNamespace(**{n: _FakeWinCall(n, events, a) for n, a in kernel32.items()}),
+            "ntdll": types.SimpleNamespace(NtResumeProcess=_FakeWinCall("NtResumeProcess", events, 0))}
+    # The real ctypes (its Structure, byref, c_* types), with Windows' DLL loader recorded.
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **_kw: dlls[name], raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 0, raising=False)
+
+    class _Leader:
+        _handle = 33
+
+        def __init__(self, argv, **kwargs):
+            events.append(("Popen", tuple(argv), kwargs.get("creationflags")))
+
+        def wait(self):
+            events.append(("leader exited",))
+            return 3
+
+        def kill(self):
+            events.append(("kill",))
+
+    monkeypatch.setattr(subprocess, "Popen", _Leader)
+    monkeypatch.setattr(sys, "argv", ["launcher", "11", "report.txt", "npm", "run", "build"])
+    with pytest.raises(SystemExit) as exited:
+        exec(compile(_JOIN_JOB, "<join-job>", "exec"), {"__name__": "__main__"})
+    events.append(("exit", exited.value.code))
+    return events
+
+
+def _index(events, name, *args):
+    return next(i for i, event in enumerate(events) if event[0] == name and event[1:1 + len(args)] == args)
+
+
+def test_the_windows_build_launcher_reaps_the_command_tree_before_it_returns(monkeypatch):
+    """C3: npm (the leader) exits while a build/builder descendant it started still writes. A
+    normal return of the launcher lets the updater release the checkout, so the launcher must
+    terminate the command's own job (never the update job, which holds the update's other
+    children) and return only once no process of it is left, with the leader's exit status."""
+    events = _run_join_launcher(monkeypatch, stray_polls=2)
+    tree = 22
+    assert _index(events, "AssignProcessToJobObject", tree, 33) < _index(events, "NtResumeProcess"), \
+        "the command ran before it was held in its own job"
+    assert _index(events, "leader exited") < _index(events, "TerminateJobObject", tree), events
+    assert not any(e[0] == "TerminateJobObject" and e[1] != tree for e in events), "terminated the update job"
+    polls = [i for i, e in enumerate(events) if e[0] == "QueryInformationJobObject"]
+    assert len(polls) == 3 and polls[0] > _index(events, "TerminateJobObject", tree), \
+        "the launcher returned while a build descendant was still alive"
+    assert events[-1] == ("exit", 3), events
+
+
+def test_a_build_command_that_starts_outside_the_update_job_is_put_in_it_before_it_runs(monkeypatch, tmp_path):
+    """F80: under Store Python the suspended node starts outside the update job (desktop-app
+    breakaway through a job that permits breakaway); refusing it made every Node build of the
+    update fail. It is assigned to the update job while suspended and runs once it is in."""
+    monkeypatch.chdir(tmp_path)  # a refusal writes its report file (argv[2]) relative to here
+    events = _run_join_launcher(monkeypatch, stray_polls=0, escaped=True)
+    assert _index(events, "AssignProcessToJobObject", 11, 33) < _index(events, "NtResumeProcess"), \
+        "the command ran before it was in the update job"
+    assert events[-1] == ("exit", 3), events
+
+
+def test_a_build_command_the_update_job_will_not_take_never_runs(monkeypatch, tmp_path):
+    """F54 kept: a suspended command outside the job that Windows also refuses to assign to it
+    is killed before its first instruction and the launcher refuses."""
+    from hermes_cli.update_custody import _REFUSED_EXIT
+
+    monkeypatch.chdir(tmp_path)
+    events = _run_join_launcher(monkeypatch, stray_polls=0, escaped=True, rebind=0)
+    assert not any(e[0] == "NtResumeProcess" for e in events) and ("kill",) in events, events
+    assert events[-1] == ("exit", _REFUSED_EXIT), events
+
+
+def test_the_windows_build_launcher_returns_at_once_when_nothing_was_left(monkeypatch):
+    """C3 healthy control: a build whose descendants all exited with the leader costs one poll."""
+    events = _run_join_launcher(monkeypatch, stray_polls=0)
+    assert [e[0] for e in events if e[0] == "QueryInformationJobObject"] == ["QueryInformationJobObject"]
+    assert events[-1] == ("exit", 3), events

@@ -379,6 +379,7 @@ export function useStatusbarItems({
       unavailable: copy.gatewayUnavailable
     },
     inferenceStatus,
+    messagingConfigured: statusSnapshot?.gateway_messaging_configured,
     messagingRunning: statusSnapshot?.gateway_running,
     messagingState: statusSnapshot?.gateway_state,
     platforms: statusSnapshot?.gateway_platforms,

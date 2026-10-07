@@ -68,6 +68,9 @@ _EXCEPTION_TYPE_CLASSES = (
 _STOP_REASON_PREFIX_CLASSES = (
     ("historical takeover preparation failed", "deps_failed"), ("Windows gateway recovery failed", "restart_failed"),
 )
+# An OSError that ended the run, read by its errno token alone (never the text after it):
+# ENOSPC (28 on every platform), Windows ERROR_HANDLE_DISK_FULL (39) / ERROR_DISK_FULL (112).
+_DISK_FULL_ERRNO = re.compile(r"[A-Z][A-Za-z0-9_]*: \[(?:Errno 28|WinError (?:39|112))\]")
 # ---- end iuf c1 ----
 
 
@@ -89,12 +92,15 @@ def _restart_incomplete(receipt: dict[str, Any]) -> bool:
 
 
 def update_failure_class(receipt: dict[str, Any], stages: list[dict[str, Any]], outcome: str) -> str:
-    """Why a failed/refused run stopped, from fields the FINAL receipt already carries.
+    """Why a failed/refused/partial run stopped, from fields the FINAL receipt already carries.
 
-    The parked copy (update_receipt._metric_receipt) keeps outcome, stages, the admission step and
-    fleet states but no stop_reason / exit_code / gateway_restart, so a parked run can only be told
-    apart by its stages; full receipts carry every field read here (``schema`` marks one).
+    A pre-apply exit names itself (``stop_class``, recorded on the line before the exit by
+    update_receipt.record_stop_reason); only a run with no apply mark reads it, so a reason can
+    never outlive the exit that recorded it. Parked copies (update_receipt._metric_receipt) carry
+    every field read here except the free text; copies parked by older releases have no ``schema``.
     """
+    from .shared_metrics_contract import UPDATE_STOP_CLASSES
+
     if outcome not in {"failed", "refused"}:
         return "none"
     raw_steps = receipt.get("steps")
@@ -108,6 +114,13 @@ def update_failure_class(receipt: dict[str, Any], stages: list[dict[str, Any]], 
     exc_type = match.group(1) if match else ""
     if exc_type == "KeyboardInterrupt" or exit_code == 130:
         return "interrupted"
+    if receipt.get("outcome") == "partial" and receipt.get("user_action"):
+        # Committed; only the user's stashed changes are owed (record_user_action, exit 1). Since C3
+        # this is the only ``partial`` a receipt gets; older releases' verification wrote it too.
+        return "local_changes_parked"
+    stop_class = receipt.get("stop_class")
+    if stop_class in UPDATE_STOP_CLASSES and not any(s["name"] == "apply" for s in stages):
+        return stop_class
     if outcome == "refused":
         # Exit 2 at the command boundary is the updater's refusal convention; on main the only
         # open-receipt exit 2 is another updater holding the lock (update_finish).
@@ -125,6 +138,10 @@ def update_failure_class(receipt: dict[str, Any], stages: list[dict[str, Any]], 
         return "restart_failed"  # a skipped restart left the fleet owing one (completion exit 1)
     if by_reason := next((cls for prefix, cls in _STOP_REASON_PREFIX_CLASSES if reason.startswith(prefix)), None):
         return by_reason
+    if _DISK_FULL_ERRNO.match(reason):
+        return "disk_full"
+    if exc_type == "PermissionError":
+        return "permission_denied"
     if exc_type:
         return next((cls for types, cls in _EXCEPTION_TYPE_CLASSES if exc_type in types), "exception")
     marked = {s["name"] for s in stages}
@@ -218,6 +235,17 @@ def _apply_mode(receipt: dict[str, Any], stages: list[dict[str, Any]]) -> str:
     return "unknown"
 
 
+def _committed_with_work_owed(receipt: dict[str, Any]) -> bool:
+    """The code moved (an apply mark that did not fail), and the run closed owing work, not failed:
+    interrupted after the commit point (finalize_interrupted_update_receipt) or the user's parked
+    changes (record_user_action -> ``partial``). Follow-ups alone already finalize ``success`` (C3)."""
+    applied = any(isinstance(mark, dict) and mark.get("name") == "apply" and mark.get("outcome") != "failed"
+                  for mark in receipt.get("stages") or ())
+    owed = receipt.get("outcome") == "interrupted" or (
+        receipt.get("outcome") == "partial" and bool(receipt.get("user_action")))
+    return applied and owed
+
+
 def update_receipt_fields(receipt: dict[str, Any]) -> tuple[dict[str, str], list[dict[str, str]]] | None:
     """Bounded hermes.update.run + hermes.update.stage dimensions for one FINAL receipt."""
     from .shared_metrics_contract import update_duration_bucket, version_age_bucket
@@ -228,18 +256,24 @@ def update_receipt_fields(receipt: dict[str, Any]) -> tuple[dict[str, str], list
     outcome = _RUN_OUTCOMES.get(str(receipt.get("outcome") or ""), "failed")
     if outcome == "success" and any(s["name"] == "apply" and s.get("outcome") == "skipped" for s in stages):
         outcome = "noop"
+    if _committed_with_work_owed(receipt):
+        outcome = "partial"
     started = _epoch(receipt.get("started_at"))
     committed = _epoch((receipt.get("pre_update") or {}).get("commit_date"))
     age_ms = None if started is None or committed is None else (started - committed) * 1000
+    failure_class = update_failure_class(receipt, stages, "failed" if outcome == "partial" else outcome)
     run = {
         "apply_mode": _apply_mode(receipt, stages),
         "duration_bucket": update_duration_bucket(_elapsed_ms(receipt.get("started_at"), receipt.get("finished_at"))),
-        "failed_stage": _failed_stage(stages) if outcome in {"failed", "refused"} else "none",
+        "failed_stage": (
+            # The parked autostash is the apply's last step (update_cmd._pull_updates restores it).
+            "apply" if failure_class == "local_changes_parked"
+            else _failed_stage(stages) if outcome in {"failed", "refused", "partial"} else "none"),
         "from_version_age_bucket": version_age_bucket(age_ms),
         "kind": "desktop" if receipt.get("initiator") == "desktop" else "cli",
         "outcome": outcome,
         # ---- iuf c1 ----
-        "failure_class": update_failure_class(receipt, stages, outcome),
+        "failure_class": failure_class,
         # ---- end iuf c1 ----
     }
     if run["outcome"] == "refused" and not stages:

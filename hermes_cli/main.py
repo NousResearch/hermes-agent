@@ -2329,6 +2329,9 @@ def _update_preflight_handled(args) -> bool:
         sys.exit(0)
     if is_managed():
         managed_error("update Hermes Agent")
+        from hermes_cli.update_cmd_common import _record_stop
+
+        _record_stop("managed_install", without_receipt="refused")  # before the lock: a metrics row only
         return True
 
     # --plan is read-only and deployment-kind aware, so it runs BEFORE the
@@ -2423,6 +2426,10 @@ def cmd_update(args):
     if not _update_lock.acquire():
         print(describe_holder(_update_lock.holder))
         _finalize_update_output(_update_io_state)
+        from hermes_cli.update_cmd_common import _record_stop
+
+        # No receipt: latest.json and the running record belong to the update holding the lock.
+        _record_stop("lock_held", without_receipt="refused")
         sys.exit(UPDATE_EXIT_CONCURRENT)
 
 

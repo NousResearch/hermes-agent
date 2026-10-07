@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import time
 import uuid
@@ -516,6 +517,61 @@ def record_gateway_restart(**kwargs: Any) -> None:
     _record("gateway_restart_result", "gateway restart result", **kwargs)
 
 
+def record_stop_reason(reason: str) -> None:
+    """Name the exit that is about to stop this run, as one closed token (``stop_class``).
+
+    Called on the line before the ``sys.exit``/raise it names, so the last one recorded is the
+    exit that fired. The token must be one of ``shared_metrics_contract.UPDATE_STOP_CLASSES``
+    (anything else is ignored by the metric); the human ``stop_reason`` and printed text are
+    untouched. No-op when no receipt is open; never raises.
+    """
+    _record("fact", f"update stop {reason}", "stop_class", reason)
+
+
+def git_error_stop_class(exc: BaseException) -> Optional[str]:
+    """The closed stop token for a git ``CalledProcessError`` that is about to end the run, or None.
+
+    Reads only the failed argv and fixed git/Hermes phrases in its output, never stores either.
+    """
+    if not isinstance(exc, subprocess.CalledProcessError):
+        return None
+    output = exc.stderr or exc.output or ""
+    output = output.decode("utf-8", "replace") if isinstance(output, bytes) else str(output)
+    argv = [str(part) for part in exc.cmd] if isinstance(exc.cmd, (list, tuple)) else str(exc.cmd or "").split()
+    if "index.lock" in output and "File exists" in output:
+        return "git_index_locked"  # another git (or a killed one, #132089) holds the index lock
+    if exc.returncode == 124 and "timed out after" in output:
+        return "git_timeout"  # update_cmd._git_run's own timeout text
+    if "No space left on device" in output:
+        return "disk_full"
+    if "stash" in argv:
+        return "local_changes_blocked"  # update_cmd_stash._push_stash saved nothing
+    if {"checkout", "merge", "reset"} & set(argv):
+        return "checkout_move_failed"
+    return None
+
+
+def record_stop_without_receipt(reason: str, outcome: str) -> None:
+    """Count an exit that fires before this run's receipt opens, in shared metrics only.
+
+    No receipt is written, so the exit behaves exactly as before: at the update-lock refusal
+    ``latest.json`` and the running record belong to the update holding the lock (opening one
+    would replace its pointer and reconcile its archive), and the Git-operation refusal runs before
+    the receipt, plan and snapshot by design. The row is derived from the same fields a final
+    receipt carries (``outcome`` is ``refused`` or ``failed``). Never raises.
+    """
+    with suppress(Exception):
+        now = _utc_now_iso()
+        data = {
+            "schema": 1, "update_id": uuid.uuid4().hex, "started_at": now, "finished_at": now,
+            "outcome": "refused" if outcome == "refused" else "failed",
+            "stop_class": reason, "pre_update": {}, "stages": [], "steps": [], "fleet": [],
+        }
+        from hermes_cli.observability.shared_metrics_update import record_update_receipt
+
+        record_update_receipt(data)
+
+
 def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason: str = "") -> Optional[Path]:
     """Finalize + persist the receipt (``success``/``partial``/``failed``/``refused``); path or None.
 
@@ -627,10 +683,28 @@ def _collection_enabled_now() -> Optional[bool]:
     return isinstance(config, dict) and config.get("enabled") is True
 
 
+#: The leading label of a stop reason the parked copy may keep: an exception type name or a fixed
+#: phrase Hermes writes, plus an errno token; never the message after it.
+_PARKED_REASON_LABEL = re.compile(r"[A-Za-z_][A-Za-z0-9_ ]{0,60}:(?: \[(?:Errno|WinError) \d+\])?")
+_STOP_CLASS_TOKEN = re.compile(r"[a-z][a-z0-9_]{0,39}")
+
+
 def _metric_receipt(data: dict[str, Any]) -> dict[str, Any]:
-    """Only what shared_metrics_update.update_receipt_fields reads; never argv or step text."""
-    pre = data.get("pre_update") if isinstance(data.get("pre_update"), dict) else {}
+    """Only what shared_metrics_update.update_receipt_fields reads; never argv or step text.
+
+    Every field the classifier reads is kept in closed form so a parked run classifies exactly as
+    the same run finalized in-process: the exit's ``stop_class`` token, the exit code, the stop
+    reason's leading label (``-`` for any other text), and flags for the restart/user-action facts.
+    """
+    raw_pre, raw_restart, raw_reason = (data.get(key) for key in ("pre_update", "gateway_restart", "stop_reason"))
+    pre: dict[str, Any] = raw_pre if isinstance(raw_pre, dict) else {}
+    restart: dict[str, Any] = raw_restart if isinstance(raw_restart, dict) else {}
+    reason: str = raw_reason if isinstance(raw_reason, str) else ""
+    label = _PARKED_REASON_LABEL.match(reason)
+    stop_class = data.get("stop_class")
+    exit_code = data.get("exit_code")
     return {
+        "schema": data.get("schema"),
         "update_id": data.get("update_id"), "started_at": data.get("started_at"),
         "finished_at": data.get("finished_at"), "outcome": data.get("outcome"),
         "initiator": "desktop" if data.get("initiator") == "desktop" else None,
@@ -644,6 +718,15 @@ def _metric_receipt(data: dict[str, Any]) -> dict[str, Any]:
             for step in data.get("steps") or () if isinstance(step, dict) and step.get("name") == "admission"
         ],
         "fleet": [{"state": row.get("state")} for row in data.get("fleet") or () if isinstance(row, dict)],
+        "stop_class": stop_class if isinstance(stop_class, str) and _STOP_CLASS_TOKEN.fullmatch(stop_class) else None,
+        "exit_code": exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None,
+        "stop_reason": label.group(0) if label else ("-" if reason else ""),
+        "user_action": bool(data.get("user_action")),
+        "gateway_restart": {key: bool(restart.get(key)) for key in ("incomplete", "phase_error", "failed_units")},
+        "runtime_outcomes": [
+            {"outcome": "failed"} for row in data.get("runtime_outcomes") or ()
+            if isinstance(row, dict) and row.get("outcome") == "failed"
+        ],
     }
 
 

@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli.update_cmd_common import _record_stop
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
 
@@ -415,6 +417,7 @@ def _reject_unsafe_stash_restore(
     print(f"  Inspect them with: git stash show --stat {stash_ref}")
     print(f"  Restore manually after fixing them: git stash apply {stash_ref}")
     _clear_pending_autostash()  # named right above, and the update fails
+    _record_stop("stash_restore_rejected")
     raise SystemExit(1)
 
 

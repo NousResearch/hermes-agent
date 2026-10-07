@@ -15,6 +15,7 @@ closed, so a drifted emitter fails the suite (``registry.check_payload`` raises 
 
 from __future__ import annotations
 
+from typing import Literal
 from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
@@ -230,6 +231,38 @@ class SessionUsagePayload(Payload):
 
 
 event("session.usage", SessionUsagePayload, doc="Mid-turn usage tick; message.complete carries the authoritative final usage.")
+
+
+class ManagedTurnKnownUsage(Payload):
+    """Only the provider-confirmed tokens observed by this managed turn so far."""
+    calls: int = Field(ge=0)
+    input: int = Field(ge=0)
+    output: int = Field(ge=0)
+    cache_read: int = Field(ge=0)
+    cache_write: int = Field(ge=0)
+    reasoning: int = Field(ge=0)
+    total: int = Field(ge=0)
+
+
+class ManagedTurnUsagePayload(Payload):
+    """``managed_turn_usage.ManagedTurnUsageObserver``; volatile after-call observations.
+
+    Missing usage and mixed models permanently clear ``observed_usage_complete``.
+    Coverage is deliberately restricted to responses that reached the standard
+    accounting hook: provider failures/invalid responses and Codex app-server
+    require separate proof. Not terminal usage or worker-stop evidence.
+    """
+    managed_turn_key: str = Field(pattern=r"^[0-9a-f]{32}$")
+    user_row_id: int = Field(gt=0)
+    model: str
+    observed_calls: int = Field(gt=0)
+    observed_usage_complete: bool
+    coverage: Literal["accounted_responses_only"]
+    usage: ManagedTurnKnownUsage
+
+
+event("managed_turn.usage", ManagedTurnUsagePayload,
+      doc="Opt-in managed turn: confirmed usage after each accounted provider response (not final/stop proof).")
 
 
 class SessionTitlePayload(Payload):

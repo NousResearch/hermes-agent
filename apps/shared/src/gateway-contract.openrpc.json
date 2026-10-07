@@ -2887,6 +2887,24 @@
       }
     },
     {
+      "name": "prompt.managed_turn.get",
+      "summary": "Read-only admission lookup for an opt-in managed turn; absence is not permission to resubmit.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ManagedTurnLookupParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ManagedTurnLookupResult"
+        }
+      }
+    },
+    {
       "name": "prompt.submit",
       "summary": "Send a user turn to a live session; busy sessions queue / steer / redirect instead of refusing.",
       "params": [
@@ -17647,6 +17665,163 @@
         "title": "LoopSnapshot",
         "type": "object"
       },
+      "ManagedTurnKnownUsage": {
+        "additionalProperties": false,
+        "description": "Only the provider-confirmed tokens observed by this managed turn so far.",
+        "properties": {
+          "calls": {
+            "minimum": 0,
+            "title": "Calls",
+            "type": "integer"
+          },
+          "input": {
+            "minimum": 0,
+            "title": "Input",
+            "type": "integer"
+          },
+          "output": {
+            "minimum": 0,
+            "title": "Output",
+            "type": "integer"
+          },
+          "cache_read": {
+            "minimum": 0,
+            "title": "Cache Read",
+            "type": "integer"
+          },
+          "cache_write": {
+            "minimum": 0,
+            "title": "Cache Write",
+            "type": "integer"
+          },
+          "reasoning": {
+            "minimum": 0,
+            "title": "Reasoning",
+            "type": "integer"
+          },
+          "total": {
+            "minimum": 0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "input",
+          "output",
+          "cache_read",
+          "cache_write",
+          "reasoning",
+          "total"
+        ],
+        "title": "ManagedTurnKnownUsage",
+        "type": "object"
+      },
+      "ManagedTurnLookupParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "managed_turn_key": {
+            "title": "Managed Turn Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "managed_turn_key"
+        ],
+        "title": "ManagedTurnLookupParams",
+        "type": "object"
+      },
+      "ManagedTurnLookupResult": {
+        "additionalProperties": false,
+        "properties": {
+          "found": {
+            "title": "Found",
+            "type": "boolean"
+          },
+          "user_row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Row Id"
+          }
+        },
+        "required": [
+          "found"
+        ],
+        "title": "ManagedTurnLookupResult",
+        "type": "object"
+      },
+      "ManagedTurnUsagePayload": {
+        "additionalProperties": false,
+        "description": "``managed_turn_usage.ManagedTurnUsageObserver``; volatile after-call observations.\n\nMissing usage and mixed models permanently clear ``observed_usage_complete``.\nCoverage is deliberately restricted to responses that reached the standard\naccounting hook: provider failures/invalid responses and Codex app-server\nrequire separate proof. Not terminal usage or worker-stop evidence.",
+        "properties": {
+          "managed_turn_key": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Managed Turn Key",
+            "type": "string"
+          },
+          "user_row_id": {
+            "exclusiveMinimum": 0,
+            "title": "User Row Id",
+            "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "observed_calls": {
+            "exclusiveMinimum": 0,
+            "title": "Observed Calls",
+            "type": "integer"
+          },
+          "observed_usage_complete": {
+            "title": "Observed Usage Complete",
+            "type": "boolean"
+          },
+          "coverage": {
+            "const": "accounted_responses_only",
+            "title": "Coverage",
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/ManagedTurnKnownUsage"
+          }
+        },
+        "required": [
+          "managed_turn_key",
+          "user_row_id",
+          "model",
+          "observed_calls",
+          "observed_usage_complete",
+          "coverage",
+          "usage"
+        ],
+        "title": "ManagedTurnUsagePayload",
+        "type": "object"
+      },
       "McpCatalogEntry": {
         "additionalProperties": false,
         "properties": {
@@ -26504,6 +26679,18 @@
             "default": "",
             "title": "Text"
           },
+          "managed_turn_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Managed Turn Key"
+          },
           "display_kind": {
             "anyOf": [
               {
@@ -26708,6 +26895,18 @@
             ],
             "default": null,
             "title": "User Row Id"
+          },
+          "managed_turn_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Managed Turn Key"
           },
           "survivor_user_row_ids": {
             "anyOf": [
@@ -40140,6 +40339,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/LayoutApplyPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "managed_turn.usage",
+      "summary": "Opt-in managed turn: confirmed usage after each accounted provider response (not final/stop proof).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ManagedTurnUsagePayload"
           }
         }
       ]

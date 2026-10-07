@@ -50,8 +50,11 @@ def test_scheduler_compression_projects_real_endpoint_receipts(tmp_path, monkeyp
     from hermes_cli.web_routers.cron import _run_owned_by
 
     receipts = []
-    for reason, role in [("cron_complete", "assistant"), ("cron_incomplete_no_output", "user")]:
-        path = tmp_path / (reason + ".db")
+    cases = [(reason + suffix, reason, role)
+             for reason, role in [("cron_complete", "assistant"), ("cron_incomplete_no_output", "user")]
+             for suffix in ["", "_stale_sibling"]]
+    for case, reason, role in cases:
+        path = tmp_path / (case + ".db")
         root = f"cron_{reason}_20261002_030000"
         tip = "20261002_030001_child"
         execution = executions.create_execution(reason, source="scheduled")
@@ -62,9 +65,14 @@ def test_scheduler_compression_projects_real_endpoint_receipts(tmp_path, monkeyp
         assert _run_owned_by(store.get_session(root), executions.live_inflight_execution(reason))
         # Scheduler owns the attempt while compression rotates it.
         publish(store, root, tip, [{"role": role, "content": "answer or pending task"}])
+        if case.endswith("_stale_sibling"):
+            store.create_session("stale_sibling", "cron", parent_session_id=root)
+            store.end_session("stale_sibling", "ws_orphan_reap")
+            # The stale sibling exists BEFORE the real scheduler selects its tip.
+            assert store.get_compression_tip(root) == tip
         assert store.get_session(root)["cron_finalized"] is False
         unfinalized = project(monkeypatch, path, root, reason)
-        receipts.append({"case": reason + "_unfinalized", "resumable": False, **unfinalized})
+        receipts.append({"case": case + "_unfinalized", "resumable": False, **unfinalized})
         agent = SimpleNamespace(session_id=tip, _end_session_on_close=True)
         _finalize_cron_session(store, agent, reason, "test job", root)
         assert agent._end_session_on_close is False
@@ -81,7 +89,7 @@ def test_scheduler_compression_projects_real_endpoint_receipts(tmp_path, monkeyp
                 assert row["id"] == root
                 assert row["cron_finalized"] is True
                 assert row["scheduler_owned"] is False
-            receipts.append({"case": reason, "resumable": True, **receipt})
+            receipts.append({"case": case, "resumable": True, **receipt})
             # Real resume and prompt heal must not remove authorization on the tip.
             store.reopen_session(tip)
             assert store.reopen_if_explicitly_closed(tip, provenance="test host") is None
@@ -142,6 +150,53 @@ def test_interactive_rotation_preserves_outcome_for_two_generations(db, reason, 
         )
     assert db.get_session(tip)["end_reason"] == "tui_close"
     assert db.get_session("forbidden") is None
+
+
+@pytest.mark.parametrize("reason", ["cron_complete", "cron_incomplete_no_output"])
+def test_routing_proof_heals_current_close_without_erasing_settlement(db, reason):
+    import tui_gateway.server  # registers prompt-turn runtime globals
+    from tui_gateway.prompt_turn import _reopen_routed_session_row
+
+    root = "cron_job_20261002_030000"
+    db.create_session(root, "cron")
+    db.end_session(root, reason)
+    session = {"agent": SimpleNamespace(session_id=root)}
+    # A CURRENT scheduler boundary is not an explicit-close accident.
+    _reopen_routed_session_row(db, root, session)
+    assert db.get_session(root)["end_reason"] == reason
+    db.reopen_session(root)
+    db.end_session(root, "tui_close")
+    assert db.try_acquire_compression_lock(root, "worker", ttl_seconds=60)
+    # A lease without routing proof cannot clear a deliberate close.
+    with pytest.raises(RuntimeError, match="already ended"):
+        db.publish_compression_child(
+            parent_session_id=root, child_session_id="forbidden", source="cron",
+            messages=[{"role": "assistant", "content": "answer"}],
+            compression_lock_holder="worker",
+        )
+    assert db.get_session(root)["end_reason"] == "tui_close"
+    # The real host healer has separate routing ownership, not just historical settlement.
+    _reopen_routed_session_row(db, root, session)
+    assert db.get_session(root)["ended_at"] is None
+    assert db.get_session(root)["end_reason"] is None
+    assert json.loads(db.get_session(root)["model_config"])["_cron_finalized"] == reason
+    publish(db, root, "healed_child")
+    assert db.get_session("healed_child")["cron_finalized"] is True
+
+
+@pytest.mark.parametrize("kind", ["live", "compression", "finalized", "settled_cleanup", "deliberate"])
+def test_competing_continuations_still_fail_closed(db, kind):
+    root = "cron_job_20261002_030000"
+    db.create_session(root, "cron")
+    publish(db, root, "real_child")
+    db.end_session("real_child", "cron_complete")
+    config = {"_cron_finalized": "cron_complete"} if kind == "settled_cleanup" else None
+    db.create_session("competing_child", "cron", parent_session_id=root, model_config=config)
+    reason = {"compression": "compression", "finalized": "cron_complete",
+              "settled_cleanup": "ws_orphan_reap", "deliberate": "tui_close"}.get(kind)
+    if reason:
+        db.end_session("competing_child", reason)
+    assert db.get_session(root)["cron_finalized"] is False
 
 
 @pytest.mark.parametrize("reason", [None, "ws_orphan_reap", "agent_close"])

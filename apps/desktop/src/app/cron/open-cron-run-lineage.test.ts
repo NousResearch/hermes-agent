@@ -54,7 +54,7 @@ describe.skipIf(!python)('real compressed cron producer-to-Desktop gates', () =>
     const receiptProperty = xml.querySelector('property[name="desktop_receipts"]')
     expect(receiptProperty).not.toBeNull()
     receipts = JSON.parse(receiptProperty!.getAttribute('value')!) as Receipt[]
-    expect(receipts).toHaveLength(4)
+    expect(receipts).toHaveLength(8)
   }, 150_000)
 
   beforeEach(() => $cronRunReadOnlyVerdicts.set(new Map()))
@@ -63,7 +63,11 @@ describe.skipIf(!python)('real compressed cron producer-to-Desktop gates', () =>
     'cron_complete',
     'cron_incomplete_no_output',
     'cron_complete_unfinalized',
-    'cron_incomplete_no_output_unfinalized'
+    'cron_incomplete_no_output_unfinalized',
+    'cron_complete_stale_sibling',
+    'cron_incomplete_no_output_stale_sibling',
+    'cron_complete_stale_sibling_unfinalized',
+    'cron_incomplete_no_output_stale_sibling_unfinalized'
   ])('%s uses authoritative root history and detail at open and send', async name => {
     const receipt = receipts.find(row => row.case === name)
     expect(receipt).toBeDefined()

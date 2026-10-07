@@ -297,6 +297,7 @@ def finish_native(prepared: Path, frontends: dict[str, Path]) -> int:
         inputs = load_prepared(prepared)
         values = asdict(inputs)
         values["frontends"] = {name: Path(path).absolute() for name, path in frontends.items()}
+        print("assembling verified payload", flush=True)
         assemble(AgentInputs.from_dict(values), out)
     print(f"✓ manifest ({out / 'manifest.json'})")
     return 0

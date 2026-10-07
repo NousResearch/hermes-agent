@@ -708,7 +708,8 @@ def _diff_from_snapshot(snapshot: LocalEditSnapshot | None) -> str | None:
         display_path = _display_diff_path(path)
         diff = "".join(unified_diff(
             (before or "").splitlines(keepends=True), (after or "").splitlines(keepends=True),
-            fromfile=f"a/{display_path}", tofile=f"b/{display_path}",
+            # lstrip keeps the a//b// join single-slashed when the display path is absolute (#134718)
+            fromfile=f"a/{display_path.lstrip('/')}", tofile=f"b/{display_path.lstrip('/')}",
         ))
         if diff:
             chunks.append(diff if diff.endswith("\n") else diff + "\n")

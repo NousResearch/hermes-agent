@@ -122,11 +122,13 @@ _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
 
 def _worker_memory_max_bytes() -> int:
     """Finite per-worker cgroup limit that can never widen host risk.
-    ``TERMINAL_LOCAL_MEMORY_MAX_MB`` is honored only when it *tightens* the safe
-    bound (min of the gateway's cgroup-v2 ``memory.max`` and half of physical RAM,
-    capped at 4 GiB), so an oversized override cannot exceed the enclosing slice.
+    The safe bound is the min of the gateway's cgroup-v2 ``memory.max`` and half
+    of physical RAM. ``TERMINAL_LOCAL_MEMORY_MAX_MB`` may tighten it like before,
+    and may now also widen it up to that safe bound; the 4 GiB absolute cap
+    guards only the default path (no explicit override), so an oversized
+    override still cannot exceed the enclosing slice (#130566).
 
-    The proposed local-memory-guard environment override is honored when it tightens the safe bound, so this
+    The local-memory-guard environment override is honored against the safe bound, so this
     isolation composes with PR #57121 instead of inventing a second knob.
     """
     override_bound: Optional[int] = None
@@ -144,6 +146,11 @@ def _worker_memory_max_bytes() -> int:
                 "expected an integer representing at least %d MiB",
                 override, _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024))
     candidates: List[int] = []
+    # Whether the enclosing slice's memory controller was actually observed. A cgroup-v1
+    # host, an unreadable /proc/self/cgroup, or a failing memory.max read all leave it
+    # unknown, and then the override must keep the absolute cap: widening to half RAM
+    # could exceed the real (invisible) slice limit (#130566).
+    slice_known = False
     try:
         for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
             if line.startswith("0::"):
@@ -151,6 +158,10 @@ def _worker_memory_max_bytes() -> int:
                 raw_limit = (
                     Path("/sys/fs/cgroup") / relative / "memory.max"
                 ).read_text(encoding="utf-8-sig").strip()
+                # Reading the file at all proves the slice bound is real, even when it
+                # reports "max" (an unlimited slice cannot cap the worker, so widening
+                # falls back to the half-RAM bound).
+                slice_known = True
                 if raw_limit.isdigit():
                     cgroup_limit = int(raw_limit)
                     if cgroup_limit >= _MIN_WORKER_MEMORY_MAX_BYTES:
@@ -163,10 +174,12 @@ def _worker_memory_max_bytes() -> int:
         physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(
             os.sysconf("SC_PAGE_SIZE")
         )
-        physical_bound = min(
-            _WORKER_MEMORY_MAX_CAP_BYTES,
-            max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2),
-        )
+        physical_bound = max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2)
+        if override_bound is None or not slice_known:
+            # The absolute cap keeps the no-override default conservative; an explicit
+            # override may only widen past it when the enclosing slice bound is known,
+            # and never past the slice / half-RAM bound (#130566).
+            physical_bound = min(_WORKER_MEMORY_MAX_CAP_BYTES, physical_bound)
         candidates.append(physical_bound)
     except (OSError, ValueError, TypeError):
         pass

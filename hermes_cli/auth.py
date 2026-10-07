@@ -22,12 +22,23 @@ import threading
 import time
 import webbrowser
 
+from collections.abc import MutableMapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from functools import partial
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    FrozenSet,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    Tuple,
+)
 from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
@@ -169,6 +180,47 @@ def _api_key_provider(
         api_key_env_vars=api_key_env_vars, base_url_env_var=base_url_env_var)
 
 
+class _ConcurrentProviderRegistry(MutableMapping):
+    """PROVIDER_REGISTRY storage that snapshots on iteration.
+
+    Plugin-load workers mirror provider rows in (``auth_plugin_providers.register_plugin_provider``)
+    while other engine threads iterate the registry (env-key auto-detect, auth-status fallbacks,
+    metric attribution…). On a bare dict that iteration dies with ``RuntimeError: dictionary
+    changed size during iteration`` and the whole plugin load fails (#134594). Single-key reads
+    (``get`` / ``in`` / ``[key]``) stay lock-free — CPython keeps one dict operation atomic — while
+    every iteration path (``items()`` / ``values()`` / ``keys()`` / ``iter()`` / ``set()`` …)
+    walks a key snapshot taken under the lock, so a concurrent ``__setitem__`` cannot invalidate
+    an in-flight iterator.
+    """
+
+    __slots__ = ("_rows", "_lock")
+
+    def __init__(self, rows: Any = ()) -> None:
+        self._rows = dict(rows)
+        self._lock = threading.RLock()
+
+    def __getitem__(self, key: str) -> ProviderConfig:
+        return self._rows[key]
+
+    def __setitem__(self, key: str, value: ProviderConfig) -> None:
+        with self._lock:
+            self._rows[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        with self._lock:
+            del self._rows[key]
+
+    def __iter__(self) -> Iterator[str]:
+        with self._lock:
+            return iter(tuple(self._rows))
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._rows
+
+
 # Registry rows in priority order (resolve_provider() scans api_key rows in this order). A tuple
 # row is ``_api_key_provider(id, name, inference_base_url, api_key_env_vars[, base_url_env_var
 # [, auth_type]])``; OAuth / bespoke rows are full ``ProviderConfig`` objects.
@@ -247,9 +299,9 @@ _REGISTRY_ROWS: tuple[Any, ...] = (
     # region (agent/vertex_adapter.py build_vertex_base_url), not a fixed host.
     ("vertex", "Google Vertex AI", "", (), "", "vertex"),
     ("azure-foundry", "Azure Foundry", "", ("AZURE_FOUNDRY_API_KEY",), "AZURE_FOUNDRY_BASE_URL"))
-PROVIDER_REGISTRY: dict[str, ProviderConfig] = {
+PROVIDER_REGISTRY: _ConcurrentProviderRegistry = _ConcurrentProviderRegistry({
     p.id: p for p in (r if isinstance(r, ProviderConfig) else _api_key_provider(*r) for r in _REGISTRY_ROWS)
-}
+})
 # The rows above, before any plugin touches the dict (a user plugin may override these; #48450).
 BUILTIN_PROVIDER_IDS = frozenset(PROVIDER_REGISTRY)
 

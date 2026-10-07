@@ -145,11 +145,10 @@ registry.register(
     emoji="🔗",
 )
 
-# The setup profile's catalog install. Reachable only through the ``setup`` toolset, which the
-# profile's role grants; registry dispatch has no card callback, so it answers with the CLI pointer.
+# Registry dispatch has no card callback, so it answers with the CLI pointer.
 registry.register(
     name="manage_catalog",
-    toolset="setup",
+    toolset="catalog",
     schema=MANAGE_CATALOG_SCHEMA,
     handler=lambda args, **kw: manage_catalog(args, session_id=kw.get("session_id")),
     emoji="🧩",

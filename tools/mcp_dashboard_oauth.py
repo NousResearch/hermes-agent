@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-import secrets
 import threading
 import time
 from contextlib import contextmanager
@@ -112,10 +111,11 @@ class DashboardOAuthFlow:
 
         ``iss`` (RFC 9207) is carried through — see ``tools.mcp_oauth._parse_redirect_query``.
         """
+        from gateway.platforms._shared import secrets_match
         with self._lock:
             if self._callback_ready.is_set():
                 raise ValueError("OAuth callback already received")
-            if self.expected_state is None or state is None or not secrets.compare_digest(self.expected_state, state):
+            if not secrets_match(state, self.expected_state):
                 raise ValueError("OAuth callback state mismatch")
             if error:
                 self._callback_error = error

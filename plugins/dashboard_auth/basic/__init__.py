@@ -140,7 +140,9 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
         # Always run a scrypt verify (real hash if the username matches, else the dummy)
         # and compare the username with compare_digest too, so neither the username nor
         # its length leaks via timing.
-        username_ok = hmac.compare_digest(username.encode("utf-8"), self._username.encode("utf-8"))
+        # Imported on use: nothing else in the dashboard loads gateway.platforms.
+        from gateway.platforms._shared import secrets_match
+        username_ok = secrets_match(username, self._username)
         password_ok = _verify_password(password, self._password_hash if username_ok else _DUMMY_HASH)
         if not (username_ok and password_ok):
             raise InvalidCredentialsError("invalid username or password")

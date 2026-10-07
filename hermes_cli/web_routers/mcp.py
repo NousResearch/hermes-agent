@@ -344,6 +344,7 @@ async def mcp_oauth_callback(
     error: Optional[str] = None,
     iss: Optional[str] = None,
 ):
+    from gateway.platforms._shared import secrets_match
     _gc_mcp_oauth_flows()
     with _mcp_oauth_flows_lock:
         candidates = [
@@ -352,7 +353,7 @@ async def mcp_oauth_callback(
         ]
     flow = next(
         (c for c in candidates
-         if c.expected_state is not None and state is not None and secrets.compare_digest(c.expected_state, state)),
+         if secrets_match(state, c.expected_state)),
         None,
     )
     if flow is None:

@@ -16,7 +16,6 @@ Derived from #97058 by @astraltrekkin, re-homed after the ``auth_codex.py`` spli
 
 from __future__ import annotations
 
-import hmac
 import logging
 import secrets
 import webbrowser
@@ -151,7 +150,8 @@ def _codex_browser_login(
     if callback.get("error"):
         detail = callback.get("error_description") or callback["error"]
         raise _codex_err(f"OpenAI authorization failed: {detail}", "codex_browser_auth_denied")
-    if not hmac.compare_digest(str(callback.get("state") or ""), state):
+    from gateway.platforms._shared import secrets_match
+    if not secrets_match(callback.get("state"), state):
         raise _codex_err(
             "Authorization callback state mismatch — the redirect did not come from this login. Aborting.",
             "codex_browser_state_mismatch")

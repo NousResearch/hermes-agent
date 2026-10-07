@@ -14,6 +14,8 @@ from xml.etree import ElementTree as ET
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from gateway.platforms._shared import secrets_match, timestamp_fresh
+
 
 class WeComCryptoError(Exception):
     pass
@@ -73,8 +75,11 @@ class WXBizMsgCrypt:
         return self.decrypt(msg_signature, timestamp, nonce, echostr).decode("utf-8")
 
     def decrypt(self, msg_signature: str, timestamp: str, nonce: str, encrypt: str) -> bytes:
-        if _sha1_signature(self.token, timestamp, nonce, encrypt) != msg_signature:
+        if not secrets_match(msg_signature, _sha1_signature(self.token, timestamp, nonce, encrypt)):
             raise SignatureError("signature mismatch")
+        # The signature covers the timestamp, so a stale one is a captured request being replayed.
+        if not timestamp_fresh(timestamp):
+            raise SignatureError("timestamp outside replay window")
         try:
             cipher_text = base64.b64decode(encrypt)
         except Exception as exc:

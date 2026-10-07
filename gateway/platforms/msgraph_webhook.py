@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import ipaddress
 import json
 import logging
@@ -21,6 +20,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms._shared import secrets_match
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, is_network_accessible,
 )
@@ -272,12 +272,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
     def _verify_client_state(self, notification: Dict[str, Any]) -> bool:
         """Timing-safe compare of the Graph-supplied clientState against the configured shared secret
         (``openssl rand -hex 32`` in the setup guide)."""
-        expected = self._client_state
-        provided = _string_or_none(notification.get("clientState"))
-        if expected is None or provided is None:
-            return False
-        # Compare as bytes: compare_digest raises TypeError on non-ASCII str (clientState is request-controlled).
-        return hmac.compare_digest(provided.encode(), expected.encode())
+        return secrets_match(_string_or_none(notification.get("clientState")), self._client_state)
 
     def _remember_receipt(self, receipt_key: str) -> None:
         self._seen_receipts.add(receipt_key)

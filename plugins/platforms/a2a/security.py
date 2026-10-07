@@ -17,7 +17,7 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Optional
 from agent.proxy_bypass import is_loopback_host
-from gateway.platforms._shared import profile_scoped as _profile_scoped
+from gateway.platforms._shared import profile_scoped as _profile_scoped, secrets_match
 
 logger = logging.getLogger(__name__)
 
@@ -94,9 +94,9 @@ class A2ASecurityContext:
             return None
         presented = parts[1].strip()
         for token, name in self.peer_tokens:
-            if hmac.compare_digest(presented, token):
+            if secrets_match(presented, token):
                 return name
-        if self.bearer_token and hmac.compare_digest(presented, self.bearer_token):
+        if secrets_match(presented, self.bearer_token):
             return f"ip:{client_ip or 'unknown'}"
         return None
 

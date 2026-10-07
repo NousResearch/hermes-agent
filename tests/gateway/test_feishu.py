@@ -1510,7 +1510,7 @@ class TestWebhookSecurity(unittest.TestCase):
         encrypt_key = "test_secret"
         adapter = self._make_adapter(encrypt_key)
         body = b'{"type":"event"}'
-        timestamp = "1700000000"
+        timestamp = str(int(time.time()))
         nonce = "abc123"
         content = f"{timestamp}{nonce}{encrypt_key}" + body.decode("utf-8")
         sig = hashlib.sha256(content.encode("utf-8")).hexdigest()

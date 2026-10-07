@@ -21,7 +21,10 @@ from functools import lru_cache
 from itertools import groupby, takewhile
 from pathlib import Path
 
-from agent.pet.constants import DEFAULT_SCALE, FRAME_H, FRAME_W, FRAMES_PER_STATE, PetState, state_row_index
+from agent.pet.constants import (
+    DEFAULT_SCALE, FRAME_H, FRAME_W, FRAMES_PER_STATE, PetState,
+    infer_frame_size, state_row_index,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +89,10 @@ def _raw_frames(sheet_path: str, state_value: str, frame_w: int, frame_h: int, f
         from PIL import Image
 
         sheet = Image.open(Path(sheet_path)).convert("RGBA")
+        # Default-size callers on a higher-res sheet adopt the sheet's own grid
+        # (2x atlases ship 384x416 cells); explicit non-default sizes win.
+        if (frame_w, frame_h) == (FRAME_W, FRAME_H):
+            frame_w, frame_h = infer_frame_size(sheet.width, sheet.height)
         cols, rows = max(1, sheet.width // frame_w), max(1, sheet.height // frame_h)
         # Clamp to the sheet: some pets ship fewer rows than the taxonomy reserves.
         top = min(state_row_index(state_value, rows) * frame_h, max(0, sheet.height - frame_h))

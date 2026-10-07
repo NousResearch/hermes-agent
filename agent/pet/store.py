@@ -247,9 +247,12 @@ def thumbnail_png(slug: str, *, source_url: str = "", timeout: float = 30.0) -> 
     try:
         from PIL import Image
 
+        from agent.pet import constants
+
         with Image.open(io.BytesIO(sheet_bytes)) as im:
-            frame = im.convert("RGBA").crop((0, 0, min(_THUMB_FRAME_W, im.width), min(_THUMB_FRAME_H, im.height)))
-        frame = frame.resize((_THUMB_W, round(_THUMB_W * _THUMB_FRAME_H / _THUMB_FRAME_W)), Image.NEAREST)
+            frame_w, frame_h = constants.infer_frame_size(im.width, im.height)
+            frame = im.convert("RGBA").crop((0, 0, min(frame_w, im.width), min(frame_h, im.height)))
+        frame = frame.resize((_THUMB_W, round(_THUMB_W * frame_h / frame_w)), Image.NEAREST)
         buf = io.BytesIO()
         frame.save(buf, format="PNG")
     except Exception as exc:  # noqa: BLE001

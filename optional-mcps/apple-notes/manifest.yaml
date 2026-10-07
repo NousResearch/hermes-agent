@@ -14,9 +14,9 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-notes-mcp@2.9.30`:
+# On macOS, `npx -y apple-notes-mcp@2.9.32`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.9.30 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.9.32 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 83 tools, every one carrying a description;
 #   - resolves all 20 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
@@ -78,8 +78,12 @@ source: https://github.com/sweetrb/apple-notes-mcp
 #     varint reader stopped at 35 bits, so `get-checklist-state` and every
 #     other body reader failed on Notes' sign-extended -1 baseline offset.
 #   - `doctor`'s Full Disk Access remediation said granting Claude.app was
-#     enough (#220). macOS checks the grant on the Node binary itself, so
-#     `doctor` now prints that binary's path and says to add it.
+#     enough (#220). macOS checks the grant on the responsible process.
+#     Claude Desktop launches servers through a helper that disclaims
+#     responsibility, so there the Node binary itself is checked and a grant
+#     on Claude.app never reaches it; `doctor` now prints that binary's path
+#     and says to add it. Under a terminal, the terminal app stays
+#     responsible and its grant covers the server (see post_install).
 # Also carried, outside the default surface: the legacy HTML entity decoder
 # fix from 2.8.13 extended to post-write readback verification (#211; a
 # correct write of `&` inside a link was reported as a mismatch), and
@@ -144,12 +148,29 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # `add-native-tags`, `add-attachment`) are outside default_enabled.
 # No new tools since 2.9.30: still 83 tools, all 20 default_enabled entries
 # resolve.
+#
+# 2.9.32 (2026-09-29) is re-pinned on the security footing of 2.8.2 above:
+# 2.9.31 inlines `fast-uri` 3.1.6 into `build/index.js`, the only 3.x release
+# affected by GHSA-58mr-gqgx-xq4g (high; host confusion via an unclosed
+# bracket in the URI authority), reachable via ajv's JSON-schema validation
+# on every tool call regardless of default_enabled. 2.9.32 bundles 3.1.8; the
+# `build/index.js` diff from 2.9.31 is confined to the inlined `fast-uri`
+# module, and no other shipped file changed except package.json. (The
+# apple-mail pin carries the same fix via 2.19.20.) Same validation, run
+# against both 2.9.31 and 2.9.32: 83 tools, all described, all 20
+# default_enabled entries resolve.
+# Declined, newest first: 2.10.0-2.14.0 add tools and options outside
+# default_enabled (`query-notes` facets, HTML vector drawings, a permissions
+# CLI, a template editor CLI, paragraph anchors); 2.9.35 is an
+# `add-attachment` verification fix; 2.9.34 is dev-toolchain only; 2.9.33
+# moves the bundled MCP SDK 1.30.0 -> 1.30.1 (Dependabot). None fixes a
+# defect in a default_enabled tool.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-notes-mcp@2.9.31"
+    - "apple-notes-mcp@2.9.32"
 
 # Drives Apple Notes locally via AppleScript; no credentials.
 auth:
@@ -192,10 +213,25 @@ tools:
 
 post_install: |
   Requires macOS — the server controls Apple Notes via AppleScript and will
-  prompt for Automation access to Notes on first use. A couple of read tools
-  (checklist state, markdown export) also use Full Disk Access when granted,
-  but degrade gracefully without it. It ships read-only by default; enable
-  the create / update / delete / move tools in the install-time checklist if
-  you want write access.
+  prompt for Automation access to Notes on first use.
+
+  Full Disk Access is optional. A few read tools use it to read the Notes
+  database directly: checklist state, checklist marks in Markdown,
+  `get-note-metadata` (which needs it), sync status, and fast full-text
+  search. The rest degrade gracefully without it. To grant it, note that
+  macOS checks the *responsible* process, which depends on how Hermes was
+  started:
+    - From a terminal (the usual case): grant Terminal, iTerm, or whichever
+      terminal you run `hermes` in, then quit and reopen it.
+    - Some other way (a GUI wrapper, a launchd service): macOS can instead
+      check the `node` binary that `npx` runs. The server's `doctor` tool
+      prints its path (or run `realpath "$(command -v node)"` in the
+      environment that starts Hermes); add it under System Settings >
+      Privacy & Security > Full Disk Access > +. A version-managed Node
+      (nvm, fnm, Volta, asdf, mise) or Homebrew's ad-hoc-signed node loses
+      that grant on a Node upgrade.
+
+  It ships read-only by default; enable the create / update / delete / move
+  tools in the install-time checklist if you want write access.
 
   Start a new Hermes session to load the Apple Notes tools.

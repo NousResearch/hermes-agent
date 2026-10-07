@@ -14,22 +14,32 @@ source: https://github.com/sweetrb/apple-numbers-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-numbers-mcp@1.2.2`:
+# On macOS, `npx -y apple-numbers-mcp@1.2.4`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     1.2.2 — i.e. the bytes npx resolved are the bytes pinned here;
+#     1.2.4 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 26 tools, every one carrying a description;
 #   - resolves all 6 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
 # Tools added since the previous pin are deliberately left OUT of
 # default_enabled — widening the default surface is the maintainers' call.
-# Re-run all three checks before moving this pin. (Re-pinned immediately
-# outside the normal >=2-week age policy: 1.2.2 fixes a fast-uri security
-# vulnerability, 4 GHSAs high severity, reachable via ajv's JSON-schema
-# validation on every tool call regardless of default_enabled.)
+# Re-run all three checks before moving this pin. (Earlier pin, ahead of the
+# >=2-week age policy: 1.2.2 fixed a fast-uri security vulnerability, 4 GHSAs
+# high severity, reachable via ajv's JSON-schema validation on every tool
+# call regardless of default_enabled.)
 #
-# npm-current 1.2.3 (2026-09-09) is declined under the defect-only
-# carve-out: it fixes no defect in a default_enabled tool. It is not an empty
-# release, though. Besides removing three unused imports, it carries a
+# 1.2.4 (2026-09-29) is re-pinned on that same security footing: 1.2.2 and
+# 1.2.3 inline `fast-uri` 3.1.6 into `build/index.js`, the only 3.x release
+# affected by GHSA-58mr-gqgx-xq4g (high; host confusion via an unclosed
+# bracket in the URI authority), again reachable via ajv on every tool call.
+# 1.2.4 bundles 3.1.8, and its `build/index.js` diff from 1.2.3 is confined
+# to the inlined `fast-uri` module (its `ip-address` floor is dev/install-tree
+# only). No tool surface change: still 26 tools, all 6 default_enabled
+# entries resolve. Declined: 1.2.5 (dev-only `brace-expansion` floor) and
+# 1.2.6 (Dependabot rebuild) fix no defect in a default_enabled tool.
+#
+# 1.2.3 (2026-09-09) rides along; on its own it was declined under the
+# defect-only carve-out, as it fixes no defect in a default_enabled tool. It
+# is not an empty release, though. Besides removing three unused imports, it carries a
 # transitive `qs` security override (sweetrb/apple-numbers-mcp#77) and
 # security floors for `hono` and `js-yaml` (#80). Those are dependency-
 # resolution changes in the repo's pnpm workspace and lockfile. In the
@@ -40,7 +50,7 @@ transport:
   command: "npx"
   args:
     - "-y"
-    - "apple-numbers-mcp@1.2.2"
+    - "apple-numbers-mcp@1.2.4"
 
 # Reads/writes .numbers files via a numbers-parser Python sidecar plus
 # AppleScript for formatting/formulas; no credentials.

@@ -14,36 +14,47 @@ source: https://github.com/sweetrb/apple-photos-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-photos-mcp@2.1.12`:
+# On macOS, `npx -y apple-photos-mcp@2.1.14`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.1.12 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.1.14 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 21 tools, every one carrying a description;
 #   - resolves all 13 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
 # Tools added since the previous pin are deliberately left OUT of
 # default_enabled — widening the default surface is the maintainers' call.
-# Re-run all three checks before moving this pin. (Re-pinned immediately
-# outside the normal >=2-week age policy: 2.1.12 fixes a fast-uri security
-# vulnerability, 4 GHSAs high severity, reachable via ajv's JSON-schema
-# validation on every tool call regardless of default_enabled.)
+# Re-run all three checks before moving this pin. (Earlier pin, ahead of the
+# >=2-week age policy: 2.1.12 fixed a fast-uri security vulnerability, 4
+# GHSAs high severity, reachable via ajv's JSON-schema validation on every
+# tool call regardless of default_enabled.)
 #
-# npm-current 2.1.13 (2026-09-23) is declined under the defect-only
-# carve-out: it fixes no defect in a default_enabled tool. It is not an empty
-# release, though. It adds an opt-in stale-while-revalidate cache for the
+# 2.1.14 (2026-09-29) is re-pinned on that same security footing: 2.1.12 and
+# 2.1.13 inline `fast-uri` 3.1.6 into `build/index.js`, the only 3.x release
+# affected by GHSA-58mr-gqgx-xq4g (high; host confusion via an unclosed
+# bracket in the URI authority), again reachable via ajv on every tool call.
+# 2.1.14 bundles 3.1.8, and its `build/index.js` diff from 2.1.13 is confined
+# to the inlined `fast-uri` module. No tool surface change: still 21 tools,
+# all 13 default_enabled entries resolve. Declined: 2.1.15-2.1.18 are a
+# dev/install-tree `ip-address` floor (not in the bundle), a Dependabot
+# rebuild, a dev-only `brace-expansion` floor, and an `osxphotos` 0.76.1 ->
+# 0.77.1 sidecar bump — none fixes a defect in a default_enabled tool.
+#
+# 2.1.13 (2026-09-23) rides along; on its own it was declined under the
+# defect-only carve-out, as it fixes no defect in a default_enabled tool. It
+# is not an empty release, though. It adds an opt-in stale-while-revalidate cache for the
 # PhotosDB sidecar (`APPLE_PHOTOS_MCP_STALE_WHILE_REVALIDATE=1`, off by
 # default, with two cache-race fixes inside that path). It also carries a
 # transitive `qs` security override (sweetrb/apple-photos-mcp#84) and
 # security floors for `hono` and `js-yaml` (#85). Those are dependency-
 # resolution changes in the repo's pnpm workspace and lockfile. In the
 # published package, `build/index.js` is byte-identical to 2.1.12 and the
-# runtime dependency ranges are unchanged. The shipped delta is
+# runtime dependency ranges are unchanged. Its shipped delta is
 # `src/utils/photos_reader.py` (the opt-in cache), README and package.json.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-photos-mcp@2.1.12"
+    - "apple-photos-mcp@2.1.14"
 
 # Reads the Photos library via an osxphotos Python sidecar; no credentials.
 auth:
@@ -73,12 +84,32 @@ tools:
     - list-persons
 
 post_install: |
-  Requires macOS, Python 3.11+, and Full Disk Access for the process that
-  launches Hermes — the Photos library database lives in a protected location.
-  The server uses an osxphotos Python sidecar and bootstraps a local venv on
-  first run (~a minute). It ships read-only by default; `export` and the
-  album/metadata write tools can be enabled in the install-time checklist,
-  and the write tools also require APPLE_PHOTOS_MCP_ENABLE_WRITES=1
-  server-side (read-only guarantee unless both are on).
+  Requires macOS and Python 3.11+. The server uses an osxphotos Python
+  sidecar and bootstraps a local venv on first run (~a minute).
+
+  Full Disk Access is required — the Photos library database lives in a
+  protected location. macOS checks the grant on the *responsible* process,
+  which depends on how Hermes was started:
+    - From a terminal (the usual case): the terminal app is responsible for
+      everything it launches, `npx` and `node` included. Grant Full Disk
+      Access to Terminal, iTerm, or whichever terminal you run `hermes` in,
+      then quit and reopen it.
+    - Some other way (a GUI wrapper, a launchd service): there is no
+      terminal to pass its grant down, and macOS can instead check the
+      `node` binary that `npx` runs. Get its real path by running
+      `realpath "$(command -v node)"` in the environment that starts Hermes,
+      then add it under System Settings > Privacy & Security > Full Disk
+      Access > + (press Cmd+Shift+G to paste the path). The grant is tied to
+      that path and binary: a version-managed Node (nvm, fnm, Volta, asdf,
+      mise) or Homebrew's ad-hoc-signed node loses it on a Node upgrade.
+  If tools still fail with "operation not permitted" or "unable to open
+  database file", run `log stream --predicate 'subsystem == "com.apple.TCC"'`
+  and retry: the `responsible_path` on the Full Disk Access
+  (kTCCServiceSystemPolicyAllFiles) line is the binary that needs the grant.
+
+  It ships read-only by default; `export` and the album/metadata write tools
+  can be enabled in the install-time checklist, and the write tools also
+  require APPLE_PHOTOS_MCP_ENABLE_WRITES=1 server-side (read-only guarantee
+  unless both are on).
 
   Start a new Hermes session to load the Apple Photos tools.

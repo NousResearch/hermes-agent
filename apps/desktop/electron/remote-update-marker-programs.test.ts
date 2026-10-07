@@ -83,7 +83,8 @@ test.skipIf(!powershell)('the Windows remote marker judge agrees with every corp
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
-})
+  // pwsh cold start alone can take seconds on a loaded runner; same budget as the other subprocess tests.
+}, 20_000)
 
 // A dead claim whose checkout lock is still flocked (a killed updater's completion
 // child) must be kept: the gate answers HELD instead of unlinking it (review G1).

@@ -1,8 +1,9 @@
-"""Sequential tool execution: Ctrl-C emits a cancelled ``post_tool_call`` hook.
+"""Sequential and concurrent tool execution: Ctrl-C emits a cancelled ``post_tool_call`` hook.
 
 Split out of ``tests/agent/test_run_agent.py`` (code-health size ratchet); shares its fixtures.
 """
 
+import contextlib
 import json
 from unittest.mock import patch
 
@@ -17,9 +18,10 @@ _mock_plugin_discovery = _base._mock_plugin_discovery
 
 
 class TestExecuteToolCallsInterruptHook:
-    def test_keyboard_interrupt_emits_cancelled_post_tool_hook(self, agent, monkeypatch):
-        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
-        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+    @pytest.mark.parametrize("concurrent", [False, True], ids=["sequential", "concurrent"])
+    def test_keyboard_interrupt_emits_cancelled_post_tool_hook(self, agent, monkeypatch, concurrent):
+        calls = [_mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id=f"c{i}") for i in (1, 2)]
+        mock_msg = _mock_assistant_msg(content="", tool_calls=calls if concurrent else calls[:1])
         messages = []
         hook_calls = []
         agent.session_id = "session-1"
@@ -37,12 +39,14 @@ class TestExecuteToolCallsInterruptHook:
             patch("model_tools.handle_function_call", side_effect=KeyboardInterrupt),
             patch("run_agent._set_interrupt"),
             patch("agent.interrupt_control._set_interrupt"),
-            pytest.raises(KeyboardInterrupt),
+            # The concurrent worker absorbs Ctrl-C into a cancelled result; sequential re-raises.
+            contextlib.nullcontext() if concurrent else pytest.raises(KeyboardInterrupt),
         ):
-            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+            run = agent._execute_tool_calls_concurrent if concurrent else agent._execute_tool_calls_sequential
+            run(mock_msg, messages, "task-1")
 
-        post_calls = [kwargs for name, kwargs in hook_calls if name == "post_tool_call"]
-        assert len(post_calls) == 1
+        post_calls = sorted((kwargs for name, kwargs in hook_calls if name == "post_tool_call"), key=lambda kw: kw["tool_call_id"])
+        assert len(post_calls) == len(mock_msg.tool_calls)
         assert post_calls[0]["tool_name"] == "web_search"
         assert post_calls[0]["tool_call_id"] == "c1"
         assert post_calls[0]["session_id"] == "session-1"

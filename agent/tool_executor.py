@@ -975,9 +975,12 @@ def _run_sequential_tool_execution_middleware(
             # A timed-out shell may still be unwinding. Never release a later
             # prepared command into overlapping execution.
             prepared.batch.close()
-            # Label the abort as the batch guard's own, not a user stop (#130207). No message:
-            # ``_interrupt_message`` is what gateway/CLI re-queue as the user's next turn.
-            agent.interrupt(tool_reason="terminal batch timeout")
+            if state == "timeout":
+                # Label the abort as the batch guard's own, not a user stop (#130207). No message:
+                # ``_interrupt_message`` is what gateway/CLI re-queue as the user's next turn. On the
+                # interrupted branch the stop is already published; re-interrupting would rebook it
+                # and null the user's queued message and redirect.
+                agent.interrupt(tool_reason="terminal batch timeout")
         future.cancel()
         if state == "timeout":
             _interrupt_worker_tids(agent, worker_tid)

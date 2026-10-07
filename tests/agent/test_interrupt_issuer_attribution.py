@@ -129,5 +129,25 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
         # Rendered verbatim: consumers substitute ``{name}`` with str.replace, never str.format.
         agent._tool_interrupt_reason = "guard {x}"
         assert interrupt_skip_wording(agent) == "Turn aborted — guard {x}"
+
+        # A USER stop that abandons the same wedged batch (grace elapsed) keeps its own attribution:
+        # the guard must not rebook it as a batch timeout nor drop the queued message / redirect.
+        set_interrupt(False)
+        agent.clear_interrupt()
+        agent.interrupt("fix the login bug")
+        agent._pending_redirect = "use the staging db"
+        prepared.future = concurrent.futures.Future()
+        with (
+            patch("agent.terminal_approval_batch.take_prepared_call", return_value=prepared),
+            patch.object(te, "_resolve_sequential_tool_timeout", return_value=60.0),
+            patch.object(te, "_emit_terminal_post_tool_call"),
+            patch.object(te.concurrent.futures, "wait", lambda fs, timeout=None: None),
+        ):
+            te._run_sequential_tool_execution_middleware(
+                agent, function_name="terminal", function_args={}, effective_task_id="t",
+                tool_call_id="c2", execute=lambda *_a, **_k: None)
+        assert interrupt_issuer(agent) is None
+        assert agent._interrupt_message == "fix the login bug"
+        assert agent._pending_redirect == "use the staging db"
     finally:
         set_interrupt(False)

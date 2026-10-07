@@ -32,11 +32,11 @@ from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_json_write, env_float, file_signature, is_truthy_value
-from hermes_cli.auth_zai_kimi import (
-    KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
-    _resolve_zai_base_url, detect_zai_endpoint)
-from hermes_cli.auth_model_picker import (
+from utils import atomic_json_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
+from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
+    KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _model_level_key_env, _normalize_lmstudio_runtime_base_url,
+    _resolve_kimi_base_url, _resolve_zai_base_url, detect_zai_endpoint)
+from hermes_cli.auth_model_picker import (  # noqa: F401  re-exported
     _prompt_model_selection, _save_model_choice)
 from hermes_cli.auth_device_flow import (
     _can_open_graphical_browser, _default_verify, _is_remote_session,
@@ -358,25 +358,6 @@ def _usable_declared_secret(provider_id: str, value: Any, source: str) -> Option
     return val
 
 
-def _model_level_key_env(provider_id: str) -> str:
-    """``model.key_env`` when config.yaml's main model targets *provider_id*, else ``""``.
-
-    The Desktop settings UI saves registry-provider keys as a credential pointer
-    (``model.key_env`` → ``$HERMES_HOME/.env``) instead of the registry's canonical env var,
-    so credential resolution must consult it (#106336).
-    """
-    try:
-        from hermes_cli.config import load_config
-        model_cfg = (load_config() or {}).get("model")
-    except Exception:
-        return ""
-    if not isinstance(model_cfg, dict):
-        return ""
-    if str(model_cfg.get("provider") or "").strip().lower() != provider_id:
-        return ""
-    return str(model_cfg.get("key_env") or model_cfg.get("api_key_env") or "").strip()
-
-
 def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
     if provider_id == "copilot":
@@ -418,14 +399,20 @@ def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) 
     # selection (peek) but try the rest too so one malformed entry doesn't block a valid one.
     pool_source = f"credential_pool:{provider_id}"
     try:
-        from agent.credential_pool import load_pool
+        from agent.credential_pool import STATUS_DEAD, load_pool
+
         pool = load_pool(provider_id)
         if pool and pool.has_credentials():
             entry = pool.peek()
             candidates = [entry] if entry is not None else []
             try:
                 for extra in pool.entries():
-                    if extra is not None and all(extra is not c for c in candidates):
+                    # DEAD rows are terminally revoked: skip them like peek() so a
+                    # DEAD-only pool reads as unconfigured (#134398). Exhausted rows
+                    # stay eligible — #40961 wants their real upstream 429 to surface.
+                    if extra is None or extra.last_status == STATUS_DEAD:
+                        continue
+                    if all(extra is not c for c in candidates):
                         candidates.append(extra)
             except Exception:
                 pass

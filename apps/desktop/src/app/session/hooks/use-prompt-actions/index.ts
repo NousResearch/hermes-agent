@@ -69,6 +69,7 @@ import {
   planEdit,
   planRestore,
   rebindSurvivorRowIds,
+  revalidateEditPlan,
   runRewindSubmit,
   type SurvivorUserRowIds
 } from './rewind'
@@ -1209,20 +1210,31 @@ export function usePromptActions({
       const sessionId = activeSessionIdRef.current
 
       // Same dual-store read as reloadFromMessage (#68734).
-      const messages = (sessionId ? $sessionStates.get()[sessionId]?.messages : null) ?? $messages.get()
+      const planning = (sessionId ? $sessionStates.get()[sessionId]?.messages : null) ?? $messages.get()
 
       const confirmDeep = () => confirm(deepCutConfirmRequest(t.assistant.thread))
-      const forceDeep = answeredFor !== undefined && answeredFor === messages
+      const forceDeep = answeredFor !== undefined && answeredFor === planning
 
       const planned = sessionId
-        ? await planConfirmedEdit(messages, edited, forceDeep ? async () => true : confirmDeep)
+        ? await planConfirmedEdit(planning, edited, forceDeep ? async () => true : confirmDeep)
         : null
 
-      const plan = planned && forceDeep ? { ...planned, confirmDeepTruncate: true } : planned
+      const forced = planned && forceDeep ? { ...planned, confirmDeepTruncate: true } : planned
 
-      // Edit interrupts a live turn on purpose; only output that landed during the confirm makes
-      // the plan's index and rollback snapshot stale.
-      if (!sessionId || !plan || (plan.confirmDeepTruncate && currentMessages(sessionId) !== messages)) {
+      if (!sessionId || !forced) {
+        return
+      }
+
+      // Edit interrupts a live turn on purpose, so busy is fine; after a confirm wait the plan is
+      // re-aimed at the current transcript (a stream may have grown it) and dropped, with a notice,
+      // only if the edited turn itself moved.
+      const messages = forced.confirmDeepTruncate ? currentMessages(sessionId) : planning
+      const plan = messages === planning ? forced : revalidateEditPlan(forced, messages, edited)
+
+      if (!plan) {
+        // The edited turn moved while the confirm was open: nothing was sent.
+        notify({ kind: 'warning', message: copy.editFailed })
+
         return
       }
 
@@ -1343,7 +1355,7 @@ export function usePromptActions({
           notifyError(surfaced, unavailable ? copy.editTurnUnavailable : copy.editFailed)
         } else if (await confirmDeep()) {
           // Re-run from the top: the session is re-read and re-validated after this wait.
-          await editMessageRef.current(edited, messages)
+          await editMessageRef.current(edited, planning)
         }
       }
     },

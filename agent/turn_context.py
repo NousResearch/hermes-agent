@@ -615,6 +615,7 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
     for name, value in _PER_TURN_RESET_STATE:
         setattr(agent, name, value)
     agent._turn_failed_file_mutations = {}
+    agent._responses_image_artifacts = {}
     agent._turn_file_mutation_paths = set()
     agent._tool_guardrails.reset_for_turn()
     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)

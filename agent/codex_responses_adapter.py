@@ -1108,12 +1108,14 @@ class _OutputScan:
     def __init__(self, response_status: Optional[str]) -> None:
         self.content_parts, self.reasoning_parts, self.tool_calls = [], [], []
         self.reasoning_items_raw, self.message_items_raw = [], []
+        self.image_outputs = []
+        self.response_status = response_status
         self.has_incomplete_items = response_status in _INCOMPLETE_STATUSES
         self.saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
         self.saw_commentary_phase = self.saw_final_answer_phase = self.saw_reasoning_item = False
 
     def scan(self, output: List[Any], issuer_kind: Optional[str], issuer_model: Optional[str] = None) -> None:
-        for item in output:
+        for output_index, item in enumerate(output):
             item_type = getattr(item, "type", None)
             item_status = _lower_or_none(getattr(item, "status", None))
             if item_status in _INCOMPLETE_STATUSES and item_type not in _SERVER_SIDE_TOOL_CALL_TYPES:
@@ -1138,6 +1140,14 @@ class _OutputScan:
                         )
             elif item_type == "custom_tool_call" or (item_type == "function_call" and item_status not in _INCOMPLETE_STATUSES):
                 self.tool_calls.append(_response_tool_call(item, item_type, len(self.tool_calls)))
+            elif (item_type == "image_generation_call" and item_status == "completed"
+                  and self.response_status not in {"queued", "in_progress"}):
+                self.image_outputs.append({
+                    "item_id": getattr(item, "id", None), "status": item_status,
+                    "output_index": output_index,
+                    "result": getattr(item, "result", None),
+                    "output_format": getattr(item, "output_format", None),
+                })
 
     def _message(self, item: Any, item_status: Optional[str]) -> None:
         normalized_phase = _lower_or_none(getattr(item, "phase", None))
@@ -1228,10 +1238,18 @@ def _normalize_codex_response(
         codex_reasoning_items=scan.reasoning_items_raw or None,
         # Leaked text must not be replayed as a completed assistant message on the continuation.
         codex_message_items=None if leaked_tool_call_text else (scan.message_items_raw or None),
+        responses_image_outputs=[
+            {"response_id": getattr(response, "id", None),
+             "response_identity": getattr(response, "id", None) or id(response), **item}
+            for item in scan.image_outputs
+        ] or None,
     )
     # Reasoning-only: for Codex/xAI/GitHub, status=completed means "still thinking" → incomplete so the continuation
     # retries. Other backends trust response.status — forcing incomplete there stalls for minutes on a final state.
-    reasoning_only = (scan.reasoning_items_raw or reasoning_parts or scan.saw_reasoning_item) and not final_text
+    reasoning_only = (
+        (scan.reasoning_items_raw or reasoning_parts or scan.saw_reasoning_item)
+        and not final_text and not scan.image_outputs
+    )
     trusted_final = (
         response_status == "completed" and issuer_kind not in ("codex_backend", "xai_responses", "github_responses")
     )
@@ -1242,7 +1260,8 @@ def _normalize_codex_response(
     elif (
         leaked_tool_call_text
         or scan.saw_streaming_or_item_incomplete
-        or ((scan.has_incomplete_items or scan.saw_commentary_phase) and not scan.saw_final_answer_phase)
+        or (scan.has_incomplete_items and not scan.saw_final_answer_phase)
+        or (scan.saw_commentary_phase and not scan.saw_final_answer_phase and not scan.image_outputs)
         or (reasoning_only and not trusted_final)
     ):
         finish_reason = "incomplete"

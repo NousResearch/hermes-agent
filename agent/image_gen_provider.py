@@ -83,6 +83,63 @@ def save_b64_image(b64_data: str, *, prefix: str = "image", extension: str = "pn
     return provider_media.save_b64(_GENERATED_IMAGE_KIND, b64_data, prefix=prefix, extension=extension)
 
 
+_MAX_NATIVE_IMAGE_BYTES = 25 * 1024 * 1024
+_MAX_NATIVE_IMAGE_PIXELS = 40_000_000
+_NATIVE_IMAGE_FORMATS = {"png": "PNG", "jpg": "JPEG", "jpeg": "JPEG", "webp": "WEBP"}
+_NATIVE_IMAGE_EXTENSIONS = {"PNG": "png", "JPEG": "jpg", "WEBP": "webp"}
+
+
+def save_native_b64_image(b64_data: str, *, output_format: Optional[str] = None) -> Path:
+    """Strict, bounded validation for paid server-side results, then atomic local delivery.
+
+    Keep the older plugin helper's permissive contract unchanged. Provider IDs/format text
+    never become paths, and diagnostics never include the encoded image.
+    """
+    import base64
+    import binascii
+    import io
+    import warnings
+    from PIL import Image
+
+    if not isinstance(b64_data, str) or not b64_data:
+        raise ValueError("Missing image base64 result.")
+    if len(b64_data) > ((_MAX_NATIVE_IMAGE_BYTES + 2) // 3) * 4:
+        raise ValueError("Image encoded size exceeds the limit.")
+    expected = None
+    if output_format is not None:
+        expected = _NATIVE_IMAGE_FORMATS.get(output_format.lower()) if isinstance(output_format, str) else None
+        if expected is None:
+            raise ValueError("Unsupported image output format.")
+    try:
+        raw = base64.b64decode(b64_data, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Invalid image base64.") from exc
+    if not raw or len(raw) > _MAX_NATIVE_IMAGE_BYTES:
+        raise ValueError("Image decoded size is empty or exceeds the limit.")
+    signature = (
+        "PNG" if raw.startswith(b"\x89PNG\r\n\x1a\n") else
+        "JPEG" if raw.startswith(b"\xff\xd8\xff") else
+        "WEBP" if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP" else None
+    )
+    if signature is None or (expected and signature != expected):
+        raise ValueError("Image format/signature mismatch or unsupported image.")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(raw)) as image:
+                if image.format != signature or image.width * image.height > _MAX_NATIVE_IMAGE_PIXELS:
+                    raise ValueError("Invalid image format or pixel size.")
+                image.verify()
+            # JPEG's verify() is a no-op; a bounded decode also rejects truncated scan data.
+            with Image.open(io.BytesIO(raw)) as image:
+                image.load()
+    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+        raise ValueError("Invalid or oversized image data.") from exc
+    return provider_media.save_bytes_atomic(
+        _GENERATED_IMAGE_KIND, raw, prefix="responses_image", extension=_NATIVE_IMAGE_EXTENSIONS[signature],
+    )
+
+
 _URL_IMAGE_CONTENT_TYPES = {
     "image/png": "png", "image/jpeg": "jpg", "image/jpg": "jpg", "image/webp": "webp", "image/gif": "gif",
 }

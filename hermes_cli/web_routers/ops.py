@@ -151,20 +151,32 @@ def _webhook_route_summary(name: str, route: Dict[str, Any], base_url: str) -> D
     }
 
 
+def _webhook_subs_guard(run):
+    """Run a webhook-store read or mutation, answering 409 when the store file is unreadable:
+    read as empty, a create would write it back holding only its own route (every other route
+    and secret lost)."""
+    import hermes_cli.webhook as wh
+
+    try:
+        return run()
+    except wh.WebhookSubscriptionsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.get("/api/webhooks")
 async def list_webhooks(profile: Optional[str] = None):
     def _run():
         import hermes_cli.webhook as wh
 
         base_url = wh._get_webhook_base_url()
-        return {
+        return _webhook_subs_guard(lambda: {
             "enabled": wh._is_webhook_enabled(),
             "base_url": base_url,
             "subscriptions": [
                 _webhook_route_summary(name, route, base_url)
                 for name, route in wh._load_subscriptions().items()
             ],
-        }
+        })
 
     return await config_scoped_to_thread(profile, _run)
 
@@ -209,7 +221,7 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
         )
 
     def _snapshot():
-        subscriptions = wh._load_subscriptions()
+        subscriptions = _webhook_subs_guard(lambda: wh._load_subscriptions())
         return subscriptions.get(name, wh._MISSING_SUBSCRIPTION)
 
     expected = await config_scoped_to_thread(profile, _snapshot)
@@ -232,10 +244,12 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
         route["deliver_extra"] = {"chat_id": body.deliver_chat_id}
 
     def _save():
-        try:
-            published = wh._replace_subscription(name, route, expected)
-        except wh.SubscriptionMutationConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        def publish():
+            try:
+                return wh._replace_subscription(name, route, expected)
+            except wh.SubscriptionMutationConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        published = _webhook_subs_guard(publish)
         return _webhook_route_summary(name, published, wh._get_webhook_base_url())
 
     summary = await config_scoped_to_thread(profile, _save)
@@ -261,7 +275,7 @@ async def delete_webhook(name: str, profile: Optional[str] = None):
         def remove(subscriptions):
             del subscriptions[_webhook_key_in(subscriptions, name)]
 
-        wh._mutate_subscriptions(remove)
+        _webhook_subs_guard(lambda: wh._mutate_subscriptions(remove))
 
     await config_scoped_to_thread(profile, _run)
     return {"ok": True}
@@ -279,7 +293,7 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle, profile: Op
             subscriptions[key]["enabled"] = bool(body.enabled)
             return key
 
-        return wh._mutate_subscriptions(toggle)
+        return _webhook_subs_guard(lambda: wh._mutate_subscriptions(toggle))
 
     key = await config_scoped_to_thread(profile, _run)
     return {"ok": True, "name": key, "enabled": bool(body.enabled)}

@@ -857,9 +857,13 @@ class BatchRunner:
         self._print_summary(results, total_tool_stats, total_reasoning_stats, kept, batch_files_found, start_time)
 
 
-def _split_csv(value: Optional[str]) -> Optional[List[str]]:
-    """Comma-separated CLI string to a list of stripped items; ``None`` when empty."""
-    return [p.strip() for p in value.split(",")] if value else None
+def _split_csv(value: Optional[str | List[str] | Tuple[str, ...]]) -> Optional[List[str]]:
+    """Normalize Fire's CSV argument into a stripped list; None when empty."""
+    if not value:
+        return None
+    if isinstance(value, (list, tuple)):
+        return [str(p).strip() for p in value if str(p).strip()]
+    return [p.strip() for p in value.split(",") if p.strip()]
 
 
 def main(
@@ -982,6 +986,9 @@ def main(
         except Exception as e:
             print(f"❌ Error loading prefill messages: {e}")
             raise SystemExit(1)
+
+    # Fire literal-evaluates date-like numeric run names, but output paths must be strings.
+    run_name = str(run_name)
 
     try:
         runner = BatchRunner(

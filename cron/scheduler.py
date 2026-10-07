@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- security fix for #82010: distinguish an explicitly-empty toolset allowlist (fail closed, nothing allowed) from an absent one (no restriction); the added lines are minimal fail-closed branches at this existing chokepoint
 """Cron job scheduler: tick() runs due jobs (gateway calls it every 60s from a background thread).
 A file lock (~/.hermes/cron/.tick.lock) keeps overlapping processes to one tick at a time.
 """
@@ -52,21 +53,6 @@ from agent.session_activity import AwakeIdleMeter
 from agent.turn_failure_copy import is_max_iteration_handoff
 
 logger = logging.getLogger(__name__)
-
-
-def _close_late_session_db_result(future: "concurrent.futures.Future") -> None:
-    """Done-callback: close a SessionDB whose constructor finished after run_job's init timeout
-    (worker abandoned via ``shutdown(wait=False)``), else its .db/WAL/SHM handles leak to EMFILE.
-
-    If the constructor later completes inside that abandoned worker, the Future's result — an open SessionDB
-    holding .db / WAL / SHM file handles — would be orphaned and never closed, leaking descriptors until
-    EMFILE (#72782). This callback retrieves and closes that eventual late result.
-    """
-    with contextlib.suppress(Exception):
-        db = future.result()
-        if db is not None:
-            from hermes_state_registry import release_or_close
-            release_or_close(db)
 
 
 def _set_cron_session_title(session_db, session_id, base_title):
@@ -494,7 +480,10 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
 
     1. Per-job ``enabled_toolsets`` (set via ``cronjob`` tool on create/update). Keeps the agent's
     job-scoped toolset override intact — #6130. Enabled MCP servers are layered on per
-    ``_merge_mcp_into_per_job_toolsets`` so a native-toolset allowlist does not silently strip MCP tools. 2.
+    ``_merge_mcp_into_per_job_toolsets`` so a native-toolset allowlist does not silently strip MCP tools.
+    An explicitly-set EMPTY list is a zero-toolset allowlist, not a clear to the platform default —
+    it is falsy, so it must be compared with ``is not None``, else it fell through to the config
+    default and widened an unattended job back to every toolset (#82010). 2.
     Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``) so users can gate cron toolsets
     globally without recreating every job. 3. Never ``None``: AIAgent reads ``None`` as "every
     toolset", so an unreadable ``platform_toolsets.cron`` restriction would hand an unattended job
@@ -502,7 +491,11 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
     error on the job and opens an incident, so the operator sees it instead of a widened run.
     """
     per_job = job.get("enabled_toolsets")
-    if per_job:
+    if per_job is not None:
+        if not per_job:
+            # Explicit zero: no toolsets at all — no MCP merge either, else every enabled server
+            # would ride back in and widen the allowlist the operator just emptied (#82010).
+            return []
         return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
@@ -1941,6 +1934,7 @@ def _open_cron_session_db(job: dict):
             # inside it, the future's result would be orphaned and its SQLite FDs (.db, WAL, SHM) leak until
             # process exit. Register a done-callback that retrieves and closes any eventual late result
             # (#72782).
+            from cron.scheduler_detached_worker import _close_late_session_db_result
             _session_db_future.add_done_callback(_close_late_session_db_result)
             raise
         finally:
@@ -2151,7 +2145,8 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     return final_response
 
 
-def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_session_id: str) -> None:
+def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_session_id: str,
+                           workdir: Optional[str] = None) -> None:
     """Title, classify, end and release the cron session after the agent turn has returned."""
     # Bound every DB op so storage failure cannot hold the dispatch guard.
     _session_db = _BoundedCronSessionDB(session_db, job_id)
@@ -2221,6 +2216,13 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
                 job_id, _lifecycle, _end_reason)
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': session lifecycle classification failed: %s", job_id, e)
+    # Stamp the job's workdir on the row BEFORE end_session (title-write ordering, #50536): the
+    # sidebar groups by cwd prefix and nothing else writes a cron row's cwd (#108205).
+    if workdir:
+        try:
+            _session_db.update_session_cwd(_final_cron_session_id, workdir)
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug("Job '%s': failed to stamp workdir on session row: %s", job_id, e, exc_info=True)
     try:
         _session_db.end_session(_final_cron_session_id, _end_reason)
         # The scheduler owns cron-session finalization. AIAgent.close() also
@@ -2674,10 +2676,12 @@ def run_job(
     finally:
         from cron.scheduler_detached_worker import defer_teardown_to_running_worker
         _worker_teardown_deferred = defer_teardown_to_running_worker(
-            _worker_state.get("future"), _session_db, agent, job_id, job_name, _cron_session_id)
+            _worker_state.get("future"), _session_db, agent, job_id, job_name, _cron_session_id,
+            workdir=scope.workdir)
         scope.exit()
         if _session_db and not _worker_teardown_deferred:
-            _finalize_cron_session(_session_db, agent, job_id, job_name, _cron_session_id)
+            _finalize_cron_session(_session_db, agent, job_id, job_name, _cron_session_id,
+                                   workdir=scope.workdir)
         # Tear down the ephemeral agent or the gateway leaks fds per tick (EMFILE). With deferred
         # teardown, hand the live agent back: delivery needs a live async client.
         # Release subprocesses, terminal sandboxes, browser daemons, and the main OpenAI/httpx client held

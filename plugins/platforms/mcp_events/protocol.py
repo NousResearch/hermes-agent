@@ -236,8 +236,14 @@ class SubscriptionStore:
         return os.path.join(home, _SUBSCRIPTIONS_FILE)
 
     def _ensure_loaded(self) -> None:
-        if self._loaded:
+        # Reload when the file changed: the tools write through their own instances.
+        try:
+            mtime = os.path.getmtime(self._path())
+        except OSError:
+            mtime = None
+        if self._loaded and mtime == getattr(self, "_mtime", None):
             return
+        self._mtime = mtime
         try:
             with open(self._path(), encoding="utf-8") as fh:
                 data = json.load(fh)

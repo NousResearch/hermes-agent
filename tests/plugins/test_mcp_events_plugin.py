@@ -554,3 +554,12 @@ class TestToolRegistration:
         # The registry calls handler(args_dict, **context); a TypeError here means the tool can never run.
         assert isinstance(registered["mcp_events_subscriptions"]({}, task_id="t1"), str)
         assert "No subscription" in registered["mcp_events_unsubscribe"]({"subscription_id": "sub_missing"}, task_id="t1")
+
+
+class TestStoreReload:
+    def test_the_store_sees_records_written_by_another_instance(self, tmp_path):
+        reader = protocol.SubscriptionStore(home_dir=str(tmp_path))
+        assert reader.list() == []
+        time.sleep(0.01)
+        protocol.SubscriptionStore(home_dir=str(tmp_path)).add({"id": "sub_1", "event": "e", "callback_url": "c"})
+        assert [r["id"] for r in reader.list()] == ["sub_1"]

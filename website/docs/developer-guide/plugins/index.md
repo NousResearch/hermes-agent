@@ -125,6 +125,43 @@ skipped. Agent Plugins v1 does not define trust, permissions, provenance, or a
 sandbox. Enabling a package grants its instructions and local executable the
 same full-trust posture as other installed Hermes plugins.
 
+### Hermes extension keys in `plugin.json`
+
+Hermes-specific settings live under the `com.nousresearch.hermes` extension
+namespace. Hermes ignores keys it does not know at this level, so adding one
+does not break older clients.
+
+```json
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "my-portable-plugin",
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "requires_hermes": ">=0.22.0",
+      "servers": {
+        "my-server": { "app": { "...": "..." }, "requires": { "app": true } }
+      }
+    }
+  }
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `requires_hermes` | Hermes versions the package supports. Same syntax as the native `plugin.yaml` field: comma-separated `>=`, `>`, `<=`, `<`, `==`, `!=` clauses; a bare version means `>=`. |
+| `servers` | Per-server settings keyed by the `mcp.json` server name: [application declarations](./application-declarations.md), `trust`, costs and `timeout` (below). |
+
+`hermes plugins install` checks `requires_hermes` before it parses the server
+declarations. When the running version does not satisfy the spec, the install
+stops, nothing is installed, and the error names the spec, the running version
+and the update command (`hermes update` on a git or pip install). An installed
+package whose spec stops matching (for example after a downgrade) is skipped at
+load with the same reason, and `hermes plugins validate` reports whether the
+spec parses.
+
+A running version Hermes cannot determine (`unknown`, for example a checkout
+with no release tags) satisfies every spec, the same as for native plugins.
+
 A package can ask Hermes to gate one of its MCP servers, the same way a user's
 `trust: untrusted` does in `config.yaml`. Use it for servers whose tools spend
 money, trade, send messages or change accounts, so the user approves each
@@ -213,10 +250,10 @@ A server entry key this Hermes does not know (one a newer release added) is
 ignored with a warning, which `hermes plugins validate` lists, and the package
 still installs. Releases from before this rule reject the package instead, and a
 release that ignores a key may behave less safely than intended, so declare a new
-key together with a catalog `requires_hermes` floor. `plugin.json` has no
-`requires_hermes` field, so that catalog floor is a portable package's only one: an install by
-catalog name refuses on an older Hermes, and `hermes plugins update` keeps the
-installed pin until Hermes is updated.
+key together with a `requires_hermes` floor, both in `plugin.json` and on the
+catalog entry. Releases from before the `plugin.json` key enforce only the catalog
+floor: an install by catalog name refuses on an older Hermes, and `hermes plugins
+update` keeps the installed pin until Hermes is updated.
 
 An explicit per-server MCP call budget also reaches Hermes' outer tool executor. A call
 whose budget exceeds the shared concurrent-batch deadline becomes a sequential
@@ -654,7 +691,10 @@ active plugin requests consent against its staged declaration before publication
 A refusal preserves the installed plugin and selected environment.
 
 The installer and PM admission reject unsupported `manifest_version` values
-and unmet `requires_hermes` constraints before publication.
+and unmet `requires_hermes` constraints before publication. For a portable
+package the constraint is `extensions."com.nousresearch.hermes".requires_hermes`
+in `plugin.json`; for a catalog install the entry's `requires_hermes` is checked
+before the repository is cloned.
 :::
 
 ### Python dependencies

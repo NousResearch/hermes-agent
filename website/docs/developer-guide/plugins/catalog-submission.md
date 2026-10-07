@@ -179,12 +179,15 @@ the gallery. There is no separate listing to maintain.
    (`">=0.21.5"`), never a CalVer date, and never newer than the current release.
    The entry's `requires_hermes` is enforced: an install by catalog name refuses
    on a Hermes it rejects, and `hermes plugins update` keeps an installed plugin
-   at its current pin until Hermes is updated. Declare the same floor in
-   `plugin.yaml` as well, because older Hermes versions enforce only that one
-   (the loader skips the plugin when it does not match). A portable package
-   (`plugin.json`) has no `requires_hermes` field, so the catalog entry's
-   `requires_hermes` is its only floor: set one when the package needs a recent
-   Hermes (a server declaration key an older release ignores). `version` matches the
+   at its current pin until Hermes is updated. Declare the same floor in the
+   plugin itself as well: top-level in `plugin.yaml`, or at
+   `extensions."com.nousresearch.hermes".requires_hermes` in a portable
+   package's `plugin.json`. Install and load check that floor too (the loader
+   skips the plugin when it does not match), and older releases enforce only
+   part of this: some check only `plugin.yaml`, and releases before the portable
+   key check only the catalog entry for a portable package. Set both when the
+   package needs a recent Hermes (for example a server declaration key an older
+   release ignores or cannot parse). `version` matches the
    pinned code, and Python dependencies resolve under Hermes's core constraints
    (`hermes plugins validate --install-deps` is what CI runs).
 15. **No skins or forks of bundled plugins.** A change to a bundled plugin is a

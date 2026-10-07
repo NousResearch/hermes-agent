@@ -4676,7 +4676,8 @@ export const zh = defineLocale({
       restoreNext: '恢复下一个检查点',
       goForward: '前进',
       sendEdited: '发送编辑后的消息',
-      attachingFile: '正在附加…'
+      attachingFile: '正在附加…',
+      quoteInChat: '引用到聊天'
     },
     approval: {
       gatewayDisconnected: 'Hermes 网关未连接',

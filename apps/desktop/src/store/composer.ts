@@ -809,6 +809,143 @@ function stripTerminalRefTokens(draft: string) {
     .trim()
 }
 
+// ---------------------------------------------------------------------------
+// @message: reference support — quoted-text storage keyed by messageId
+// ---------------------------------------------------------------------------
+
+const MESSAGE_REF_RE = /@message:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g
+
+export const $composerMessageQuotes = atom<Record<string, string>>({})
+
+function messageIdsFromDraft(draft: string) {
+  const ids: string[] = []
+  const seen = new Set<string>()
+
+  for (const match of draft.matchAll(MESSAGE_REF_RE)) {
+    const id = unquoteRefValue(match[1] || '')
+
+    if (!id || seen.has(id)) {
+      continue
+    }
+
+    seen.add(id)
+    ids.push(id)
+  }
+
+  return ids
+}
+
+export function setComposerMessageQuote(messageId: string, text: string) {
+  const nextMessageId = messageId.trim()
+  const nextText = text.trim()
+
+  if (!nextMessageId || !nextText) {
+    return
+  }
+
+  const current = $composerMessageQuotes.get()
+
+  if (current[nextMessageId] === nextText) {
+    return
+  }
+
+  $composerMessageQuotes.set({
+    ...current,
+    [nextMessageId]: nextText
+  })
+}
+
+export function reconcileComposerMessageQuotes(draft: string) {
+  const current = $composerMessageQuotes.get()
+  const messageIds = new Set(messageIdsFromDraft(draft))
+  let changed = false
+  const next: Record<string, string> = {}
+
+  for (const [messageId, text] of Object.entries(current)) {
+    if (!messageIds.has(messageId)) {
+      changed = true
+
+      continue
+    }
+
+    next[messageId] = text
+  }
+
+  if (changed) {
+    $composerMessageQuotes.set(next)
+  }
+}
+
+export function messageQuoteContextBlocks(draft: string) {
+  const ids = messageIdsFromDraft(draft)
+
+  if (ids.length === 0) {
+    return []
+  }
+
+  const quotes = $composerMessageQuotes.get()
+
+  return ids.flatMap(messageId => {
+    const text = quotes[messageId]?.trim()
+
+    if (!text) {
+      return []
+    }
+
+    return `\`\`\`quote<${messageId}>\n${text}\n\`\`\``
+  })
+}
+
+export function clearComposerMessageQuotes() {
+  if (Object.keys($composerMessageQuotes.get()).length === 0) {
+    return
+  }
+
+  $composerMessageQuotes.set({})
+}
+
+/**
+ * The `@message:` half of the freeze: quoted text is memory-only (keyed by
+ * messageId), so a payload crossing a send/steer/enqueue boundary must carry
+ * its quotes in the transport text — resolving later from the live store lets
+ * a store clear or a long-delayed queue drain silently drop them (same class
+ * as #77078 for terminal chips).
+ *
+ * When the terminal pass failed closed (missingLabels), nothing is expanded at
+ * all — every caller rejects that payload wholesale, so a half-frozen payload
+ * would only hide the failure. Unresolved `@message:` refs (no store entry)
+ * stay visible instead of being dropped. Idempotent: a fence whose
+ * `quote<id>` header is already present is not added twice (matching by
+ * header, not by whole block — quoted text can contain code fences that a
+ * lazy block regex would stop at).
+ */
+function freezeMessageQuoteChips(payload: ComposerTransportPayload): ComposerTransportPayload {
+  if (payload.missingLabels.length > 0) {
+    return payload
+  }
+
+  const blocks = messageQuoteContextBlocks(payload.transportText)
+
+  if (blocks.length === 0) {
+    return payload
+  }
+
+  const fresh = blocks.filter(block => {
+    // The fence header ends at `>\n` — ids can contain `>` but never a newline.
+    // Compare with the trailing newline so `quote<msg>` cannot match inside a
+    // `quote<msg>1>` header.
+    const header = block.match(/^```quote<[\s\S]*?>\n/)?.[0]
+
+    return !header || !payload.transportText.includes(header)
+  })
+
+  if (fresh.length === 0) {
+    return payload
+  }
+
+  return { ...payload, transportText: [...fresh, payload.transportText].filter(Boolean).join('\n\n') }
+}
+
 export interface ComposerTransportPayload {
   /** Model-facing text: fenced selection blocks with `@terminal:` chips stripped. */
   transportText: string
@@ -819,10 +956,11 @@ export interface ComposerTransportPayload {
 }
 
 /**
- * Freeze `@terminal:` chips into transport text at the moment a message
- * crosses a send/steer/enqueue boundary. The selection map is memory-only and
- * label-colliding — later resolve against it can inject a different pane's
- * output (#77078). Callers that cannot resolve every chip must fail closed.
+ * Freeze `@terminal:` chips and `@message:` quote refs into transport text at
+ * the moment a message crosses a send/steer/enqueue boundary. The selection
+ * map is memory-only and label-colliding — later resolve against it can inject
+ * a different pane's output (#77078). Callers that cannot resolve every chip
+ * must fail closed.
  *
  * Idempotent: already-frozen transport (no chips) is returned unchanged.
  */
@@ -830,6 +968,14 @@ export function freezeComposerTransportPayload(
   draft: string,
   selections: Record<string, string> = $composerTerminalSelections.get()
 ): ComposerTransportPayload {
+  return freezeMessageQuoteChips(freezeTerminalChips(draft, selections))
+}
+
+/**
+ * The `@terminal:` half of the freeze: resolve chips into fenced blocks, fail
+ * closed on missing selections, strip chip tokens from the remainder.
+ */
+function freezeTerminalChips(draft: string, selections: Record<string, string>): ComposerTransportPayload {
   const labels = terminalLabelsFromDraft(draft)
 
   if (labels.length === 0) {

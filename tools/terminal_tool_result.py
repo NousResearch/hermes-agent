@@ -218,10 +218,38 @@ def finalize_foreground_result(
     # for every later command). Prefer the result's own cwd; env.cwd is shared
     # mutable compat state kept as fallback for third-party providers.
     observed_cwd = None
+    containment_note = None
     if (result or {}).get("cwd_observed"):
         observed_cwd = (result or {}).get("cwd") or getattr(env, "cwd", None)
     if not workdir and observed_cwd:
-        record_session_cwd(session_key, observed_cwd)
+        # Goal A: a worktree-isolated child whose command escaped its approved
+        # worktree in-shell (an arbitrary ``cd`` — outside structured
+        # containment, which is an honestly-reported MATERIAL residual) must
+        # not have that escaped directory PERSIST as its new base cwd, where
+        # every later command and file-tool anchor would follow it.
+        # Registry-keyed by the child's task_id (covers kernel-RPC relays where
+        # the delegated-child ContextVar is absent); unregistered task ids keep
+        # historical behavior.
+        from tools.child_containment import check_session_cwd_record
+
+        if check_session_cwd_record(proposed_cwd=str(observed_cwd), task_id=task_id):
+            record_session_cwd(session_key, observed_cwd)
+        else:
+            from tools.child_containment import DENIED_PREFIX
+
+            logger.warning(
+                "delegated-child cwd escape not persisted: command observed cwd %r "
+                "outside the child's approved worktree (task %s)", observed_cwd, task_id)
+            containment_note = (
+                f"{DENIED_PREFIX}: the command's resulting working directory "
+                f"({observed_cwd}) is outside this child's approved worktree; "
+                f"it was not recorded as the session cwd. Later commands still "
+                f"start in the approved worktree.")
+            # Neither the durable record NOR the echoed cwd may advertise the
+            # escaped directory as the child's working state.
+            result["cwd"] = None
+            result["cwd_observed"] = False
+            observed_cwd = None
 
     output = result.get("output", "")
     returncode = result.get("returncode", 0)
@@ -270,6 +298,7 @@ def finalize_foreground_result(
         ("hint", failure_hint or None),
         ("sudo_auth_failed", True if sudo_auth_failed else None),
         ("sudo_cache_cleared", True if sudo_cache_cleared else None),
+        ("containment_note", containment_note),
     ]
     for key, value in optional_fields:
         if value is not None:

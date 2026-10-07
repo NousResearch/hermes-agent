@@ -67,8 +67,12 @@ class Workflow:
         return col
 
     def can_move(self, src: str, dst: str) -> bool:
-        """True when a human may request ``src -> dst`` (archive always allowed)."""
-        self._require(src)
+        """True when a human may request ``src -> dst``. Archiving is always allowed;
+        ``archived`` is a valid source (restore). ``src == dst`` is not a move."""
+        if src != ARCHIVED:
+            self._require(src)
+        if src == dst:
+            return False
         if dst == ARCHIVED:
             return True
         self._require(dst)
@@ -94,7 +98,7 @@ class Workflow:
             raise ValueError(f"{ARCHIVED!r} is reserved and cannot be a column")
         known = set(keys)
         for src, dsts in self.manual.items():
-            if src not in known or not set(dsts) <= known:
+            if src not in known | {ARCHIVED} or not set(dsts) <= known:
                 raise ValueError(f"manual moves from {src!r} reference unknown columns")
 
 
@@ -128,6 +132,7 @@ DEFAULT_WORKFLOW = Workflow(
         # (reopen_review_task ignores the requested target). Phase 1 fixes it.
         "review": ("triage", "todo", "ready", "done"),
         "done": ("triage", "todo", "ready"),
+        ARCHIVED: ("triage", "todo", "ready"),  # restore from the archive filter
     }),
 )
 DEFAULT_WORKFLOW.validate()

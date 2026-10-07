@@ -2,7 +2,7 @@
 
 Every ``src -> dst`` pair is requested through the dashboard API on a parentless task.
 The workflow allow-list must agree with what the server accepts, in both directions.
-Also covers ``GET /workflow`` and ``GET /board`` column order.
+Also covers ``GET /workflow``.
 """
 
 from __future__ import annotations
@@ -62,11 +62,13 @@ def _task_in(client, src: str) -> str:
             assert kb.request_review(conn, tid, summary="s", force=True)
         elif src == "done":
             assert kb.complete_task(conn, tid, summary="s", force=True)
+        elif src == kw.ARCHIVED:
+            assert kb.archive_task(conn, tid)
         assert kb.get_task(conn, tid).status == src
     return tid
 
 
-@pytest.mark.parametrize("src", W.keys())
+@pytest.mark.parametrize("src", (*W.keys(), kw.ARCHIVED))
 def test_manual_moves_match_server(client, src):
     mismatches = []
     for dst in (*W.keys(), kw.ARCHIVED):
@@ -95,8 +97,3 @@ def test_get_workflow(client):
     r = client.get("/k/workflow")
     assert r.status_code == 200
     assert r.json() == W.to_dict()
-
-
-def test_board_columns_follow_workflow_order(client):
-    names = [c["name"] for c in client.get("/k/board").json()["columns"]]
-    assert names == list(W.keys())

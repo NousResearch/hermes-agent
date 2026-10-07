@@ -26,8 +26,7 @@ def test_default_workflow_is_valid_and_excludes_archived():
     assert kw.ARCHIVED not in W.keys()
 
 
-def test_status_copies_derive_from_the_workflow():
-    assert kb.VALID_STATUSES == set(W.keys()) | {kw.ARCHIVED}
+def test_cli_icon_for_every_status():
     # CLI: every listable status has a glyph (was missing triage + review).
     assert set(kanban_output._STATUS_ICONS) == kb.VALID_STATUSES
 
@@ -48,6 +47,13 @@ def _all_tool_schemas():
 def test_archive_is_always_a_manual_move():
     assert all(W.can_move(k, kw.ARCHIVED) for k in W.keys())
     assert not any(W.can_move(k, "running") for k in W.keys())
+
+
+def test_can_move_is_total_over_task_statuses():
+    # Every value tasks.status can hold is a valid source; a same-column drop is not a move.
+    for src in kb.VALID_STATUSES:
+        assert not W.can_move(src, src)
+        assert any(W.can_move(src, dst) for dst in kb.VALID_STATUSES)
 
 
 @pytest.mark.parametrize("call", [

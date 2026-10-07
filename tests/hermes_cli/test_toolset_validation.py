@@ -235,12 +235,27 @@ def test_plugin_platform_toolset_validates_and_has_no_warnings():
 
 
 def test_unknown_toolset_does_not_suggest_itself_when_name_matches_default():
-    # If a predicate rejects the default toolset name, it shouldn't produce "did you mean 'hermes-teams'?" for 'hermes-teams'
-    platform = "teams"
-    warnings = validate_platform_toolsets({platform: ["hermes-teams"]}, lambda name: False)
-    unknown = [w for w in warnings if "unknown toolset 'hermes-teams'" in w]
-    assert len(unknown) == 1
-    assert "did you mean 'hermes-teams'?" not in unknown[0]
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    platform = "test_self_ref"
+    toolset_name = f"hermes-{platform}"
+    platform_registry.register(
+        PlatformEntry(
+            name=platform,
+            label="Test Self Ref",
+            adapter_factory=lambda _config: object(),
+            check_fn=lambda: True,
+        )
+    )
+    try:
+        # When default_valid is True via platform_registry but predicate rejects the name,
+        # it must not suggest "did you mean 'hermes-test_self_ref'?" for itself.
+        warnings = validate_platform_toolsets({platform: [toolset_name]}, lambda name: False)
+        unknown = [w for w in warnings if f"unknown toolset '{toolset_name}'" in w]
+        assert len(unknown) == 1
+        assert f"did you mean '{toolset_name}'?" not in unknown[0]
+    finally:
+        platform_registry.unregister(platform)
 
 
 def test_platform_default_keys_includes_plugin_platforms():

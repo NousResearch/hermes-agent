@@ -28,7 +28,7 @@
 <tr><td><b>閉じた学習ループ</b></td><td>エージェント自身が管理し、定期的にナッジを行うメモリ。複雑なタスク完了後の自律的なスキル生成。使用中に自己改善するスキル。LLM要約を活用したクロスセッション想起のためのFTS5セッション検索。<a href="https://github.com/plastic-labs/honcho">Honcho</a>による弁証法的ユーザーモデリング。<a href="https://agentskills.io">agentskills.io</a>のオープン標準と互換。</td></tr>
 <tr><td><b>スケジュール自動化</b></td><td>任意のプラットフォームへの配信に対応した、組み込みcronスケジューラ。日次レポート、深夜バックアップ、週次監査 — すべて自然言語で指示し、無人で実行できます。</td></tr>
 <tr><td><b>委譲と並列化</b></td><td>独立したサブエージェントを生成し、並列ワークストリームを実行。RPC経由でツールを呼び出すPythonスクリプトを書くことで、複数ステップのパイプラインをコンテキストコストゼロのターンに圧縮します。</td></tr>
-<tr><td><b>ノートPCだけでなく、どこでも動作</b></td><td>6つのターミナルバックエンド — local、Docker、SSH、Singularity、Modal、Daytona。DaytonaとModalはサーバーレス永続性を提供し、エージェントの環境はアイドル時に休止し、必要に応じて目覚めるため、セッション間のコストはほぼゼロです。月5ドルのVPSでもGPUクラスタでも動かせます。</td></tr>
+<tr><td><b>ノートPCだけでなく、どこでも動作</b></td><td>7つのターミナルバックエンド — local、Docker、SSH、Singularity、Modal、Daytona、Vercel Sandbox。DaytonaとModalはサーバーレス永続性を提供し、エージェントの環境はアイドル時に休止し、必要に応じて目覚めるため、セッション間のコストはほぼゼロです。月5ドルのVPSでもGPUクラスタでも動かせます。</td></tr>
 <tr><td><b>研究にすぐ使える</b></td><td>バッチでの軌跡生成、次世代のツール呼び出しモデルを訓練するための軌跡圧縮。</td></tr>
 </table>
 
@@ -36,7 +36,7 @@
 
 ## クイックインストール
 
-### Linux、macOS、WSL2、Termux
+### Linux、macOS、WSL2
 
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
@@ -52,11 +52,12 @@ PowerShellで以下を実行します:
 iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
-インストーラはすべてを処理します: uv、Python 3.11、Node.js、ripgrep、ffmpeg、**ポータブル版Git Bash**（MinGit、`%LOCALAPPDATA%\hermes\git`に展開 — 管理者権限不要、システムのGitインストールから完全に隔離されます）。Hermesはこのバンドル版Git Bashを使ってシェルコマンドを実行します。
+ソースインストーラは、Python 3.14、Node.js、npm、ripgrep、FFmpeg、Pythonの依存関係をPMに委ねます。
+Gitがない場合は、検証済みのGit for WindowsアーカイブをHermesのツールストアに配置します。
+システムのGitを置き換えることはありません。別配布のMSIX/App Installerパッケージとその更新管理については
+[インストール方法](https://hermes-agent.nousresearch.com/docs/getting-started/installation)を参照してください。
 
-既にGitがインストールされている場合、インストーラはそれを検出して代わりに使用します。なければ約45MBのMinGitをダウンロードするだけで済み — システムのGitに干渉することはありません。
-
-> **Android / Termux:** テスト済みの手動インストール手順は[Termuxガイド](https://hermes-agent.nousresearch.com/docs/getting-started/termux)に記載されています。Termux上では、`.[all]`エクストラがAndroid非対応の音声関連依存を引き込むため、Hermesはキュレートされた`.[termux]`エクストラをインストールします。
+> **Android / Termux:** aarch64デバイス向けに署名付きAPTリポジトリが用意されており、`stable`チャンネル（タグ付きリリース）とプレリリースの`canary`チャンネルがあります。パッケージにはPython、Node.js、TUIが含まれます。デスクトップ/サーバー向けのインストールスクリプトではなく、[Termuxガイド](https://hermes-agent.nousresearch.com/docs/getting-started/termux)に従ってください。
 >
 > **Windows:** Windowsネイティブは完全にサポートされています — 上記のPowerShellワンライナーがすべてをインストールします。WSL2を使いたい場合は、Linuxコマンドがそのまま使えます。Windowsネイティブのインストール先は`%LOCALAPPDATA%\hermes`、WSL2のインストール先はLinuxと同じく`~/.hermes`です。
 
@@ -128,7 +129,7 @@ hermes doctor       # 問題を診断
 Hermesは好きなプロバイダで動作します — それは変わりません。ただ、モデル、ウェブ検索、画像生成、TTS、クラウドブラウザのために5つもの個別APIキーを集めたくないのであれば、**[Nous Portal](https://portal.nousresearch.com)**が1つのサブスクリプションでそのすべてをカバーします:
 
 - **300以上のモデル** — `/model <name>`でいずれも選択可能
-- **Tool Gateway** — ウェブ検索（Firecrawl）、画像生成（FAL）、テキスト読み上げ（OpenAI）、クラウドブラウザ（Browser Use）をすべてあなたのサブスクリプション経由でルーティング。追加アカウントは不要です。
+- **Tool Gateway** — ウェブ検索、画像生成（FAL）、テキスト読み上げ（OpenAI）、クラウドブラウザ（Browser Use）をすべてあなたのサブスクリプション経由でルーティング。追加アカウントは不要です。
 
 新規インストールから1コマンド:
 
@@ -220,26 +221,8 @@ hermes claw migrate --overwrite  # 既存の競合を上書き
 
 コントリビューションを歓迎します！開発セットアップ、コードスタイル、PRプロセスについては[コントリビューションガイド](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing)を参照してください。
 
-コントリビュータ向けのクイックスタート — 標準のインストーラを使い、それが作成する`$HERMES_HOME/hermes-agent`（通常は`~/.hermes/hermes-agent`）の完全なgitチェックアウトから作業してください。これは`hermes update`、管理されたvenv、遅延依存関係、ゲートウェイ、ドキュメントツールが使用するレイアウトと一致します。
-
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
-uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
-```
-
-手動クローンのフォールバック（管理インストールのレイアウトを意図的に使わない使い捨てクローンやCI向け）:
-
-venvはクローンしたソースツリーの外に作成してください — エージェントが動作するディレクトリ内のvenvは、エージェントが自身のチェックアウトに対して実行する相対パスのコマンドによって消去され、実行中のランタイムをセッションの途中で破壊する可能性があります。
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv ~/.hermes/venvs/hermes-dev --python 3.11
-source ~/.hermes/venvs/hermes-dev/bin/activate
-uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
-```
+アクティベーション、日常的な使い方、依存関係の変更、環境からの離脱については、まず[PM開発者ワークフロー](website/docs/reference/package-management.md#developer-workflow)を参照してください。
+独立したテスト環境と検証コマンドについては[Development Setup](CONTRIBUTING.md#development-setup)で説明しています。
 
 ---
 

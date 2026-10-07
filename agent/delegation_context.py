@@ -32,9 +32,12 @@ def delegated_child_context(session_id: str | None = None) -> Iterator[None]:
     construction calls ``set_current_session_id``)."""
     token = _DELEGATED_CHILD_CONTEXT.set(True)
     try:
-        from gateway.session_context import scoped_current_session_id  # lazy: it calls is_delegated_child_context()
+        from gateway.session_context import (  # lazy: it calls is_delegated_child_context()
+            scoped_current_session_id,
+            scoped_gateway_context,
+        )
 
-        with scoped_current_session_id(session_id):
+        with scoped_gateway_context(False), scoped_current_session_id(session_id):
             yield
     finally:
         _DELEGATED_CHILD_CONTEXT.reset(token)

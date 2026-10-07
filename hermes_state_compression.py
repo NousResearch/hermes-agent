@@ -26,7 +26,9 @@ _COOLDOWN_ROW_SQL = (
 # fork is a separate user-visible conversation (_LISTABLE_CHILD_SQL already surfaces it as its
 # own row), so following it here would hijack the lineage tip projection onto the reset sibling
 # and make the real continuation invisible (#114271).
-_CHAIN_STEP_SQL = f"""
+def _chain_step_sql(child_scope_clause: str = "") -> str:
+    scoped_child = f"AND {child_scope_clause}" if child_scope_clause else ""
+    return f"""
                     SELECT child.id
                     FROM sessions parent
                     JOIN sessions child ON child.parent_session_id = parent.id
@@ -36,6 +38,7 @@ _CHAIN_STEP_SQL = f"""
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                       AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
+                      {scoped_child}
                     ORDER BY
                       CASE
                         WHEN child.end_reason = 'compression' THEN 0
@@ -49,6 +52,7 @@ _CHAIN_STEP_SQL = f"""
                     """
 
 
+_CHAIN_STEP_SQL = _chain_step_sql()
 # Turn-lease rows expired longer than this are swept by the next acquisition of any conversation.
 _TURN_LEASE_SWEEP_GRACE_S = 86400.0
 
@@ -721,7 +725,7 @@ class SessionCompressionMixin:
                 (time.time(), cutoff),
         ) or 0
 
-    def get_compression_chain(self, session_id: str) -> List[str]:
+    def get_compression_chain(self, session_id: str, recall_scope: object = None) -> List[str]:
         """Walk the compression-continuation chain forward: root-first through the tip (``[session_id]``
         when no continuation); ``get_compression_tip`` is the last element. A continuation is a child of
         a session with ``end_reason='compression'``. The old ``child.started_at >= parent.ended_at`` test
@@ -729,6 +733,9 @@ class SessionCompressionMixin:
         written, while a stale websocket later creates a sibling that passes it). Instead exclude
         branch/delegate/tool children and prefer children that continue the chain or are still live over
         stale closed siblings such as ``ws_orphan_reap``."""
+        if recall_scope and not self.session_matches_recall_scope(session_id, recall_scope):
+            return []
+        child_scope_sql, child_scope_params = self._recall_scope_sql("child", recall_scope)
         current = session_id
         chain = [current] if current else []
         seen = set(chain)
@@ -737,7 +744,8 @@ class SessionCompressionMixin:
         # stale mid id (#125041).
         for _ in range(_CHAIN_CAP):
             with self._read_ctx() as conn:
-                row = conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone()
+                row = conn.execute(
+                    _chain_step_sql(child_scope_sql), (current, *child_scope_params)).fetchone()
             child_id = row["id"] if row is not None else None
             if not child_id or child_id in seen:
                 return chain
@@ -746,11 +754,11 @@ class SessionCompressionMixin:
             chain.append(child_id)
         return chain
 
-    def get_compression_tip(self, session_id: str) -> Optional[str]:
+    def get_compression_tip(self, session_id: str, recall_scope: object = None) -> Optional[str]:
         """Live tip of a compression chain (``get_compression_chain`` semantics); the input
         id when no continuation exists."""
-        chain = self.get_compression_chain(session_id)
-        return chain[-1] if chain else session_id
+        chain = self.get_compression_chain(session_id, recall_scope=recall_scope)
+        return chain[-1] if chain else None
 
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")

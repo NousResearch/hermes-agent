@@ -1,6 +1,7 @@
 """OpenAI-compatible API server platform adapter (aiohttp).
 
-Serves /v1/chat/completions, /v1/responses, /v1/models, /v1/capabilities, /api/sessions,
+Serves /v1/chat/completions, the dedicated authenticated gateway-proxy chat route,
+/v1/responses, /v1/models, /v1/capabilities, /api/sessions,
 /v1/runs, /api/jobs and /health* (full table: ``APIServerAdapter._http_route_table``); any
 OpenAI-compatible frontend connects at http://localhost:8642/v1 with API_SERVER_KEY. Under
 ``gateway.multiplex_profiles`` secondary profiles live at ``/p/<profile>/...``.
@@ -26,7 +27,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 # _resolve_request_profile result for a /p/<profile>/ prefix this gateway does not serve (-> 404);
 # distinct from None (no prefix / multiplexing off -> default profile).
@@ -1187,6 +1188,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     # Admission-gated OpenAI-compatible entry points (bodies live in the mixin).
     _handle_chat_completions = _admit_api_agent_request(OpenAICompatRoutesMixin._handle_chat_completions)
+    _handle_gateway_proxy_chat_completions = _admit_api_agent_request(
+        OpenAICompatRoutesMixin._handle_gateway_proxy_chat_completions)
     _handle_responses = _admit_api_agent_request(OpenAICompatRoutesMixin._handle_responses)
 
     def __init__(self, config: PlatformConfig):
@@ -1581,6 +1584,130 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return self._auth_failed_response()
 
     @staticmethod
+    def _single_gateway_proxy_header(request: "web.Request", name: str) -> Optional[str]:
+        """One exact header value; missing and duplicate fields are invalid."""
+        headers = request.headers
+        getall = getattr(headers, "getall", None)
+        if callable(getall):
+            values = list(getall(name, []))
+        elif name in headers:
+            values = [headers.get(name)]
+        else:
+            values = []
+        return values[0] if len(values) == 1 and isinstance(values[0], str) else None
+
+    def _parse_gateway_proxy_context(
+        self, request: "web.Request",
+    ) -> tuple[Optional[dict[str, str]], Optional[str], Optional["web.Response"]]:
+        """Mandatory, non-downgradeable identity for the dedicated proxy route."""
+        from gateway.recall_scope import (
+            GATEWAY_PROXY_MARKER_HEADER,
+            GATEWAY_PROXY_ORIGIN_HEADER,
+            GATEWAY_PROXY_SESSION_KEY_HEADER,
+            canonical_recall_identity,
+            decode_gateway_proxy_origin,
+            decode_gateway_proxy_session_key,
+        )
+
+        marker = self._single_gateway_proxy_header(request, GATEWAY_PROXY_MARKER_HEADER)
+        encoded_origin = self._single_gateway_proxy_header(request, GATEWAY_PROXY_ORIGIN_HEADER)
+        encoded_session_key = self._single_gateway_proxy_header(
+            request, GATEWAY_PROXY_SESSION_KEY_HEADER)
+        if marker != "1" or not encoded_origin or not encoded_session_key:
+            return None, None, _error_response(
+                "Gateway proxy context is missing or malformed", 400,
+                code="gateway_proxy_context_invalid")
+        # Normal route admission authenticated this request. Keep direct/manual
+        # handler wiring from treating the historical no-key test mode as trusted.
+        if not self._expected_api_key():
+            return None, None, _error_response(
+                "Gateway proxy context requires API key authentication", 403,
+                err_type="gateway_auth_error", code="gateway_proxy_auth_required")
+        try:
+            origin = decode_gateway_proxy_origin(encoded_origin)
+            session_key = decode_gateway_proxy_session_key(encoded_session_key)
+        except ValueError as exc:
+            return None, None, _error_response(
+                str(exc), 400, code="gateway_proxy_context_invalid")
+        identity = canonical_recall_identity(origin)
+        request_profile = (_api_request_profile.get() or "default").strip().lower()
+        if identity is None or identity.profile != request_profile:
+            return None, None, _error_response(
+                "Gateway proxy context does not match the requested profile", 409,
+                code="gateway_proxy_profile_mismatch")
+        return origin, session_key, None
+
+    async def _verify_gateway_proxy_session_context(
+        self, *, session_id: str, origin: Mapping[str, str], session_key: str,
+    ) -> Optional["web.Response"]:
+        """Create or verify durable origin + exact session key atomically."""
+        from gateway.recall_scope import canonical_recall_identity
+
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return _error_response(
+                "Gateway proxy scope could not open state.db", 503,
+                err_type="server_error", code="gateway_proxy_state_unavailable")
+        try:
+            existing = await asyncio.to_thread(db.get_session, session_id)
+            if not existing:
+                encoded = json.dumps(
+                    dict(origin), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+                def _insert_if_absent(conn):
+                    return conn.execute(
+                        """INSERT INTO sessions (
+                               id, source, user_id, session_key, chat_id,
+                               chat_type, thread_id, profile_name, origin_json,
+                               started_at
+                           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(id) DO NOTHING""",
+                        (
+                            session_id, str(origin.get("platform") or ""),
+                            origin.get("user_id") or None, session_key,
+                            origin.get("chat_id") or None, origin.get("chat_type") or None,
+                            origin.get("thread_id") or None, origin.get("profile") or None,
+                            encoded, time.time(),
+                        ),
+                    ).rowcount == 1
+
+                if not hasattr(db, "_execute_write"):
+                    raise RuntimeError("SessionDB lacks atomic insert support")
+                await asyncio.to_thread(db._execute_write, _insert_if_absent)
+                existing = await asyncio.to_thread(db.get_session, session_id)
+        except Exception:
+            logger.exception("Gateway proxy could not establish durable origin for %s", session_id)
+            return _error_response(
+                "Gateway proxy scope could not be persisted", 503,
+                err_type="server_error", code="gateway_proxy_scope_persist_failed")
+
+        raw_durable = (existing or {}).get("origin_json")
+        try:
+            durable_origin = json.loads(raw_durable) if raw_durable else None
+        except (TypeError, ValueError):
+            durable_origin = None
+        live_identity = canonical_recall_identity(origin)
+        durable_identity = canonical_recall_identity(durable_origin)
+        if live_identity is None or durable_identity is None:
+            return _error_response(
+                "Gateway proxy session has no unambiguous durable origin", 409,
+                code="gateway_proxy_scope_unavailable")
+        durable_session_key = (existing or {}).get("session_key")
+        if not isinstance(durable_session_key, str) or not durable_session_key:
+            return _error_response(
+                "Gateway proxy session has no durable session key", 409,
+                code="gateway_proxy_session_key_unavailable")
+        if durable_session_key != session_key:
+            return _error_response(
+                "Gateway proxy session key does not match the durable session", 409,
+                code="gateway_proxy_session_key_mismatch")
+        if live_identity != durable_identity:
+            return _error_response(
+                "Gateway proxy context does not match the durable session origin", 409,
+                code="gateway_proxy_scope_mismatch")
+        return None
+
+    @staticmethod
     def _normalize_callback_platform(value: str) -> str:
         normalized = (value or "").strip().lower().replace("-", "_")
         return normalized if re.fullmatch(r"[a-z0-9_]+", normalized) else ""
@@ -1718,6 +1845,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _http_route_table(self) -> List[tuple]:
         """(method, path, handler) rows registered by ``connect()`` (a method so multiplex tests
         can assert the /p/<profile>/ mirrors without a listener)."""
+        from gateway.recall_scope import GATEWAY_PROXY_CHAT_COMPLETIONS_PATH
+
         routes: List[tuple] = [
             ("GET", "/health", self._handle_health),
             ("GET", "/health/detailed", self._handle_health_detailed),
@@ -1743,6 +1872,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
             ("POST", "/api/sessions/{session_id}/model", self._handle_session_model_lock),
+            ("POST", GATEWAY_PROXY_CHAT_COMPLETIONS_PATH,
+             self._handle_gateway_proxy_chat_completions),
             ("POST", "/v1/chat/completions", self._handle_chat_completions),
             ("POST", "/v1/responses", self._handle_responses),
             ("GET", "/v1/responses/{response_id}", self._handle_get_response),
@@ -4098,8 +4229,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _bind_api_server_session(
         *, chat_id: str = "", session_key: str = "", session_id: str = "", profile: str = "",
         browser_control_principal: str = "", browser_control_transport_family: str = "",
-        session_history_delivery: str = "") -> list:
+        session_history_delivery: str = "",
+        gateway_origin: Optional[Mapping[str, str]] = None) -> list:
         """Bind an API turn with push disabled and history delivery default-denied.
+
+        Ordinary API requests have no messaging-recall capability. The dedicated
+        authenticated proxy binds its verified gateway origin.
 
         Only routes whose continuation reads SessionDB may pass "1". An omitted
         declaration or fingerprint-derived identity keeps delegation synchronous.
@@ -4108,11 +4243,23 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         reach ``HERMES_SESSION_PROFILE``: the persistent-Docker container key is derived from it, so an
         unbound profile collapses every profile's turns onto the default sandbox (#96370)."""
         from gateway.session_context import set_session_vars
+        origin = dict(gateway_origin or {})
         return set_session_vars(
-            platform="api_server", chat_id=chat_id, session_key=session_key, session_id=session_id,
-            profile=profile, browser_control_principal=browser_control_principal,
+            platform=str(origin.get("platform") or "api_server"),
+            chat_id=str(origin.get("chat_id") or chat_id),
+            parent_chat_id=str(origin.get("parent_chat_id") or ""),
+            prospective_thread_id=str(origin.get("prospective_thread_id") or ""),
+            chat_type=str(origin.get("chat_type") or ""),
+            thread_id=str(origin.get("thread_id") or ""),
+            user_id=str(origin.get("user_id") or ""),
+            user_id_alt=str(origin.get("user_id_alt") or ""),
+            scope_id=str(origin.get("scope_id") or origin.get("guild_id") or ""),
+            profile=str(origin.get("profile") or profile),
+            session_key=session_key, session_id=session_id,
+            browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family,
-            async_delivery=False, cron_session="", session_history_delivery=session_history_delivery)
+            async_delivery=False, cron_session="", gateway_context=bool(origin),
+            session_history_delivery=session_history_delivery)
 
     def _turn_runtime_metadata(
         self, agent: Any, *, route: Optional[Dict[str, Any]], requested_runtime: Optional[Dict[str, Any]],
@@ -4197,7 +4344,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
         relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result",
         resume_unanswered_turn: bool = False, approval_notify_callback=None,
-        approval_session_key: Optional[str] = None) -> tuple:
+        approval_session_key: Optional[str] = None,
+        gateway_origin: Optional[Mapping[str, str]] = None) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``approval_notify_callback`` (with ``approval_session_key``) routes dangerous-command
         approval requests to the caller's stream, keyed like ``/v1/runs`` approvals (#51871).
@@ -4217,6 +4365,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         request_profile = _api_request_profile.get()
         request_browser_control_principal = _api_request_browser_control_principal.get()
         request_browser_control_transport_family = _api_request_browser_control_transport_family.get()
+        request_gateway_origin = dict(gateway_origin or {})
 
         def _run():
             from gateway.session_context import clear_session_vars
@@ -4226,6 +4375,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     session_id=session_id or "", profile=request_profile or "",
                     browser_control_principal=request_browser_control_principal,
                     browser_control_transport_family=request_browser_control_transport_family,
+                    gateway_origin=request_gateway_origin or None,
                     session_history_delivery=session_history_delivery)
                 agent = None
                 from agent.notification_presentation import notification_turn

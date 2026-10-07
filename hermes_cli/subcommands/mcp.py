@@ -39,7 +39,8 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         "--connect-timeout", type=float,
         help="Timeout in seconds for initial connection and tool discovery")
     mcp_add_p.add_argument(
-        "--env", nargs="*", default=[], help="Environment variables for stdio servers (KEY=VALUE)")
+        "--env", action="append", nargs="+", default=[], metavar="KEY=VALUE",
+        help="Environment variables for stdio servers; accepts multiple values and may be repeated")
 
     mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")
     mcp_rm_p.add_argument("name", help="Server name to remove")

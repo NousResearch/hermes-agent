@@ -149,6 +149,65 @@ def step_state_db_guard() -> dict:
     return {"ok": False, "error": message}
 
 
+def step_check_git_deleted_files() -> dict:
+    """Check for tracked files deleted from the source checkout after update.
+
+    Reports any tracked files that were deleted during update or maintenance
+    steps. This helps diagnose asset loss or unexpected deletions (#134555).
+    Read-only, diagnostic only.
+    """
+    import subprocess
+
+    try:
+        root = install_root()
+        if not (root / ".git").exists():
+            return {"ok": True, "skipped": "not-a-git-checkout"}
+
+        # Get list of deleted tracked files
+        result = subprocess.run(
+            ["git", "diff-files", "--name-only", "-d"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if result.returncode != 0:
+            logger.debug("git diff-files failed: %s", result.stderr)
+            return {"ok": True, "skipped": "git-query-failed"}
+
+        deleted_files = [
+            line.strip()
+            for line in result.stdout.splitlines()
+            if line.strip()
+        ]
+
+        if not deleted_files:
+            return {"ok": True, "deleted": 0}
+
+        logger.warning(
+            "post-update: detected %d deleted tracked files in %s: %s",
+            len(deleted_files),
+            root,
+            "; ".join(deleted_files[:10]),  # Log first 10
+        )
+
+        if len(deleted_files) > 10:
+            logger.warning("... and %d more", len(deleted_files) - 10)
+
+        return {
+            "ok": True,
+            "deleted": len(deleted_files),
+            "files": deleted_files[:10] if deleted_files else [],
+        }
+    except subprocess.TimeoutExpired:
+        logger.warning("git diff-files timed out")
+        return {"ok": True, "skipped": "git-timeout"}
+    except Exception as exc:
+        logger.warning("check_git_deleted_files failed: %s", exc)
+        return {"ok": False, "error": str(exc)}
+
+
 def step_drop_live_plugin_catalog() -> dict:
     """Drop the active home's cached live plugin catalog after a code change.
 
@@ -298,6 +357,7 @@ HOME_STEPS: tuple = (
     ("adopt_blessed_checkout", step_adopt_blessed_checkout),
     ("migrate_config", step_migrate_config),
     ("sync_skills", step_sync_skills),
+    ("check_git_deleted_files", step_check_git_deleted_files),
     ("state_db_guard", step_state_db_guard),
     ("drop_live_plugin_catalog", step_drop_live_plugin_catalog),
     ("expose_cli", expose_cli),

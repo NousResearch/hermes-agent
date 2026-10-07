@@ -34,8 +34,9 @@ def test_registries_are_disjoint_and_named():
 def test_home_steps_cover_the_boot_contract():
     # boot_bootstrap gates these with the per-home record; the three
     # user-state concerns (config, skills, state.db) must all be present.
+    # Diagnostic step for deleted files tracking (#134555) is also required.
     names = {name for name, _ in HOME_STEPS}
-    assert {"migrate_config", "sync_skills", "state_db_guard"} <= names
+    assert {"migrate_config", "sync_skills", "state_db_guard", "check_git_deleted_files"} <= names
 
 
 # ── run_steps isolation ──────────────────────────────────────────────
@@ -126,6 +127,75 @@ def test_state_db_guard_passes_valid_db(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
     assert step_state_db_guard() == {"ok": True}
+
+
+# ── step_check_git_deleted_files ─────────────────────────────────────
+
+
+def test_check_git_deleted_files_skips_non_checkout(tmp_path, monkeypatch):
+    """Skips gracefully when directory is not a git checkout."""
+    from hermes_cli.post_update import step_check_git_deleted_files
+
+    monkeypatch.setattr("pm.paths.install_root", lambda: tmp_path)
+    result = step_check_git_deleted_files()
+    assert result == {"ok": True, "skipped": "not-a-git-checkout"}
+
+
+def test_check_git_deleted_files_detects_deletions(tmp_path, monkeypatch):
+    """Detects and logs deleted tracked files (#134555)."""
+    import subprocess
+    from hermes_cli.post_update import step_check_git_deleted_files
+
+    # Create a minimal git repo with a file
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (tmp_path / "tracked.txt").write_text("content")
+
+    # Mock install_root and git subprocess
+    monkeypatch.setattr("pm.paths.install_root", lambda: tmp_path)
+
+    call_count = [0]
+
+    def mock_run(*args, **kwargs):
+        call_count[0] += 1
+        result = subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout="apps/desktop/public/image.png\nassets/icon.png\n",
+            stderr="",
+        )
+        return result
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    result = step_check_git_deleted_files()
+    assert result["ok"] is True
+    assert result["deleted"] == 2
+    assert len(result["files"]) <= 2
+
+
+def test_check_git_deleted_files_handles_git_error(tmp_path, monkeypatch):
+    """Gracefully handles git command failures."""
+    import subprocess
+    from hermes_cli.post_update import step_check_git_deleted_files
+
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    monkeypatch.setattr("pm.paths.install_root", lambda: tmp_path)
+
+    def mock_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=1,
+            stdout="",
+            stderr="fatal: not a git repository",
+        )
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    result = step_check_git_deleted_files()
+    assert result["ok"] is True
+    assert result.get("skipped") == "git-query-failed"
 
 
 # ── step_drop_live_plugin_catalog ────────────────────────────────────

@@ -149,7 +149,7 @@ class MCPEventsRequestHandler(BaseHTTPRequestHandler):
         except Exception:
             return drop(400, "delivery body is not JSON", emitter=sub["emitter_url"], ref=sub_id)
 
-        event_name = str(payload.get("event") or sub.get("event") or "unknown")
+        event_name = str(payload.get("name") or sub.get("event") or "unknown")
         text = security.wrap_event(sub["emitter_url"], event_name, sub_id,
                                    security.render_event_payload(payload))
         chat_id = f"mcp-events:{sub_id}"  # one conversation per subscription, like A2A's per-context routing

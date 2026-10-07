@@ -514,3 +514,14 @@ class TestUnsubscribeShape:
         assert params["arguments"] == {"from": "a@b.c"}
         assert params["delivery"] == {"url": "https://hooks.example.com/mcp/events/webhook/loc1"}
         assert "subscriptionId" not in params
+
+
+class TestDeliveryEventName:
+    def test_the_event_name_comes_from_name_in_the_delivery(self, live_receiver):
+        stub, base = live_receiver
+        _subscribe_stub(stub, event="deploy")
+        status, _ = _signed_post(base, "/mcp/events/webhook/loc-1", stub._sec.webhook_secret,
+                                 {"eventId": "e1", "name": "deploy.finished", "timestamp": "2026-10-07T12:00:00Z",
+                                  "data": {}, "cursor": None}, webhook_id="wh-name")
+        assert status == 200
+        assert stub.dispatched[-1]["event"] == "deploy.finished"

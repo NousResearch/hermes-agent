@@ -1,0 +1,39 @@
+# Plugin-catalog entry for hermes-frihet v0.1.0.
+#
+# Per the catalog admission rules (plugin-catalog/README.md in
+# NousResearch/hermes-agent):
+#  - The maintainer of the plugin repository (Frihet-io) is the only one
+#    authorised to submit this entry.
+#  - ``tier`` MUST be ``community`` — ``official`` in the catalog means
+#    "maintained by NousResearch". We describe ourselves as the
+#    "Official Hermes Agent integration for Frihet" in the description
+#    and README; the catalog's tier label is a Nous-internal trust
+#    signal, not a brand claim.
+#  - ``sha`` MUST be a 40-character full commit hash of a tagged,
+#    audited commit of Frihet-io/hermes-frihet. Update via a new PR
+#    whenever we ship a meaningful change (rule 4 of the admission
+#    policy).
+name: frihet
+repo: https://github.com/Frihet-io/hermes-frihet
+# Pinned at v0.1.0 / Frihet-io/hermes-frihet @ f3312087a8acda01ee3a5b089017f2a2657d2d5c
+# (feat(doctor): honour the Hermes OAuth token cache when no API key is set).
+# 75 tests green, hermes plugins validate --install-deps 15/15, security scan safe.
+sha: f3312087a8acda01ee3a5b089017f2a2657d2d5c
+description: "Official Hermes Agent integration for Frihet — discoverability, setup, diagnostics, and operating guidance for the Frihet MCP. Zero duplicated tools; the canonical 158-operation Frihet surface stays in @frihet/mcp-server and the remote endpoint https://mcp.frihet.io/mcp."
+maintainer: Frihet-io
+tier: community
+category: tools
+docs_url: https://github.com/Frihet-io/hermes-frihet#readme
+requires_hermes: ">=0.21.5"
+version: "0.1.0"
+# Capabilities mirror plugin.yaml exactly. Zero Python tools on purpose:
+# the canonical Frihet surface (158 ops) lives in @frihet/mcp-server and
+# is reached via the native Hermes MCP client. The plugin adds a skill,
+# a /frihet slash command, and a pre_tool_call hook that escalates
+# irreversible Frihet operations to the human approval gate.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

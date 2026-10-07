@@ -941,6 +941,17 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
     sys.exit(0)
 
 
+def _reexec_dashboard(argv: list[str], env: dict[str, str]) -> NoReturn:
+    """Start the dashboard and keep the child exit status."""
+    # Windows execvpe can crash on Python 3.14 after it starts the child.
+    if sys.platform == "win32":
+        proc = subprocess.Popen(argv, env=env)
+        # health: allow HX006 -- wait for the dashboard lifetime and return its exit status
+        sys.exit(proc.wait())
+    else:
+        os.execvpe(sys.executable, argv, env)
+
+
 def _route_named_profile_dashboard(
     args, _headless_backend: bool, _ssh_owner_nonce: str, _token_file: str) -> None:
     """Route a named-profile launch to the single MACHINE dashboard (per-request ``?profile=`` scoping
@@ -1001,13 +1012,7 @@ def _route_named_profile_dashboard(
         env["HERMES_HOME"] = str(get_default_hermes_root())
     except Exception:
         env.pop("HERMES_HOME", None)  # prior behaviour rather than blocking the reroute
-    # On Windows os.execvpe() spawns via CreateProcess then exits, which under
-    # Python 3.14+ can crash with STATUS_ACCESS_VIOLATION; use Popen + exit.
-    if sys.platform == "win32":
-        proc = subprocess.Popen(reexec_argv, env=env)
-        sys.exit(proc.wait())
-    else:
-        os.execvpe(sys.executable, reexec_argv, env)
+    _reexec_dashboard(reexec_argv, env)
 
 
 def _resolve_dashboard_web_dist(args, _headless_backend: bool) -> None:

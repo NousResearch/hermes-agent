@@ -34,6 +34,13 @@ logger = logging.getLogger(__name__)
 
 _BWS_RUN_TIMEOUT = 30
 
+# Rate-limit retry: gateways of several profiles share one machine account and
+# start together, so Bitwarden answers the burst with "429 ... Try again in Ns"
+# (#126831). Bounded retries honour that hint instead of failing the profile.
+_BWS_RATE_LIMIT_RETRIES = 2
+_RETRY_AFTER_RE = re.compile(r"try again in (\d+)\s*s", re.IGNORECASE)
+_BWS_RETRY_MAX_DELAY = 5.0
+
 # <hermes_home>/cache/bws_cache.json holds only secret VALUES (never the access
 # token); kept out of .env so users editing .env don't commit BSM-sourced secrets.
 _CacheKey = Tuple[str, str, str]  # (access_token_fingerprint, project_id, server_url)
@@ -61,8 +68,11 @@ def _encrypted_disk_cache_path(home_path: Optional[Path] = None) -> Path:
 # First matching rule wins. The BSM identity endpoint rejects a revoked /
 # expired machine-account token with an OAuth-style
 # `[400 Bad Request] {"error":"invalid_client"}`, hence those AUTH tokens.
+# A 429 lands here before AUTH: the shared-vault burst answer is
+# `[429 Too Many Requests] ... Slow down! ... Try again in 1s` (#126831).
 _BWS_ERROR_RULES = (
     (ErrorKind.TIMEOUT, ("timed out",)),
+    (ErrorKind.RATE_LIMITED, ("429", "too many requests", "slow down", "rate limit")),
     (ErrorKind.BINARY_MISSING, ("binary not available", "failed to invoke")),
     (ErrorKind.AUTH_FAILED, ("unauthorized", "invalid token", "access token", "401", "403",
                              "invalid_client", "invalid_grant", "400 bad request")),
@@ -176,6 +186,31 @@ def _read_encrypted_disk_cache(*, cache_key: _CacheKey, access_token: str, max_a
 # --- Secret fetch -----------------------------------------------------------
 
 
+def _fetch_with_rate_limit_retry(
+    bws: Path, access_token: str, project_id: str, server_url: str,
+) -> Tuple[Dict[str, str], List[str]]:
+    """One ``bws secret list`` with bounded retries on server-side 429s.
+
+    A RATE_LIMITED failure sleeps per the server's "Try again in Ns" hint
+    (capped at ``_BWS_RETRY_MAX_DELAY``) and retries up to
+    ``_BWS_RATE_LIMIT_RETRIES`` times; any other failure raises immediately,
+    and an exhausted budget re-raises so the stale-cache fallback can apply.
+    """
+    for attempt in range(_BWS_RATE_LIMIT_RETRIES + 1):
+        try:
+            return _run_bws_list(bws, access_token, project_id, server_url)
+        except RuntimeError as exc:
+            if (attempt >= _BWS_RATE_LIMIT_RETRIES
+                    or _classify_bws_error(str(exc)) != ErrorKind.RATE_LIMITED):
+                raise
+            match = _RETRY_AFTER_RE.search(str(exc))
+            delay = min(float(match.group(1)) + 0.5, _BWS_RETRY_MAX_DELAY) if match else 1.0
+            logger.warning("bws rate-limited (attempt %d/%d), retrying in %.1fs",
+                           attempt + 1, _BWS_RATE_LIMIT_RETRIES + 1, delay)
+            time.sleep(delay)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 def fetch_bitwarden_secrets(
     *, access_token: str, project_id: str, binary: Optional[Path] = None,
     cache_ttl_seconds: float = 300, use_cache: bool = True, server_url: str = "",
@@ -186,9 +221,11 @@ def fetch_bitwarden_secrets(
 
     ``server_url``: region / self-hosted instance (empty = US Cloud). With
     ``encrypted_cache_enabled`` fresh entries are written AES-GCM encrypted and a
-    last-good entry may be served after NETWORK/TIMEOUT failures for up to
-    ``encrypted_cache_max_stale_seconds`` — independent of the fresh TTL, so
+    last-good entry may be served after NETWORK/TIMEOUT/RATE_LIMITED failures for
+    up to ``encrypted_cache_max_stale_seconds`` — independent of the fresh TTL, so
     ``cache_ttl_seconds: 0`` can coexist with a break-glass offline cache.
+    RATE_LIMITED failures are first retried with backoff (see
+    ``_fetch_with_rate_limit_retry``).
     Raises ``RuntimeError`` on fatal conditions (missing binary, auth failure,
     unparseable output); env_loader catches, the setup wizard lets it propagate.
     """
@@ -220,14 +257,15 @@ def fetch_bitwarden_secrets(
                            "`hermes secrets bitwarden setup`.")
 
     try:
-        secrets, warnings = _run_bws_list(bws, access_token, project_id, server_url)
+        secrets, warnings = _fetch_with_rate_limit_retry(bws, access_token, project_id, server_url)
     except RuntimeError as exc:
         # Stale fallback ONLY for transport failures — never AUTH_FAILED / INTERNAL,
         # where old secrets would mask a real problem (without it a fleet sharing
         # one project all stops on a network blip). With the encrypted cache on it
         # is the ONLY fallback (at-rest payload must never be plaintext); else the
         # plain DiskCache is read with ttl=inf, but only when the real TTL > 0.
-        if use_cache and _classify_bws_error(str(exc)) in (ErrorKind.NETWORK, ErrorKind.TIMEOUT):
+        if use_cache and _classify_bws_error(str(exc)) in (
+                ErrorKind.NETWORK, ErrorKind.TIMEOUT, ErrorKind.RATE_LIMITED):
             stale = label = None
             if encrypted_cache_enabled:
                 stale = _read_encrypted(encrypted_cache_max_stale_seconds)
@@ -337,7 +375,7 @@ class BitwardenSource(SecretSource):
             "project_id": {"description": "BSM project UUID", "default": ""},
             "cache_ttl_seconds": {"description": "Fresh disk+memory cache TTL; 0 disables fresh-cache reuse",
                                   "default": 300},
-            "encrypted_cache": {"description": "Encrypted last-good cache for network/timeout fallback",
+            "encrypted_cache": {"description": "Encrypted last-good cache for network/timeout/rate-limit fallback",
                                 "default": {"enabled": False, "max_stale_seconds": 0}},
             "override_existing": {"description": "BSM values overwrite .env/shell values", "default": True},
             "auto_install": {"description": "Auto-download the pinned bws binary", "default": True},

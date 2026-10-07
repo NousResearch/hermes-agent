@@ -4420,9 +4420,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Recognize a handoff the model paraphrased behind the bracketed marker.
 
         The marker alone is not enough (a reply could quote it while discussing
-        compaction), so the window AFTER the marker must also carry compaction
-        vocabulary — the marker itself contains "compaction" and would satisfy
-        the token check on its own."""
+        compaction), so the paraphrased boilerplate AFTER the marker must also
+        carry compaction vocabulary; the marker is skipped so its own words can
+        never confirm itself."""
         if not text.startswith(_HANDOFF_MARKER_PREFIX):
             return False
         head_end = len(_HANDOFF_MARKER_PREFIX)

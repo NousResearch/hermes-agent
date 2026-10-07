@@ -10,10 +10,10 @@
   Parâmetros de URL: ?estatico · ?sofundo · ?fps · ?q=0.4..1
   Atalhos: H esconde a interface · F tela cheia · M microfone · P pensar · espaço fala · 1–4 formas · D mostra FPS
 */
-import { CFG, IMG, ASSETS, PARAMS, STILL, SO_FUNDO, REDUCED, COARSE, MOBILE, FONT } from './config.js';
+import { CFG, IMG, HEAD3D, ASSETS, PARAMS, STILL, SO_FUNDO, REDUCED, COARSE, MOBILE, FONT } from './config.js';
 import { clamp, mix, ease, rnd, $, toast } from './util.js';
 import { QUAD_VS, BG_FS, MESH_VS, MESH_FS, BODY_FS, PART_VS, PART_FS } from './shaders.js';
-import { buildParticles, buildMesh, STRIDE } from './model3d.js';
+import { buildSolid, buildParticles, buildMesh, STRIDE } from './model3d.js';
 import { createAudio } from './audio.js';
 import { createPose } from './pose.js';
 import { buildShapes, buildText } from './shapes.js';
@@ -47,7 +47,7 @@ function loadImage(src) {
 }
 
 function start(imgs) {
-  const [imFundo, imMascaras, imCorpoRGB, imCorpoA, imEmissao, imInfo] = imgs;
+  const [imFundo, imMascaras, imCorpoRGB, imCorpoA, imEmissao, imInfo, ...imVistas] = imgs;
   const gl = canvas.getContext('webgl', { antialias: false, alpha: false, depth: true, stencil: false, powerPreference: 'high-performance' });
   if (!gl) throw new Error('este navegador não liberou WebGL (ative a aceleração de hardware ou use Chrome, Edge ou Safari)');
   const bctx = bloomCv.getContext('2d');
@@ -112,16 +112,43 @@ function start(imgs) {
   if (!total) throw new Error('as camadas de partículas vieram vazias');
   const cap = CFG.maxParticles || (MOBILE ? 90000 : 400000);
   const keep = Math.min(1, cap / total);                 // celular: amostra e compensa o brilho (uGain)
-  // busto 3D (model3d.js): aura da foto + superfície do manequim + orelhas, e a malha escura que tampa o que fica atrás
-  const pts = buildParticles(em, inf, keep), mesh = buildMesh();
-  const N = pts.length / STRIDE;
+  // busto 3D por vistas (model3d.js): a cabeça medida na frente (alfa) e no perfil (vista de 90°); cada vista vira um
+  // conjunto de partículas preso à superfície. Ficam em sequência no buffer: parados, frente, vistas
+  const views = HEAD3D.VIEWS.map((v, i) => ({ yaw: v.yaw, pixels: pixels(imVistas[i]) }));
+  const prof = new Array(IMG.h);
+  {
+    const pv = views.reduce((a, v) => (v.yaw > a.yaw ? v : a)).pixels;
+    for (let y = 0; y < IMG.h; y++) {
+      let l = -1, r = -1;
+      for (let x = 0; x < IMG.w; x++) { const k = (y * IMG.w + x) * 4; if (pv[k] + pv[k + 1] + pv[k + 2] > 150) { if (l < 0) l = x; r = x; } }
+      prof[y] = [l, r];
+    }
+  }
+  const solid = buildSolid(pixels(imCorpoA), prof);
+  const pts = buildParticles(em, inf, keep, solid, views), mesh = buildMesh(solid);
+  const N = pts.length / STRIDE, NSETS = views.length + 1;
+  const RANGE = Array.from({ length: NSETS + 1 }, () => [0, 0]);   // [início, quantidade]: 0 = parados, 1 = frente, 2.. = vistas
+  for (let i = 0; i < N; i++) RANGE[pts[i * STRIDE + 13] + 1][1]++;
+  for (let s = 1, at = RANGE[0][1]; s <= NSETS; s++) { RANGE[s][0] = at; at += RANGE[s][1]; }
+  const fillAt = RANGE.map((r) => r[0]);
   const homeT = new Float32Array(N * 2), colT = new Uint8Array(N * 4), infoT = new Uint8Array(N * 4), p3T = new Float32Array(N * 4);
-  for (let i = 0; i < N; i++) {
-    const o = i * STRIDE;
+  for (let j = 0; j < N; j++) {
+    const o = j * STRIDE, i = fillAt[pts[o + 13] + 1]++;
     homeT[i * 2] = pts[o]; homeT[i * 2 + 1] = pts[o + 1];
     colT[i * 4] = pts[o + 2]; colT[i * 4 + 1] = pts[o + 3]; colT[i * 4 + 2] = pts[o + 4]; colT[i * 4 + 3] = pts[o + 5] * 42;
     infoT[i * 4] = pts[o + 6]; infoT[i * 4 + 1] = pts[o + 7]; infoT[i * 4 + 2] = pts[o + 8]; infoT[i * 4 + 3] = (rnd() * 255) | 0;
     for (let k = 0; k < 4; k++) p3T[i * 4 + k] = pts[o + 9 + k];
+  }
+  // pesos das vistas pro giro a: as duas vizinhas, em rampa linear (a frente é o conjunto 1; o lado esquerdo espelha)
+  const VIEW_YAWS = [0, ...views.map((v) => v.yaw)];
+  function viewWeights(a) {
+    const t = Math.abs(a), w = new Float32Array(NSETS);
+    let k = 0;
+    while (k < VIEW_YAWS.length - 1 && t > VIEW_YAWS[k + 1]) k++;
+    if (k === VIEW_YAWS.length - 1) { w[k] = 1; return w; }
+    const f = clamp((t - VIEW_YAWS[k]) / (VIEW_YAWS[k + 1] - VIEW_YAWS[k]), 0, 1);
+    w[k] = 1 - f; w[k + 1] = f;
+    return w;
   }
   const gain = 1 / keep;
   const SHAPES = buildShapes(N, homeT);
@@ -287,6 +314,7 @@ function start(imgs) {
 
     if (!SO_FUNDO) {
       gl.enable(gl.BLEND);
+      const yawNow = head.pose.yaw.x * ST.head, VW = viewWeights(yawNow);
       gl.clear(gl.DEPTH_BUFFER_BIT);
       gl.enable(gl.DEPTH_TEST);
       if (ST.head > 0.002) {
@@ -299,6 +327,7 @@ function start(imgs) {
         fieldUniforms(p, fieldOn);
         head.uniforms(gl, p);
         gl.uniform1f(p.u.uVis, ST.head);
+        gl.uniform1f(p.u.uFrontW, VW[0]);
         for (let loc = 1; loc < 5; loc++) gl.disableVertexAttribArray(loc);
         attr(0, B.meshHome, 2, gl.FLOAT, false, 0);
         attr(5, B.meshP3, 4, gl.FLOAT, false, 0);
@@ -314,6 +343,7 @@ function start(imgs) {
         fieldUniforms(p, fieldOn);
         head.uniforms(gl, p);
         gl.uniform1f(p.u.uVis, ST.head);
+        gl.uniform1f(p.u.uFrontW, VW[0]);
         gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, T.bodyRGB); gl.uniform1i(p.u.uBodyRGB, 0);
         gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, T.bodyA); gl.uniform1i(p.u.uBodyA, 1);
         gl.depthMask(false);
@@ -349,7 +379,16 @@ function start(imgs) {
       attr(3, B.shape[fromShape] || B.shape.head, 3, gl.FLOAT, false, 0);
       attr(4, B.shape[toShape] || B.shape.head, 3, gl.FLOAT, false, 0);
       attr(5, B.p3, 4, gl.FLOAT, false, 0);
-      gl.drawArrays(gl.POINTS, 0, N);
+      // parados (ombros, aura) e as duas vistas vizinhas do giro atual, cada uma com o seu peso
+      gl.uniform1f(u.uMirror, 1);
+      gl.uniform1f(u.uSetW, 1);
+      gl.drawArrays(gl.POINTS, RANGE[0][0], RANGE[0][1]);
+      for (let s = 0; s < NSETS; s++) {
+        if (VW[s] < 0.002 || !RANGE[s + 1][1]) continue;
+        gl.uniform1f(u.uMirror, s > 0 && yawNow < 0 ? -1 : 1);
+        gl.uniform1f(u.uSetW, VW[s]);
+        gl.drawArrays(gl.POINTS, RANGE[s + 1][0], RANGE[s + 1][1]);
+      }
       gl.disable(gl.DEPTH_TEST);
       gl.depthMask(true);
     }

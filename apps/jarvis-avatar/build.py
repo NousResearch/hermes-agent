@@ -42,7 +42,7 @@ def bundle_js() -> str:
         src = re.sub(r"^export\s+", "", src, flags=re.M)
         parts.append(f"/* ---- {name}.js ---- */\n{src.strip()}\n")
     js = "\n".join(parts)
-    js = re.sub(r"'(assets/img/[\w.-]+)'", lambda m: f"'{data_uri(ROOT / m.group(1))}'", js)
+    js = re.sub(r"'(assets/img/[\w./-]+)'", lambda m: f"'{data_uri(ROOT / m.group(1))}'", js)
     if "</script" in js:
         sys.exit("build: o JS contém '</script' e quebraria o HTML")
     return "(() => {\n'use strict';\n" + js + "})();\n"

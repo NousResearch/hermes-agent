@@ -7,8 +7,8 @@ import { clamp, ease, rnd } from './util.js';
 // saída (a aceleração cresce aos poucos) e sem passar do ponto na chegada.
 const axis = (filt, w) => ({ x: 0, v: 0, t: 0, filt, w });
 const POSE_STEP = 1 / 120;                                    // passo fixo: o mesmo movimento a 30, 60 ou 120 fps
-const POSE_LIM = { yaw: 1.25, pitch: 0.26, roll: 0.06 };      // giro 3D até ~72° (a lateral e a nuca são partículas
-                                                              // extras); o aceno segue 2,5D, então fica pequeno
+const POSE_LIM = { yaw: 1.5, pitch: 0.26, roll: 0.06 };       // giro 3D até ~86° (cada ângulo vem de uma vista desenhada;
+                                                              // o perfil é a vista de 90°); o aceno segue 2,5D, pequeno
 function drive(s, target, dt) {
   for (let left = dt; left > 1e-6; left -= POSE_STEP) {
     const h = Math.min(POSE_STEP, left);

@@ -14,22 +14,20 @@ export const IMG = { w: 1672, h: 941, horizon: 587, axisX: 832, headTop: 122, ch
 // cabeça 3D (shaders.js sliceOf + nuvem de partículas em main.js): profundidade/largura de cada fatia do manequim
 // e densidade das partículas na superfície (por px²)
 export const HEAD3D = {
-  PIVOT: 40,           // px: eixo vertical do giro, atrás do centro da cabeça (no pescoço)
-  // cabeça: sólido rígido. [y, meia-largura] medidos no contorno do desenho de partículas (canal de borda de info.png);
-  // a mandíbula afina até o queixo, que fica NA FRENTE do pescoço. Entre os pontos, Catmull-Rom.
-  HEAD: [[123, 0], [128, 34], [132, 52], [136, 66], [140, 80], [148, 97], [155, 109], [170, 130], [185, 145], [200, 159], [215, 169], [230, 177],
-    [245, 184], [260, 190], [290, 197], [320, 200], [350, 200], [380, 199], [410, 197], [440, 193], [470, 186],
-    [500, 176], [530, 162], [560, 145], [590, 124], [615, 103], [635, 82], [650, 60], [660, 32], [665, 0]],
-  DEPTH: 1.15,         // profundidade / largura do crânio
-  JAW: [470, 655],     // na mandíbula o centro avança até CHIN_FWD px e a fatia achata (DEPTH - JAW_FLAT)
-  CHIN_FWD: 135, JAW_FLAT: 0.3,
-  // pescoço + tronco: um sólido atrás da cabeça, que torce (1 no alto do pescoço, TWIST nos ombros)
-  BODY: [[480, 118], [560, 118], [600, 124], [640, 128], [670, 140], [690, 160], [700, 175], [720, 201], [740, 235],
-    [760, 278], [780, 324], [800, 405], [820, 474], [840, 511], [860, 537], [880, 558], [900, 575], [920, 588], [941, 597]],
-  BODY_Z: -25,         // centro do pescoço/tronco, atrás do centro da cabeça
-  NECK_DEPTH: 0.95, TORSO_DEPTH: 150,   // pescoço redondo; tronco raso (profundidade máx. em px)
-  TWIST: 0.12, TWIST_Y: [600, 780],
-  EAR: { cy: 415, ry: 54, out: 26 },   // orelha: centro e meia-altura (y) e quanto sai do crânio (px)
+  PIVOT: 40,               // px: eixo vertical do giro, atrás do centro da cabeça (no pescoço)
+  TURN_Y: [640, 700],      // a base do pescoço: acima gira inteiro, abaixo (ombros) fica parado
+  EARS: [354, 492],        // linhas onde as orelhas saem do crânio na vista de frente
+  HALO: 6, HALO_MAX: 70,   // px: brilho do contorno além do alfa · até onde o brilho fora da silhueta acompanha a borda
+  MESH_IN: 10,             // px: a malha escura fica esse tanto pra dentro do sólido (não aparece como mancha na borda)
+  LUM: 110,                // soma r+g+b mínima pra um pixel de vista virar partícula (o escuro é a malha)
+  // vistas giradas pra direita de quem olha (giro em rad, medido pela silhueta e pelo dourado); a esquerda é o espelho.
+  // A de 90° também dá a profundidade da cabeça (model3d.buildSolid)
+  VIEWS: [
+    { src: 'assets/img/vistas/giro16.webp', yaw: 0.28 },
+    { src: 'assets/img/vistas/giro41.webp', yaw: 0.72 },
+    { src: 'assets/img/vistas/giro48.webp', yaw: 0.84 },
+    { src: 'assets/img/vistas/giro90.webp', yaw: 1.5708 },
+  ],
 };
 export const HEAD_RX = 182, HEAD_RY = (IMG.chinY - IMG.headTop) / 2;   // semi-eixos do crânio
 export const NECK_Y = IMG.chinY + 110;                                  // base do pescoço: pivô da cabeça
@@ -44,6 +42,7 @@ export const ASSETS = [
   'assets/img/corpo-alfa.png',  // alfa da base escura
   'assets/img/emissao.png',     // cor de cada partícula
   'assets/img/info.png',        // r: relevo · g: borda · b: marca da partícula (>200 = aura)
+  ...HEAD3D.VIEWS.map((v) => v.src),   // vistas giradas da cabeça
 ];
 
 export const PARAMS = new URLSearchParams(location.search);

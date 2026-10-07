@@ -5,16 +5,13 @@ Avatar do Jarvis em WebGL: a imagem de referência é separada em camadas (fundo
 ondas, voz e estados (ouvindo / pensando / falando) deslocam partículas e corpo pela mesma
 função na GPU, então tudo se move junto.
 
-O busto é 3D (`src/model3d.js`), mas o visual é o da foto. As próprias partículas do desenho
-(`emissao.png` e `info.png`) são vestidas em sólidos de fatias elípticas medidas no contorno: a
-**cabeça** é rígida, e a mandíbula avança, então o queixo fica na frente do pescoço. O **pescoço e o
-tronco** formam outro sólido, que torce, e as **orelhas** são placas. Cada partícula vai pro ponto
-da superfície que a projeta exatamente onde ela está na foto, então de frente a cena é a foto,
-pixel a pixel. Girando, a faixa da borda (comprimida na foto) apaga e no lugar entra o mesmo desenho
-continuado em volta da cabeça (lateral e nuca). O contorno do alto vira silhueta, e uma malha
-com profundidade esconde o que fica atrás e veste a luz da foto (`corpo-rgb`: base escura, contorno neon,
-halo): parado é a foto exata; girando, o neon da foto que entra no rosto apaga e a borda nova ganha
-o mesmo neon. Rosto liso, sem feições, como no original.
+O giro da cabeça é feito com **vistas desenhadas** (`assets/img/vistas/`: ~16°, ~41°, ~48° e perfil de 90°,
+geradas no mesmo estilo e enquadramento da foto). A cabeça é um sólido de fatias elípticas medido na frente
+(alfa do corpo) e no perfil (vista de 90°). Cada vista vira um conjunto de partículas preso à superfície no
+ângulo dela: nesse ângulo, o conjunto é a imagem exata; entre duas vistas, os dois conjuntos giram juntos e se
+fundem; o lado esquerdo é o espelho. Dos ombros pra baixo nada gira. A malha escura do sólido tampa o fundo
+e o que fica atrás. Os ângulos e o limiar de brilho ficam em `HEAD3D` (`src/config.js`). As vistas de cima e
+de baixo (`cima15`, `baixo15`) estão guardadas pro aceno, ainda não usadas.
 
 ## Rodar
 
@@ -45,10 +42,10 @@ python3 build.py                 # gera dist/jarvis.html (~5,4 MB, tudo embutido
 | `src/shaders.js` | GLSL: campo do mouse/ondas, pose, giro 3D (`place3D`), fundo, malha e partículas |
 | `src/audio.js` | microfone, `<audio>` externo, voz do navegador → volume + 8 bandas |
 | `src/pose.js` | balanço, olhadas, seguir o mouse, reação aos estados (molas amortecidas) |
-| `src/model3d.js` | busto 3D: sólidos, partículas da foto vestidas neles, lateral/nuca e malha de profundidade |
+| `src/model3d.js` | sólido da cabeça (frente + perfil), conjuntos de partículas por vista e malha de profundidade |
 | `src/shapes.js` | formas: cabeça, esfera, galáxia, texto |
 | `src/main.js` | WebGL, buffers, render (malha + partículas com profundidade), entrada, API pública, loop |
-| `assets/img/` | camadas da foto (1672×941): `fundo`, `mascaras`, `corpo-rgb`/`corpo-alfa` (a luz da figura) e `emissao`/`info` (as partículas) |
+| `assets/img/` | camadas da foto (1672×941): `fundo`, `mascaras`, `corpo-rgb`/`corpo-alfa` (a luz da figura) e `emissao`/`info` (as partículas); `vistas/` com a cabeça girada |
 | `assets/fonts/` | Sora 300/600/700 (SIL Open Font License 1.1) |
 | `build.py` | empacota tudo em `dist/jarvis.html` (só biblioteca padrão) |
 

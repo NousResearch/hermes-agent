@@ -118,9 +118,8 @@ void main() {
   gl_FragColor = vec4(c, 1.0);
 }`;
 
-// Corpo da foto (a luz da figura: base escura, contorno neon, halo) vestido na malha 3D: cada vértice lê a foto no
-// ponto onde estava com giro 0, então parado é a foto exata; girando, a luz vai junto com a superfície. O contorno da
-// foto é silhueta, não superfície: quando ele gira pra dentro do rosto, apaga, e a borda nova ganha luz de borda.
+// Corpo da foto (a luz da figura: base escura, contorno neon, halo) na malha 3D: cada vértice lê a foto no ponto onde
+// estava com giro 0, então parado é a foto exata. Na cabeça essa luz vale só junto com a vista de frente.
 export const MESH_VS = `
 precision highp float;
 attribute vec2 aHome;
@@ -129,7 +128,7 @@ uniform vec2 uRes, uOffset, uPar, uImg;
 uniform float uScale;
 ` + FIELD + POSE + `
 varying vec2 vUv;
-varying float vNz, vMove, vSide;
+varying float vK;
 void main() {
   vec3 q = place3D(aHome, aP3, uYaw.x);
   vec2 p = vec2(q.x, aHome.y);
@@ -138,28 +137,21 @@ void main() {
   vec2 s = p * uScale + uOffset;
   gl_Position = vec4(s.x / uRes.x * 2.0 - 1.0, 1.0 - s.y / uRes.y * 2.0, depthOf(q.y), 1.0);
   vUv = aHome / uImg;
-  vNz = q.z;
-  vMove = abs(q.z - aP3.z);                       // quanto este ponto mudou de orientação
-  vSide = abs(aP3.y);                             // perto da borda da foto (normal de lado)
+  vK = aP3.w;
 }`;
 
 export const MESH_FS = `
 precision mediump float;
 uniform sampler2D uBodyRGB, uBodyA;
-uniform float uVis;
+uniform float uVis, uFrontW;
 varying vec2 vUv;
-varying float vNz, vMove, vSide;
+varying float vK;
 void main() {
-  vec3 rgb = texture2D(uBodyRGB, vUv).rgb;         // pré-multiplicado
-  float a = texture2D(uBodyA, vUv).r;
-  // faixa da borda da foto (contorno neon) que girou pra dentro: vira base escura
-  float off = smoothstep(0.04, 0.3, vMove) * smoothstep(0.4, 0.85, vSide);
-  rgb = mix(rgb, vec3(0.012, 0.035, 0.07) * a, off);
-  // luz de borda na silhueta nova (só onde o ponto mudou de orientação: parado, a foto já tem a dela)
-  // (a mesma cor e largura do neon da foto: azul-ciano que estoura pra branco na borda)
-  float e = 1.0 - clamp(vNz, 0.0, 1.0), fr = pow(e, 2.2) * 1.3 + pow(e, 8.0) * 1.6;
-  rgb += vec3(0.4, 0.72, 1.0) * fr * smoothstep(0.02, 0.2, vMove);
-  gl_FragColor = vec4(rgb, max(a, 0.6 * smoothstep(0.02, 0.2, vMove))) * uVis;
+  // a luz da foto de frente vale na cabeça só enquanto a vista de frente pesa (as outras vistas trazem a própria luz);
+  // a cabeça girada continua tampando o fundo
+  vec3 rgb = texture2D(uBodyRGB, vUv).rgb * mix(1.0, uFrontW, vK);   // pré-multiplicado
+  float a = max(texture2D(uBodyA, vUv).r, 0.8 * vK * (1.0 - uFrontW));
+  gl_FragColor = vec4(rgb, a) * uVis;
 }`;
 
 // O resto do corpo da foto (halo e brilho que ficam fora da malha: em volta da cabeça, orelhas, ombros): tela cheia,
@@ -167,7 +159,7 @@ void main() {
 export const BODY_FS = `
 precision highp float;
 uniform vec2 uRes, uOffset, uImg, uPar;
-uniform float uScale, uVis;
+uniform float uScale, uVis, uFrontW;
 uniform sampler2D uBodyRGB, uBodyA;
 ` + FIELD + POSE + `
 void main() {
@@ -180,7 +172,7 @@ void main() {
   h = q - pose(h);
   h = q - pose(h);                                // inverte a pose (ponto fixo, 4 passos)
   vec2 uv = h / uImg;
-  float keep = 1.0 - smoothstep(0.04, 0.3, abs(uYaw.x));
+  float keep = mix(uFrontW, 1.0, smoothstep(${HEAD3D.TURN_Y[0].toFixed(1)}, ${HEAD3D.TURN_Y[1].toFixed(1)}, h.y));   // ombros: sempre
   if (uVis * keep < 0.002 || uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) discard;
   gl_FragColor = vec4(texture2D(uBodyRGB, uv).rgb, texture2D(uBodyA, uv).r) * uVis * keep;
 }`;
@@ -195,6 +187,7 @@ attribute vec3 aTo;
 attribute vec4 aP3;              // z (px, pra frente), normal (nx, nz), quanto acompanha o giro (model3d.js)
 uniform vec2 uRes, uOffset, uPar, uMouth;
 uniform float uScale, uTime, uStill, uMorphT0, uLevel, uThink, uListen, uGain, uHeadness, uAxisX, uHeadCY, uChinY;
+uniform float uSetW, uMirror;   // peso do conjunto (vista) desta chamada · -1: vista espelhada (lado esquerdo)
 uniform float uBands[8];
 ` + FIELD + POSE + `
 varying vec3 vCol;
@@ -207,6 +200,15 @@ void main() {
   // troca de forma: cada partícula sai no seu tempo e faz uma curva no meio do caminho
   float k = smoothstep(0.0, 1.0, clamp((uTime - uMorphT0 - seed * 0.7) / 1.1, 0.0, 1.0));
   vec3 base = mix(aFrom, aTo, k);
+  // vista espelhada: o lado esquerdo usa as vistas da direita refletidas no eixo da figura
+  vec2 home = aHome;
+  vec4 p3 = aP3;
+  float role = floor(aCol.a * ${(255 / 42).toFixed(4)} + 0.5);
+  if (uMirror < 0.0) {
+    home.x = 2.0 * AX - home.x;
+    base.x = 2.0 * AX - base.x;
+    if (role < 3.5) p3.y = -p3.y;
+  }
   float fly = sin(k * 3.14159265);
   base.xy += fly * vec2(sin(seed * 40.0 + uTime * 0.7), cos(seed * 31.0 + uTime * 0.6)) * 60.0;
   vec2 p = base.xy;
@@ -229,42 +231,31 @@ void main() {
 
   // giro 3D: onde o ponto vai parar menos onde estava com giro 0, aplicado sobre base (a troca de forma continua
   // funcionando com base fora de casa). A malha escura usa a mesma conta (place3D) e tampa o que fica atrás.
+  // A luz já vem desenhada em cada vista: aqui só a posição e a profundidade mudam.
   float yawS = mix(uYaw.x, uYaw.y, aura) * hd;
   vec2 turned = base.xy;
-  float lit = 1.0, zd;                              // luz da superfície (1 nas outras formas) · profundidade
-  bool solid = aura < 0.5;                          // manequim e orelhas (a aura é da foto)
-  float role = floor(aCol.a * ${(255 / 42).toFixed(4)} + 0.5);
-  if (solid && role > 3.5 && role < 4.5) {         // contorno do topo: colado à silhueta girada
-    float a = yawS * aP3.w, c = cos(a), sn = sin(a);
-    turned.x += (aP3.x + YAW_PIV) * sn + (aHome.x - AX) * (sqrt(aP3.y * aP3.y * c * c + aP3.z * aP3.z * sn * sn) / max(aP3.y, 1.0) - 1.0);
+  float lit = 1.0, zd = 0.0;
+  bool solid = aura < 0.5;
+  if (solid && role > 3.5) {                        // brilho fora da silhueta (halo, orelha): colado à borda girada
+    float a = yawS * p3.w, c = cos(a), sn = sin(a);
+    turned.x += (p3.x + YAW_PIV) * sn + (home.x - AX) * (sqrt(p3.y * p3.y * c * c + p3.z * p3.z * sn * sn) / max(p3.y, 1.0) - 1.0);
     zd = 2000.0;
   } else if (solid) {
-    vec3 q = place3D(aHome, aP3, yawS);
-    turned.x += q.x - aHome.x;
-    // luz relativa ao repouso (giro 0 = brilho exato da foto): o que fica rasante ganha a luz de borda
-    float fr = 1.0 - clamp(q.z, 0.0, 1.0), fr0 = 1.0 - clamp(aP3.z, 0.0, 1.0);
-    lit = max(0.55, 1.0 + 2.5 * (pow(fr, 3.0) - pow(fr0, 3.0)));
-    // a faixa da borda (comprimida na foto, com o contorno claro) apaga quando gira; a lateral extra que fica no mesmo
-    // lugar aparece no mesmo passo. Parado: a faixa inteira e nenhuma extra na frente (a cena é a foto).
-    // As extras do verso (normal pra trás em repouso) não precisam disso: a malha as esconde enquanto estão atrás
-    // pros dois lados: do lado que se afasta a faixa ficaria entre a textura nova e a borda (a foto tem um anel escuro
-    // logo dentro do contorno, que viraria um vinco)
-    float open = smoothstep(0.04, 0.3, abs(q.z - aP3.z));
-    // o contorno claro da foto é silhueta, não superfície: girando pra qualquer lado ele sai da borda, então apaga
-    // (a luz de borda nasce na silhueta nova pelo fresnel acima)
-    lit *= 1.0 - smoothstep(0.35, 0.9, rim) * smoothstep(0.03, 0.2, abs(q.z - aP3.z));
-    float spin = smoothstep(0.04, 0.3, abs(yawS));
-    lit *= role < 0.5 ? 1.0 : role < 1.5 ? 1.0 - open : role < 2.5 ? (aP3.z > 0.0 ? open : 1.0) : role < 3.5 ? spin : 1.0 - spin;
+    vec3 q = place3D(home, p3, yawS);
+    turned.x += q.x - home.x;
     zd = q.y + 6.0 * clamp(q.z * 3.0, 0.0, 1.0);    // um pouco à frente da malha, só o que encara a câmera (o verso não vaza)
   } else {
-    // aura: um halo em volta da silhueta; acompanha o centro da cabeça e a largura dela girada, sempre atrás do busto
-    float a = yawS * aP3.w, c = cos(a), sn = sin(a);
-    turned.x += (aHome.x - AX) * (sqrt(c * c + ${(HEAD3D.DEPTH * HEAD3D.DEPTH).toFixed(3)} * sn * sn) - 1.0) + YAW_PIV * sn;
+    // aura: um halo em volta da silhueta; acompanha o centro da cabeça girada, sempre atrás do busto
+    turned.x += YAW_PIV * sin(yawS * p3.w);
     zd = -400.0;
   }
   lit = mix(1.0, lit, hd);
   vMv = 0.0;
   float stretch = 1.0, wx = 1.0;
+  // girando, a grade regular de pixels das vistas vira moiré (ainda mais com a tela menor que a imagem): um
+  // deslocamento sub-pixel por partícula quebra o padrão. Parado: zero, a imagem fica exata
+  float jit = solid ? smoothstep(0.004, 0.05, abs(yawS)) * hd : 0.0;
+  turned += (vec2(fract(seed * 91.7), fract(seed * 57.3)) - 0.5) * 1.2 * jit;
   p += turned - base.xy;
   float sh = YAW_PIV * sin(yawS);                // o crânio do aceno vai com a cabeça girada (igual ao corpo)
   p += mix(poseOf(turned, uPose, uLean, sh), poseOf(turned, uPoseLag, uLeanLag, sh), aura) * hd;   // a pose vem antes do campo, igual ao corpo
@@ -299,7 +290,7 @@ void main() {
   b *= 1.0 + live * 0.3 * pow(0.5 + 0.5 * sin(uTime * (0.8 + seed * 2.5) + seed * 50.0), 12.0);
   b *= 1.0 + live * hd * outline * 0.3 * pulse;
   b *= max(0.6, 1.0 + 0.35 * turnShade(base.xy) * hd);         // luz do microgiro
-  b *= lit;
+  b *= lit * uSetW;
   if (uScale < 1.0) b *= mix(uScale * uScale, 1.0, vMv);   // tela menor que a foto: conserva o brilho (a cobertura já conserva)
   vCol = aCol.rgb * b;
   vRound = clamp(length(f.xy) / 6.0 + pop + fly + (1.0 - hd) + mv, 0.0, 1.0);

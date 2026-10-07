@@ -13,6 +13,7 @@ const copy: MicRecorderErrorCopy = {
   microphoneConstraintsUnsupported: 'constraints',
   microphoneInUse: 'in use',
   microphonePermissionDenied: 'permission',
+  microphoneSecureContextRequired: 'secure context',
   microphoneStartFailed: 'start failed',
   microphoneUnsupported: 'unsupported',
   noMicrophone: 'no mic'

@@ -6,6 +6,7 @@ import { zhAuxTasks } from './zh_aux_tasks'
 import { zhLocalModels } from './zh_local_models'
 import { zhModelMenu } from './zh_model_menu'
 import { zhNotices } from './zh_notices'
+import { zhNotifications } from './zh_notifications'
 import { zhSharedMetrics } from './zh_shared_metrics'
 
 export const zh = defineLocale({
@@ -203,94 +204,7 @@ export const zh = defineLocale({
     }
   },
 
-  notifications: {
-    sharedProfileWarning:
-      '另一个 Hermes 安装实例正在使用此配置。两个实例共享此配置的设置和数据，因此更改可能发生冲突。你可以继续使用，也可以在更改前关闭另一个实例。',
-    region: '通知',
-    hide: '隐藏',
-    show: '显示',
-    more: count => `另外 ${count} 条通知`,
-    clearAll: '全部清除',
-    dismiss: '关闭通知',
-    details: '详情',
-    copyDetail: '复制详情',
-    copyDetailFailed: '无法复制通知详情',
-    backendOutOfDateTitle: '后端版本过旧',
-    backendOutOfDateMessage: '你的 Hermes 后端早于当前桌面构建，可能无法正常工作。请更新以保持一致。',
-    desktopOutOfDateTitle: '应用版本过旧',
-    desktopOutOfDateMessage: '此 Hermes 应用早于所连接的后端，可能无法正常工作。请更新应用以保持一致。',
-    updateDesktopApp: '更新应用',
-    installMethodUnsupportedTitle: '不受支持的安装方式',
-    updateHermes: '更新 Hermes',
-    updateReadyTitle: '有可用更新',
-    updateReadyMessage: count => `有 ${count} 项新更改可用。`,
-    updateReadyMessageUnknown: '有新更新可用。',
-    updateReadyMessageAppInstaller: 'Hermes 新版本已就绪。现在更新，Windows 会自动完成。',
-    seeWhatsNew: '查看更新内容',
-    mcp: {
-      needsAuthTitle: 'MCP 服务器需要重新认证',
-      needsAuthMessage: name => `${name} MCP 需要重新认证。`,
-      errorTitle: 'MCP 服务器无法连接',
-      errorMessage: name => `${name} MCP 健康检查失败。`,
-      signIn: '登录',
-      view: '查看',
-      disable: '禁用',
-      disabledMessage: name => `已禁用 ${name} MCP。可随时在「能力 → MCP」中重新启用。`,
-      disableFailed: name => `无法禁用 ${name} MCP。`
-    },
-    errors: {
-      elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
-      elevenLabsRejectedKey: 'ElevenLabs 拒绝了该 API key (401)。',
-      diskFull: '磁盘已满 — 请腾出一些空间后再试。',
-      gatewayAuthFailed: '网关认证失败 — 请检查你的 API_SERVER_KEY。',
-      methodNotAllowed: '桌面后端拒绝了该请求 (405 Method Not Allowed)。请尝试重启 Hermes Desktop。',
-      microphonePermission: '麦克风权限已被拒绝。',
-      openaiRejectedApiKey: 'OpenAI 拒绝了该 API key。',
-      openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。',
-      codeSkewRestartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。'
-    },
-    voice: {
-      configureSpeechToText: '配置语音转文字后即可使用语音模式。',
-      couldNotStartSession: '无法启动语音会话',
-      microphoneAccessDenied: '麦克风访问被拒绝。',
-      microphoneConstraintsUnsupported: '此设备不支持当前麦克风约束。',
-      microphoneFailed: '麦克风出错',
-      microphoneInUse: '麦克风正被其他应用占用。',
-      microphonePermissionDenied: '麦克风权限被拒绝。',
-      microphoneStartFailed: '无法开始麦克风录音。',
-      microphoneUnsupported: '当前运行环境不支持麦克风录音。',
-      noMicrophone: '未找到麦克风。',
-      noSpeechDetected: '没有检测到语音',
-      playbackFailed: '语音播放失败',
-      recordingFailed: '语音录制失败',
-      sayStopToEnd: phrase => `说“${phrase}”即可结束语音对话。`,
-      transcriptionFailed: '语音转写失败',
-      transcriptionUnavailable: '语音转写暂不可用。',
-      tryRecordingAgain: '请再录一次。',
-      unavailable: '语音不可用',
-      liveEnded: '实时语音会话已结束',
-      liveEndedConnectionLost: '实时语音会话连接已断开。',
-      liveEndedClosed: '实时语音会话已被服务端关闭。',
-      liveError: '实时语音',
-      liveDelegationFailed: '无法将请求交给 Hermes',
-      liveUnavailable: reason => `GPT-Live 语音聊天不可用：${reason}。已改用语音转文字。`
-    },
-    native: {
-      approvalTitle: '需要批准',
-      approvalTitleNamed: session => `需要批准 — ${session}`,
-      approveAction: '批准',
-      rejectAction: '拒绝',
-      inputTitle: '需要输入',
-      inputTitleNamed: session => `需要输入 — ${session}`,
-      inputBody: 'Hermes 正在等待你的回应。',
-      turnDoneTitle: 'Hermes 已完成',
-      turnDoneBody: '消息已完成。',
-      turnErrorTitle: '本轮失败',
-      backgroundDoneTitle: '后台任务已完成',
-      backgroundFailedTitle: '后台任务失败',
-      creditsTitle: '额度'
-    }
-  },
+  notifications: zhNotifications,
 
   ...zhNotices,
 

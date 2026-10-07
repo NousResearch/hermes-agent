@@ -794,6 +794,10 @@ def _cmd_moa(rid, params, session, name, arg):
             return _err(rid, 4004, moa.moa_usage())
         if not session:
             return _err(rid, 4001, "no active session")
+        # Both branches below switch the model: the live one in place, the lazy one through the
+        # override the first agent build consumes — refuse either on a stale process (#99859).
+        if (skew := _model_skew_err(rid)) is not None:
+            return skew
         preset = moa.normalize_moa_config(_load_cfg().get("moa") or {})["default_preset"]
         # Record the live identity for post-turn restore, then swap the agent's client in
         # place: session["model_override"] alone never switches an already-built agent.
@@ -1124,6 +1128,9 @@ def _(rid, params: dict) -> dict:
     base = (parts[0] if parts else "").lower()
     arg = parts[1] if len(parts) > 1 else ""
     sid = params.get("session_id", "")
+    # Desktop sends a typed `/model <name>` here; refuse before the worker or the live mirror switch (#99859).
+    if base == "model" and arg.strip() and (skew := _model_skew_err(rid)) is not None:
+        return skew
     live_output = _live_slash_command_output(sid, session, base, arg)
     if live_output is not None:
         return _ok(rid, {"output": live_output or "(no output)"})

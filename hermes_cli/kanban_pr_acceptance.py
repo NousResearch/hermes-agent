@@ -99,9 +99,13 @@ def _gh_env(profile_home: str | None) -> dict[str, str] | None:
     base = hermes_subprocess_env(inherit_credentials=False)
     routed = _is_routed_home(profile_home)
     if routed:
-        # gh's config dir decides which login `gh api` uses, yet it is a path, not a
-        # credential, so no scrub list sees it; the target's own value is re-added from its .env below.
-        base.pop("GH_CONFIG_DIR", None)
+        # The launcher's own gh login must not reach the child: GH_TOKEN/GITHUB_TOKEN are
+        # already scrubbed by hermes_subprocess_env, but the enterprise trio (GH_HOST,
+        # GH_/GITHUB_ENTERPRISE_TOKEN) is on no strip list, and a surviving ambient token
+        # would satisfy the fail-closed check below and log gh in as the launcher (#122689,
+        # the GHE case). The target's own values are re-added from its secret scope below.
+        for key in _GH_LOGIN_KEYS:
+            base.pop(key, None)
     env = served_profile_child_env(base=base, target_home=profile_home, inherit_credentials=False)
     scope = build_profile_secret_scope(Path(profile_home))
     for key in _GH_LOGIN_KEYS:

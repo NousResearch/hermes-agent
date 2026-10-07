@@ -474,7 +474,9 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
             _persist_live_session_runtime(session)
         return
     persisted = _session_db_model(session)
-    if persisted and persisted != model:
+    # A persisted old default is not an explicit pick: unpinned chats must
+    # still follow a profile edit from the previously observed default.
+    if persisted and persisted != model and (seen is None or persisted != seen[0]):
         return
     raw = f"{model} --provider {provider}" if provider else model
     try:

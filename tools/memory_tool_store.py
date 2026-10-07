@@ -588,7 +588,7 @@ class MemoryStore:
             # serialization so tracked MEMORY.md/USER.md never show up in git
             # with a missing EOF newline (#134569). Parsers strip entries, so
             # the added byte is round-trip neutral.
-            atomic_write_text(path, ENTRY_DELIMITER.join(entries) + "\n" if entries else "",
+            atomic_write_text(path, (ENTRY_DELIMITER.join(entries) + "\n") if entries else "",
                               tmp_prefix=".mem_")
         except OSError as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")

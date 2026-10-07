@@ -25,8 +25,8 @@ from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable:
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
 from hermes_constants import (
-    get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
-    reset_hermes_home_override, set_hermes_home_override)
+    get_hermes_home, get_hermes_home_override, get_process_hermes_home, get_routing_process_hermes_home,
+    profile_name_for_home, reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import file_signature, is_truthy_value
 from hermes_state_ids import new_session_id
@@ -426,13 +426,16 @@ _start_idle_reaper()
 
 def _launch_home() -> Path:
     """The launch profile's home at call time: the patched ``_hermes_home`` when a test changed
-    it, else the live process home — resolved through :func:`get_process_hermes_home`, which honours
-    ``HERMES_HOME`` but ignores the context-local override. The desktop multiplex cron ticker sets
-    that override per profile at startup, and a first touch inside a foreign window would bind
-    process-wide launch state (the shared ``state.db`` handle, the launch ``.env`` secrets) to
-    another profile (#102526). Resolving here rather than at import time lets a harness that
-    redirects ``HERMES_HOME`` after import be honoured (#112692)."""
-    home = _hermes_home if _hermes_home != _HERMES_HOME_AT_IMPORT else get_process_hermes_home()
+    it, else the process's launch home — resolved through :func:`get_routing_process_hermes_home`,
+    which honours ``HERMES_HOME`` but ignores the context-local override. The desktop multiplex cron
+    ticker sets that override per profile at startup, and a first touch inside a foreign window
+    would bind process-wide launch state (the shared ``state.db`` handle, the launch ``.env``
+    secrets) to another profile (#102526). Resolving here rather than at import time lets a harness
+    that redirects ``HERMES_HOME`` after import be honoured (#112692). A pinned launch home wins
+    over the live env var for the same reason: a host that mirrors a served profile into
+    ``HERMES_HOME`` (an embedding host per turn; this backend while ``DELETE /api/profiles/b``
+    removes B's service unit) must not bind the frozen launch env or that handle to B."""
+    home = _hermes_home if _hermes_home != _HERMES_HOME_AT_IMPORT else get_routing_process_hermes_home()
     return Path(home)
 
 

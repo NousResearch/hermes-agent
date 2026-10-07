@@ -659,8 +659,11 @@ def _prune_unanswered_tool_calls(messages: list[dict]) -> tuple[list[dict], int]
     return pruned, repairs
 
 
-def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
-    """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
+def _merge_consecutive_users(messages: list[dict], *, marker_pairs_only: bool = False) -> tuple[list[dict], int]:
+    """Pass 3: merge consecutive plain-text user messages (no user input lost).
+    ``marker_pairs_only`` (the bare-list surface of ``repair_message_sequence``) folds ONLY a
+    display-marker row into its plain neighbor — the #94486 addressability fold — while two real
+    user turns stay their canonical source boundaries (#63298)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
     from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
     from agent.turn_context import _source_identified_user_row
@@ -686,6 +689,11 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             # A queued prompt's stable client source id IS its turn boundary (#63298): a
             # source-identified user row keeps its own row on every layer.
             and not _source_identified_user_row(prev) and not _source_identified_user_row(msg)
+            # The bare-list fold is ONLY the display-marker addressability pair (#94486):
+            # exactly one side is a display-marker row; marker+marker and plain+plain stay
+            # their canonical boundaries there (#63298).
+            and (not marker_pairs_only
+                 or bool(prev.get("display_kind")) != bool(msg.get("display_kind")))
             # Only merge plain-text content; leave multimodal (list or undecodable sentinel) content alone.
             and _plain_text(prev.get("content", "")) and _plain_text(msg.get("content", ""))
         ):
@@ -795,6 +803,11 @@ def repair_message_sequence(agent, messages: list[dict]) -> int:
     # source-identified (queued) row.
     if getattr(agent, "_session_db", None) is not None:
         current, made = _merge_consecutive_users(current)
+        repairs += made
+    else:
+        # A bare list folds ONLY the display-marker addressability pair (#94486); two real
+        # user turns stay their canonical boundaries (#63298).
+        current, made = _merge_consecutive_users(current, marker_pairs_only=True)
         repairs += made
     if repairs > 0:
         # Rewrite in place so persistence/return value/DB flush see the repaired sequence.

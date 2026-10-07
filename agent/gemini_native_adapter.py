@@ -480,9 +480,14 @@ def _thinking_requests_output_headroom(thinking_config: Any) -> bool:
     """True when Gemini will spend output tokens on thinking: thought tokens bill against ``maxOutputTokens``,
     so a global 4096/16384 cap can be consumed entirely by high thinking (``finishReason=MAX_TOKENS``, no answer)."""
     normalized = _normalize_thinking_config(thinking_config) or {}
-    budget, has_level = normalized.get("thinkingBudget"), "thinkingLevel" in normalized
     if normalized.get("includeThoughts") is False:
-        return has_level or bool(budget)
+        # Hidden thoughts = reasoning disabled/minimised: never ask for headroom, or a small
+        # caller budget (title generation's 64 tokens) balloons to the model ceiling. Gemini 3
+        # still carries a "low" thinkingLevel here (no off-switch), which must not re-enable the
+        # bump. (#91927)
+        return False
+    budget = normalized.get("thinkingBudget")
+    has_level = "thinkingLevel" in normalized
     return bool(normalized) and not (isinstance(budget, int) and budget <= 0 and not has_level)
 
 

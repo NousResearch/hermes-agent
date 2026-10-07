@@ -24,6 +24,11 @@ export const jaModelMenu = {
     `このモデルは個別の上限に達しており、${time} に再開します。ここにある他のモデルは引き続き使えます。`,
   usageLeft: (percent: number, time: null | string) =>
     time ? `残り ${percent}% · ${time} にリセット` : `残り ${percent}%`,
+  poolAccounts: (count: number) => `${count} アカウント`,
+  poolLimited: (limited: number, total: number) => `${total} アカウント中 ${limited} 件が制限中`,
+  poolAccount: (number: number) => `アカウント ${number}`,
+  poolUnknown: '使用量を取得できません',
+  poolUnavailable: '再ログインしてください',
   usageTip: (provider: string) => `${provider} は利用上限に近づいています。`,
   usageWindow: (label: string, percent: number, time: null | string) =>
     time ? `${label}: 残り ${percent}%、${time} にリセット` : `${label}: 残り ${percent}%`

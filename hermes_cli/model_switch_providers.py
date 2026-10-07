@@ -449,20 +449,23 @@ def _aws_live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str,
 
 def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
     """Nous serves a huge live catalog; the picker shows ONLY the curated agentic list, augmented
-    with the Portal's free/paid recommendations (new models surface without a CLI release) and
-    narrowed by org policy. Mirrors ``_model_flow_nous`` so GUI pickers match the CLI. A failed
+    with the Portal's free/paid recommendations and paid-tier sale models, then narrowed by org
+    policy. Mirrors ``_model_flow_nous`` so GUI pickers match the CLI. A failed
     recommendation fetch still yields a policy-filtered curated list."""
     model_ids = curated.get("nous", [])
     try:
         from hermes_cli.models_pricing import get_pricing_for_provider
         from hermes_cli.models import (
             check_nous_free_tier,
+            union_with_nous_on_sale_models,
             union_with_portal_free_recommendations,
             union_with_portal_paid_recommendations,
         )
         from hermes_cli.auth import get_provider_auth_state
-        # Cache-only: both Portal unions below discard the pricing map (``model_ids, _ = ...``);
-        # only the appended ids matter, so a live catalog fetch here buys nothing but latency.
+        # Cache-only: a cold cache must not hold the picker open. The Portal unions only append ids;
+        # the on-sale union reads the rows the background prewarm filled under the same key the
+        # fetcher registers (base + credential fingerprint), so a logged-in account's cached_only
+        # read finds them.
         pricing = get_pricing_for_provider("nous", cached_only=True) or {}
         try:
             portal = (get_provider_auth_state("nous") or {}).get("portal_base_url", "") or ""
@@ -472,6 +475,7 @@ def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
             model_ids, _ = union_with_portal_free_recommendations(model_ids, pricing, portal)
         else:
             model_ids, _ = union_with_portal_paid_recommendations(model_ids, pricing, portal)
+            model_ids = union_with_nous_on_sale_models(model_ids, pricing)
     except Exception:
         pass
     try:

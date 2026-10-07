@@ -18,6 +18,7 @@ from hermes_cli import setup_platforms
 logger = logging.getLogger(__name__)
 
 from agent.deadline import run_bounded_async
+from agent.ssl_verify import platform_ssl_context
 from gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal,
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
@@ -247,7 +248,7 @@ def _probe_voice_duration_seconds(path: str) -> Optional[int]:
         if shutil.which("ffprobe"):
             proc = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
             if proc.returncode == 0:
                 return _coerce_duration_seconds(proc.stdout.strip())
     except Exception:
@@ -271,7 +272,7 @@ def _probe_video_geometry(path: str) -> Dict[str, int]:
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height", "-show_entries", "format=duration",
              "-of", "json", path],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
         if proc.returncode != 0:
             return {}
         blob = json.loads(proc.stdout or "{}")
@@ -307,7 +308,7 @@ def _video_thumbnail_jpeg(path: str, duration: Optional[int]) -> Optional[str]:
         proc = subprocess.run(
             ["ffmpeg", "-y", "-ss", str(seek), "-i", path, "-frames:v", "1",
              "-vf", "scale=320:-2", "-q:v", "6", out],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         if proc.returncode != 0 or not os.path.getsize(out):
             with contextlib.suppress(OSError):
                 os.remove(out)
@@ -2987,13 +2988,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             configured=self.config.extra.get("proxy_url"))
 
         def _pair(general_httpx: dict, updates_httpx: dict, **extra) -> tuple:
-            return (HTTPXRequest(**request_kwargs, **extra, httpx_kwargs=general_httpx),
-                    HTTPXRequest(**request_kwargs, **extra, httpx_kwargs=updates_httpx))
+            return (HTTPXRequest(**request_kwargs, **extra, httpx_kwargs={"verify": platform_ssl_context(), **general_httpx}),
+                    HTTPXRequest(**request_kwargs, **extra, httpx_kwargs={"verify": platform_ssl_context(), **updates_httpx}))
 
         if fallback_ips and not proxy_url and not disable_fallback:
             logger.info("[%s] Telegram fallback IPs active: %s", self.name, ", ".join(fallback_ips))
-            # Separate request/update pools reduce contention during polling reconnect + bootstrap calls.
-            _transport_kwargs: dict = {"socket_options": tcp_keepalive_socket_options()}
+            _transport_kwargs: dict = {"socket_options": tcp_keepalive_socket_options(), "verify": platform_ssl_context()}
             # Keep request/update pools separate to reduce contention during polling reconnect + bot API
             # bootstrap/delete_webhook calls. httpx ignores the client-level `limits` kwarg when a custom
             # `transport` is supplied (#58790). Unlike the proxy/direct branches (which inject limits at the
@@ -4934,7 +4934,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             # A user script under HERMES_HOME the agent can write: scrubbed like cron and quick-command scripts.
             from tools.environments.local import build_subprocess_env
             proc = await asyncio.create_subprocess_exec(
-                str(script_path), arg, *extra_args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                str(script_path), arg, *extra_args, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 env=build_subprocess_env(strip_launch_profile=True))
             _stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=60)
             if proc.returncode == 0:

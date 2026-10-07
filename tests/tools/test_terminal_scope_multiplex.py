@@ -302,3 +302,42 @@ def test_launch_turn_binds_terminal_scope_once_multiplexing_is_active(
     finally:
         reset_terminal_scope(token)
     assert get_terminal_scope() is None
+
+
+def test_placeholder_cwd_never_resolves_to_another_profile_dir(tmp_path, monkeypatch):
+    """#127022: a multiplexed host whose process HOME is another profile's dir
+    (inherited from a ``hermes -p <other>`` launch chain) must not hand that
+    dir to the routed profile as TERMINAL_CWD; the routed profile falls back
+    to its own home instead."""
+    from pathlib import Path
+
+    from tools.terminal_scope import build_profile_terminal_scope
+
+    other = tmp_path / "profiles" / "other"
+    other.mkdir(parents=True)
+    routed = tmp_path / "routed-home"
+    routed.mkdir()
+    # Path.home() ignores $HOME on Windows; patch the source itself.
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: other))
+
+    scope = build_profile_terminal_scope(routed)
+    assert scope["TERMINAL_CWD"] == str(routed)
+    assert os.path.realpath(scope["TERMINAL_CWD"]) != os.path.realpath(other)
+
+
+def test_placeholder_cwd_keeps_plain_process_home(tmp_path, monkeypatch):
+    """Control for #127022: an ordinary HOME outside any profiles/ tree keeps
+    the standalone behavior (no change outside the poisoned case)."""
+    from pathlib import Path
+
+    from tools.terminal_scope import build_profile_terminal_scope
+
+    plain = tmp_path / "plain-home"
+    plain.mkdir()
+    routed = tmp_path / "routed-home"
+    routed.mkdir()
+    # Path.home() ignores $HOME on Windows; patch the source itself.
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: plain))
+
+    scope = build_profile_terminal_scope(routed)
+    assert scope["TERMINAL_CWD"] == str(plain)

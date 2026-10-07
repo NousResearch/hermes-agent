@@ -167,17 +167,41 @@ def build_profile_terminal_scope(
             _apply(raw_terminal)
             image_pinned = image_pinned or "docker_image" in raw_terminal
     scope["TERMINAL_DOCKER_IMAGE_PINNED"] = "1" if image_pinned else "0"
-    _resolve_scope_cwd_placeholder(scope)
+    _resolve_scope_cwd_placeholder(scope, hermes_home=home)
     return scope
 
 
-def _resolve_scope_cwd_placeholder(scope: Dict[str, str]) -> None:
+def _is_other_profile_home(resolved: str, hermes_home: Any) -> bool:
+    """True when *resolved* sits inside a ``profiles/`` tree outside the routed home.
+
+    A multiplexed host inherits its process ``HOME`` from whatever launched it
+    (e.g. a ``hermes -p <other>`` chain), so the ``Path.home()`` fallback can
+    point at a *different* profile's directory (#127022).
+    """
+    if hermes_home is None:
+        return False
+    try:
+        resolved_path = Path(resolved).resolve()
+        home_path = Path(hermes_home).resolve()
+    except OSError:
+        return False
+    if resolved_path == home_path or home_path in resolved_path.parents:
+        return False
+    return "profiles" in resolved_path.parts
+
+
+def _resolve_scope_cwd_placeholder(scope: Dict[str, str], hermes_home: Any = None) -> None:
     """Give a scope with no explicit ``terminal.cwd`` the same resolved ``TERMINAL_CWD`` a standalone
     gateway computes at import (``gateway/run.py``: local backend → ``$HOME``; docker with the
     workspace mount → the host cwd signal; other backends → unset). Without it a routed turn's
     ``resolve_agent_cwd()`` falls back to the multiplexer PROCESS cwd (wherever ``hermes gateway``
     was launched), so the system prompt, context-file discovery and the local terminal all run in
-    a directory the profile's standalone gateway would never have used."""
+    a directory the profile's standalone gateway would never have used.
+
+    When the ``Path.home()`` fallback lands inside a *different* profile's home (a ``profiles/``
+    tree outside the routed home), it is the launch chain's directory, not the routed profile's:
+    substitute the routed profile's own home instead (#127022).
+    """
     if scope.get("TERMINAL_CWD"):
         return
     from gateway.cwd_placeholder import resolve_placeholder_terminal_cwd
@@ -189,6 +213,8 @@ def _resolve_scope_cwd_placeholder(scope: Dict[str, str]) -> None:
             "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in {"true", "1", "yes"},
         home_fallback=str(Path.home()),
     )
+    if resolved and hermes_home is not None and _is_other_profile_home(resolved, hermes_home):
+        resolved = str(Path(hermes_home))
     if resolved:
         scope["TERMINAL_CWD"] = resolved
 

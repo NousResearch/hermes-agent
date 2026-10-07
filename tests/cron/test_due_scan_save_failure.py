@@ -112,8 +112,8 @@ def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, m
     save_jobs([_due_job(), _half_paused_job()] + ([once] if with_once else []))
     before = load_jobs()
     if junk:  # load_jobs() drops a non-object entry and persists that repair: the save must not abort the tick
-        raw = json.loads(cronjobs.JOBS_FILE.read_text())
-        cronjobs.JOBS_FILE.write_text(json.dumps(dict(raw, jobs=raw["jobs"] + [42])))
+        raw = json.loads(cronjobs.JOBS_FILE.read_text(encoding="utf-8-sig"))
+        cronjobs.JOBS_FILE.write_text(json.dumps(dict(raw, jobs=raw["jobs"] + [42])), encoding="utf-8")
     ran, sweeps = [], []
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", cron_store / "cron" / "executions.db")
     monkeypatch.setattr(scheduler, "run_one_job", lambda job, **k: ran.append(job["id"]) or True)
@@ -355,7 +355,8 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
 
     target = cron_store / "ro" / "jobs.json"  # the save follows a symlinked jobs.json to its target
     target.parent.mkdir()
-    target.write_text((cron_dir / "jobs.json").read_text())
+    payload = (cron_dir / "jobs.json").read_text(encoding="utf-8-sig")
+    target.write_text(payload, encoding="utf-8")
     (cron_dir / "jobs.json").unlink()
     (cron_dir / "jobs.json").symlink_to(target)
     os.chmod(target, 0o400)
@@ -366,7 +367,7 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
         os.chmod(target.parent, 0o700)
         os.chmod(target, 0o600)
     lock = cron_dir / ".tick.lock"  # only the tick lock is unwritable (root-owned): every tick skips
-    lock.write_text("")
+    lock.write_text("", encoding="utf-8")
     os.chmod(lock, 0o400)
     try:
         assert store_health.probe_store(cron_dir).filename == str(lock)

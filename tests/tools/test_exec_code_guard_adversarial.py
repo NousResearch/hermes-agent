@@ -1155,7 +1155,8 @@ def test_empty_script_auto_approves():
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# Section E — 2026-09-19：resolver 失败姿态（已修复）+ session kernel 跨 cell 残余（XFAIL）
+# Section E — 2026-09-19：resolver 失败姿态（已修复）+ session kernel 跨 cell 残余
+#            2026-10-07：残余改钉「效果」，并撤回未合并 carrier 的兜底表述
 # ═════════════════════════════════════════════════════════════════════════
 #
 # E1 修复前实测（2026-09-19）：把 hermes_constants.get_hermes_home 换成抛异常后，
@@ -1163,11 +1164,29 @@ def test_empty_script_auto_approves():
 #    都会失败（纯计算 cell 不受影响，因为候选集只在写目标判定时才被触达）。修复后 resolver
 #    失败降级到 env/legacy 候选，判定照常进行：不扩大保护面，也不把异常交给调用方。
 #
-# E2 是静态层在**默认执行模型**下的文档化残余：session kernel 常驻（kernel_mode 已在 #96787
-#    退役，本地执行恒为持久内核），受保护路径可先在**前一个 cell** 绑定到变量，本 cell 只见
-#    Name，静态不可解析。2026-09-19 实拍：单 cell 字面量 → hard_blocked；跨 cell（cell 1
-#    `p = "<home>/config.yaml"`、cell 2 `open(p,"w")`）→ 写入真实落盘。该格由 post-hoc 内容
-#    完整性层兜底（#113450 / #113458 用内容哈希，路径形态无关），本 PR 不假装覆盖它。
+# E2 是静态层在**默认执行模型**下的边界：session kernel 常驻（kernel_mode 已在 #96787 退役，
+#    本地执行恒为持久内核），受保护路径可先在**前一个 cell** 绑定到变量，本 cell 只见 Name，
+#    静态不可解析。
+#
+#    ⚠️ 该形状在**当前 main 上没有任何层覆盖**。本节早先的版本把它写成「由 post-hoc 内容
+#    完整性层兜底（#113450 / #113458）」，2026-10-07 复核后撤回：两者至今仍是 open 的未合并
+#    carrier，既不在本 PR 的 landing object 里、也不在 main 上（main 的
+#    check_execute_code_guard 只有放行分支，没有任何 hard block）；而且它们快照的是 active
+#    profile 的 config.yaml **单文件**，不覆盖同一形状下的 hooks/ 载荷。除非某层以**合并态**
+#    存在，任何「已由 X 兜底」的表述都不成立。
+#
+#    2026-10-07 实测（fake HERMES_HOME + 真实 execute_code 入口 + 真实持久 kernel）：
+#      · 同 cell 字面量目标 → hard_blocked（E 的 control 用例）
+#      · cell 1 绑定 → cell 2 `open(p,"w")`：默认模式落审批链；--yolo 下 status=success 且
+#        文件真实落盘
+#      · cell 1 `q = Path(<home>/config.yaml)` → cell 2 `q.write_text(...)`：**默认模式**即
+#        status=success、文件落盘、无审批提示（静默）
+#      · 同一静默形状指向 `hooks/pre_tool_call.py` → hook 文件真实写盘（每后续工具调用执行）
+#    根源是「per-cell 静态视图 × 常驻解释器」，不是某个函数漏判；效果边界的归属是 #49578 的
+#    needs-decision 设计题，本 PR 不抢跑，也不新增第二份机制。
+#
+#    因此 E2 用**端到端**用例钉住「受保护文件在跨 cell 形状下不得被改写」这个效果；另保留
+#    一条静态层单元断言，用来记录静态层自身的行为边界。
 
 def test_home_resolver_failure_does_not_escape_guard(monkeypatch, tmp_path):
     """E1: a broken home resolver must not abort the guard for write-shaped cells."""
@@ -1199,14 +1218,50 @@ def test_same_cell_literal_protected_target_blocked_control():
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "静态层边界（文档化残余，2026-09-19 实拍）：session kernel 常驻时，受保护路径可先在"
-        "前一个 cell 绑定到变量，本 cell 只见 Name，静态不可解析。若将来补上 cell 边界记忆，"
-        "本用例会 XPASS——请更新标记与文档，不要忽略它。"
+        "静态层单元记录（2026-10-07 复核）：本用例断言的是 _execute_code_has_sensitive_write 的"
+        "返回值，不是「受保护写入没有落地」。它只对静态层的改动敏感、对运行时/效果边界的修复"
+        "不敏感（实测：把该函数强制返回非 None 会让它 XPASS；效果边界层落地不会）。"
+        "效果断言见 test_cross_cell_bound_protected_target_cannot_be_written。"
     ),
 )
 def test_cross_cell_bound_protected_target_visible():
-    """E2: a target bound in an earlier cell stays invisible to the per-cell static layer."""
+    """E2 (static unit): a target bound in an earlier cell stays invisible to the per-cell scan."""
     assert _execute_code_has_sensitive_write('open(target, "w").write("x")') is not None
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "已知缺陷（2026-10-07 实测，当前 main 无任何层覆盖）：常驻 session kernel 下，前一个 "
+        "cell 绑定的受保护目标在本 cell 以 Name 到达静态层，cell 1 bind → cell 2 写入会真实"
+        "落盘。本用例钉的是**效果**（受保护文件内容未被改写）——效果边界层以合并态落地后它会"
+        "XPASS，届时请更新标记与 Section E 文档。"
+    ),
+)
+def test_cross_cell_bound_protected_target_cannot_be_written(tmp_path, monkeypatch):
+    """E2 (end-to-end): bind in cell 1, write in cell 2 — the protected file must not change.
+
+    Drives the real entry point into the real persistent kernel against a temp
+    ``HERMES_HOME``, so the live profile is never touched.
+    """
+    import json as _json
+
+    from tools import code_execution_tool as _cet
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setattr(_cet, "_load_config", lambda: {"mode": "strict", "timeout": 30})
+
+    target = tmp_path / "config.yaml"
+    target.write_text("# original\n", encoding="utf-8")
+
+    def _cell(code: str, *, reset: bool = False) -> dict:
+        return _json.loads(_cet.execute_code(code, task_id="xcell-guard", reset=reset))
+
+    _cell(f"p = {str(target)!r}", reset=True)
+    _cell('open(p, "w").write("mutated")')
+
+    assert target.read_text(encoding="utf-8") == "# original\n"
 
 
 # ═════════════════════════════════════════════════════════════════════════

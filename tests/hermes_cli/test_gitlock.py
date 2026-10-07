@@ -339,9 +339,14 @@ def _status_blocked_on_a_fifo(repo: Path, *argv: str) -> subprocess.Popen:
     proc = subprocess.Popen(["git", *argv, "status", "--porcelain"], cwd=repo,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.monotonic() + 20
-    while not (repo / ".git" / "index.lock").exists():
-        assert proc.poll() is None and time.monotonic() < deadline, "git status never took index.lock"
-        time.sleep(0.05)
+    try:
+        while not (repo / ".git" / "index.lock").exists():
+            assert proc.poll() is None and time.monotonic() < deadline, "git status never took index.lock"
+            time.sleep(0.05)
+    except BaseException:
+        proc.kill()  # never leave the blocked git behind a failed setup
+        proc.wait()
+        raise
     return proc
 
 
@@ -390,5 +395,133 @@ def _killed_update_receipt() -> None:
     update_receipt.begin_update_receipt()
     current = update_receipt._current.get()
     current.data.update(pid=dead.pid, pid_create_time=None, writer_pid=dead.pid, writer_create_time=None)
-    update_receipt._write_latest((json.dumps(current.data) + "\n").encode("utf-8"))
+    payload = (json.dumps(current.data) + "\n").encode("utf-8")
+    for stale in update_receipt._receipt_dir().glob(f"update_*_{current.data['update_id']}.json"):
+        stale.unlink()  # the run's own archive, as its dead process last wrote it
+    update_receipt._run_file(update_receipt._receipt_dir(), current.data).write_bytes(payload)
+    update_receipt._write_latest(payload)
     update_receipt._current.set(None)
+
+
+def _git_in_the_editor(repo: Path, tmp_path: Path, argv: list[str]) -> subprocess.Popen:
+    """A real ``git commit`` form holding ``index.lock`` while its editor waits: the lock fd is CLOSED."""
+    import sys
+
+    editor = tmp_path / "editor.py"
+    editor.write_text("import sys, time\nfrom pathlib import Path\n"
+                      "Path(sys.argv[1] + '.ready').write_text('')\n"
+                      "while not Path(sys.argv[1] + '.go').exists(): time.sleep(0.02)\n"
+                      "Path(sys.argv[1]).write_text('fixture\\n')\n", encoding="utf-8")
+    (repo / "a.txt").write_text("changed\n")
+    proc = subprocess.Popen(argv, cwd=repo, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            env={**os.environ, "GIT_EDITOR": f"{sys.executable} {editor}"})
+    msg = repo / ".git" / "COMMIT_EDITMSG"
+    deadline = time.monotonic() + 20
+    while not Path(f"{msg}.ready").exists():
+        if proc.poll() is not None or time.monotonic() > deadline:
+            proc.kill()
+            proc.wait()
+            raise AssertionError(f"{argv} never reached its editor")
+        time.sleep(0.02)
+    return proc
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="ownership proof via /proc (Linux)")
+@pytest.mark.parametrize("form", ["dashed git-commit in the editor", "a reader git in the checkout"])
+def test_a_killed_updates_lock_stays_while_any_git_works_in_the_checkout(repo: Path, tmp_path: Path, form) -> None:
+    """Review P1: the killed-update receipt plus a younger lock let the reclaim delete the lock of a
+    live ``/usr/lib/git-core/git-commit -a`` waiting in its editor (fd closed, and not ``comm == git``):
+    the user's commit then died "unable to write new index file". No git of any form may be working in
+    the checkout when the start-of-update reclaim takes the lock."""
+    from hermes_cli.gitlock import release_dead_index_lock
+
+    lock = repo / ".git" / "index.lock"
+    _killed_update_receipt()
+    if form.startswith("dashed"):
+        exec_path = subprocess.run(["git", "--exec-path"], capture_output=True, text=True, check=True).stdout.strip()
+        dashed = Path(exec_path) / "git-commit"
+        if not dashed.exists():
+            pytest.skip("this git ships no dashed git-commit")
+        proc = _git_in_the_editor(repo, tmp_path, [str(dashed), "-a"])
+        assert lock.exists(), "premise: git commit holds index.lock in its editor"
+    else:
+        lock.write_bytes(b"")
+        proc = subprocess.Popen(["git", "cat-file", "--batch"], cwd=repo, stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        assert release_dead_index_lock(repo) is False
+        assert lock.exists(), f"{form}: the reclaim deleted a lock a live git may own"
+    finally:
+        Path(f"{repo / '.git' / 'COMMIT_EDITMSG'}.go").write_text("")
+        if form.startswith("dashed"):
+            assert proc.wait(timeout=20) == 0, "the user's commit failed"
+        else:
+            proc.kill()
+            proc.wait()
+    if not form.startswith("dashed"):
+        assert release_dead_index_lock(repo) is True, "once the checkout's git is gone the killed update's lock goes"
+
+
+def test_lock_keeping_git_is_recognised_in_every_form_and_by_path_components(tmp_path: Path, monkeypatch) -> None:
+    """Review P1/secondary, the hosts with no /proc: the macOS branch had only an (empty) ``lsof``,
+    and the Windows scan matched ``git.exe`` alone and compared paths with ``startswith``
+    (``hermes-backup`` read as inside ``hermes``). Injected process metadata, not a native run."""
+    import types
+
+    from hermes_cli import _early_recovery as er
+    from hermes_cli import gitlock
+
+    assert er._git_subcommand_of(b"/usr/lib/git-core/git-commit\0-a\0") == "commit"
+    assert er._git_subcommand_of(["C:\\Git\\mingw64\\libexec\\git-core\\GIT-COMMIT.EXE"]) == "commit"
+    assert er._git_subcommand_of(["git", "-C", "x", "-c", "k=v", "--no-pager", "save", "-a"]) == "save"
+
+    root = tmp_path / "hermes"
+    (root / ".git").mkdir(parents=True)
+    (tmp_path / "hermes-backup").mkdir()
+    lock = root / ".git" / "index.lock"
+    lock.write_bytes(b"")
+
+    def ps_lists(command: str):
+        def run(argv, **_kw):
+            if argv[0] == "lsof":
+                return subprocess.CompletedProcess(argv, 1, "", "")
+            rows = (f"4242 {getattr(os, 'getuid', lambda: 0)()} {command.split()[0]}" if "-ocomm=" in argv else f"4242 {command}")
+            return subprocess.CompletedProcess(argv, 0, rows + "\n", "")
+        return run
+
+    monkeypatch.setattr("shutil.which", lambda name: name)
+    monkeypatch.setattr(er.subprocess, "run", ps_lists("/Library/Developer/CommandLineTools/usr/libexec/git-core/git-commit -a"))
+    assert er._held_open_lsof(lock, root, False), "macOS: a dashed git-commit with its fd closed keeps the lock"
+    monkeypatch.setattr(er.subprocess, "run", ps_lists("git log --oneline"))
+    assert er._held_open_lsof(lock, root, False) is False and er._held_open_lsof(lock, root, True)
+    monkeypatch.undo()
+
+    def scan(cwd: Path, name: str = "git.exe"):
+        proc = types.SimpleNamespace(info={"pid": 4242, "name": name, "cwd": str(cwd), "cmdline": [name, "commit"],
+                                           "environ": {}}, is_running=lambda: True)
+        psutil = types.SimpleNamespace(process_iter=lambda attrs: [proc])
+        monkeypatch.setitem(__import__("sys").modules, "psutil", psutil)
+        return gitlock._windows_git_in_checkout(root)
+
+    assert scan(tmp_path / "hermes-backup") is False, "a sibling directory is not this checkout"
+    assert scan(root / "sub") is True and scan(root, "git-commit.exe") is True
+
+
+def test_a_failed_retry_never_erases_the_killed_updates_claim(repo: Path) -> None:
+    """Review secondary: a retry that kept the then-live lock and failed replaced latest.json, so once
+    the git died the killed run's lock waited for the 10-minute sweep. The durable per-run records
+    still name the killed run: the last run that started before the lock was written."""
+    from hermes_cli import update_receipt
+    from hermes_cli.gitlock import release_dead_index_lock
+
+    lock = repo / ".git" / "index.lock"
+    _killed_update_receipt()
+    time.sleep(0.05)
+    lock.write_bytes(b"")  # the killed run's git took it, then died with it
+    time.sleep(0.05)
+    update_receipt.begin_update_receipt()  # the retry: refused on the lock, and finalized failed
+    update_receipt.finalize_update_receipt("failed")
+    assert update_receipt.read_latest_receipt()["outcome"] == "failed"
+
+    assert release_dead_index_lock(repo) is True
+    assert not lock.exists()

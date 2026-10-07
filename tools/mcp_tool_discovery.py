@@ -215,6 +215,27 @@ def _resolve_server_lazy(name: str, config: dict) -> bool:
     return _parse_boolish(config.get("lazy", False), default=False)
 
 
+def _resolve_lazy_schema_max_age(config: dict):
+    """Local snapshot lifetime for a lazy server whose MCP response carried no ``ttlMs``.
+
+    Optional per-server key ``mcp_servers.<name>.lazy_schema_cache_max_age`` (seconds).
+    Returns ``None`` when unset, non-numeric or non-positive, which preserves the original
+    "no server TTL means never expires" behaviour. Kept per-server to match ``lazy``,
+    ``timeout`` and ``connect_timeout``. Addresses #101007's stale-forever caveat.
+    """
+    raw = config.get("lazy_schema_cache_max_age")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning("MCP config lazy_schema_cache_max_age=%r is not a number; ignoring", raw)
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
 def _note_connect_failure(name: str, exc: BaseException) -> str:
     """Record a failed connect (under ``_lock``): error text for status, cooldown stamp."""
     message = _errors._format_connect_error(exc)
@@ -411,7 +432,8 @@ def _register_lazy_from_cache(new_servers: Dict[str, dict]) -> Tuple[Dict[str, d
     for name, cfg in new_servers.items():
         if not _resolve_server_lazy(name, cfg):
             continue
-        entry = get_cached_entry(name, config_fingerprint(cfg))
+        entry = get_cached_entry(name, config_fingerprint(cfg),
+                                 max_age_seconds=_resolve_lazy_schema_max_age(cfg))
         if not entry:
             continue
         with _core._lock:

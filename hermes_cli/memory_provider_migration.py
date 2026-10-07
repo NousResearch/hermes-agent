@@ -59,6 +59,25 @@ def catalog_source(name: str) -> Optional[str]:
     return entry.name if entry is not None else None
 
 
+def catalog_install_hint(name: str, *, category: Optional[str] = None) -> Optional[str]:
+    """``hermes [-p <profile>] plugins install <name>`` when this checkout's catalog ships plugin
+    *name* (of *category*, when given), else None.
+
+    Recovery copy for a provider that left core and is not installed (offline, lazy installs off, a
+    failed migration): doctor, ``memory status``, ``memory setup <name>`` and the CLI's unknown-command
+    error point at the one command that fixes it. In-tree catalog only, never the network — these run
+    offline and on error paths."""
+    try:
+        from hermes_cli.plugin_catalog import get_catalog_entry
+        entry = get_catalog_entry(name) if name else None
+    except Exception:
+        return None
+    if entry is None or (category is not None and entry.category != category):
+        return None
+    from hermes_constants import get_hermes_home
+    return _install_command(name, get_hermes_home())
+
+
 def _pending_provider(home: Path, *, say: Callable[[str], None]) -> Optional[str]:
     """The provider *home* needs from the catalog, or None (nothing to do, or a catalog miss already
     reported through *say*). Read-only."""
@@ -139,14 +158,15 @@ def _home_consent(home: Path) -> bool:
         reset_hermes_home_override(token)
 
 
-def _install_into(home: Path) -> Callable[[str], dict]:
+def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[str], dict]:
     def _install(name: str) -> dict:
         from hermes_cli.plugins_cmd import dashboard_install_plugin
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(home)
         try:
             return dashboard_install_plugin("", force=False, enable=True, catalog_name=name,
-                                            assume_deps_consent=name in _LEFT_CORE and _unattended_consent())
+                                            assume_deps_consent=(name in _LEFT_CORE and _unattended_consent())
+                                            if consent is None else consent)
         finally:
             reset_hermes_home_override(token)
     return _install
@@ -235,4 +255,14 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
                f"security.allow_lazy_installs is off, so Hermes did not fetch it: "
                f"run `{_install_command(name, home)}`.")
         return False
-    return migrate_home(home, install=_install_into(home), say=report) == name
+    # Agent init cannot answer a dependency prompt: under the CLI the prompt_toolkit input owns the
+    # terminal (the question hangs the turn), elsewhere there is no terminal (the install is refused,
+    # every process). So it installs with consent or not at all: a provider that shipped in core
+    # carries the consent its built-in had; any other one needs the user's own install.
+    if name not in _LEFT_CORE:
+        if _pending_provider(home, say=report) == name:
+            report(f"⚠ Memory provider '{name}' is not installed, so external memory is off for this session. "
+                   f"It never shipped with Hermes, so Hermes installs it only when you ask: "
+                   f"run `{_install_command(name, home)}`.")
+        return False
+    return migrate_home(home, install=_install_into(home, consent=True), say=report) == name

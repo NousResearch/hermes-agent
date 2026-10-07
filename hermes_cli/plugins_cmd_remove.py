@@ -42,13 +42,13 @@ def _remove_plugin_core(target: Path) -> None:
     _pc().rmtree_readonly(staging)
 
 
-def cmd_remove(name: str) -> None:
+def cmd_remove(name: str, *, allow_live_gateway: bool = False) -> None:
     """Remove an installed plugin by name."""
     console = _pc()._console()
     plugins_dir = _pc()._plugins_dir()
     target = _pc()._require_installed_plugin(name, plugins_dir, console)
     try:
-        result = _remove_user_plugin(plugins_dir, name, target)
+        result = _remove_user_plugin(plugins_dir, name, target, allow_live_gateway=allow_live_gateway)
     except (OSError, _pc().PluginOperationError) as exc:
         _pc()._fail(console, f"[red]Error:[/red] Could not remove plugin '{name}': {exc}")
     console.print()
@@ -59,7 +59,7 @@ def cmd_remove(name: str) -> None:
     console.print()
 
 
-def _remove_user_plugin(plugins_dir: Path, name: str, target: Path) -> dict[str, Any]:
+def _remove_user_plugin(plugins_dir: Path, name: str, target: Path, *, allow_live_gateway: bool = False) -> dict[str, Any]:
     """Shared ``remove`` tail for the CLI, the dashboard and the ``plugins.manage`` RPC.
 
     *target* is the resolved directory; when ``plugins_dir/name`` itself is a symlink only the link
@@ -67,6 +67,7 @@ def _remove_user_plugin(plugins_dir: Path, name: str, target: Path) -> dict[str,
     and following it deleted that plugin plus its install metadata while the alias stayed dangling.
     Config bookkeeping (aliases, toolset) is gathered before the tree disappears.
     """
+    _pc()._refuse_live_gateway_mutation("remove", allow_live_gateway=allow_live_gateway)
     link = plugins_dir / name.strip("/")
     if link.is_symlink():
         link.unlink()

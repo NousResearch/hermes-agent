@@ -86,7 +86,7 @@ import {
   toggleCronDeliveryTarget,
   validateCronEditor
 } from './cron-job-model'
-import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT } from './job-state'
+import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT, truncateText } from './job-state'
 import { openCronRun, reconcileCronRunVerdicts } from './open-cron-run'
 
 const DEFAULT_DELIVER = 'local'
@@ -101,6 +101,13 @@ const CUSTOM_TEMPLATE = 'custom'
 
 function cronProfileForScope(scope: string): string {
   return scope === ALL_PROFILES ? 'all' : scope
+}
+
+// A blueprint writes a real per-profile job, and "all" is not a writable target —
+// collapse it to 'default', matching the manual create path in handleEditorSave.
+// The catalog is fetched for the same profile: plugin blueprints are per profile.
+function blueprintProfileForScope(scope: string): string {
+  return scope === ALL_PROFILES ? 'default' : scope
 }
 
 const SCHEDULE_OPTIONS: ReadonlyArray<ScheduleOption> = [
@@ -123,7 +130,7 @@ const STATE_TONE: Record<string, PanelPillTone> = {
   completed: 'muted'
 }
 
-const truncate = (value: string, max = 80): string => (value.length > max ? `${value.slice(0, max)}…` : value)
+const truncate = (value: string, max = 80): string => truncateText(value, max)
 
 function jobName(job: CronJob): string {
   return asText(job.name).trim()
@@ -312,6 +319,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   const [busyJobTokens, setBusyJobTokens] = useState<ReadonlyMap<string, symbol>>(() => new Map())
   const [triggeringJobKeys, setTriggeringJobKeys] = useState<ReadonlySet<string>>(() => new Set())
   const triggerControllerRef = useRef<CronTriggerController | null>(null)
+  // Accepted-but-unmaterialized triggers, by `${profile}:${jobId}`. The ref is
+  // written before the state set, so a queued row appears synchronously with
+  // the click and the controller guard has no untracked window.
+  const pendingTriggersRef = useRef(new Map<string, number>())
+  const [pendingTriggers, setPendingTriggers] = useState<ReadonlyMap<string, number>>(() => new Map())
 
   // eslint-disable-next-line no-restricted-syntax -- controller mount identity, not an atom mirror
   useEffect(() => {
@@ -407,9 +419,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   // Blueprint recipes render in the same list rail, below the jobs — clicking
   // one opens the create dialog pre-seeded to that recipe. Same query key as
   // the dialog's "Start from" dropdown, so the catalog is fetched once.
+  const blueprintProfile = blueprintProfileForScope(profileScope)
+
   const blueprintsQuery = useQuery({
-    queryKey: ['cron-blueprints'],
-    queryFn: async () => (await getAutomationBlueprints()).blueprints
+    queryKey: ['cron-blueprints', blueprintProfile],
+    queryFn: async () => (await getAutomationBlueprints(blueprintProfile)).blueprints
   })
 
   const visibleBlueprints = useMemo(() => {
@@ -495,6 +509,25 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     }
   }
 
+  const settlePendingTrigger = useCallback((key: string, requestedAt: number) => {
+    if (pendingTriggersRef.current.get(key) !== requestedAt) {
+      return
+    }
+
+    pendingTriggersRef.current.delete(key)
+    setPendingTriggers(current => {
+      if (current.get(key) !== requestedAt) {
+        return current
+      }
+
+      const next = new Map(current)
+
+      next.delete(key)
+
+      return next
+    })
+  }, [])
+
   async function handleTrigger(job: CronJob) {
     const viewProfile = profile
     const key = `${viewProfile}:${job.id}`
@@ -503,6 +536,15 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     if (!controller) {
       return
     }
+
+    const requestedAt = Date.now()
+
+    // Optimistic queued-run feedback: the row is painted from the click, not
+    // from the backend materializing the session (which can take tens of
+    // seconds); it settles when Run History observes the run or times out.
+    // Ref first so the busy render and the controller guard share one instant.
+    pendingTriggersRef.current.set(key, requestedAt)
+    setPendingTriggers(current => new Map(current).set(key, requestedAt))
 
     try {
       const run = await controller.run(
@@ -535,6 +577,9 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
       if (triggerControllerRef.current === controller && cronProfileForScope($profileScope.get()) === viewProfile) {
         notifyError(err, c.failedTrigger)
       }
+
+      // The request never reached the backend; the queued row is a lie.
+      settlePendingTrigger(key, requestedAt)
     }
   }
 
@@ -609,11 +654,9 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
   // Blueprint instantiation is a distinct backend path (fills typed slots, then
   // creates the job) so it can't share the raw-cron onSave contract. Merge the
-  // created job into $cronJobs like every other create path. A blueprint writes a
-  // real per-profile job, and "all" is not a writable target — collapse it to
-  // 'default', matching the manual create path in handleEditorSave.
+  // created job into $cronJobs like every other create path.
   async function handleBlueprintCreate(blueprint: AutomationBlueprint, values: Record<string, string>) {
-    const writableProfile = profileScope === ALL_PROFILES ? 'default' : profileScope
+    const writableProfile = blueprintProfile
 
     const {
       value: job,
@@ -692,6 +735,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
                     active={false}
                     icon="rocket"
                     key={item.key}
+                    meta={item.plugin || undefined}
                     onSelect={() => setEditor({ blueprintKey: item.key, mode: 'create' })}
                     rowKey={`blueprint-${item.key}`}
                     title={item.title}
@@ -709,7 +753,10 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
               onEdit={() => setEditor({ mode: 'edit', job: selectedJob })}
               onOpenSession={onOpenSession}
               onPauseResume={() => void handlePauseResume(selectedJob)}
+              onPendingRunSettled={settlePendingTrigger}
               onTrigger={() => void handleTrigger(selectedJob)}
+              pendingJobKey={`${profile}:${selectedJob.id}`}
+              pendingRunAt={pendingTriggers.get(`${profile}:${selectedJob.id}`)}
             />
           ) : query.trim() ? (
             // A search with no selected job: search-flavored copy is right.
@@ -734,6 +781,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
       )}
 
       <CronEditorDialog
+        blueprintProfile={blueprintProfile}
         editor={editor}
         onBlueprintCreate={handleBlueprintCreate}
         onClose={() => setEditor({ mode: 'closed' })}
@@ -797,10 +845,24 @@ interface CronJobDetailProps {
   onEdit: () => void
   onOpenSession?: (sessionId: string, session?: SessionInfo) => void
   onPauseResume: () => void
+  onPendingRunSettled: (key: string, requestedAt: number) => void
   onTrigger: () => void
+  pendingJobKey?: string
+  pendingRunAt?: number
 }
 
-function CronJobDetail({ busy, c, job, onEdit, onOpenSession, onPauseResume, onTrigger }: CronJobDetailProps) {
+function CronJobDetail({
+  busy,
+  c,
+  job,
+  onEdit,
+  onOpenSession,
+  onPauseResume,
+  onPendingRunSettled,
+  onTrigger,
+  pendingJobKey,
+  pendingRunAt
+}: CronJobDetailProps) {
   const state = jobState(job)
   const isPaused = state === 'paused'
   const deliver = jobDeliver(job)
@@ -822,7 +884,13 @@ function CronJobDetail({ busy, c, job, onEdit, onOpenSession, onPauseResume, onT
             <PanelAction disabled={busy} icon={isPaused ? 'play' : 'debug-pause'} onClick={onPauseResume}>
               {isPaused ? c.resumeTitle : c.pauseTitle}
             </PanelAction>
-            <PanelAction disabled={busy} icon="zap" onClick={onTrigger} primary>
+            <PanelAction
+              disabled={busy}
+              icon={pendingRunAt === undefined ? 'zap' : 'loading'}
+              onClick={onTrigger}
+              primary
+              spinning={pendingRunAt !== undefined}
+            >
               {c.triggerNow}
             </PanelAction>
           </div>
@@ -868,7 +936,14 @@ function CronJobDetail({ busy, c, job, onEdit, onOpenSession, onPauseResume, onT
         </section>
       ) : null}
 
-      <CronJobRuns c={c} jobId={job.id} onOpenSession={onOpenSession} />
+      <CronJobRuns
+        c={c}
+        jobId={job.id}
+        onOpenSession={onOpenSession}
+        onPendingRunSettled={onPendingRunSettled}
+        pendingJobKey={pendingJobKey}
+        pendingRunAt={pendingRunAt}
+      />
     </PanelDetail>
   )
 }
@@ -893,22 +968,39 @@ function isSyntheticCronOutputRun(run: SessionInfo): boolean {
 // Runs are produced by the background scheduler tick. cron.changed /
 // sessions.changed broadcasts re-load immediately on event-capable backends
 // (the tick dep below), so the poll drops to a slow backstop there; older
-// backends keep the legacy cadence.
+// backends keep the legacy cadence. While a trigger is queued, poll fast.
 const RUNS_POLL_INTERVAL_MS = 8000
 const RUNS_BACKSTOP_INTERVAL_MS = 60_000
+const PENDING_RUNS_POLL_INTERVAL_MS = 1000
+// A run created moments before the click (another surface's trigger, or a
+// scheduler tick racing the button) must not be mistaken for this click's run
+// — but clock skew between renderer and backend can date it slightly early.
+const PENDING_RUN_START_SLACK_MS = 2000
+// Bounded even if the backend never materializes the run (claimed by a window
+// that died, scheduler paused, …): the queued row is transient feedback, not a
+// persistent record.
+const PENDING_RUN_TIMEOUT_MS = 90_000
 
 function CronJobRuns({
   c,
   jobId,
-  onOpenSession
+  onOpenSession,
+  onPendingRunSettled,
+  pendingJobKey,
+  pendingRunAt
 }: {
   c: Translations['cron']
   jobId: string
   onOpenSession?: (sessionId: string, session?: SessionInfo) => void
+  onPendingRunSettled: (key: string, requestedAt: number) => void
+  pendingJobKey?: string
+  pendingRunAt?: number
 }) {
   const [runs, setRuns] = useState<null | SessionInfo[]>(null)
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
+
+  const pending = pendingRunAt !== undefined
 
   useEffect(() => {
     let cancelled = false
@@ -921,6 +1013,22 @@ function CronJobRuns({
 
           if (!cancelled) {
             setRuns(result)
+
+            // The queued row is settled by the run this trigger produced:
+            // any run that started after the click. Looking at the whole
+            // snapshot (not just a diff against the last poll) avoids
+            // missing a run that landed between two loads.
+            if (pendingRunAt !== undefined && pendingJobKey !== undefined) {
+              const started = result.some(run => {
+                const startedAtMs = (run.started_at || run.last_active || 0) * 1000
+
+                return startedAtMs >= pendingRunAt - PENDING_RUN_START_SLACK_MS
+              })
+
+              if (started) {
+                onPendingRunSettled(pendingJobKey, pendingRunAt)
+              }
+            }
           }
         })
         .catch(() => {
@@ -937,7 +1045,7 @@ function CronJobRuns({
           void load()
         }
       },
-      changeEventsAvailable ? RUNS_BACKSTOP_INTERVAL_MS : RUNS_POLL_INTERVAL_MS
+      pending ? PENDING_RUNS_POLL_INTERVAL_MS : changeEventsAvailable ? RUNS_BACKSTOP_INTERVAL_MS : RUNS_POLL_INTERVAL_MS
     )
 
     const onVisible = () => {
@@ -954,23 +1062,56 @@ function CronJobRuns({
       document.removeEventListener('visibilitychange', onVisible)
     }
     // cronChangeTick: a fired run moves jobs.json bookkeeping → reload now.
-  }, [changeEventsAvailable, cronChangeTick, jobId])
+  }, [changeEventsAvailable, cronChangeTick, jobId, onPendingRunSettled, pending, pendingJobKey, pendingRunAt])
+
+  // Bounded life for the queued row: even on an event-capable backend (where
+  // the fast poll above may be the only prober), the feedback disappears and
+  // the action unlocks once the wait is clearly unrecoverable.
+  useEffect(() => {
+    if (pendingRunAt === undefined || pendingJobKey === undefined) {
+      return
+    }
+
+    const remainingMs = Math.max(0, pendingRunAt + PENDING_RUN_TIMEOUT_MS - Date.now())
+    const timeoutId = window.setTimeout(() => onPendingRunSettled(pendingJobKey, pendingRunAt), remainingMs)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [onPendingRunSettled, pendingJobKey, pendingRunAt])
 
   return (
     <div>
       <PanelSectionLabel className="mb-1.5">
         {c.runHistory}
-        {runs && runs.length > 0 ? ` · ${runs.length}` : ''}
+        {runs && runs.length + (pending ? 1 : 0) > 0 ? ` · ${runs.length + (pending ? 1 : 0)}` : ''}
       </PanelSectionLabel>
-      {runs === null ? (
+      {runs === null && !pending ? (
         <div className="flex items-center gap-1.5 py-1 text-xs text-muted-foreground">
           <Codicon name="loading" size="0.75rem" spinning />
         </div>
-      ) : runs.length === 0 ? (
+      ) : runs?.length === 0 && !pending ? (
         <div className="py-1 text-xs text-muted-foreground">{c.noRuns}</div>
       ) : (
         <div className="flex flex-col gap-px">
-          {runs.map(run =>
+          {pending && (
+            // The queued row is transient feedback for a trigger the backend
+            // accepted but has not turned into a session yet; it sits above
+            // the authoritative rows and is replaced once one appears.
+            <div
+              aria-live="polite"
+              className="flex items-center justify-between gap-3 rounded-md px-2 py-1 text-xs text-muted-foreground"
+              data-slot="cron-run-pending"
+              role="status"
+            >
+              <span className="flex min-w-0 items-center gap-1.5">
+                <Codicon name="loading" size="0.75rem" spinning />
+                <span className="truncate">{c.queuedRun}</span>
+              </span>
+              <span className="shrink-0 text-[0.62rem] text-muted-foreground/55 tabular-nums">
+                {formatRunTime(pendingRunAt / 1000)}
+              </span>
+            </div>
+          )}
+          {(runs ?? []).map(run =>
             isSyntheticCronOutputRun(run) ? (
               // Output-doc rows have no backing session to open; show the
               // recorded output preview without a chat-navigation affordance.
@@ -1069,11 +1210,13 @@ export function DeliverCheckboxes({
 }
 
 function CronEditorDialog({
+  blueprintProfile,
   editor,
   onBlueprintCreate,
   onClose,
   onSave
 }: {
+  blueprintProfile: string
   editor: EditorState
   onBlueprintCreate: (blueprint: AutomationBlueprint, values: Record<string, string>) => Promise<void>
   onClose: () => void
@@ -1107,8 +1250,8 @@ function CronEditorDialog({
   // The blueprint catalog powers the create dialog's "Start from" dropdown; it's
   // meaningless when editing an existing job, so skip the fetch there.
   const blueprintsQuery = useQuery({
-    queryKey: ['cron-blueprints'],
-    queryFn: async () => (await getAutomationBlueprints()).blueprints,
+    queryKey: ['cron-blueprints', blueprintProfile],
+    queryFn: async () => (await getAutomationBlueprints(blueprintProfile)).blueprints,
     enabled: open && !isEdit
   })
 
@@ -1277,6 +1420,7 @@ function CronEditorDialog({
                 {blueprintList.map(item => (
                   <SelectItem key={item.key} value={item.key}>
                     {item.title}
+                    {item.plugin && <span className="ml-1.5 text-muted-foreground">· {item.plugin}</span>}
                   </SelectItem>
                 ))}
               </SelectContent>

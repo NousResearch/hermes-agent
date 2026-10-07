@@ -70,10 +70,11 @@ def test_startup_recovery_attempts_each_profile_home(tmp_path, monkeypatch):
         (profile_home / "config.yaml").write_text("memory:\n  provider: twin\n", encoding="utf-8")
     monkeypatch.setattr(mig, "_attempted", set())
     monkeypatch.setattr(mig, "catalog_source", lambda name: name)
+    monkeypatch.setattr(mig, "_LEFT_CORE", frozenset({"twin"}))
     monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
     installed = []
 
-    def fake_installer(profile_home):
+    def fake_installer(profile_home, **_kw):
         def install(name):
             plugin_dir = profile_home / "plugins" / name
             plugin_dir.mkdir(parents=True)
@@ -122,6 +123,36 @@ def test_unattended_migration_install_carries_lazy_install_consent(tmp_path, mon
     assert mig._install_into(tmp_path)(name) == {"ok": True}
     assert seen["catalog_name"] == name
     assert seen.get("assume_deps_consent", False) is consent
+
+
+@pytest.mark.parametrize(("name", "installs"), [("hindsight", True), ("someplugin", False)])
+def test_startup_recovery_never_asks_a_dependency_question(tmp_path, monkeypatch, name, installs):
+    """Agent init cannot answer a prompt: in the CLI the question hangs the turn behind the chat input,
+    with no terminal it is refused on every process start. A provider that shipped in core installs
+    with its built-in's consent even on a terminal; any other one is not attempted and names the command."""
+    import io
+
+    from hermes_cli import plugins_cmd
+    from pm import install as pm_install
+
+    class _Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    (tmp_path / "config.yaml").write_text(f"memory:\n  provider: {name}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("sys.stdin", _Tty())
+    monkeypatch.setattr("sys.stdout", _Tty())
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda *_a: pytest.fail("agent init asked a question"))
+    seen: list[dict] = []
+    monkeypatch.setattr(plugins_cmd, "dashboard_install_plugin", lambda *a, **kw: seen.append(kw) or {"ok": False})
+    said: list[str] = []
+    mig.recover_at_startup(name, say=said.append)
+    assert [kw["assume_deps_consent"] for kw in seen] == ([True] if installs else [])
+    assert installs or f"`hermes plugins install {name}`" in said[-1]
 
 
 def test_update_asks_once_and_names_each_profile(tmp_path, monkeypatch):
@@ -226,3 +257,38 @@ def test_startup_hint_installs_into_the_profile_that_printed_it(tmp_path, monkey
         said: list[str] = []
         assert mig.recover_at_startup("twin", say=said.append) is False
         assert f"`{command}`" in said[0]
+
+
+def test_missing_catalog_provider_recovery_names_the_profile_install_command(tmp_path, monkeypatch, capsys):
+    """Offline, lazy installs off, or a failed migration: every surface a user turns to (doctor,
+    ``memory status``, ``memory setup honcho``, ``hermes honcho``) names the one command that installs
+    the catalog plugin into THIS profile. Real in-tree catalog, nothing installed."""
+    from types import SimpleNamespace
+    from hermes_cli import doctor_state, memory_setup
+    from hermes_cli._parser import build_top_level_parser
+
+    home = tmp_path / "profiles" / "work"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text("memory:\n  provider: honcho\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    want = "hermes -p work plugins install honcho"
+
+    doctor_state._memory_provider_generic("honcho")
+    memory_setup.cmd_status(SimpleNamespace())
+    memory_setup.cmd_setup_provider("honcho")
+    assert capsys.readouterr().out.count(want) == 3
+    parser, _subparsers, _chat = build_top_level_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["honcho", "status"])
+    assert want in capsys.readouterr().err
+
+
+def test_recovery_copy_without_a_catalog_memory_entry_keeps_the_generic_hint(tmp_path, monkeypatch, capsys):
+    from hermes_cli import doctor_state
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # not a profile home: no -p to add
+    assert mig.catalog_install_hint("honcho", category="memory") == "hermes plugins install honcho"
+    assert mig.catalog_install_hint("honcho", category="tools") is None
+    assert mig.catalog_install_hint("no-such-provider") is None
+    doctor_state._memory_provider_generic("no-such-provider")
+    assert "run: hermes memory setup" in capsys.readouterr().out

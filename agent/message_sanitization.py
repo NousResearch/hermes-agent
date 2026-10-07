@@ -14,6 +14,7 @@ import re
 from functools import partial
 from typing import Any, Callable
 
+from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER, hidden_interrupt_placeholder_row
 from agent.message_metadata import DB_ROW_SNAPSHOT
 from agent.vision_message_prep import _provider_model_key
 
@@ -288,14 +289,26 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
     """Append a synthetic assistant turn when an interrupted tail is a tool result: a transcript
     ending on a raw ``tool`` message makes the next user message land as ``tool → user``, an
     alternation violation strict providers (Gemini, Claude) answer by hallucinating a
-    continuation. Mutates in place; True if a closing turn was appended."""
+    continuation. Mutates in place; True if a closing turn was appended.
+
+    Only the placeholder closes silently: with no real text (or just the bare interrupt
+    placeholder) the row is hidden from the user — ``api_content`` carries the LLM-visible
+    text (substituted at API-build time by ``substitute_api_content``), ``content=""`` +
+    ``display_kind="hidden"`` keep it out of rendered transcripts, matching the
+    ``_INTERRUPTED_PLACEHOLDER`` shape in ``turn_api_call.py``. A caller-supplied banner
+    (truncation notices, partial-delivery text) stays visible: it is the turn's only
+    user-facing explanation."""
     last = messages[-1] if messages else None
     if not isinstance(last, dict) or last.get("role") != "tool":
         return False
     text = final_response if isinstance(final_response, str) else ""
     from agent.message_metadata import append_message
 
-    append_message(messages, {"role": "assistant", "content": text.strip() or "Operation interrupted."})
+    stripped = text.strip()
+    if not stripped or stripped == _INTERRUPTED_PLACEHOLDER:
+        append_message(messages, hidden_interrupt_placeholder_row())
+    else:
+        append_message(messages, {"role": "assistant", "content": stripped})
     return True
 
 
@@ -455,7 +468,7 @@ __all__ = [
     "strip_images_for_rejecting_model",
     # call_id policy owners
     "deterministic_call_id", "coalesce_tool_call_id", "tool_call_id_variants",
-    "tool_result_id_variants", "uniquify_tool_call_ids",
+    "tool_result_id_variants", "uniquify_tool_call_ids", "normalize_provider_tool_call_ids",
     # reasoning_content policy owners
     "reasoning_echo_family", "matches_reasoning_echo_family", "needs_reasoning_echo",
     "stale_thinking_reaches_wire", "apply_reasoning_content_policy", "reapply_reasoning_echo",
@@ -568,6 +581,48 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
             "call/result pairing lossless.", cid, new_id, _fn_name,
         )
     return tool_calls
+
+
+_PROVIDER_TOOL_ID_PREFIXES = ("chatcmpl-tool-",)
+
+def normalize_provider_tool_call_ids(tool_calls: list) -> list:
+    """Rewrite known provider ids when a parallel batch would be rejected on replay.
+
+    The digest is deterministic so persisted messages and prompt-cache prefixes remain
+    stable. Composite Responses ids retain their response-item half.
+    """
+    if len(tool_calls or []) < 2:
+        return tool_calls
+    # Gate on the effective id serialization and result pairing use (stripped, blank call_id
+    # falls back to id), not on raw fields.
+    if not all(coalesce_tool_call_id(tc).startswith(_PROVIDER_TOOL_ID_PREFIXES) for tc in tool_calls):
+        return tool_calls
+    logger.warning("Normalized provider-minted parallel tool-call ids for replay compatibility")
+    for tc in tool_calls:
+        # Rewrite each field's call half separately: ``id`` may carry the response-item
+        # half while ``call_id`` is bare, and that half must survive.
+        for key in ("id", "call_id"):
+            value = _tc_field(tc, key)
+            if not isinstance(value, str):
+                continue
+            primary, sep, item = value.strip().partition("|")
+            primary = primary.strip()
+            if not primary.startswith(_PROVIDER_TOOL_ID_PREFIXES):
+                continue
+            # surrogatepass: provider JSON can carry lone surrogates; strict utf-8 would raise,
+            # and errors=replace would collapse distinct ids onto one digest.
+            digest = hashlib.sha256(primary.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+            _set_provider_tool_id(tc, key, f"call_{digest}{sep}{item}")
+    return tool_calls
+
+
+def _set_provider_tool_id(tc: Any, key: str, value: str) -> None:
+    # transports.types.ToolCall exposes call_id as a read-only view of provider_data;
+    # write the backing value so id and call_id stay in agreement.
+    if isinstance(getattr(type(tc), key, None), property) and isinstance(getattr(tc, "provider_data", None), dict):
+        tc.provider_data[key] = value
+    else:
+        _tc_set(tc, key, value)
 
 
 # -- reasoning_content policy: single owner of strip-vs-re-pad; adapters keep only SYNTAX --

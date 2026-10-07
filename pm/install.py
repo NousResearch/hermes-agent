@@ -15,6 +15,7 @@ from typing import Optional
 
 from pm import paths
 from pm.downloader import DownloadPaused, ProgressFn
+from pm.filesystem import native, remove_tree, retry_held
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
@@ -90,7 +91,7 @@ def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
         store = Store(root)
         facts = _facts() if root == paths.store_root() else Facts(root / "facts.json")
         fact = facts.get(package.name)
-        if not fact or not facts.installed(package.name, None, root):
+        if not fact or not facts.installed(package.name, None, store.root):
             continue
         binary = package.binary(store.entry(fact["entry"]), target)
         if binary is not None and not binary.is_file():
@@ -99,7 +100,7 @@ def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
             continue
         if verify and not _entry_verified(package, fact, store, target):
             continue
-        if facts.installed(package.name, lockfile.version(package.name), root,
+        if facts.installed(package.name, lockfile.version(package.name), store.root,
                            _identity(lockfile, package.name, target)):
             return facts, store
         if (allow_outdated and fact.get("target") == target
@@ -127,7 +128,10 @@ def installed_package(name: str, *, allow_outdated: bool = False) -> InstalledPa
     facts, store = location
     fact = facts.get(name)
     entry = store.entry(fact["entry"])
-    return InstalledPackage(entry, fact["version"], package.binary(entry, target))
+    binary = package.binary(entry, target)
+    # Callers execute and compare these paths outside PM: the ordinary spelling, not the store's.
+    return InstalledPackage(Path(native(entry)), fact["version"],
+                            Path(native(binary)) if binary is not None else None)
 
 
 def uv_launcher(name: str) -> Path | None:
@@ -144,7 +148,7 @@ def uv_launcher(name: str) -> Path | None:
     facts, store = location
     binary = package.binary(store.entry(facts.get("uv")["entry"]), target)
     launcher = binary.with_name(name + binary.suffix) if binary is not None else None
-    return launcher if launcher is not None and launcher.is_file() else None
+    return Path(native(launcher)) if launcher is not None and launcher.is_file() else None
 
 
 def _identity(lockfile: Lockfile, name: str, target: str):
@@ -217,7 +221,7 @@ def _refuse_lazy(name: str, what: str) -> InstallError:
     return error
 
 
-def _remove_entry(store: Store, entry_name: str) -> None:
+def _remove_entry(store: Store, entry_name: str, *, attempts: int = 5) -> None:
     """Remove a replaced or failed entry, retrying transient Windows holds.
 
     Corruption may leave a file where the directory belonged. Failure
@@ -226,25 +230,66 @@ def _remove_entry(store: Store, entry_name: str) -> None:
     import time
 
     entry = store.entry(entry_name)
-    for attempt in range(5):
+    for attempt in range(attempts):
         try:
             if entry.is_symlink() or not entry.is_dir():
                 entry.unlink(missing_ok=True)
             else:
-                shutil.rmtree(entry)
+                remove_tree(entry)
             return
         except FileNotFoundError:
             return
-        except OSError as e:
-            if attempt == 4:
+        except OSError:
+            if attempt == attempts - 1:
                 raise
             time.sleep(0.2 * (attempt + 1))
+
+
+_SET_ASIDE_PREFIX = ".reclaim-"
+
+
+def _discard_entry(store: Store, entry_name: str) -> None:
+    """Drop a tree a finished publish or restore left behind as garbage.
+
+    A running Hermes process can keep the replaced interpreter's DLLs mapped
+    far past the retry window, and failing here reports a completed install
+    as broken (#124807). Windows still allows renaming a tree with mapped
+    images, so it moves to a `.reclaim-*` name: its slot is free for the next
+    publish, no restore ever picks it up, and the next install or
+    `hermes pm gc` deletes it once the hold is gone.
+    """
+    import uuid
+
+    try:
+        _remove_entry(store, entry_name)
+        return
+    except OSError as e:
+        error = e
+    try:
+        store.entry(entry_name).rename(store.entry(f"{_SET_ASIDE_PREFIX}{uuid.uuid4().hex}"))
+    except OSError:
+        LOG.warning("could not remove or set aside %s: %s", entry_name, error)
+        return
+    LOG.warning("%s is still in use (%s); set aside for the next install or `hermes pm gc`",
+                entry_name, error)
+
+
+def _reclaim_set_aside(store: Store) -> int:
+    """Delete set-aside trees whose hold is gone; the caller holds the store lock."""
+    removed = 0
+    for item in sorted(store.root.glob(f"{_SET_ASIDE_PREFIX}*")):
+        try:
+            _remove_entry(store, item.name, attempts=1)
+        except OSError:
+            continue
+        removed += 1
+    return removed
 
 
 def _remove_downloads(store: Store, artifacts: list[dict]) -> None:
     """Release this package's archives after publication, under its store lock."""
     for artifact in artifacts:
-        _remove_entry(store, f"fetch-{artifact['sha256']}")
+        _discard_entry(store, f"fetch-{artifact['sha256']}")
 
 
 def _entry_verified(package: Package, fact: dict, store: Store, target: str) -> bool:
@@ -263,22 +308,22 @@ def _restore_previous_entry(store: Store, entry, previous) -> None:
     displaced = store.entry(f".displaced-{uuid.uuid4().hex}")
     had_entry = entry.exists() or entry.is_symlink()
     if had_entry:
-        entry.rename(displaced)
+        retry_held(lambda: entry.rename(displaced))
     try:
-        previous.rename(entry)
+        retry_held(lambda: previous.rename(entry))
     except BaseException:
         if had_entry:
-            displaced.rename(entry)
+            retry_held(lambda: displaced.rename(entry))
         raise
     if had_entry:
-        _remove_entry(store, displaced.name)
+        _discard_entry(store, displaced.name)
 
 
 @contextmanager
 def _publish_entry(package, store, staged, entry, previous_entry, target):
     """Keep rollback live through the caller's native facts commit, if any."""
     if entry.exists() or entry.is_symlink():
-        entry.rename(previous_entry)
+        retry_held(lambda: entry.rename(previous_entry))
     try:
         store.publish(staged, entry.name)
         reason = package.verify(entry, target)
@@ -290,7 +335,7 @@ def _publish_entry(package, store, staged, entry, previous_entry, target):
             _restore_previous_entry(store, entry, previous_entry)
         raise
     if previous_entry.exists():
-        _remove_entry(store, previous_entry.name)
+        _discard_entry(store, previous_entry.name)
 
 
 def _settle_previous_entry(package, store, entry, previous_entry, previous, target) -> None:
@@ -301,7 +346,7 @@ def _settle_previous_entry(package, store, entry, previous_entry, previous, targ
     # an interrupted stage always restores its prior usable bytes.
     if (previous and previous.get("entry") == entry.name
             and _entry_verified(package, previous, store, target)):
-        _remove_entry(store, previous_entry.name)
+        _discard_entry(store, previous_entry.name)
     else:
         _restore_previous_entry(store, entry, previous_entry)
 
@@ -381,6 +426,7 @@ def _install(
         previous = facts.get(package.name) if facts is not None else None
         previous_entry = store.entry(f".previous-{'stage-' if facts is None else ''}{entry_name}")
         _settle_previous_entry(package, store, entry, previous_entry, previous, target)
+        _reclaim_set_aside(store)
         if (_entry_current(package, lockfile, facts, store, entry, previous, version, pin, target)
                 and not _fresh_copy):
             _remove_downloads(store, artifacts)
@@ -404,9 +450,11 @@ def _install(
                     raise DownloadPaused("install paused")
                 if progress is not None:
                     progress("verify", 0, 0, "")
-                reason = package.verify(staged, target)
+                reason, remedy = package.verify(staged, target), ""
                 if reason:
-                    raise InstallError(package.name, f"staged entry failed verification: {reason}")
+                    reason, remedy = package.repair_staged_verification(staged, target, reason)
+                if reason:
+                    raise InstallError(package.name, f"staged entry failed verification: {reason}", remedy)
                 if facts is None:
                     (staged / ".pm-stage-pin.json").write_text(pin, encoding="utf-8")
                 with _publish_entry(package, store, staged, entry, previous_entry, target):
@@ -516,7 +564,7 @@ def ensure(
         raise _refuse_lazy(name, ", ".join(p.name for p in missing))
     if missing:
         store = _operation.lock() if _operation is not None else Store(paths.writable_store_root())
-        facts = _facts() if store.root == paths.store_root() else Facts(store.root / "facts.json")
+        facts = _facts() if store.root == _store().root else Facts(store.root / "facts.json")
         for package in missing:
             # Publication may change entries; do not carry observations across it.
             checked.clear()
@@ -891,8 +939,8 @@ def _store_path_dirs() -> list[str]:
         if isinstance(path_dirs, str):
             path_dirs = [path_dirs]
         for directory in path_dirs:
-            if directory and directory not in dirs:
-                dirs.append(str(directory))
+            if directory and native(directory) not in dirs:
+                dirs.append(native(directory))
     return dirs
 
 

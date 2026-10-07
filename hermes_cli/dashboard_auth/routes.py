@@ -20,13 +20,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections import defaultdict, deque
+from collections import OrderedDict, deque
 from typing import Any, Deque, Dict
 from urllib.parse import quote, unquote, urlencode, urlparse, urlunparse
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from hermes_cli.dashboard_auth import (
@@ -141,6 +141,23 @@ def _login_success(request: Request, session: Session, provider: str) -> None:
            email=session.email, org_id=session.org_id)
 
 
+def _externalize_post_login_target(target: str, prefix: str) -> str:
+    """Prepend *prefix* to *target* when behind a reverse proxy.
+
+    When the dashboard is mounted at a sub-path (e.g. ``/hermes``) via
+    ``X-Forwarded-Prefix``, a bare ``/`` landing must become ``/hermes/``
+    so the browser stays inside the mount. Paths that already carry the
+    prefix are returned unchanged; the native loopback redirect (an
+    absolute ``http://127.0.0.1...`` URL) never matches and is untouched.
+    """
+    prefix = prefix.rstrip("/")
+    if not target or not prefix:
+        return target
+    if target == prefix or target.startswith(f"{prefix}/"):
+        return target
+    return f"{prefix}{target}"
+
+
 def _complete_login(request: Request, provider: str, session: Session, *, broker_state: str,
                     next_raw: str) -> tuple:
     """Shared tail of the callback + password routes after credentials verified: audit success,
@@ -150,7 +167,8 @@ def _complete_login(request: Request, provider: str, session: Session, *, broker
     if broker_state:
         return _finish_native_login(
             request, broker_state=broker_state, session=session, provider=provider), True
-    return _validate_post_login_target(next_raw) or "/", False
+    landing = _validate_post_login_target(next_raw) or "/"
+    return _externalize_post_login_target(landing, _prefix(request)), False
 
 
 def _start_upstream_login(request: Request, p, *, audit_failure: bool, extra_pkce: dict[str, str]):
@@ -177,7 +195,8 @@ def _start_upstream_login(request: Request, p, *, audit_failure: bool, extra_pkc
 async def login_page(request: Request) -> HTMLResponse:
     # ``next=`` is set by the gate's redirect but /login is reachable directly.
     next_path = _validate_post_login_target(request.query_params.get("next", ""))
-    return HTMLResponse(render_login_html(next_path=next_path), headers=_NO_STORE)
+    return HTMLResponse(
+        render_login_html(next_path=next_path, prefix=_prefix(request)), headers=_NO_STORE)
 
 
 @router.get("/api/auth/providers", name="auth_providers")
@@ -291,7 +310,8 @@ async def auth_native_authorize(
                     authorize_path=f"{_prefix(request)}/auth/native/authorize",
                     code_challenge=code_challenge,
                     code_challenge_method=code_challenge_method,
-                    redirect_uri=redirect_uri, state=state),
+                    redirect_uri=redirect_uri, state=state,
+                    prefix=_prefix(request)),
                 headers=_NO_STORE)
     if p is None:
         raise _http(404, f"Unknown provider: {provider!r}")
@@ -360,12 +380,26 @@ async def auth_callback(
 
 # --- Public: password (non-redirect) login ---------------------------------
 # Brute-force throttle: a process-local sliding window per client IP. Best-effort
-# defence-in-depth on top of the provider's constant-time verify (resets on restart; behind a
-# proxy the IP is the proxy's unless X-Forwarded-For).
+# defence-in-depth on top of the provider's constant-time verify (resets on restart).
+# Uses the ASGI peer; trusted proxy normalization must happen upstream.
 _PW_RATE_MAX_ATTEMPTS = 10
 _PW_RATE_WINDOW_SEC = 60.0
-_pw_attempts: Dict[str, Deque[float]] = defaultdict(deque)
+_PW_RATE_MAX_BUCKETS = 4096
+_pw_attempts: "OrderedDict[str, Deque[float]]" = OrderedDict()
 _pw_attempts_lock = threading.Lock()
+
+
+def _prune_password_rate_buckets_locked(cutoff: float) -> None:
+    """Drop expired/empty password-login limiter buckets.
+
+    Must be called with ``_pw_attempts_lock`` held.
+    """
+    for bucket_key in list(_pw_attempts.keys()):
+        bucket = _pw_attempts[bucket_key]
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if not bucket:
+            _pw_attempts.pop(bucket_key, None)
 
 
 def _password_rate_limited(ip: str) -> bool:
@@ -374,7 +408,19 @@ def _password_rate_limited(ip: str) -> bool:
     now = time.monotonic()
     cutoff = now - _PW_RATE_WINDOW_SEC
     with _pw_attempts_lock:
-        bucket = _pw_attempts[ip or "_unknown_"]
+        key = ip or "_unknown_"
+        max_buckets = max(1, int(_PW_RATE_MAX_BUCKETS))
+        if key not in _pw_attempts and len(_pw_attempts) >= max_buckets:
+            _prune_password_rate_buckets_locked(cutoff)
+        while key not in _pw_attempts and len(_pw_attempts) >= max_buckets:
+            _pw_attempts.popitem(last=False)
+
+        bucket = _pw_attempts.get(key)
+        if bucket is None:
+            bucket = deque()
+            _pw_attempts[key] = bucket
+        else:
+            _pw_attempts.move_to_end(key)
         while bucket and bucket[0] < cutoff:
             bucket.popleft()
         if len(bucket) >= _PW_RATE_MAX_ATTEMPTS:
@@ -390,7 +436,8 @@ def _reset_password_rate_limit() -> None:
 
 
 class _PasswordLoginBody(BaseModel):
-    provider: str
+    # Providers use short stable IDs, not display names or URLs.
+    provider: str = Field(max_length=128)
     username: str
     password: str
     next: str = ""

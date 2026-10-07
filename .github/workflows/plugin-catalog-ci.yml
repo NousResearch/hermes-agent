@@ -49,9 +49,12 @@ jobs:
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          # The pull_request checkout is GitHub's merge commit; depth 2 brings its
-          # first parent (the base tip), which is all the diff below needs.
-          fetch-depth: 2
+          # Full commit graph + tags, blobs on demand: the diff below needs the
+          # merge commit's first parent, and Hermes resolves its own version
+          # from the release tags merged into HEAD. A shallow checkout reports
+          # "unknown", which plugins checking the host version reject (omh).
+          fetch-depth: 0
+          filter: blob:none
           # `hermes plugins validate` below runs pinned-repo code; keep the
           # job's token out of .git/config where that code could read it.
           persist-credentials: false

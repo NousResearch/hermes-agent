@@ -7,25 +7,34 @@ forwarded values resolve through the profile's secret scope, not the process env
 from __future__ import annotations
 
 import logging
-from contextvars import ContextVar
 from typing import Iterable
 from hermes_cli.config import cfg_get, read_raw_config
 
 logger = logging.getLogger(__name__)
 
-# Session-scoped allowlist; ContextVar-backed to prevent cross-session bleed
-# in the gateway pipeline.
-_allowed_env_vars_var: ContextVar[set[str]] = ContextVar("_allowed_env_vars")
+# Process-wide set of env var names registered by skills for sandbox
+# passthrough. Deliberately NOT a ContextVar: tool dispatch fans each tool
+# call onto a worker whose context is a copy_context() snapshot taken at
+# submit time (tools.thread_context.propagate_context_to_thread), so a
+# registration made inside one tool's worker (skill_view calling
+# register_env_passthrough) never reaches the submitting thread's context —
+# every subsequent tool (execute_code, terminal) re-snapshots the original
+# context and sees an empty allowlist, and the skill's declared env vars
+# never pass through (#90004). The config-based allowlist below is already
+# a module-level global with exactly the process-wide visibility the skill
+# path needs to match.
+#
+# Cross-session exposure is limited to the NAMES: the values still resolve
+# per profile through resolve_passthrough_value's secret_scope, so a name
+# registered by one session cannot read another profile's secret. The
+# previous ContextVar also never actually isolated anything within one
+# process running a single profile (the common deployment).
+_allowed_env_vars: set[str] = set()
 
 
 def _get_allowed() -> set[str]:
-    """Get or create the allowed env vars set for the current context/session."""
-    try:
-        return _allowed_env_vars_var.get()
-    except LookupError:
-        val: set[str] = set()
-        _allowed_env_vars_var.set(val)
-        return val
+    """Get the process-wide skill passthrough allowlist."""
+    return _allowed_env_vars
 
 
 # Config-based allowlist, keyed by Hermes home: under gateway.multiplex_profiles one process serves
@@ -174,5 +183,8 @@ def scoped_passthrough_additions(present: Iterable[str]) -> dict[str, str]:
 
 
 def clear_env_passthrough() -> None:
-    """Reset the skill-scoped allowlist (e.g. on session reset)."""
+    """Reset the skill-registered allowlist (e.g. on session reset).
+
+    Clears the process-wide set; a later ``skill_view`` re-registers its
+    vars on demand, so recovery is a single skill load."""
     _get_allowed().clear()

@@ -324,14 +324,10 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
             enabled.append("kanban")
         _apply_toolset_selection(tools, enabled, quiet_mode, disable=False)
     else:
-        from toolsets import get_all_toolsets
+        from toolsets import TOOLSET_SESSION_PLATFORMS, get_all_toolsets
         for ts_name in get_all_toolsets():
-            tools.update(resolve_toolset(ts_name))
-    # A role-reserved toolset (``setup``) reaches only a profile carrying that role, whatever the config,
-    # CLI flag, env pin or "all" asked for; this is the one point every surface's selection passes.
-    from toolsets import profile_role_toolsets
-    for ts_name in profile_role_toolsets()[1]:
-        tools.difference_update(resolve_toolset(ts_name))
+            if ts_name not in TOOLSET_SESSION_PLATFORMS:
+                tools.update(resolve_toolset(ts_name))
     # Disabled toolsets are always subtracted LAST, so a tool in a disabled
     # toolset is stripped even when a composite (hermes-cli) re-enables it.
     # This ensures that even if a composite toolset (like hermes-cli) is enabled, any tools belonging to a
@@ -931,7 +927,7 @@ def handle_function_call(
         if "manage_connections" not in _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode=True):
             return _emit(tool_error("Connectors are not available in this session."))
         if is_connector_name(function_name) and parse_connector_name(function_name) is None:
-            return _emit(tool_error("Malformed connector tool name; expected connectors__<connector>__<tool>."))
+            return _emit(tool_error("Malformed connector tool name; expected connectors__<connector>__{tool}."))
 
     original_args = dict(function_args)
     if not skip_tool_request_middleware:

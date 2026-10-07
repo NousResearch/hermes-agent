@@ -134,6 +134,7 @@ export interface Translations {
     /** First-run shared-metrics offer — optional, English fallback. */
     sharedMetricsTitle?: string;
     sharedMetricsBody?: string;
+    sharedMetricsReaskBody?: string;
     sharedMetricsShare?: string;
     sharedMetricsLocal?: string;
     sharedMetricsOff?: string;
@@ -145,6 +146,7 @@ export interface Translations {
   status: {
     actionFailed: string;
     actionFinished: string;
+    actionFinishedOwed: string;
     actions: string;
     agent: string;
     connected: string;

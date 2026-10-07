@@ -129,6 +129,7 @@ class SessionCreateParams(ProfileParams):
     provider: str | None = None
     reasoning_effort: str | None = None
     fast: bool | None = None  # presence is the contract: omitted inherits, true pins priority, false pins normal
+    service_tier: str | None = None
     close_on_disconnect: bool = False
     hidden: bool = False
     room_plumbing: bool = False
@@ -235,6 +236,9 @@ class SessionListRow(Result):
     message_count: int = 0
     live_message_count: int | None = None
     source: str = ""
+    # Durable lineage root of a compressed conversation (REST parity, #66663); None on
+    # rows that are not projected compression tips.
+    lineage_root_id: str | None = Field(default=None, alias="_lineage_root_id")
 
 
 class SessionListResult(Result):

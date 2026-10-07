@@ -9,6 +9,7 @@ from openai import OpenAI
 
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse
+from providers import get_provider_profile
 
 
 @pytest.fixture
@@ -518,7 +519,7 @@ class TestChatCompletionsKimi:
 class TestChatCompletionsLmStudioReasoning:
     """LM Studio publishes per-model reasoning ``allowed_options``. When the
     user requests an effort the model can't honor (e.g. ``high`` on a
-    toggle-style ``["off","on"]`` model), the transport omits
+    toggle-style ``["off","on"]`` model), the lmstudio profile omits
     ``reasoning_effort`` so LM Studio falls back to the model's default —
     silently downgrading "high" to "low" would mislead the user.
     """
@@ -526,7 +527,7 @@ class TestChatCompletionsLmStudioReasoning:
     def test_omits_effort_when_high_not_allowed_toggle(self, transport):
         kw = transport.build_kwargs(
             model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
-            is_lmstudio=True,
+            provider_profile=get_provider_profile("lmstudio"),
             supports_reasoning=True,
             reasoning_config={"effort": "high"},
             lmstudio_reasoning_options=["off", "on"],
@@ -537,7 +538,7 @@ class TestChatCompletionsLmStudioReasoning:
     def test_passes_through_when_effort_allowed(self, transport):
         kw = transport.build_kwargs(
             model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
-            is_lmstudio=True,
+            provider_profile=get_provider_profile("lmstudio"),
             supports_reasoning=True,
             reasoning_config={"effort": "high"},
             lmstudio_reasoning_options=["off", "low", "medium", "high"],
@@ -546,6 +547,24 @@ class TestChatCompletionsLmStudioReasoning:
 
 
 
+
+
+class TestProfileHookKeywordCompat:
+    """``lmstudio_reasoning_options`` is LM Studio-only: a plugin hook that names the older keywords
+    without ``**context`` must not start raising TypeError on every request."""
+
+    def test_hook_without_var_kwargs_still_called(self, transport):
+        from providers.base import ProviderProfile
+
+        class OldSignature(ProviderProfile):
+            def build_api_kwargs_extras(self, *, reasoning_config=None, supports_reasoning=False,
+                                        qwen_session_metadata=None, model=None, base_url=None,
+                                        ollama_num_ctx=None, session_id=None, cache_scope_id=None):
+                return {}, {"reasoning_effort": "low"}
+
+        kw = transport.build_kwargs(model="m", messages=[{"role": "user", "content": "Hi"}],
+                                    provider_profile=OldSignature(name="old-signature"))
+        assert kw["reasoning_effort"] == "low"
 
 
 class TestChatCompletionsValidate:

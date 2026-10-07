@@ -458,6 +458,7 @@ def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
         from hermes_cli.models import (
             check_nous_free_tier,
             union_with_nous_on_sale_models,
+            union_with_nous_free_catalog_models,
             union_with_portal_free_recommendations,
             union_with_portal_paid_recommendations,
         )
@@ -473,6 +474,10 @@ def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
             portal = ""
         if check_nous_free_tier(force_fresh=force_fresh_nous_tier):
             model_ids, _ = union_with_portal_free_recommendations(model_ids, pricing, portal)
+            # The Portal recommends a subset of what the gateway actually serves for $0, so the
+            # gateway's own catalog is the authority on free: without this a zero-priced chat model
+            # the Portal does not recommend never enters the candidate set and cannot be picked.
+            model_ids = union_with_nous_free_catalog_models(model_ids, pricing)
         else:
             model_ids, _ = union_with_portal_paid_recommendations(model_ids, pricing, portal)
             model_ids = union_with_nous_on_sale_models(model_ids, pricing)

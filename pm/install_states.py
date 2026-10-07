@@ -7,9 +7,13 @@ PM runtime, ~200 MB each), and nothing removed it when the tree was deleted: one
 host carried 402 such orphans (80 GB) after a fortnight of worktree campaigns.
 
 The state dir records the checkout it belongs to in ``inputs/.project-root`` (written by
-:func:`pm.environments.record_activation_inputs`); a dir whose recorded checkout no longer
-exists has no possible reader. Removal still fails closed on anything a live process could
-hold: the install lock, or a generation lease.
+:func:`pm.environments.record_activation_inputs`). A missing path alone does not prove the
+checkout is gone: a data root shared with a container (``-v ~/.hermes:/opt/data``) or an
+unmounted volume records paths this process cannot see. So a dir is an orphan only when its
+checkout sat where this process can see that it was deleted -- under the data root that owns
+``installs/`` (scratch clones, the runtime checkout) or directly in a ``.worktrees/`` dir that
+still exists. Removal still fails closed on anything a live process could hold: the install
+lock, or a dependency / PM runtime generation lease.
 """
 
 from __future__ import annotations
@@ -22,10 +26,17 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _provably_deleted(root: Path, data_root: Path) -> bool:
+    if root.exists():
+        return False
+    return root.is_relative_to(data_root) or (root.parent.name == ".worktrees" and root.parent.is_dir())
+
+
 def orphan_install_states(installs: Path) -> list[Path]:
-    """State dirs whose recorded checkout is gone. Dirs without a record are left alone."""
+    """State dirs whose recorded checkout is provably deleted. Dirs without a record are left alone."""
     if not installs.is_dir():
         return []
+    data_root = installs.resolve().parent
     orphans: list[Path] = []
     for state in sorted(installs.iterdir()):
         record = state / "inputs" / ".project-root"
@@ -35,7 +46,7 @@ def orphan_install_states(installs: Path) -> list[Path]:
             root = record.read_text(encoding="utf-8-sig").strip()
         except OSError:
             continue
-        if root and not Path(root).exists():
+        if root and _provably_deleted(Path(root), data_root):
             orphans.append(state)
     return orphans
 
@@ -57,11 +68,11 @@ def _held(state: Path) -> bool:
                 return True
         finally:
             os.close(fd)
-    environments = state / "environments"
-    if environments.is_dir():
-        for generation in environments.iterdir():
-            if generation.is_dir() and (generation / ".leases").is_dir() and leases_held(generation):
-                return True
+    for generations in (state / "environments", state / "pm-runtime" / "generations"):
+        if generations.is_dir():
+            for generation in generations.iterdir():
+                if generation.is_dir() and (generation / ".leases").is_dir() and leases_held(generation):
+                    return True
     return False
 
 

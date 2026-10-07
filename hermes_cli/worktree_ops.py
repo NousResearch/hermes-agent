@@ -971,6 +971,29 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     Phases: ``_prune_candidates`` -> ``_classify_prune_candidates`` -> ``_reap_prune_verdicts``
     -> ``_prune_orphaned_branches``.
     """
+    try:
+        _prune_stale_worktree_trees(repo_root, max_age_hours)
+    finally:
+        _reclaim_orphan_install_states()
+
+
+def _reclaim_orphan_install_states() -> None:
+    """Trees removed by any path (the prune pass, `git worktree remove` by hand, `rm -rf` of a
+    scratch clone) leave their ~200 MB dependency state under <home>/installs/; reclaim it on
+    every pass, including the early returns where no tree is old enough to prune. Startup
+    maintenance must never block a launch; the traceback goes to the debug log."""
+    try:
+        from pm.environments import installs_root
+        from pm.install_states import collect_orphan_install_states
+
+        reclaimed = collect_orphan_install_states(installs_root())
+        if reclaimed:
+            logger.info("Reclaimed %d dependency state dir(s) of deleted checkouts", len(reclaimed))
+    except Exception:
+        logger.debug("Orphan install-state reclaim failed", exc_info=True)
+
+
+def _prune_stale_worktree_trees(repo_root: str, max_age_hours: int) -> None:
     worktrees_dir = Path(repo_root) / ".worktrees"
     if not worktrees_dir.exists():
         _prune_orphaned_branches(repo_root)
@@ -996,19 +1019,6 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
 
     _prune_orphaned_branches(repo_root, protect=kept_branches)
 
-    # Trees removed by any path (this pass, `git worktree remove` by hand, a campaign's own
-    # cleanup) leave their ~200 MB dependency state under <home>/installs/ forever; reclaim it.
-    # Startup maintenance must never block a launch; the traceback goes to the debug log.
-    try:
-        from pm.environments import installs_root
-        from pm.install_states import collect_orphan_install_states
-
-        reclaimed = collect_orphan_install_states(installs_root())
-        if reclaimed:
-            logger.info("Reclaimed %d dependency state dir(s) of deleted checkouts", len(reclaimed))
-    except Exception:
-        logger.debug("Orphan install-state reclaim failed", exc_info=True)
-
     # The conservative startup pass accumulates trees it can never reclaim; say so once per launch.
     try:
         from hermes_cli.worktree_gc import worktrees_summary
@@ -1019,7 +1029,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
             logger.warning(".worktrees/ holds %d tree(s) (%s) — run `hermes worktree list` "
                            "to audit and `hermes worktree prune` to reclaim safely.", count, size_txt)
     except Exception:
-        pass
+        logger.debug("worktree summary failed", exc_info=True)
 
 
 def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None) -> None:

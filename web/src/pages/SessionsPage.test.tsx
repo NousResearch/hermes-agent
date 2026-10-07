@@ -119,6 +119,18 @@ afterEach(async () => {
 });
 
 describe("SessionsPage per-row profile routing (#99387)", () => {
+  it("keeps oneshot sessions in chats while using the same classification for filters", async () => {
+    await renderSessionsPage([
+      { id: "sid-oneshot", profile: "default", source: "oneshot", model: null, title: "One-shot", started_at: 1,
+        ended_at: null, last_active: 1, is_active: false, message_count: 1, tool_call_count: 0,
+        input_tokens: 1, output_tokens: 1, preview: "one-shot" },
+    ]);
+
+    expect(apiMocks.getSessions.mock.calls[0]?.[2]).toEqual({
+      excludeSources: ["cron", "tool", "api_server", "acp", "hermes_flow", "vulcan_delegate", "webhook"],
+    });
+  });
+
   it("sends every per-row request to the row's owning profile, not the management default", async () => {
     await renderSessionsPage([
       { id: "sid-guanli", profile: "guanli", source: "cli", model: null, title: "Managed", started_at: 1, ended_at: null,

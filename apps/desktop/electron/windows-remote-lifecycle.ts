@@ -10,7 +10,16 @@ const READY_RE = /^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/gm
 const READY_POLL_INTERVAL_MS = 750
 
 function psLiteral(value) {
-  return `'${String(value).replace(/'/g, "''")}'`
+  const text = String(value)
+
+  // Stdin scripts use ASCII on Windows PowerShell 5.1, independently of the
+  // remote console code page. Encode Unicode values as data, never as code.
+  if (/[^\x00-\x7F]/.test(text)) {
+    const encoded = Buffer.from(text, 'utf16le').toString('base64')
+    return `([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encoded}')))`
+  }
+
+  return `'${text.replace(/'/g, "''")}'`
 }
 
 function encodedPowerShell(script) {
@@ -40,7 +49,25 @@ function stripPowerShellNoise(stdout) {
 // command shell is commonly cmd.exe, whose command-line limit is 8191 chars.
 // SshConnection.exec already supports streaming stdin to the remote command.
 function powerShellStdinCommand() {
-  return 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command [ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))).Invoke()'
+  return 'powershell.exe -NoProfile -NonInteractive -Command -'
+}
+
+// Use PowerShell's native stdin parser instead of dynamically creating a
+// ScriptBlock from base64. The command stays short and the script stays visible
+// to host inspection. A single block plus its terminating blank line preserves
+// multiline statements; propagate failures instead of continuing as success.
+function powerShellStdinData(script: string) {
+  return [
+    '& {',
+    '$ProgressPreference="SilentlyContinue"',
+    "$ErrorActionPreference='Stop'",
+    '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)',
+    script,
+    '}',
+    '',
+    'if (-not $?) { exit 1 }',
+    ''
+  ].join('\r\n')
 }
 
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {
@@ -92,7 +119,8 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     'if($explicit -and $hermes -ne $explicit){throw "The configured Hermes path is not an executable file."}',
     '$python=[IO.Path]::Combine([IO.Path]::GetDirectoryName($hermes), "python.exe")',
     'Assert-NoReparse $python $false',
-    '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
+    '$arch=[Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()',
+    '[ordered]@{os="Windows";arch=$arch;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
   ].join('\r\n')
 
   // Windows OpenSSH may serialize PowerShell's progress stream as
@@ -101,7 +129,7 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   // (module auto-load racing the exec read). stripPowerShellNoise drops every
   // block; the JSON is the last meaningful line.
   const lines = stripPowerShellNoise(
-    await ssh.exec(powerShellStdinCommand(), { stdinData: `${encodedPowerShell(script)}\r\n` })
+    await ssh.exec(powerShellStdinCommand(), { stdinData: powerShellStdinData(script) })
   )
   const parsed = JSON.parse(lines[lines.length - 1] || 'null')
 
@@ -189,7 +217,7 @@ public static class HermesMarkerNoFollow {
 // (powerShellStdinCommand): its script, with the C# no-follow reader, is far
 // over cmd.exe's 8191-char command-line limit.
 function windowsUpdateMarkerProbeStdinData(hermesHome, python = '') {
-  return `${encodedPowerShell(windowsUpdateMarkerProbeScript(hermesHome, python))}\r\n`
+  return powerShellStdinData(windowsUpdateMarkerProbeScript(hermesHome, python))
 }
 
 /**
@@ -204,11 +232,12 @@ async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome, python = '
     // Same stdout channel as the probe: a CLIXML progress block after the
     // final `Write-Output $result` would otherwise win the .pop() and turn a
     // CLEAR gate into a fail-closed 'update-in-progress' verdict.
-    observation = stripPowerShellNoise(
-      await ssh.exec(powerShellStdinCommand(), {
-        stdinData: windowsUpdateMarkerProbeStdinData(hermesHome, python)
-      })
-    ).pop() || ''
+    observation =
+      stripPowerShellNoise(
+        await ssh.exec(powerShellStdinCommand(), {
+          stdinData: windowsUpdateMarkerProbeStdinData(hermesHome, python)
+        })
+      ).pop() || ''
   } catch (cause) {
     const error: any = new Error('Could not prove that the remote Hermes install is clear for SSH startup.')
     error.kind = 'update-in-progress'

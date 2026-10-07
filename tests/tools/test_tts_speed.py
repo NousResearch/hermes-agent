@@ -125,7 +125,7 @@ class TestLocalOpenaiTempo:
         output = tmp_path / "out.mp3"
         output.write_bytes(b"original")
 
-        with patch("tools.tts_tool_delivery.shutil.which", return_value=None), \
+        with patch("tools.tts_tool_delivery.locate_command", return_value=MagicMock(command=())), \
              pytest.raises(RuntimeError, match="requires ffmpeg"):
             _apply_local_tempo(str(output), 1.5)
         assert output.read_bytes() == b"original"
@@ -134,7 +134,8 @@ class TestLocalOpenaiTempo:
             Path(args[-1]).write_bytes(b"processed")
             return CompletedProcess(args, 0, b"", b"")
 
-        with patch("tools.tts_tool_delivery.shutil.which", return_value="/usr/bin/ffmpeg"), \
+        with patch("tools.tts_tool_delivery.locate_command",
+                   return_value=MagicMock(command=("/usr/bin/ffmpeg",))), \
              patch("tools.tts_tool_delivery._ffmpeg_run", side_effect=successful_run):
             assert _apply_local_tempo(str(output), 1.5) == str(output)
         assert output.read_bytes() == b"processed"
@@ -146,7 +147,8 @@ class TestLocalOpenaiTempo:
             Path(args[-1]).write_bytes(b"partial")
             return CompletedProcess(args, 1, b"", b"encoder failed")
 
-        with patch("tools.tts_tool_delivery.shutil.which", return_value="/usr/bin/ffmpeg"), \
+        with patch("tools.tts_tool_delivery.locate_command",
+                   return_value=MagicMock(command=("/usr/bin/ffmpeg",))), \
              patch("tools.tts_tool_delivery._ffmpeg_run", side_effect=failed_run), \
              pytest.raises(RuntimeError, match="encoder failed"):
             _apply_local_tempo(str(output), 1.5)

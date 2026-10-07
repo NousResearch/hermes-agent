@@ -1,59 +1,256 @@
-name: Install & Update E2E red tracker
+from __future__ import annotations
 
-# Someone hears about a red scheduled matrix. After every scheduled
-# "Install & Update E2E" run, tests/install/e2e-assets/red-tracker.mjs keeps
-# ONE issue labelled install-e2e-red in step with it: a red run opens it (or
-# rewrites the open one's body in place with the current red legs grouped by
-# failure class), a green run closes it. No comment per red run, no second
-# issue.
-#
-# A separate workflow on purpose: install-e2e.yml is also a reusable workflow
-# called by stable-release.yml with contents/actions read only, and a nested
-# job asking for issues: write would fail that call at startup.
-#
-# Dispatch it by hand to preview (dry-run, the default) or replay a run.
+import argparse
+import json
+import os
+import subprocess
+import sys
+from copy import deepcopy
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Tuple
 
-on:
-  workflow_run:
-    workflows: ['Install & Update E2E']
-    types: [completed]
-  workflow_dispatch:
-    inputs:
-      run-id:
-        description: 'Install & Update E2E run id to report on.'
-        required: true
-        type: string
-      dry-run:
-        description: 'Print the planned issue change instead of making it.'
-        required: false
-        type: boolean
-        default: true
+try:
+    import tomllib
+except ModuleNotFoundError:
+    tomllib = None
 
-permissions:
-  contents: read
+try:
+    import yaml
+except ModuleNotFoundError:
+    yaml = None
 
-concurrency:
-  group: install-e2e-red-tracker
-  cancel-in-progress: false
+CONFIG_SUFFIXES = {
+    ".yaml", ".yml", ".json", ".toml", ".ini", ".cfg", ".conf",
+    ".env", ".properties", ".opts",
+}
 
-jobs:
-  track:
-    name: Update the install-e2e-red tracker
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: read
-      issues: write
-    steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
-        with:
-          sparse-checkout: tests/install/e2e-assets/red-tracker.mjs
-          sparse-checkout-cone-mode: false
-      - name: Open, update or close the tracker
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ inputs.run-id || github.event.workflow_run.id }}
-          DRY_RUN: ${{ inputs.dry-run == true && '--dry-run' || '' }}
-        run: node tests/install/e2e-assets/red-tracker.mjs --run-id "$RUN_ID" $DRY_RUN
+SPECIAL_PATH_HINTS = {
+    ".github/workflows/": "CI/CD workflow",
+    "docker-compose": "Docker orchestration",
+    "compose": "Docker orchestration",
+    "Dockerfile": "Container build configuration",
+    ".coderabbit": "Code review automation",
+    "kubernetes": "Kubernetes deployment or config",
+    "helm": "Helm chart config",
+    "terraform": "Infrastructure as code",
+    "ansible": "Infrastructure automation",
+    "nginx": "Web server config",
+    "apache": "Web server config",
+    "postgres": "Database config",
+    "redis": "Cache config",
+    "azure": "Cloud config",
+    "github": "GitHub configuration",
+}
+
+RISK_BY_PATH = {
+    "ci": "medium",
+    "workflow": "high",
+    "docker": "high",
+    "kubernetes": "high",
+    "helm": "high",
+    "terraform": "high",
+    "ansible": "high",
+    ".coderabbit": "medium",
+    "secret": "high",
+    "security": "high",
+    "auth": "high",
+    "database": "high",
+    "redis": "medium",
+}
+
+
+def run_git(repo: str, args: List[str]) -> str:
+    completed = subprocess.run(
+        ["git", "-C", repo, *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {completed.stderr.strip() or completed.stdout.strip()}")
+    return completed.stdout.strip()
+
+
+def is_config_file(path: str) -> bool:
+    lower = path.lower()
+    if lower.endswith(tuple(CONFIG_SUFFIXES)):
+        return True
+    if lower.startswith(".github/workflows/"):
+        return True
+    if lower.endswith("dockerfile") or lower.endswith("dockerfile"):
+        return True
+    if lower.endswith(".env"):
+        return True
+    if ".coderabbit" in lower:
+        return True
+    if "docker-compose" in lower:
+        return True
+    if lower.startswith("compose"):
+        return True
+    return False
+
+
+def classify_path(path: str) -> str:
+    lower = path.lower()
+    for token, label in SPECIAL_PATH_HINTS.items():
+        if token in lower:
+            return label
+    return "General configuration"
+
+
+def detect_risk(path: str) -> str:
+    lower = path.lower()
+    for token, level in RISK_BY_PATH.items():
+        if token in lower:
+            return level
+    return "low"
+
+
+def parse_value(text: str, path: str) -> Any:
+    lower = path.lower()
+    if lower.endswith(".json"):
+        return json.loads(text)
+    if lower.endswith(".toml"):
+        if tomllib is None:
+            raise RuntimeError("Python 3.11+ required for TOML parsing")
+        return tomllib.loads(text)
+    if lower.endswith((".yaml", ".yml")):
+        if yaml is None:
+            return None
+        return yaml.safe_load(text) or {}
+    if lower.endswith(".ini") or lower.endswith(".cfg") or lower.endswith(".conf"):
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+    return None
+
+
+def flatten_path(prefix: str, key: Any) -> str:
+    return f"{prefix}.{key}" if prefix else str(key)
+
+
+def recursive_compare(old: Any, new: Any, prefix: str = "") -> List[str]:
+    changes: List[str] = []
+    if isinstance(old, dict) and isinstance(new, dict):
+        for key in sorted(set(old) | set(new)):
+            next_prefix = flatten_path(prefix, key)
+            if key not in old:
+                changes.append(f"{next_prefix}: <added> -> {json.dumps(new[key], default=str)}")
+            elif key not in new:
+                changes.append(f"{next_prefix}: {json.dumps(old[key], default=str)} -> <removed>")
+            else:
+                changes.extend(recursive_compare(old[key], new[key], next_prefix))
+        return changes
+
+    if isinstance(old, list) and isinstance(new, list):
+        if old != new:
+            changes.append(f"{prefix}: {json.dumps(old, default=str)} -> {json.dumps(new, default=str)}")
+        return changes
+
+    if old != new:
+        changes.append(f"{prefix}: {json.dumps(old, default=str)} -> {json.dumps(new, default=str)}")
+    return changes
+
+
+def read_file_from_git(repo: str, ref: str, path: str) -> str:
+    try:
+        return run_git(repo, ["show", f"{ref}:{path}"])
+    except RuntimeError:
+        return ""
+
+
+def git_changed_files(repo: str, base: str, head: str) -> List[str]:
+    diff = run_git(repo, ["diff", "--name-only", base, head])
+    files = [line.strip() for line in diff.splitlines() if line.strip()]
+    return [p for p in files if is_config_file(p)]
+
+
+def summarize_reason(path: str) -> str:
+    lower = path.lower()
+    if lower.startswith(".github/workflows/"):
+        return "Impacto probable: cambios de entorno de CI/CD, triggers, jobs, runners o variables del pipeline."
+    if ".coderabbit" in lower:
+        return "Impacto probable: cambia la lógica de revisión automática, inclusiones/exclusiones y reglas de análisis."
+    if "docker-compose" in lower or "compose" in lower:
+        return "Impacto probable: modifica servicios, redes, puertos, volúmenes o dependencias del entorno."
+    if "dockerfile" in lower:
+        return "Impacto probable: cambia la imagen base, paquetes instalados o pasos de build del contenedor."
+    if "terraform" in lower or "kubernetes" in lower or "helm" in lower:
+        return "Impacto probable: modifica infraestructura, despliegues, cargas y configuración de producción."
+    if lower.endswith((".yaml", ".yml", ".json", ".toml")):
+        return "Impacto probable: cambia parámetros de configuración del sistema o aplicación."
+    return "Impacto probable: cambia la configuración del proyecto y podría afectar comportamiento o despliegue."
+
+
+def analyze_file(repo: str, path: str, base: str, head: str) -> Tuple[str, List[str], str]:
+    old_text = read_file_from_git(repo, base, path)
+    new_text = read_file_from_git(repo, head, path)
+
+    if not new_text and not old_text:
+        return path, [], "No content available to compare."
+
+    if new_text == old_text:
+        return path, [], "No meaningful content difference found."
+
+    old_data = parse_value(old_text, path)
+    new_data = parse_value(new_text, path)
+
+    if old_data is not None and new_data is not None:
+        changes = recursive_compare(old_data, new_data)
+        if not changes:
+            return path, [], "Parsed configuration changed structurally but no simple key diff was detected."
+        return path, changes[:25], summarize_reason(path)
+
+    old_lines = old_text.splitlines()
+    new_lines = new_text.splitlines()
+    common = min(len(old_lines), len(new_lines))
+    diff_lines = []
+    for idx in range(common):
+        if old_lines[idx] != new_lines[idx]:
+            diff_lines.append(f"line {idx + 1}: {old_lines[idx]!r} -> {new_lines[idx]!r}")
+    if len(old_lines) != len(new_lines):
+        diff_lines.append(f"line count changed: {len(old_lines)} -> {len(new_lines)}")
+    return path, diff_lines[:25], summarize_reason(path)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Detect config changes and explain their likely impact.")
+    parser.add_argument("--repo", default=".", help="Path to the git repository")
+    parser.add_argument("--base", default="HEAD~1", help="Revision to compare against")
+    parser.add_argument("--head", default="HEAD", help="Target revision")
+    parser.add_argument("--files", nargs="*", default=None, help="Optional list of files to inspect instead of git diff")
+    args = parser.parse_args()
+
+    try:
+        if args.files:
+            file_list = [p for p in args.files if is_config_file(p)]
+        else:
+            file_list = git_changed_files(args.repo, args.base, args.head)
+
+        if not file_list:
+            print("No config files changed in the diff.")
+            return 0
+
+        for path in file_list:
+            file_path = Path(path)
+            risk = detect_risk(str(file_path))
+            file_name, changes, reason = analyze_file(args.repo, path, args.base, args.head)
+            print(f"[{risk.upper()}] {file_name}")
+            if changes:
+                for item in changes:
+                    print(f"  - {item}")
+            else:
+                print("  - No specific key delta detected.")
+            print(f"  {reason}")
+            print(f"  Tipo: {classify_path(file_name)}")
+            print()
+
+        return 0
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

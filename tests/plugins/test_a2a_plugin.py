@@ -1740,3 +1740,28 @@ def test_load_conversation_skips_non_dict_lines(monkeypatch, tmp_path):
         f.write("42\n")
     convo = protocol.load_conversation("ctx-mixed")
     assert len(convo) == 1 and convo[0]["text"] == "hello"
+
+
+class TestOutboundReasoningStrip:
+    """A peer-bound reply must not leak the model's internal reasoning block
+    (``💭 Reasoning: ```…``` ``) into A2A responses."""
+
+    @staticmethod
+    def _strip(reply: str) -> str:
+        from plugins.platforms.a2a.adapter import _strip_reasoning_block
+        return _strip_reasoning_block(reply)
+
+    def test_leading_reasoning_block_is_removed(self):
+        reply = "💭 Reasoning:\n```\nthey asked for X, so answer Y\n```\n\nY, as requested."
+        assert self._strip(reply) == "Y, as requested."
+
+    def test_bold_and_fullwidth_colon_variant(self):
+        reply = "💭 **Reasoning：** ```why```\nHere it is."
+        assert self._strip(reply) == "Here it is."
+
+    def test_reply_without_reasoning_is_unchanged(self):
+        assert self._strip("Just the answer.") == "Just the answer."
+
+    def test_header_only_reasoning_keeps_the_body_text(self):
+        # No fenced block: only the header is dropped, the prose stays.
+        assert self._strip("💭 Reasoning: weighing options\nAnswer: 42") == "weighing options\nAnswer: 42"

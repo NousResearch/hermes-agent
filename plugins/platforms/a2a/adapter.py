@@ -151,6 +151,18 @@ def _state_db(profile: str, sql: str, params: tuple, log_msg: str, *, commit: bo
         return ""
 
 
+_REASONING_BLOCK_RE = re.compile(
+    r"\s*💭\s*\*{0,2}Reasoning[:：]?\*{0,2}\s*(?:```[\s\S]*?```)?\s*", flags=re.DOTALL,
+)
+
+
+def _strip_reasoning_block(reply: str) -> str:
+    """Drop the model's internal reasoning block (``💭 Reasoning: ```…``` ``) from a
+    peer-bound reply — it leaks thinking traces into A2A responses and pollutes
+    downstream consumers."""
+    return _REASONING_BLOCK_RE.sub("", reply).strip()
+
+
 class A2ARequestHandler(BaseHTTPRequestHandler):
     """HTTP handler for the A2A JSON-RPC surface; all state lives on ``self.server.adapter``."""
 
@@ -634,6 +646,7 @@ class A2AAdapter(BasePlatformAdapter):
         task_id, context_id, peer = pending["task_id"], pending["context_id"], pending["peer"]
         try:
             reply = security.redact_outbound(reply or "")
+            reply = _strip_reasoning_block(reply)
             stripped = reply.lstrip()
             if state == protocol.STATE_COMPLETED and stripped.upper().startswith(protocol.INPUT_REQUIRED_MARKER):
                 state, reply = protocol.STATE_INPUT_REQUIRED, stripped[len(protocol.INPUT_REQUIRED_MARKER):].strip()

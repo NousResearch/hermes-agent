@@ -69,6 +69,26 @@ class TestWriteFileHandler:
         assert "line-number" in result["error"].lower()
         mock_get.assert_not_called()
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_allows_pipe_delimited_data_with_header_and_sequential_ids(self, mock_get, tmp_path):
+        """PSV / ``sqlite3 -header`` output is data, not read_file display text."""
+        from tools.file_tools import write_file_tool
+
+        mock_ops = MagicMock()
+        mock_ops.write_file.return_value.to_dict.return_value = {"status": "ok"}
+        mock_get.return_value = mock_ops
+        content = "id|name|age\n1|Alice|30\n2|Bob|25\n3|Carol|41\n"
+
+        result = json.loads(write_file_tool(str(tmp_path / "people.psv"), content))
+
+        assert "error" not in result
+        # The same table echoed from read_file (gutter on every line) is still refused.
+        echoed = "1|id|name|age\n2|1|Alice|30\n3|2|Bob|25\n4|3|Carol|41\n"
+        result = json.loads(write_file_tool(str(tmp_path / "echoed.psv"), echoed))
+        assert "line-number" in result["error"].lower()
+        # Only the PSV write reached file ops; the refused one never did.
+        mock_ops.write_file.assert_called_once()
+        assert mock_ops.write_file.call_args.args[1] == content
 
 
     def test_missing_content_key_returns_error(self):

@@ -634,6 +634,11 @@ def _looks_like_read_file_line_numbered_content(content: str) -> bool:
             numbered.append(int(prefix))
     if len(numbered) < 2 or len(numbered) / len(lines) < 0.6:
         return False
+    # An unnumbered header with the same '|' count as every row is delimited data
+    # (``id|name`` over ``1|Alice``); the gutter adds a '|' only to numbered lines.
+    header_prefix = lines[0].lstrip().partition("|")[0]
+    if not header_prefix.isdigit() and len({line.count("|") for line in lines}) == 1:
+        return False
     consecutive_pairs = sum(1 for prev, current in zip(numbered, numbered[1:]) if current == prev + 1)
     return consecutive_pairs >= len(numbered) - 1
 

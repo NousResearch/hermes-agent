@@ -296,37 +296,10 @@ def _clean_request_string(value: Any) -> Optional[str]:
     return (value.strip() or None) if isinstance(value, str) else None
 
 
-def _request_reasoning_config(model_options: Any) -> Optional[Dict[str, Any]]:
-    """Translate model_options (structured ``reasoning`` or legacy ``reasoning_effort``) into
-    AIAgent reasoning_config; unknown effort values are ignored, never raised."""
-    if not isinstance(model_options, dict):
-        return None
-    reasoning = model_options.get("reasoning")
-    enabled: Any = None
-    effort: Any = model_options.get("reasoning_effort")
-    if isinstance(reasoning, dict):
-        enabled = reasoning.get("enabled")
-        effort = reasoning.get("effort", effort)
-    effort_norm = str(effort).strip().lower() if effort is not None else ""
-    if enabled is False or effort_norm == "none":
-        return {"enabled": False}
-    if effort_norm in _REASONING_EFFORTS and effort_norm != "none":
-        return {"enabled": True, "effort": effort_norm}
-    if enabled is True:
-        return {"enabled": True}
-    return None
-
-
-def _request_service_tier(model_options: Any) -> Any:
-    """Return a per-request service_tier override or _REQUEST_OPTION_MISSING."""
-    if not isinstance(model_options, dict):
-        return _REQUEST_OPTION_MISSING
-    if "service_tier" in model_options:
-        raw_tier = model_options.get("service_tier")
-        return _clean_request_string(raw_tier) if isinstance(raw_tier, str) else raw_tier
-    if "fast" in model_options:
-        return "priority" if _coerce_request_bool(model_options.get("fast"), default=False) else None
-    return _REQUEST_OPTION_MISSING
+# model_options decoding lives in the topical sibling (line-cap offset);
+# re-exported here so importers are unaffected.
+from gateway.platforms.api_server_request_options import (  # noqa: E402
+    _request_reasoning_config, _request_service_tier)
 
 
 def _apply_runtime_agent_overrides(
@@ -2520,12 +2493,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """GET /api/model/options — the dashboard/TUI model-picker inventory, so external clients
         can sync to the configured provider catalog instead of scraping /v1/models."""
         refresh = _coerce_request_bool(request.query.get("refresh"), default=False)
+        include_unconfigured = _coerce_request_bool(
+            request.query.get("include_unconfigured"), default=True)
         try:
             from hermes_cli.inventory import build_model_options_payload, load_picker_context
 
             def _build_payload() -> Dict[str, Any]:
                 return build_model_options_payload(
-                    load_picker_context(), include_unconfigured=True, refresh=refresh)
+                    load_picker_context(), include_unconfigured=include_unconfigured, refresh=refresh)
             # Enrichment can fetch pricing/provider catalogs: keep it off the event loop.
             payload = await asyncio.to_thread(_build_payload)
             return web.json_response(payload)

@@ -67,6 +67,7 @@ import {
   getSessionOwnerHint,
   knownSessionOwner,
   markComposerEffortManual,
+  markComposerSelectionManual,
   ownerLookupSessionRows,
   sessionMatchesStoredId,
   setActiveSessionId,
@@ -1480,6 +1481,28 @@ describe('createBackendSessionForSend profile routing', () => {
     expect(params).not.toHaveProperty('model')
     expect(params).not.toHaveProperty('provider')
     expect(params).toMatchObject({ reasoning_effort: 'high' })
+  })
+
+  // Regression (review on #134689): the effort mark must be monotonic — a
+  // picker pick ('manual') is not downgraded to 'manual-effort' by an effort
+  // keybind/preset that runs right after, or the explicit pick would drop out
+  // of session.create and the chat would start on the profile default.
+  it('keeps sending the picked model when the effort keybind runs after the pick', async () => {
+    const params = await createWith(() => {
+      // The user picks a model in the picker first — the full manual mark.
+      setCurrentModel('anthropic/claude-opus-5')
+      setCurrentProvider('anthropic')
+      markComposerSelectionManual()
+      // Then steps the reasoning-effort keybind / applies an effort preset.
+      markComposerEffortManual()
+      setCurrentReasoningEffort('high')
+    })
+
+    expect(params).toMatchObject({
+      model: 'anthropic/claude-opus-5',
+      provider: 'anthropic',
+      reasoning_effort: 'high'
+    })
   })
 
   // The upgrade path stays intact: a real picker pick after an effort tune

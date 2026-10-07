@@ -1742,10 +1742,12 @@ export const markComposerSelectionManual = (): void => {
 
 /** Mark only the effort/speed axes as hand-tuned — the model/provider pair is
  *  NOT claimed as a user pick, so `session.create` keeps omitting it and the
- *  default reseed stays allowed (#134677). */
+ *  default reseed stays allowed (#134677). Monotonic: a source already at
+ *  'manual' (an explicit picker pick) stays there, or an effort keybind right
+ *  after picking a model would drop the pick from session.create. */
 export const markComposerEffortManual = (): void => {
   composerSelectionGeneration += 1
-  setCurrentModelSource('manual-effort')
+  if (getCurrentModelSource() !== 'manual') setCurrentModelSource('manual-effort')
 }
 
 export const setCurrentReasoningEffort = (next: Updater<string>) => {

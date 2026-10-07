@@ -188,15 +188,29 @@ pub async fn launch_hermes_desktop(
     // quarantine oddities after a self-update rebuild.
     let mut cmd = desktop_launch_command(&exe_path, &install_root);
 
-    spawn_detached_desktop(cmd.as_std_mut()).map_err(|e| {
-        format!(
-            "failed to launch {}: {e}",
-            exe_path.display()
-        )
-    })?;
+    let launch_future = async {
+        spawn_detached_desktop(cmd.as_std_mut()).map_err(|e| {
+            format!(
+                "failed to launch {}: {e}",
+                exe_path.display()
+            )
+        })
+    };
 
-    // Give Windows ~150ms to actually start the new process before we exit.
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        launch_future
+    ).await {
+        Ok(result) => {
+            result?;
+            // Give Windows ~150ms to actually start the new process before we exit.
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+        Err(_) => {
+            tracing::error!("launch_hermes_desktop timeout (30s); IPC may be blocked");
+            return Err("Desktop launch timeout - installer unresponsive".into());
+        }
+    }
 
     // Exit the installer cleanly. Tauri's process plugin gives us the
     // right hook regardless of platform.

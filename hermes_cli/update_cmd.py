@@ -1343,9 +1343,25 @@ def _apply_parked_branch_guard(
             current_branch, branch, switch_block_reason.split(":", 1)[1])
         return True, False, switch_block_reason
     # --branch typos used to surface via the checkout failing, which this path skips.
+    # Fixes #134555: tag-pinned shallow checkouts may have broken refspecs
     if _git_run(git_cmd, ["rev-parse", "--verify", "--quiet", f"origin/{branch}"]).returncode != 0:
-        print(f"✗ Branch '{branch}' does not exist locally or on origin.")
-        sys.exit(1)
+        # Local tracking ref is missing; try to repair the refspec and fetch (fixes #134555)
+        # This handles tag-pinned checkouts like +refs/tags/v*:refs/tags/v*
+        print(f"ℹ Local tracking branch 'origin/{branch}' is missing. Attempting refspec repair...")
+        try:
+            # Add heads refspec if not already present
+            _git_run(git_cmd, ["config", "--add", "remote.origin.fetch",
+                              "+refs/heads/*:refs/remotes/origin/*"], check=False)
+            # Explicit fetch with destination ref
+            _git_run(git_cmd, ["fetch", "--depth", "1", "origin",
+                              f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], check=False)
+        except Exception:
+            pass  # Refspec repair is opportunistic; continue even if it fails
+
+        # Re-check after repair attempt
+        if _git_run(git_cmd, ["rev-parse", "--verify", "--quiet", f"origin/{branch}"]).returncode != 0:
+            print(f"✗ Branch '{branch}' does not exist locally or on origin.")
+            sys.exit(1)
     print(
         f"  ℹ On branch '{current_branch}' — updating it in place from "
         f"origin/{branch} (no branch switch; local commits preserved).")

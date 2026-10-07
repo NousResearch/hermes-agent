@@ -2341,6 +2341,27 @@ async function rotateDesktopLogIfNeededAsync() {
   }
 }
 
+async function reclaimActiveLogsIfNeededAsync() {
+  // Reclaim long-lived logs that other processes hold open (e.g. Chromium --log-file)
+  // These cannot be rotated (held open in append mode), so truncate in-place only.
+  const activeLogsToReclaim = [
+    path.join(path.dirname(DESKTOP_LOG_PATH), 'desktop-chromium.log'),
+    path.join(path.dirname(DESKTOP_LOG_PATH), 'renderer.log'),
+  ]
+
+  for (const logFile of activeLogsToReclaim) {
+    try {
+      const stat = await fs.promises.stat(logFile)
+      if (stat.size >= 10 * 1024 * 1024) { // LOG_MAX_BYTES
+        rememberLog(`Reclaiming oversized active log: ${logFile} (${(stat.size / 1024 / 1024).toFixed(1)} MB)`)
+        await fs.promises.truncate(logFile, 0)
+      }
+    } catch {
+      // Log doesn't exist or can't be accessed — benign.
+    }
+  }
+}
+
 function flushDesktopLogBufferSync() {
   if (!desktopLogBuffer) {
     return
@@ -7534,6 +7555,18 @@ async function clearOauthSession(baseUrl) {
   }
 }
 
+// Per-origin OAuth login in-flight Promise registry
+// Ensures only one login window is opened per origin at a time (fixes #134481)
+const _oauthLoginInFlight = new Map<string, Promise<{ baseUrl: string; ok: boolean }>>()
+
+// Generate key for registry (origin + partition key)
+function _getOauthLoginKey(baseUrl: string, options: any = {}) {
+  const { connectionId = '', pendingAuthMode = '', pendingKind = '' } = options
+  const origin = new URL(baseUrl).origin
+  const partition = connectionId || pendingAuthMode || pendingKind
+  return partition ? `${origin}#${partition}` : origin
+}
+
 // Open a gateway login window in the OAuth session partition, resolving once
 // the access-token cookie appears (login done) or rejecting if the user closes
 // the window first. The window navigates through the IDP and back to
@@ -7552,7 +7585,35 @@ async function clearOauthSession(baseUrl) {
 //     ``/auth/login`` → portal ``/oauth/authorize`` (auto-approves org members)
 //     → ``/auth/callback``, which sets the gateway cookie with NO interactive
 //     prompt. This is the per-agent cloud cascade (decisions.md Q5).
-function openOauthLoginWindow(
+
+// Wrapper with single-flight deduplication (fixes #134481: no window stacking on 401)
+async function openOauthLoginWindow(
+  baseUrl: string,
+  options: any = {}
+) {
+  const key = _getOauthLoginKey(baseUrl, options)
+
+  // If a login is already in flight for this origin, return that Promise
+  if (_oauthLoginInFlight.has(key)) {
+    return _oauthLoginInFlight.get(key)!
+  }
+
+  // Create the new login Promise
+  const loginPromise = _openOauthLoginWindowImpl(baseUrl, options)
+
+  // Register it in the registry
+  _oauthLoginInFlight.set(key, loginPromise)
+
+  try {
+    return await loginPromise
+  } finally {
+    // Always clean up when done (success or failure)
+    _oauthLoginInFlight.delete(key)
+  }
+}
+
+// Original implementation (no changes to body)
+function _openOauthLoginWindowImpl(
   baseUrl,
   { silent = false, background = false, connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}
 ) {
@@ -7675,10 +7736,25 @@ function openOauthLoginWindow(
     // loop-guard tripped, etc.) and the window is now showing an interactive
     // page. Reveal it so the user can complete sign-in manually rather than
     // staring at nothing. Cleared on finish().
+    //
+    // Queue-aware: only reveal if there are no other pending login attempts.
+    // If multiple concurrent 401s occur, each will get its own timer, but only
+    // the first (or only) one should become visible to avoid window cascade.
     if (silent && win && !hiddenRecovery) {
       revealTimer = setTimeout(() => {
         try {
-          if (!settled && win && !win.isDestroyed() && !win.isVisible()) {
+          const loginKey = _getOauthLoginKey(baseUrl, connectionId)
+          const otherPendingLogins = Array.from(_oauthLoginInFlight.entries())
+            .filter(([key]) => key !== loginKey)
+            .length
+
+          if (
+            !settled &&
+            win &&
+            !win.isDestroyed() &&
+            !win.isVisible() &&
+            otherPendingLogins === 0  // Only reveal if this is the sole pending login
+          ) {
             win.show()
           }
         } catch {
@@ -13303,7 +13379,8 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       releaseBackendChild(hermesProcess)
 
       if (!backendConnectionState.clearForCurrentProcess(processOwner)) {
-        rememberLog(formatBackendExitLine('Ignoring stale Hermes backend exit', code, signal, primaryOutputTail))
+        const stalePrefix = code === 0 ? 'Stale Hermes backend exit' : `Hermes backend exit (code ${code}, may indicate error)`
+        rememberLog(formatBackendExitLine(stalePrefix, code, signal, primaryOutputTail))
 
         scheduleUnexpectedPrimaryRecovery({ code, signal, ready: backendReady })
 
@@ -15285,6 +15362,49 @@ function createWindow() {
     // the next boot needs (#55920).
     if (!IS_MAC) {
       appQuitting = true
+    }
+  })
+
+  // Graceful shutdown on Xボタン or close request (fixes process lingering)
+  // This handler fires BEFORE the window actually closes, allowing cleanup
+  mainWindow.on('close', async (event) => {
+    // Prevent default close; we'll close after cleanup completes
+    event.preventDefault()
+
+    rememberLog('Initiating graceful shutdown from close event...')
+
+    // Stop backend process gracefully
+    try {
+      if (backendConnectionState.process) {
+        const backendProc = backendConnectionState.process
+        if (!backendProc.killed) {
+          // Request graceful shutdown (30s timeout)
+          backendProc.kill('SIGTERM')
+
+          // Wait for graceful termination with timeout
+          await new Promise<void>((resolve) => {
+            const timeout = setTimeout(() => {
+              rememberLog('Backend graceful shutdown timeout; forcing kill...')
+              if (!backendProc.killed) {
+                backendProc.kill('SIGKILL')
+              }
+              resolve()
+            }, 30000) // 30s graceful window
+
+            backendProc.once('exit', () => {
+              clearTimeout(timeout)
+              resolve()
+            })
+          })
+        }
+      }
+    } catch (err) {
+      rememberLog(`Backend shutdown error: ${err?.message || err}`)
+    }
+
+    // Close the window now that cleanup is done
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.destroy()
     }
   })
 
@@ -19351,7 +19471,49 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Recovery from unclean shutdown (fixes zombie processes + setup errors)
+  // When the app crashes or is force-killed, cleanup state to ensure clean restart
+  try {
+    rememberLog('Checking for unclean shutdown recovery...')
+
+    // Clear any stale lock files from previous crash
+    // This ensures backend initialization doesn't fail due to lingering PID files
+    const userData = app.getPath('userData')
+    const lockFile = path.join(userData, '.hermes-desktop.lock')
+    if (fs.existsSync(lockFile)) {
+      try {
+        fs.unlinkSync(lockFile)
+        rememberLog('Cleared stale lock file; likely from previous crash')
+      } catch (err) {
+        rememberLog(`Could not clear lock file: ${err?.message || err}`)
+      }
+    }
+
+    // Reset setup state if recovery is needed
+    // This allows the onboarding window to reinitialize cleanly
+    const setupMarker = path.join(userData, '.setup-in-progress')
+    if (fs.existsSync(setupMarker)) {
+      try {
+        fs.unlinkSync(setupMarker)
+        rememberLog('Setup recovery: cleared in-progress marker')
+      } catch (err) {
+        rememberLog(`Could not clear setup marker: ${err?.message || err}`)
+      }
+    }
+
+    // Reclaim active logs held by other processes (e.g. Chromium --log-file)
+    // These cannot be rotated but can be truncated in-place if oversized
+    // Fixes #100573 follow-up: Chromium log disk exhaustion
+    try {
+      await reclaimActiveLogsIfNeededAsync()
+    } catch (err) {
+      rememberLog(`Active log reclaim warning (non-fatal): ${err?.message || err}`)
+    }
+  } catch (err) {
+    rememberLog(`Unclean shutdown recovery warning (non-fatal): ${err?.message || err}`)
+  }
+
   // Post-update relaunch detection (App Installer arm): when the previous
   // version wrote the one-shot pending-relaunch marker before quitting into
   // an OS package swap, consume it here — the renderer toasts "Hermes

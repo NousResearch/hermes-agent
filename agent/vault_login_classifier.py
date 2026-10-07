@@ -133,6 +133,15 @@ _RE_OTP = re.compile(
     r"passcode|sms)\b.*\b(?:code|pin|token)\b|\b(?:otp|totp|2fa|mfa|verification\s*code|passcode)\b"
 )
 
+# Plain "Security code" is also a checkout label; only stronger authentication
+# metadata vetoes a masked CVV heuristic.
+_RE_MASKED_CVV_AUTH = re.compile(
+    r"\b(?:password|login|log\s*in|sign\s*in|username|user\s*name|"
+    r"2fa|mfa|totp|otp|passcode)\b|"
+    r"\b(?:one\s*time|verification|auth(?:entication|enticator)?|two\s*factor|sms)"
+    r"\b.*\b(?:code|pin|token)\b"
+)
+
 
 def classify_otp_controls(controls: List[LoginControl]) -> List[ClassifiedLoginControl]:
     """The controls that take a second-factor code. ``autocomplete=one-time-code`` is authoritative;
@@ -181,15 +190,22 @@ def select_password_fill(
 
 def classify_checkout_control(control: LoginControl) -> Optional[ClassifiedLoginControl]:
     """Classify one control as a payment/address fill target (autocomplete token exact match 100,
-    label/name heuristic 70), or None. Password/email inputs are never checkout targets."""
+    label/name heuristic 70), or None. Password heuristics only target masked card security codes."""
     tokens = [t for t in control.autocomplete.lower().split() if t]
     for token in PAYMENT_AUTOFILL_TOKENS + ADDRESS_AUTOFILL_TOKENS:
         if token in tokens:
             return ClassifiedLoginControl(control, 100, "country-name" if token == "country" else token)
-    if control.type in ("password", "email"):
+    if control.type == "email":
         return None
     searchable = _normalize_text(" ".join(part for part in (control.name, control.label) if part))
+    if control.type == "password" and (
+        any(t in LOGIN_AUTOFILL_TOKENS or t in _EXCLUDED_AUTOCOMPLETE for t in tokens)
+        or _RE_MASKED_CVV_AUTH.search(searchable)
+    ):
+        return None
     for pattern, token in _CHECKOUT_HEURISTICS:
+        if control.type == "password" and token != "cc-csc":
+            continue
         if pattern.search(searchable):
             return ClassifiedLoginControl(control, 70, token)
     return None

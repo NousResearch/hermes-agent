@@ -644,7 +644,7 @@ def _submit_row_owner_key(staged: dict, session: dict) -> str:
 
 
 def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
-                           accept_metadata: dict | None = None) -> dict | None:
+                           accept_metadata: dict | None = None, *, managed_turn_key: str | None = None) -> dict | None:
     """Write the submitted user turn to the transcript and RETURN the durable dict (stamped
     ``_DB_PERSISTED_MARKER``/``_row_id``) WITHOUT slotting it on the session. The write half of
     :func:`_persist_submit_user_row`, shared by the busy-queue accept (which attaches the dict to
@@ -672,7 +672,7 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
             staged["_row_id"] = db.append_message(
                 target, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"],
                 message_uid=stamp_message_uid(staged),  # the live dict the turn adopts carries the row's uid
-                display_metadata=staged.get("display_metadata"))
+                display_metadata=staged.get("display_metadata"), managed_turn_key=managed_turn_key)
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "submit-time user row persist failed")
             return None
@@ -684,7 +684,7 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
 
 
 def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None,
-                             accept_metadata: dict | None = None) -> None:
+                             accept_metadata: dict | None = None, *, managed_turn_key: str | None = None) -> None:
     """Write the submitted user turn at send time, before the agent build and turn: the agent's own
     crash persist only runs once the build finished, so quitting a frozen app during a slow first build
     left a session row with no message (#111868). The dict is staged on the session already stamped
@@ -693,7 +693,8 @@ def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None,
     the turn's crash persist then writes the row as before. ``accept_metadata`` marks a row that
     belongs to a still-QUEUED envelope (#125577); a dispatching turn's row is never marked."""
     session.pop("_submit_user_row", None)  # a failed/unsupported write must not acknowledge an older send
-    if (staged := _write_submit_user_row(session, text, display_kind, accept_metadata)) is not None:
+    if (staged := _write_submit_user_row(session, text, display_kind, accept_metadata,
+                                         managed_turn_key=managed_turn_key)) is not None:
         session["_submit_user_row"] = staged
 
 

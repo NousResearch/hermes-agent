@@ -479,6 +479,13 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_call_uid TEXT
 );
 
+CREATE TABLE IF NOT EXISTS managed_turn_submissions (
+    idempotency_key TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    user_row_id INTEGER NOT NULL,
+    created_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS session_model_usage (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     model TEXT NOT NULL,

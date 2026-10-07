@@ -76,12 +76,33 @@ def _refuse_all(error: str):
 def _merge_in_order(
     total: int, fixed: Dict[int, dict], fetch_positions: List[int], fetch_urls: List[str], results: List[dict]
 ) -> List[dict]:
-    """Rebuild a ``total``-long result list: *fixed* entries by position, fetched *results* at
-    *fetch_positions* (a short provider list yields ``_NO_RESULT_ERROR`` entries for the rest)."""
+    """Rebuild a ``total``-long result list without trusting provider result order.
+
+    Providers can omit failures, return redirect URLs, or group successes before errors. Match a
+    result to its requested URL (or ``metadata.sourceURL``) and discard entries naming no request;
+    a missing requested URL gets a typed per-entry error. Duplicate requests consume their queued
+    positions one at a time.
+    """
     merged = dict(fixed)
-    for pos, position in enumerate(fetch_positions):
-        missing = _result_entry(fetch_urls[pos], _NO_RESULT_ERROR)
-        merged[position] = results[pos] if pos < len(results) else missing
+    queued_positions: Dict[str, List[int]] = {}
+    for position, url in enumerate(fetch_urls):
+        queued_positions.setdefault(url, []).append(position)
+
+    for result in results:
+        metadata = result.get("metadata") if isinstance(result, dict) else None
+        source_url = metadata.get("sourceURL") if isinstance(metadata, dict) else None
+        result_url = result.get("url") if isinstance(result, dict) else None
+        requested_url = next(
+            (url for url in (result_url, source_url) if url in queued_positions and queued_positions[url]),
+            None,
+        )
+        if requested_url is None:
+            continue
+        position = queued_positions[requested_url].pop(0)
+        merged[fetch_positions[position]] = result
+
+    for position, url in enumerate(fetch_urls):
+        merged.setdefault(fetch_positions[position], _result_entry(url, _NO_RESULT_ERROR))
     return [merged[i] for i in range(total)]
 
 

@@ -475,13 +475,13 @@ class TestParallelClientConfig:
         from hermes_cli.config import get_env_path, reload_env
         from plugins.web.parallel.provider import _get_sync_client as _get_parallel_client
         with patch.dict(os.environ):
-            get_env_path().write_text("PARALLEL_API_KEY=typo-key\n")
+            get_env_path().write_text("PARALLEL_API_KEY=typo-key\n", encoding="utf-8")
             reload_env()
             assert _get_parallel_client().api_key == "typo-key"
-            get_env_path().write_text("PARALLEL_API_KEY=fixed-key\n")
+            get_env_path().write_text("PARALLEL_API_KEY=fixed-key\n", encoding="utf-8")
             reload_env()
             assert _get_parallel_client().api_key == "fixed-key"
-            get_env_path().write_text("")
+            get_env_path().write_text("", encoding="utf-8")
             reload_env()
             with pytest.raises(ValueError, match="PARALLEL_API_KEY"):
                 _get_parallel_client()
@@ -526,7 +526,7 @@ class TestExaClientConfig:
         for name, line in (("a", "EXA_API_KEY=key-a\n"), ("b", "EXA_API_KEY=key-b\n"), ("nokey", "")):
             homes[name] = tmp_path / name
             homes[name].mkdir()
-            (homes[name] / ".env").write_text(line)
+            (homes[name] / ".env").write_text(line, encoding="utf-8")
         monkeypatch.setenv("EXA_API_KEY", "key-launch")
         monkeypatch.setattr("plugins.web.keyless_mcp.keyless_enabled", lambda: False)
         monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
@@ -689,11 +689,10 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
-    def test_xai_only_env_end_to_end_toolset_gate(self, monkeypatch, tmp_path):
-        """E2e through the registry: a real XAI_API_KEY env var -> the real
-        has_xai_credentials probe -> check_fn -> get_tool_definitions. The web
-        toolset must serve zero tools (xai can never be dispatched to), and it
-        must light up once a real web key joins."""
+    def test_xai_only_env_keeps_providerless_direct_extract_available(self, monkeypatch, tmp_path):
+        """E2e through the registry: XAI alone cannot expose web_search, but
+        web_extract remains available for its public direct routes. A real web
+        key then exposes both tools."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # isolate auth.json / credential pool
         monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
         for k in ("PERPLEXITY_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY"):
@@ -705,7 +704,7 @@ class TestCheckWebApiKey:
             invalidate_check_fn_cache()
             names = {d["function"]["name"]
                      for d in model_tools.get_tool_definitions(enabled_toolsets=["web"])}
-            assert names == set()
+            assert names == {"web_extract"}
 
             monkeypatch.setenv("TAVILY_API_KEY", "tavily-test-key")
             invalidate_check_fn_cache()

@@ -220,6 +220,15 @@ def worker_route(policy, construct):
             'api_mode': api_mode}
 
 
+def arm_adaptive_reasoning(agent, policy):
+    """Child side: ``agent.adaptive_reasoning`` for the worker's agent, as ``TurnRunner`` arms an in-process
+    turn's (``refresh_adaptive_reasoning``): from the session's frozen config, never adjusting a level the
+    session chose (``reasoning_chosen``). A Kanban attempt keeps its configured effort, like cron and batch."""
+    from agent.adaptive_reasoning import refresh_adaptive_reasoning
+    refresh_adaptive_reasoning(agent, {} if policy.kanban_json is not None else policy.config(),
+                               policy.reasoning_chosen())
+
+
 def checkpoint_agent_kwargs(config):
     """``AIAgent`` checkpoint arguments from a config dict (every turn: the gateway's live config, a
     managed worker's frozen session snapshot). The gateway bypasses ``load_config()``, so defaults

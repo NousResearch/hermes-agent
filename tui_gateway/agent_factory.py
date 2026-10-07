@@ -176,6 +176,8 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         overrides["provider_override"] = provider
     if isinstance(reasoning_config, dict):
         overrides["reasoning_config_override"] = reasoning_config
+        # Old rows are runtime snapshots, not proof of a deliberate user pick.
+        overrides["reasoning_user_override"] = model_config.get("reasoning_user_override", False) is True
     if service_tier:  # None = "inherit the profile" at _make_agent; "" = real override "no priority tier"
         overrides["service_tier_override"] = "" if service_tier.lower() == "normal" else service_tier
     return overrides
@@ -211,6 +213,10 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
             config[key] = value
         else:
             config.pop(key, None)
+    if isinstance(reasoning_config, dict):
+        config["reasoning_user_override"] = bool(getattr(agent, "reasoning_user_override", False))
+    else:
+        config.pop("reasoning_user_override", None)
     return config
 
 
@@ -629,12 +635,31 @@ def _startup_system_prompt(cfg: dict, task_id: str) -> str:
     return system_prompt
 
 
+def _explicit_reasoning_override(
+    reasoning_config_override: dict | None, profile_reasoning_config: dict | None,
+) -> bool:
+    """Is a ``session.create`` effort a deliberate per-session user pick?
+
+    The Desktop composer seeds its effort selector from the profile default and (before the
+    omit-inherited fix, or from older clients) ships it on every ``session.create``. An override that
+    merely mirrors the global composer default is inherited state, not a user choice — treating it as
+    explicit would silently disable adaptive reasoning escalation for every ordinary new Desktop
+    session. Only a *distinct* value counts. An absent profile value compares as the backend fallback
+    (medium).
+    """
+    if reasoning_config_override is None:
+        return False
+    baseline = profile_reasoning_config or {"enabled": True, "effort": "medium"}
+    return reasoning_config_override != baseline
+
+
 def _make_agent(
     sid: str, key: str, session_id: str | None = None, session_db=None,
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
     platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
-    cwd_override: str | None = None, auth_user_id: str | None = None):
+    cwd_override: str | None = None, auth_user_id: str | None = None,
+    reasoning_user_override: bool | None = None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
@@ -668,6 +693,7 @@ def _make_agent(
         verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
+        adaptive_reasoning=(cfg.get("agent") or {}).get("adaptive_reasoning"),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
         enabled_toolsets=onboarding_toolsets(_load_enabled_toolsets(platform),
                                              session_db if session_db is not None else _get_db(), session_id or key),
@@ -693,6 +719,15 @@ def _make_agent(
     if fallback_notice:
         # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
         agent._pending_fallback_notice = fallback_notice
+    # Preserve provenance across deferred/compute/resume builds. Only legacy
+    # session.create seeds need inference, against the composer's GLOBAL default,
+    # not the per-model effort used to resolve the agent's baseline.
+    from hermes_constants import parse_reasoning_effort
+    agent.reasoning_user_override = (
+        reasoning_user_override if reasoning_user_override is not None else
+        _explicit_reasoning_override(
+            reasoning_config_override,
+            parse_reasoning_effort((cfg.get("agent") or {}).get("reasoning_effort"))))
     return agent
 
 

@@ -229,9 +229,15 @@ def child_task_message(goal: str, context: Optional[str]) -> str:
         return goal
     from agent.prompt_cache_boundary import register_stable_prefix
 
-    prefix = f"CONTEXT:\n{context}\n\nTASK:\n"
+    prefix = child_task_prefix(context)
     register_stable_prefix(prefix)
     return prefix + goal
+
+
+def child_task_prefix(context: str) -> str:
+    """The context lead of ``child_task_message``; what follows it is the goal (adaptive reasoning
+    classifies that goal alone: agent/adaptive_reasoning.py)."""
+    return f"CONTEXT:\n{context}\n\nTASK:\n"
 
 
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:

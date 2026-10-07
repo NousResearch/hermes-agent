@@ -318,6 +318,11 @@ def _apply_reasoning_after_switch(cli, effort: str, *, persist_global: bool, one
     if parsed is None:
         return
     cli.reasoning_config = parsed
+    # Same provenance as /reasoning: a session (or --once) pick pins the effort against adaptive
+    # adjustment; --global is a new baseline. The one-turn restore snapshot puts the prior one back.
+    cli._session_reasoning_override = not persist_global
+    if cli.agent is not None:
+        cli.agent.reasoning_user_override = not persist_global
     if one_turn:
         from hermes_cli.gateway_agent import GatewayAgent
         pending = getattr(cli, "_pending_one_turn_model_restore", None)
@@ -725,6 +730,7 @@ class CLIModelSwitchMixin:
         return {
             **_runtime_fields(self),
             "reasoning_config": copy.deepcopy(getattr(self, "reasoning_config", None)),
+            "session_reasoning_override": bool(getattr(self, "_session_reasoning_override", False)),
             "agent_primary_runtime": copy.deepcopy(
                 getattr(agent, "_primary_runtime", None)
             ) if agent is not None else None}
@@ -738,10 +744,15 @@ class CLIModelSwitchMixin:
         for key in _RUNTIME_FIELDS:
             if key in snapshot:
                 setattr(self, key, snapshot.get(key))
+        # `--once --reasoning` pinned the effort for one turn only; the prior provenance returns with it.
+        if "session_reasoning_override" in snapshot:
+            self._session_reasoning_override = snapshot["session_reasoning_override"]
 
         agent = getattr(self, "agent", None)
         if agent is None:
             return
+        if "session_reasoning_override" in snapshot:
+            agent.reasoning_user_override = snapshot["session_reasoning_override"]
         from hermes_cli.gateway_agent import GatewayAgent
         # A gateway agent's one-turn level only rode the admission: put it back locally, write nothing.
         restore_reasoning = (agent.restore_reasoning if isinstance(agent, GatewayAgent)

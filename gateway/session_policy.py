@@ -73,7 +73,8 @@ def unpin_reasoning(config, profile):
     config[SESSION_PINS] = {**(config.get(SESSION_PINS) or {}), 'reasoning': False}
 
 
-FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier', 'disabled_toolsets', 'coding_context')
+FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'adaptive_reasoning', 'service_tier', 'disabled_toolsets',
+                     'coding_context')
 # What a pick (create-time ``model`` / committed ``/model``) owns of the ``model:`` block.
 SELECTION_KEYS = ('default', 'provider', 'base_url', 'api_mode', 'selection_profile', 'api_key_from', 'key_env',
                   'api_key_env')
@@ -275,6 +276,12 @@ class LocalSessionPolicy:
         # The workspace decision is the creation-time one: a project file the agent writes mid-session must
         # not switch this conversation's toolsets (prompt cache). Only a profile change (``focus`` off) does.
         return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode, self.coding_posture)))
+
+    def reasoning_chosen(self):
+        """Whether this session's reasoning level is its own choice: a create-time ``reasoning``, or a
+        committed session edit carrying one (``/reasoning <level>``, a model pick with a level) until
+        ``/reasoning reset``. Adaptive reasoning never adjusts a chosen level."""
+        return session_pinned(json.loads(self.config_json), 'reasoning', 'reasoning' in json.loads(self.request_json))
 
     def current_reasoning_config(self, runner, session_key=None):
         """The next turn's reasoning: a typed session /reasoning (the messaging handler's override), else

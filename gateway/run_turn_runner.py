@@ -508,8 +508,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         agent._gateway_turn_request_overrides = turn_overrides
 
     def _wire_turn_agent_callbacks(self, agent, turn_route, reasoning_config,
-                                   stream_delta_cb, interim_assistant_cb, want_interim_messages):
-        """Per-message state (callbacks, reasoning, voice route) — never baked into the cached agent."""
+                                   stream_delta_cb, interim_assistant_cb, want_interim_messages, *,
+                                   reasoning_explicit=False):
+        """Per-message state (callbacks, reasoning, voice route) — never baked into the cached agent.
+        ``reasoning_explicit``: this turn's level is a pick (session, launch, one-turn, API request), which
+        ``agent.adaptive_reasoning`` never adjusts."""
         ctx = self._ctx
         runner = self._runner
         agent._notification_config = ctx.user_config
@@ -543,6 +546,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         agent.notice_clear_callback = self._local_notice_clear_callback_sync if local_viewer_turn(self) else None
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+        # A cached agent re-reads the policy each turn; a typed session /reasoning (or an explicit level) wins.
+        from agent.adaptive_reasoning import refresh_adaptive_reasoning
+        override_active = getattr(runner, "_session_reasoning_override_active", None)  # absent on minimal test runners
+        refresh_adaptive_reasoning(agent, ctx.user_config, reasoning_explicit or (
+            callable(override_active) and override_active(ctx.session_key)))
         _load_daybreak = getattr(runner, "_load_daybreak", None)  # absent on minimal test runners
         agent.daybreak = callable(_load_daybreak) and _load_daybreak(ctx.source) is True
         _surface = getattr(runner, "_daybreak_surface", None)  # read by Daybreak delegation routes
@@ -1412,7 +1420,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from gateway.session_authorities import active_authority
         from gateway.session_worker_construct import session_routing
         pr = session_routing(active_authority(runner), policy) if policy else runner._provider_routing
-        reasoning_config = (policy.current_reasoning_config(runner, ctx.session_key) if policy else
+        reasoning_config = session_reasoning = (policy.current_reasoning_config(runner, ctx.session_key) if policy else
             runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))
         from gateway.session_cli_turn import one_turn_reasoning
         reasoning_config = one_turn_reasoning(self, reasoning_config)  # `/model --once --reasoning X`
@@ -1429,6 +1437,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             if tier is not _REQUEST_OPTION_MISSING:
                 runner._service_tier = tier
         runner._reasoning_config = reasoning_config
+        # agent.adaptive_reasoning never adjusts a level chosen for the session (launch flag, committed pick) or
+        # this turn (`/model --once --reasoning`), nor an API request: like cron/batch it runs its own level.
+        reasoning_explicit = (reasoning_config is not session_reasoning or api is not None
+                              or bool(policy and policy.reasoning_chosen()))
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
         agent, reused_cached_agent = self._resolve_turn_agent(
@@ -1437,7 +1449,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if pending_fallback_notice:
             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
             agent._pending_fallback_notice = pending_fallback_notice
-        self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
+        self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim,
+                                        reasoning_explicit=reasoning_explicit)
         from gateway.run_turn_progress import local_viewer_turn
         local_sinks = None
         if local_viewer_turn(self) and not ctx.mute_notification_reply:

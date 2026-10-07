@@ -113,6 +113,11 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
         kw.update({k: v for k, v in (("reasoning_config_override", current.get("create_reasoning_override")),
                                      ("service_tier_override", current.get("create_service_tier_override")))
                    if v is not None})
+    # A pick made after a lazy resume wins over the row's older snapshot.
+    if current.get("reasoning_user_override") is not None:
+        kw["reasoning_user_override"] = current["reasoning_user_override"]
+        if current.get("create_reasoning_override") is not None:
+            kw["reasoning_config_override"] = current["create_reasoning_override"]
     return kw
 
 
@@ -120,6 +125,11 @@ def _wire_session_agent(sid: str, key: str, agent) -> bool:
     """Post-build wiring; returns whether the approval notify got registered. Approval prompts route to the
     client; the self-improvement "💾 …" summary is emitted as review.summary (no print surface), honoring
     display.memory_notifications."""
+    if getattr(agent, "reasoning_user_override", False):
+        session = _sessions.get(sid)
+        if session is not None:
+            session["create_reasoning_override"] = agent.reasoning_config
+            session["reasoning_user_override"] = True
     notify_registered = False
     with contextlib.suppress(Exception):
         from tools.approval import load_permanent_allowlist, register_gateway_notify

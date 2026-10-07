@@ -5,6 +5,7 @@ docs of config.yaml.
 """
 
 from hermes_cli.config_defaults_auxiliary import _aux
+from hermes_cli.config_defaults_reasoning import _reasoning_defaults
 
 #: Image every container terminal backend (docker/modal/daytona, the singularity plugin) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -264,15 +265,8 @@ DEFAULT_CONFIG = {
         # vision_analyze and prepend the description. vision_analyze stays a tool regardless.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
-        # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort
-        # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).
-        "reasoning_overrides": {},
-        # Stored reasoning is replayed to every provider that can read it by default. This flag
-        # only adds the must-echo " " pad on reasoning-less tool-call turns, which DeepSeek,
-        # Kimi/Moonshot and Xiaomi MiMo require (auto-detected by provider name/host). Set
-        # `reasoning_echo: true` on a `model:` or `fallback_providers:` entry for a custom gateway
-        # proxying one of them. Strict providers (Mistral, Groq, Cerebras) never get the field.
-        "reasoning_echo": False,
+        # reasoning_overrides, reasoning_echo, adaptive_reasoning (documented in config_defaults_reasoning.py)
+        **_reasoning_defaults(),
         # Turn liveness watchdog: a turn with no observable progress for `timeout_s` seconds is
         # logged, force-interrupted so the UI can retry, and its lease stops renewing so stale-turn
         # cleanup can reclaim the session even if the interrupt can't unwind a wedged frame.

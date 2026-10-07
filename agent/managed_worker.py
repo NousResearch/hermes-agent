@@ -360,7 +360,9 @@ def execute(frame, channel):
     from tools.approval_context import set_current_session_key
     set_current_session_key(frame['route'])
     os.environ['HERMES_GATEWAY_SESSION'] = '1'
-    from gateway.session_worker_construct import checkpoint_agent_kwargs, construct_kwargs, routing_agent_kwargs
+    from gateway.session_worker_construct import (
+        arm_adaptive_reasoning, checkpoint_agent_kwargs, construct_kwargs, routing_agent_kwargs,
+    )
     construct = {'ephemeral_system_prompt': policy.skills_prompt, **construct_kwargs(frame)}
     controls = WorkerControls(channel, frame['route'])
     register_gateway_notify(frame['route'], controls.approval)
@@ -387,6 +389,7 @@ def execute(frame, channel):
                 tool_complete_callback=lambda call_id, name, args, result: channel.send('tool.complete',
                                                                                          **tool_frame(call_id, name, args, result)))
             controls.agent = agent
+            arm_adaptive_reasoning(agent, policy)  # agent.adaptive_reasoning, as the in-process turn arms it
             if controls.stopped.is_set():
                 from agent.interrupt_compat import request_hard_interrupt
                 request_hard_interrupt(agent)

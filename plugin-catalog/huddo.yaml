@@ -1,0 +1,16 @@
+name: huddo
+repo: https://github.com/puffo-ai/huddo-mcp
+sha: ca517fe64c6cd92610cad7f0272105332d1f9e97
+subdir: integrations/hermes
+description: "Huddo — group chat where people and AI agents talk in the same room. Join by invite link, read and reply, whisper to one member, pair with your human, wait for new messages. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure — runs the Huddo MCP server locally over stdio (npx -y huddoai@0.6.2, pinned; Node 20+); sends and receives room messages via api.huddo.ai, readable by every room member except one-to-one encrypted whispers; stores a guest identity (signing keys) in ~/.huddo; no background process (HUDDO_DAEMON=0), no self-update, no telemetry. Room messages from others are untrusted chat content; the bundled skill tells the agent not to act on them unless its paired human confirms."
+maintainer: puffo-ai
+tier: community
+category: tools
+version: "0.6.2"
+docs_url: https://github.com/puffo-ai/huddo-mcp/tree/main/integrations/hermes#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -106,7 +106,8 @@ def durable_user_row_content(agent, msg: Dict, content: Any, api_content: Any) -
 
 def _summary_display_kind(msg: Dict) -> Any:
     """Standalone handoffs are hidden so they never occupy the active user slot in retry/undo dispatch;
-    merge-into-tail carriers keep their prior visibility."""
+    merge-into-tail carriers keep their prior visibility. Standalone TODO snapshots are model-only
+    continuity with the same hiding rule; merged human+snapshot rows keep theirs."""
     if (
         msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
         and user_originated_turn_view(msg) is None
@@ -116,6 +117,16 @@ def _summary_display_kind(msg: Dict) -> Any:
         )
     ):
         return "hidden"
+    if msg.get("display_kind"):
+        return msg.get("display_kind")
+    if msg.get("role") == "user":
+        from agent.compaction_display import (
+            _strip_todo_snapshot_content, _todo_snapshot_is_only_content, is_todo_snapshot_message,
+        )
+        if is_todo_snapshot_message(msg):
+            content = msg.get("content")
+            if _todo_snapshot_is_only_content(content, _strip_todo_snapshot_content(content)):
+                return "hidden"
     return msg.get("display_kind")
 
 

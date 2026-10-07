@@ -664,7 +664,7 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     every retry (``refusing truncation without fallback``). Hide them the same way the
     Desktop collapses other display-only rows; typed notices stay for the timeline.
     """
-    from agent.compaction_display import project_compaction_message_for_display
+    from agent.compaction_display import is_todo_snapshot_message, project_compaction_message_for_display
     from agent.context_compressor import is_compaction_summary_message
     from agent.conversation_compression import _extract_steer_text_from_message
     from agent.history_commentary import project_history_commentary
@@ -702,6 +702,19 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
         if message.get("role") == "user" and message.get("display_kind") == STEER_DISPLAY_KIND and (
                 steer_text := _extract_steer_text_from_message(message)):
             message = {**message, "display_content": steer_text}
+        if is_todo_snapshot_message(message):
+            # Model-only TODO continuity: legacy rows persist untyped. Pure scaffolding hides;
+            # a merged carrier keeps only its authentic human text for display.
+            display_view = project_compaction_message_for_display(message)
+            projected = message.copy()
+            if display_view is None:
+                if not projected.get("display_kind"):
+                    projected["display_kind"] = "hidden"
+            else:
+                projected["display_content"] = display_view.get("content")
+                projected.pop("display_kind", None)
+            projected_messages.append(projected)
+            continue
         if not is_compaction_summary_message(message):
             projected_messages.append(message)
             continue

@@ -830,10 +830,19 @@ class TestCmdlineCapture:
         import psutil
         exact = [sys.executable, "-c", "import time; time.sleep(30)"]
 
+        class _StubProcess:
+            # psutil.Process(pid) itself raises NoSuchProcess for dead pids, so patching
+            # cmdline alone is environment-dependent; a stub constructor is deterministic.
+            def __init__(self, pid):
+                self.pid = pid
+
+            def cmdline(self):
+                return list(exact)
+
         def fail_probe(*a, **kw):
             raise AssertionError("ps fallback must not run when psutil reports the argv")
 
-        with patch.object(psutil.Process, "cmdline", return_value=list(exact)), \
+        with patch.object(psutil, "Process", _StubProcess), \
              patch.object(main_dashboard, "_run_probe", side_effect=fail_probe):
             argv = main_dashboard._dashboard_cmdline_for_pid(909)
 

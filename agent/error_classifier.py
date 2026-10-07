@@ -709,6 +709,7 @@ def _plugin_verdict(c: _Ctx) -> Optional[Verdict]:
             provider=c.provider, model=c.model, status_code=c.status_code, error_type=c.error_type,
             error_code=c.error_code, error_message=c.msg, error_body=c.body, error=c.error,
             approx_tokens=c.approx_tokens, context_length=c.context_length, num_messages=c.num_messages,
+            base_url=c.base_url,
         )
     except Exception as exc:
         logger.debug("Plugin error classification unavailable: %s", exc)

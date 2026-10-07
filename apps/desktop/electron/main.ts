@@ -453,8 +453,9 @@ import { poolTouchKeys } from './pool-touch-scope'
 import { createPortalSession, resolvePortalBaseUrl } from './portal-session'
 import {
   createKeepAwake,
+  KEEP_AWAKE_RELEASE_GRACE_MS,
   type KeepAwakeMode,
-  keepAwakeWanted,
+  keepAwakeHeld,
   parseKeepAwakeMode,
   readKeepAwakeMode
 } from './power-save'
@@ -18315,8 +18316,31 @@ function readPersistedKeepAwakeMode(): KeepAwakeMode {
 // Reconcile the blocker with the mode and the live turn picture. Called from
 // every mode change and every active-work report — both happen after app
 // ready, when `keepAwake` and `keepAwakeMode` above are initialised.
+//
+// 'while-working' holds the blocker for KEEP_AWAKE_RELEASE_GRACE_MS after the
+// picture goes idle (#134434): on Windows the sleep idle-timer counts from the
+// last user input, so an unattended machine sleeps within seconds of a bare
+// release — right before a follow-up turn (process_complete, bg-review,
+// compression) re-arms busy. The hold bridges that gap; any live work reschedules
+// the release, and switching the mode away cancels the pending release at once.
+let keepAwakeGraceTimer: null | NodeJS.Timeout = null
+
 function applyKeepAwake(working = isAnyTurnInFlight()) {
-  keepAwake.set(keepAwakeWanted(keepAwakeMode, working))
+  const held = keepAwakeHeld(keepAwakeMode, working, keepAwakeGraceTimer !== null)
+  keepAwake.set(held)
+
+  if (working) {
+    // Live work resets the window: a follow-up turn that re-arms busy keeps
+    // the hold continuous instead of stop/starting the native blocker.
+    if (keepAwakeGraceTimer !== null) {
+      clearTimeout(keepAwakeGraceTimer)
+    }
+
+    keepAwakeGraceTimer = setTimeout(() => {
+      keepAwakeGraceTimer = null
+      applyKeepAwake()
+    }, KEEP_AWAKE_RELEASE_GRACE_MS)
+  }
 }
 
 ipcMain.on('hermes:keep-awake', (_event, value) => {
@@ -18325,6 +18349,11 @@ ipcMain.on('hermes:keep-awake', (_event, value) => {
 
   if (mode === null) {
     return
+  }
+
+  if (keepAwakeGraceTimer !== null) {
+    clearTimeout(keepAwakeGraceTimer)
+    keepAwakeGraceTimer = null
   }
 
   keepAwakeMode = mode

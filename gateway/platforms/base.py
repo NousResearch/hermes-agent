@@ -93,6 +93,9 @@ _HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS = 5.0
 # can't exhaust the shared executor.
 _HISTORY_MEDIA_LOOKUP_MAX_WORKERS = 2
 _HISTORY_MEDIA_LOOKUP_ADMISSION = threading.BoundedSemaphore(_HISTORY_MEDIA_LOOKUP_MAX_WORKERS)
+# Cheap gate before the provenance transcript lookup (#129975): only replies that actually
+# carry image markup pay for the extra history read.
+_IMAGE_MARKUP_RE = re.compile(r'!\[|<img\s', re.IGNORECASE)
 
 
 def _platform_name(platform) -> str:
@@ -419,7 +422,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union, Collection
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -2721,6 +2724,76 @@ class BasePlatformAdapter(ABC):
             _fail_open("Media-delivery history lookup failed for", exc_info=True)
             return None
 
+    def _current_turn_tool_urls_for_session(self, session_key: str) -> Optional[set]:
+        """URLs from the CURRENT turn's tool results, read from the session transcript
+        (#129975). Rows persist as produced, so this turn's tool results are already on
+        disk at delivery time. None = no transcript to judge by; the caller then keeps
+        the legacy extract-everything behavior."""
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return None
+        try:
+            peek = getattr(store, "peek_session_id", None)
+            session_id = peek(session_key) if callable(peek) else None
+            transcript = store.load_transcript(session_id or session_key)
+        except TranscriptReadError:
+            logger.warning(
+                "Transcript read failed for session %s; reply-image provenance "
+                "runs open this turn (#129975)", session_key,
+            )
+            return None
+        except Exception:
+            return None
+        if not transcript:
+            return None
+        from gateway.media_repair import reply_image_provenance_urls
+        return reply_image_provenance_urls(list(transcript))
+
+    async def _bounded_current_turn_tool_urls(self, session_key: str) -> Optional[set]:
+        """Bounded best-effort provenance lookup, mirroring the media-dedup reader: same
+        admission slots, isolated daemon thread, fail-open (None keeps legacy extraction)."""
+        def _fail_open(reason: str, *, exc_info: bool = False) -> None:
+            logger.warning(
+                "[%s] " + reason + " %s; delivering reply images without provenance check",
+                self.name, session_key, exc_info=exc_info)
+        admission = _HISTORY_MEDIA_LOOKUP_ADMISSION
+        if not admission.acquire(blocking=False):
+            _fail_open("Provenance lookup capacity exhausted for")
+            return None
+        loop = asyncio.get_running_loop()
+        result_future = loop.create_future()
+
+        def _publish_result(result=None, error=None):
+            if not result_future.done():
+                (result_future.set_exception(error) if error is not None
+                 else result_future.set_result(result))
+
+        def _worker():
+            result, error = None, None
+            try:
+                result = self._current_turn_tool_urls_for_session(session_key)
+            except BaseException as exc:
+                error = exc
+            try:
+                with contextlib.suppress(RuntimeError):  # loop already closed (gateway shutdown)
+                    loop.call_soon_threadsafe(_publish_result, result, error)
+            finally:
+                admission.release()
+        try:
+            threading.Thread(target=_worker, name="provenance-lookup", daemon=True).start()
+        except Exception:
+            admission.release()
+            _fail_open("Could not start provenance lookup worker for", exc_info=True)
+            return None
+        try:
+            return await asyncio.wait_for(result_future, timeout=_HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            _fail_open("Timed out loading reply-image provenance for")
+            return None
+        except Exception:
+            _fail_open("Reply-image provenance lookup failed for", exc_info=True)
+            return None
+
     @abstractmethod
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect and start receiving; True on success. ``is_reconnect``: the reconnect watcher is
@@ -3057,19 +3130,30 @@ class BasePlatformAdapter(ABC):
         return url.lower().split('?')[0].endswith('.gif')
 
     @staticmethod
-    def extract_images(content: str) -> Tuple[List[Tuple[str, str]], str]:
+    def extract_images(content: str, allowed_urls: Optional[Collection[str]] = None
+                       ) -> Tuple[List[Tuple[str, str]], str]:
         """Extract ``![alt](url)`` and ``<img src=...>`` image URLs from a response;
-        returns ``([(url, alt_text), ...], content with those tags removed)``."""
+        returns ``([(url, alt_text), ...], content with those tags removed)``.
+        ``allowed_urls`` gates extraction on tool provenance (#129975): when a set is
+        given, only URLs that occurred verbatim in a tool result are extracted and
+        delivered as images; every other image URL keeps its markup in the text (a
+        plain link the delivery path never fetches). ``None`` keeps the legacy
+        behavior of extracting every image-looking URL."""
         md_pattern = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
         # <img src="url"> / <img src="url"></img> / <img src="url"/>
         html_pattern = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
         # Only extract URLs that look like actual images.
         markers = ('.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn',
                    'replicate.delivery')
+
+        def _provenanced(url: str) -> bool:
+            return allowed_urls is None or url in allowed_urls
+
         images = [(m.group(2), m.group(1)) for m in re.finditer(md_pattern, content)
                   if any(m.group(2).lower().endswith(ext) or ext in m.group(2).lower()
-                         for ext in markers)]
-        images.extend((match.group(1), "") for match in re.finditer(html_pattern, content))
+                         for ext in markers) and _provenanced(m.group(2))]
+        images.extend((match.group(1), "") for match in re.finditer(html_pattern, content)
+                      if _provenanced(match.group(1)))
         if not images:
             return images, content
         # Remove only the tags we extracted, not every markdown image.
@@ -4487,7 +4571,19 @@ class BasePlatformAdapter(ABC):
         with self._media_delivery_scope(event.source):
             media_files, response = self.extract_media(response)
             media_files = self.filter_media_delivery_paths(media_files, session_key=session_key)
-            images, text_content = self.extract_images(response)
+            # Reply-image provenance (#129975): a URL the delivery path fetches must have
+            # occurred verbatim in this turn's tool results; anything the model wrote on
+            # its own stays a plain link. None (no transcript) keeps legacy extraction.
+            allowed_image_urls = (await self._bounded_current_turn_tool_urls(session_key)
+                                  if _IMAGE_MARKUP_RE.search(response) else None)
+            if allowed_image_urls is None or not self._accepts_kwarg(
+                    self.extract_images, "allowed_urls", var_kw=False, unknown=False):
+                # An adapter that overrode extract_images with the legacy single-arg
+                # signature keeps its extract-everything behavior (introspected the same
+                # way stop_typing metadata is; never crash delivery over the filter).
+                images, text_content = self.extract_images(response)
+            else:
+                images, text_content = self.extract_images(response, allowed_urls=allowed_image_urls)
             # Strip any remaining internal directives from message body (fixes #1561). _strip_media_directives
             # shares MEDIA_TAG_CLEANUP_RE, so a MEDIA: tag with an unknown extension is intentionally left in
             # the body for extract_local_files below to pick up rather than silently dropped (#34517).

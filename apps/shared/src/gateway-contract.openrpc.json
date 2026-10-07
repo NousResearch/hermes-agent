@@ -2887,6 +2887,60 @@
       }
     },
     {
+      "name": "projects.state.get",
+      "summary": "A project's current handover record (goal / now / next / blockers), or null.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProjectIdParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ProjectStateResult"
+        }
+      }
+    },
+    {
+      "name": "projects.state.history",
+      "summary": "Past handover records, newest first (bounded retention).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProjectsStateHistoryParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ProjectStateHistoryResult"
+        }
+      }
+    },
+    {
+      "name": "projects.state.set",
+      "summary": "Record a handover as the user (partial update); archived projects and empty records answer 5063.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProjectsStateSetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ProjectStateResult"
+        }
+      }
+    },
+    {
       "name": "projects.tree",
       "summary": "Project \u2192 repo \u2192 lane overview with counts and a few preview sessions per project.",
       "params": [
@@ -25320,6 +25374,118 @@
         "title": "ProjectResult",
         "type": "object"
       },
+      "ProjectState": {
+        "additionalProperties": false,
+        "description": "``hermes_cli/projects_db.py::get_project_state`` \u2014 one handover record (the newest is current).",
+        "properties": {
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Goal"
+          },
+          "now": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Now"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Next"
+          },
+          "blockers": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Blockers"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "integer"
+          },
+          "updated_by": {
+            "enum": [
+              "user",
+              "agent"
+            ],
+            "title": "Updated By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "updated_at",
+          "updated_by"
+        ],
+        "title": "ProjectState",
+        "type": "object"
+      },
+      "ProjectStateHistoryResult": {
+        "additionalProperties": false,
+        "properties": {
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectState"
+            },
+            "title": "History",
+            "type": "array"
+          }
+        },
+        "required": [
+          "history"
+        ],
+        "title": "ProjectStateHistoryResult",
+        "type": "object"
+      },
+      "ProjectStateResult": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "title": "ProjectStateResult",
+        "type": "object"
+      },
       "ProjectTreeLane": {
         "additionalProperties": false,
         "description": "One branch / worktree / kanban lane inside a repo; ``sessions`` is empty unless hydrated.",
@@ -26346,6 +26512,119 @@
           }
         },
         "title": "ProjectsSetActiveParams",
+        "type": "object"
+      },
+      "ProjectsStateHistoryParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limit"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "ProjectsStateHistoryParams",
+        "type": "object"
+      },
+      "ProjectsStateSetParams": {
+        "additionalProperties": false,
+        "description": "Absent fields keep their previous value; ``''`` clears one. The author is always ``user``.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Goal"
+          },
+          "now": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Now"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Next"
+          },
+          "blockers": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Blockers"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "ProjectsStateSetParams",
         "type": "object"
       },
       "ProjectsTreeParams": {

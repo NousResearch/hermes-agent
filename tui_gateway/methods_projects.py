@@ -120,6 +120,27 @@ def _(rid, params, pdb, conn) -> dict:
     return _ok(rid, {"active_id": pdb.get_active_id(conn)})
 
 
+@_projects_method("projects.state.get")
+def _(rid, params, pdb, conn) -> dict:
+    return _ok(rid, {"state": pdb.get_project_state(conn, _require_project(pdb, conn, params).id)})
+
+
+@_projects_method("projects.state.set")
+def _(rid, params, pdb, conn) -> dict:
+    proj = _require_project(pdb, conn, params)
+    # Desktop is a user surface: the author is fixed here, never taken from the caller.
+    state = pdb.set_project_state(conn, proj.id, updated_by="user", **_pick(params, *pdb.STATE_FIELDS))
+    return _ok(rid, {"state": state})
+
+
+@_projects_method("projects.state.history")
+def _(rid, params, pdb, conn) -> dict:
+    proj = _require_project(pdb, conn, params)
+    limit = params.get("limit")
+    limit = pdb.STATE_HISTORY_LIMIT if limit is None else int(limit)
+    return _ok(rid, {"history": pdb.project_state_history(conn, proj.id, limit=limit)})
+
+
 @_projects_method("projects.for_cwd")
 def _(rid, params, pdb, conn) -> dict:
     cwd = _completion_cwd(

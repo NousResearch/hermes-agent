@@ -1837,6 +1837,38 @@ def test_oauth_system_prompt_sanitizer_preserves_docs_url():
     assert kwargs["system"][-1]["text"].count("claude-code") == 3  # the caller's block, not the CC prefix
 
 
+def test_oauth_slug_rewrite_preserves_skills_index_entry_name():
+    """The skills index lists each skill as ``- name: description``. The bare slug followed by a
+    colon is the key ``skill_view`` resolves — rewriting it renamed the bundled ``hermes-agent``
+    skill to ``claude-code`` on the OAuth route, colliding with the real delegation skill and
+    leaving no entry the model could address (#134744)."""
+    kwargs = build_anthropic_kwargs(
+        model="claude-sonnet-4-20250514",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "## Skills\n<available_skills>\n"
+                    "    - claude-code: Delegate coding to Claude Code CLI (features, PRs).\n"
+                    "    - hermes-agent: Use, configure, theme, extend, and orchestrate Hermes Agent.\n"
+                    "</available_skills>\n"
+                    "The hermes-agent project is documented separately."
+                ),
+            },
+            {"role": "user", "content": "Hi"},
+        ],
+        tools=None,
+        max_tokens=4096,
+        reasoning_config=None,
+        is_oauth=True,
+    )
+
+    system_text = "\n".join(block["text"] for block in kwargs["system"])
+    assert "    - hermes-agent: Use, configure, theme, extend" in system_text  # index name is a key
+    assert system_text.count("    - claude-code:") == 1  # only the delegation skill owns that name
+    assert "The claude-code project is documented separately." in system_text  # a bare prose slug still rewrites
+
+
 def test_unsupported_inline_image_subtype_downgrades_to_text_for_anthropic(monkeypatch):
     """Sibling of the Responses guard: a data:image/svg+xml (or bmp/tiff) part forwarded verbatim as
     ``media_type`` 400s the Anthropic request on every replay — it must become a text placeholder

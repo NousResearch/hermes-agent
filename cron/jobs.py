@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- security fix for #82010: distinguish an explicitly-empty toolset allowlist (fail closed, nothing allowed) from an absent one (no restriction); the added lines are minimal fail-closed branches at this existing chokepoint
 """Cron job storage: ~/.hermes/cron/jobs.json; output in
 ~/.hermes/cron/output/{job_id}/{timestamp}.md"""
 
@@ -1705,6 +1706,17 @@ def _normalize_str_list(items: Any) -> Optional[List[str]]:
     return [str(j).strip() for j in items if str(j).strip()] or None
 
 
+def _normalize_enabled_toolsets(value: Any) -> Optional[List[str]]:
+    """Per-job toolset allowlist. An explicitly-set EMPTY list means 'nothing allowed' and must
+    persist as [] — normalizing it to None would read back as 'no restriction' (#82010). Absent
+    or None stays None (the unrestricted default); a non-list raises before anything is stored."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError("enabled_toolsets must be a list of toolset names (or [] for none).")
+    return [str(j).strip() for j in value if str(j).strip()]
+
+
 def _normalize_context_from(value: Any) -> Optional[List[str]]:
     """Accept a job id or a list of ids; anything else is None."""
     if isinstance(value, str):
@@ -1751,7 +1763,7 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "script": _normalize_job_optional_text,
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
-    "enabled_toolsets": lambda v: _normalize_str_list(v) if v else None,
+    "enabled_toolsets": _normalize_enabled_toolsets,
     "workdir": _normalize_workdir,
     "no_agent": bool,
     "context_from": _normalize_context_from,
@@ -1759,6 +1771,8 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "interpreter": _normalize_job_optional_text,
 }
 _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
+    # [] is an explicit zero-tool allowlist and must survive the update path as [] too (#82010).
+    "enabled_toolsets": _normalize_enabled_toolsets,
     "workdir": lambda v: None if v in {None, "", False} else _normalize_workdir(v),
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,

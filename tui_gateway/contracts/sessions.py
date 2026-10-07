@@ -236,6 +236,9 @@ class SessionListRow(Result):
     message_count: int = 0
     live_message_count: int | None = None
     source: str = ""
+    # Durable lineage root of a compressed conversation (REST parity, #66663); None on
+    # rows that are not projected compression tips.
+    lineage_root_id: str | None = Field(default=None, alias="_lineage_root_id")
 
 
 class SessionListResult(Result):

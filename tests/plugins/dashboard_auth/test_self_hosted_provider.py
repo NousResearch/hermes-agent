@@ -28,6 +28,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+import plugins.dashboard_auth._shared as shared
 import plugins.dashboard_auth.self_hosted as oidc_plugin
 from hermes_cli.dashboard_auth import (
     InvalidCodeError,
@@ -164,7 +165,7 @@ def _make_provider(
     return p
 
 
-def _mock_post(status_code: int, body: Any, *, ctype: str = "application/json"):
+def _mock_post(status_code: int, body: Any, *, ctype: str = "application/json") -> MagicMock:
     resp = MagicMock(spec=httpx.Response)
     resp.status_code = status_code
     if isinstance(body, dict):
@@ -175,6 +176,28 @@ def _mock_post(status_code: int, body: Any, *, ctype: str = "application/json"):
         resp.json = MagicMock(side_effect=ValueError("not json"))
     resp.headers = {"content-type": ctype}
     return resp
+
+
+class _FakeStreamResponse:
+    """A streaming httpx.Response stand-in yielding fixed chunks."""
+
+    def __init__(self, method: str, url: str, *, chunks, status_code: int = 200,
+                 headers: Dict[str, str] | None = None) -> None:
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.request = httpx.Request(method, url)
+        self.url = httpx.URL(url)
+        self._chunks = chunks
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def iter_bytes(self, chunk_size: int = 65536):
+        _ = chunk_size
+        yield from self._chunks
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +248,7 @@ class TestDiscovery:
         p = self._provider()
         mock_resp = self._mock_get(200, dict(_DISCOVERY_DOC))
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ) as mock_get:
             disco1 = p._get_discovery()
             disco2 = p._get_discovery()
@@ -251,7 +274,7 @@ class TestDiscovery:
             200, forged, url="https://attacker.example/openid-configuration"
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
         ):
             with pytest.raises(ProviderError, match="origin"):
                 p._fetch_discovery()
@@ -262,7 +285,7 @@ class TestDiscovery:
             200, dict(_DISCOVERY_DOC), url="http://auth.example.com/discovery"
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
         ):
             with pytest.raises(ProviderError, match="origin"):
                 p._fetch_discovery()
@@ -275,7 +298,7 @@ class TestDiscovery:
             url="https://auth.example.com/.well-known/openid-configuration/application/o/hermes",
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
         ):
             disco = p._fetch_discovery()
         assert disco["token_endpoint"] == f"{_ISSUER}/token"
@@ -287,9 +310,51 @@ class TestDiscovery:
             200, dict(_DISCOVERY_DOC), url="https://auth.example.com:443/x"
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
         ):
             assert p._fetch_discovery()["issuer"] == _ISSUER
+
+
+    def test_discovery_rejects_oversized_response_body(self, monkeypatch):
+        """A discovery body larger than the cap must raise, not buffer."""
+        p = self._provider()
+
+        def fake_stream(method, url, **kwargs):
+            return _FakeStreamResponse(
+                method, url,
+                chunks=[b"a" * 6, b"b" * 6],
+                headers={"content-type": "application/json"},
+            )
+
+        monkeypatch.setattr(shared.httpx, "stream", fake_stream)
+        monkeypatch.setattr(shared, "_OIDC_RESPONSE_BODY_LIMIT_BYTES", 10)
+
+        with pytest.raises(ProviderError, match="exceeds 10 bytes"):
+            p._get_discovery()
+
+    def test_discovery_rejects_oversized_content_length(self, monkeypatch):
+        """An oversized declared Content-Length must reject before body read."""
+        p = self._provider()
+        read_attempted = []
+
+        class _ContentLengthResp(_FakeStreamResponse):
+            def iter_bytes(self, chunk_size=65536):
+                read_attempted.append(True)
+                yield from ()
+
+        def fake_stream(method, url, **kwargs):
+            return _ContentLengthResp(
+                method, url,
+                chunks=[],
+                headers={"content-type": "application/json", "content-length": "1048577"},
+            )
+
+        monkeypatch.setattr(shared.httpx, "stream", fake_stream)
+        monkeypatch.setattr(shared, "_OIDC_RESPONSE_BODY_LIMIT_BYTES", 1048576)
+
+        with pytest.raises(ProviderError, match="exceeds"):
+            p._get_discovery()
+        assert not read_attempted
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +548,7 @@ class TestCompleteLogin:
             },
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp
         ):
             session = provider.complete_login(
                 code="abc",
@@ -506,7 +571,7 @@ class TestCompleteLogin:
             200, {"id_token": id_token, "token_type": "Bearer"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp
         ):
             session = provider.complete_login(
                 code="abc",
@@ -521,7 +586,7 @@ class TestCompleteLogin:
             200, {"access_token": "opaque", "token_type": "Bearer"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(ProviderError, match="id_token"):
                 provider.complete_login(
@@ -531,10 +596,31 @@ class TestCompleteLogin:
                     redirect_uri="https://hermes.example/auth/callback",
                 )
 
+    def test_token_endpoint_rejects_oversized_response_body(self, provider, monkeypatch):
+        """An IDP token response larger than the cap must raise, not buffer."""
+
+        def fake_stream(method, url, **kwargs):
+            return _FakeStreamResponse(
+                method, url,
+                chunks=[b"x" * 8, b"y" * 8],
+                headers={"content-type": "application/json"},
+            )
+
+        monkeypatch.setattr(shared.httpx, "stream", fake_stream)
+        monkeypatch.setattr(shared, "_OIDC_RESPONSE_BODY_LIMIT_BYTES", 10)
+
+        with pytest.raises(ProviderError, match="exceeds 10 bytes"):
+            provider.complete_login(
+                code="x",
+                state="s",
+                code_verifier="v",
+                redirect_uri="https://hermes.example/auth/callback",
+            )
+
     def test_400_raises_invalid_code(self, provider):
         mock_resp = _mock_post(400, {"error": "invalid_grant"})
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(InvalidCodeError, match="invalid_grant"):
                 provider.complete_login(
@@ -572,7 +658,7 @@ class TestConfidentialClient:
         id_token = _mint_id_token(rsa_keypair)
         mock_resp = _mock_post(200, {"id_token": id_token, **_GOOD_TOKEN_RESP_KEYS})
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp
         ) as mock_post:
             provider.complete_login(
                 code="the-code",
@@ -644,7 +730,7 @@ class TestConfidentialClient:
             200, {"id_token": id_token, "token_type": "Bearer", "refresh_token": "rt2"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp
         ) as mock_post:
             provider.refresh_session(refresh_token="rt_old")
         _, kwargs = mock_post.call_args
@@ -681,7 +767,9 @@ class TestVerifySession:
 
 
     def test_expired_returns_none(self, provider, rsa_keypair):
-        token = _mint_id_token(rsa_keypair, ttl_seconds=-1)
+        # Well past the 60s default leeway — a just-expired token is accepted
+        # within the clock-skew window (RFC 7519 §4.1.4), a long-dead one is not.
+        token = _mint_id_token(rsa_keypair, ttl_seconds=-600)
         assert provider.verify_session(access_token=token) is None
 
     def test_wrong_audience_raises(self, provider, rsa_keypair):

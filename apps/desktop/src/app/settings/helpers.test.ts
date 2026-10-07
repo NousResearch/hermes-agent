@@ -253,7 +253,7 @@ describe('settings helpers', () => {
         stt: {
           provider: 'local',
           providers: {
-            // both are built-in STT names omitted from ENUM_OPTIONS['stt.provider']
+            // built-in STT names: local_command is unlisted, deepinfra is listed
             local_command: { type: 'command', command: 'curl …' },
             deepinfra: { type: 'command', command: 'curl …' },
             myasr: { type: 'command', command: 'curl …' }
@@ -263,7 +263,8 @@ describe('settings helpers', () => {
 
       const opts = enumOptionsFor('stt.provider', 'local', shadowing)
       expect(opts).not.toContain('local_command')
-      expect(opts).not.toContain('deepinfra')
+      // deepinfra is a listed built-in: it appears once, as the native provider.
+      expect(opts!.filter(o => o === 'deepinfra')).toHaveLength(1)
       expect(opts).toContain('myasr')
     })
   })

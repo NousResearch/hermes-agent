@@ -1753,19 +1753,18 @@ def _configured_relay_base_url(provider: str) -> str:
     base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
     if not base_url:
         return ""
-    # A base_url equal to the provider's own endpoint is not a relay (setup persists canonical
-    # URLs too): keep native discovery, which OAuth providers such as Codex need because the
-    # generic relay probe only speaks api_key. Profiles cover providers PROVIDER_REGISTRY lacks
-    # (OpenRouter).
+    # A base_url equal to the provider's own endpoint (profile's, or the registry row's when the
+    # profile leaves it empty: TokenHub; profiles cover OpenRouter, absent from the registry) is
+    # not a relay: setup persists canonical URLs, and OAuth providers (Codex) need native discovery.
     try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
         from providers import get_provider_profile
 
-        canonical = getattr(get_provider_profile(normalized), "base_url", "") or ""
+        canonical = {normalize_route_base_url(u) for u in (getattr(get_provider_profile(normalized), "base_url", ""),
+                     getattr(PROVIDER_REGISTRY.get(normalized), "inference_base_url", "")) if u}
     except Exception:
         return base_url  # lookup failed: stay a relay, never widening where credentials go
-    if canonical and normalize_route_base_url(base_url) == normalize_route_base_url(canonical):
-        return ""
-    return base_url
+    return "" if normalize_route_base_url(base_url) in canonical else base_url
 
 
 def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:

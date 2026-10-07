@@ -7,10 +7,10 @@ import sys
 
 @lru_cache(maxsize=1)
 def local_cache_folder() -> Path | None:
-    """Read WinRT LocalCache; unpackaged installs need no WinRT dependencies."""
     if sys.platform != "win32":
         return None
     try:
+        # Read WinRT LocalCache; unpackaged installs need no WinRT dependencies.
         from winrt.windows.storage import ApplicationData
 
         return Path(ApplicationData.current.local_cache_folder.path)

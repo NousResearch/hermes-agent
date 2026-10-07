@@ -1129,8 +1129,11 @@ export PYTHONUNBUFFERED=1
 # shim's UI through this file; without a watching UI the variable is simply
 # absent and the helper no-ops.
 export HERMES_UPDATE_STATUS_FILE="$STATUS"
-# `hermes update` runs under OUR marker claim (contract C1 rule 4/6).
-export HERMES_UPDATE_HANDOFF_PID="$$"
+# `hermes update` runs under OUR marker claim (contract C1 rule 4/6). Name the
+# claim's holder — $MY_PID, which the refresher took over from this shell — not
+# $$: the child matches the env pid against the marker's line-1 pid, and the
+# refresher is the child's sibling, so the ancestry fallback can never reach it.
+export HERMES_UPDATE_HANDOFF_PID="${MY_PID:-$$}"
 # The update's receipt carries this id (update_receipt._launcher_correlation_id),
 # which is how update_committed_after_exit finds THIS run's receipt.
 export HERMES_UPDATE_CORRELATION_ID="$UPDATE_CORRELATION"

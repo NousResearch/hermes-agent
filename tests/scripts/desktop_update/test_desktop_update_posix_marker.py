@@ -27,6 +27,10 @@ if '--help' in sys.argv:
     print('update options --keep-stash'); sys.exit(0)
 with open(os.environ['HANDOFF_CAPTURE'], 'a', encoding='utf-8') as f:
     f.write(' '.join(sys.argv[1:]) + '\\n')
+env_capture = os.environ.get('HANDOFF_ENV_CAPTURE')
+if env_capture:  # the HERMES_UPDATE_HANDOFF_PID this child ran under (#134381)
+    with open(env_capture, 'a', encoding='utf-8') as f:
+        f.write(os.environ.get('HERMES_UPDATE_HANDOFF_PID', '') + '\\n')
 if sys.argv[1:2] == ['desktop']:
     sys.exit(1)
 completion = os.environ.get('HANDOFF_COMPLETION')
@@ -331,6 +335,25 @@ def _ancestry(pid: int) -> list[int]:
         chain.append(pid)
         pid = int(Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(") ", 1)[1].split()[1])
     return chain
+
+
+def test_update_child_gets_the_marker_custodian_as_its_handoff_pid(tmp_path):
+    """The refresher holds the marker as a SIBLING of the `hermes update` child (#134381), so
+    the child's ancestry fallback can never reach it: HERMES_UPDATE_HANDOFF_PID must name the
+    custodian the hand-off logged, not the hand-off shell's pid, or the child refuses the very
+    update the Desktop started and every retry dead-ends on exit 2."""
+    home, install = _install(tmp_path)
+    env_capture = tmp_path / "handoff-pids.txt"
+
+    result = _run(tmp_path, home, install, HANDOFF_ENV_CAPTURE=str(env_capture))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    custodian = _custodian(home)
+    assert custodian, "hand-off never named a marker custodian"
+    seen = env_capture.read_text(encoding="utf-8-sig").split()
+    assert custodian in seen, (
+        f"update child ran under {seen}, marker custodian is {custodian}"
+    )
 
 
 def test_script_killed_right_after_spawning_the_update_leaves_a_live_marker(tmp_path):

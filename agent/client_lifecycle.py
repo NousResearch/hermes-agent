@@ -896,6 +896,10 @@ class ClientLifecycleMixin:
         current_key = str(self._anthropic_api_key or "")
         if not official_host and not (current_key.startswith("sk-ant-") or getattr(self, "_is_anthropic_oauth", False)):
             return False
+        # A pool-bound agent rotates through the pool (_swap_credential): the singleton token may belong
+        # to another account while _credential_pool_entry_id still names the selected one (as #107448).
+        if getattr(self, "_credential_pool", None) is not None and getattr(self, "_credential_pool_entry_id", None):
+            return False
         try:
             from agent.anthropic_credentials import resolve_anthropic_token
             new_token = resolve_anthropic_token(model=self.model)
@@ -913,12 +917,33 @@ class ClientLifecycleMixin:
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
             return False
+        old_keys = (self._anthropic_api_key, self.api_key)
         self._anthropic_api_key, self._is_anthropic_oauth = new_token, self._anthropic_oauth_flag(new_token)
         # Keep the public key in step, as _swap_credential does: turn_context publishes agent.api_key
         # as the auxiliary main runtime, and _try_main_provider_route pins `auto` aux calls to it —
         # a stale value keeps every auxiliary call on the revoked token until the process restarts.
         self.api_key = new_token
+        self._propagate_rotated_api_key(old_keys, new_token)
         return True
+
+    def _propagate_rotated_api_key(self, old_keys: tuple, new_key: Any) -> None:
+        """Hand a rotated main key to the holders that copied the old one before the rotation.
+
+        The rotation runs mid-turn, after turn_context published the auxiliary main runtime, and
+        ContextCompressor keeps its own key from startup (only a model switch updates it). A holder is
+        rekeyed only while it still carries an old main key, so one on another route is left alone. The
+        published dict is updated in place: worker contexts copied from the turn's share that object.
+        """
+        olds = tuple(key for key in old_keys if key and key != new_key)
+        if not olds or not new_key:
+            return
+        compressor = getattr(self, "context_compressor", None)
+        if compressor is not None and getattr(compressor, "api_key", None) in olds:
+            compressor.api_key = new_key
+        from agent.auxiliary_client import _RUNTIME_MAIN_CONTEXT
+        runtime = _RUNTIME_MAIN_CONTEXT.get()
+        if isinstance(runtime, dict) and runtime.get("api_key") in olds:
+            runtime["api_key"] = new_key
 
     # ------------------------------------------------------------------ route-derived client config
     def _apply_client_headers_for_base_url(self, base_url: str, *, apply_user_headers: bool = True) -> None:
@@ -980,6 +1005,8 @@ class ClientLifecycleMixin:
         self._credential_pool_entry_id = getattr(entry, "id", None)
         from hermes_cli.route_identity import normalize_route_base_url
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(runtime_base)
+        # A same-route rotation only; a re-route also moves base_url, which must not pair with the old holders.
+        rotated_from = () if route_changed else (getattr(self, "_anthropic_api_key", None), getattr(self, "api_key", None))
         if self.api_mode == "anthropic_messages":
             with suppress(Exception):
                 self._anthropic_client.close()
@@ -987,8 +1014,10 @@ class ClientLifecycleMixin:
             self._anthropic_client = self._build_direct_anthropic_client(runtime_key, self._anthropic_base_url)
             self._is_anthropic_oauth = self._anthropic_oauth_flag(runtime_key)
             self.api_key, self.base_url = runtime_key, stripped_base
+            ClientLifecycleMixin._propagate_rotated_api_key(self, rotated_from, runtime_key)  # tests call this unbound
             return True
         self.api_key, self.base_url = runtime_key, stripped_base
+        ClientLifecycleMixin._propagate_rotated_api_key(self, rotated_from, runtime_key)
         # Inlined (not _sync_client_kwargs_credentials): tests call this unbound on a SimpleNamespace agent.
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url

@@ -6,6 +6,7 @@ from __future__ import annotations
 import atexit
 import contextlib
 import logging
+import sqlite3
 import threading
 import time
 import weakref
@@ -421,15 +422,42 @@ class SessionUsageMixin:
 
     def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> Dict[str, float]:
         """Tokens and spend across the whole store (one scan), so the sidebar total does not
-        shrink with paging. Spend prefers the billed figure over the estimate."""
-        where = ["parent_session_id IS NULL", "message_count >= ?"]
+        shrink with paging. Spend prefers the billed figure over the estimate.
+
+        Every session counts — including subagent/branch children, whose counters are
+        independent (no double counting). Auxiliary calls (title generation, compression,
+        background review, ...) live only in ``session_model_usage`` with ``task != ''``
+        and are added on top; main-loop ``task = ''`` rows mirror the ``sessions``
+        counters and are never added twice (#126979).
+        """
+        where = ["s.message_count >= ?"]
         params: List[Any] = [min_message_count]
         if not include_archived:
-            where.append("COALESCE(archived, 0) = 0")
+            where.append("COALESCE(s.archived, 0) = 0")
+        where_sql = " AND ".join(where)
         row = self._read_one(f"""
             SELECT COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0),
                    COALESCE(SUM(COALESCE(actual_cost_usd, estimated_cost_usd, 0)), 0)
-              FROM sessions
-             WHERE {' AND '.join(where)}
+              FROM sessions s
+             WHERE {where_sql}
             """, params)
-        return {"tokens": int(row[0] or 0), "cost_usd": float(row[1] or 0.0)}
+        try:
+            aux = self._read_one(f"""
+                SELECT COALESCE(SUM(COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0)), 0),
+                       COALESCE(SUM(COALESCE(NULLIF(u.actual_cost_usd, 0), u.estimated_cost_usd, 0)), 0)
+                  FROM session_model_usage u
+                 WHERE u.task != ''
+                   AND EXISTS (
+                           SELECT 1 FROM sessions s
+                            WHERE s.id = u.session_id AND {where_sql}
+                       )
+                """, params)
+        except sqlite3.OperationalError:
+            # Older stores predate session_model_usage: no aux yet.
+            aux = None
+        tokens = int(row[0] or 0)
+        cost = float(row[1] or 0.0)
+        if aux is not None:
+            tokens += int(aux[0] or 0)
+            cost += float(aux[1] or 0.0)
+        return {"tokens": tokens, "cost_usd": cost}

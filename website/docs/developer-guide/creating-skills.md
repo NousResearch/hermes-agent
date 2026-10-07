@@ -320,6 +320,8 @@ skills:
 
 Snippets run with the skill directory as their working directory, and output is capped at 4000 characters. Failures (timeouts, non-zero exits) show up as a short `[inline-shell error: ...]` marker instead of breaking the whole skill.
 
+Trust scoping: community hub installs never auto-execute snippets, even with the flag on — the hub's install scan blocks a community skill carrying this DSL on a caution/dangerous verdict, and a `--force` install (or one from before the scanner caught the pattern) must not re-arm what the gate refused. Bundled, trusted, and your own skills expand as before.
+
 ### Test It
 
 Run the skill and verify the agent follows the instructions correctly:

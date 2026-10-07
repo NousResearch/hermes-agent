@@ -1,0 +1,44 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: mavens
+connector_slug: mavens
+description: >-
+  MAVENS.mcp - authenticated software project reviews and findings for
+  connected repositories (remote MCP over HTTP with OAuth).
+source: https://github.com/franzfarian/mavens-mcp-plugin
+
+# Remote MCP server at https://mavens.it/api/mcp. OAuth 2.1 + Dynamic
+# Client Registration over Streamable HTTP: the resource document
+# (.well-known/oauth-protected-resource/api/mcp) names https://mavens.it as
+# authorization server, and the origin metadata document
+# (.well-known/oauth-authorization-server) publishes issuer
+# https://mavens.it with authorization_code + PKCE S256, DCR
+# (registration_endpoint) and token_endpoint_auth_method none.
+transport:
+  type: http
+  url: https://mavens.it/api/mcp
+
+auth:
+  type: oauth
+  # Native MCP OAuth (no third-party provider). Discovery, PKCE, token
+  # exchange and refresh are handled by Hermes's mcp_oauth_manager.
+
+# Tool surface requires an authenticated session, so leave
+# tools.default_enabled unset: the install-time checklist probes the
+# server after login and pre-checks everything it finds.
+suggest:
+  keywords:
+    - mavens
+    - mavens.mcp
+    - project review
+  hosts:
+    - mavens.it
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with MAVENS.
+  Approve access, then restart the session so the MCP tools load.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure mavens

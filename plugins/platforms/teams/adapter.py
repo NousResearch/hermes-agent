@@ -515,8 +515,8 @@ class TeamsAdapter(BasePlatformAdapter):
             if not self._activity_mentions_bot(activity, bot_ids, text) and getattr(activity, "reply_to_id", None) not in self._sent_ids:
                 logger.debug("[teams] Dropping non-personal message without a bot mention (chat=%s, msg=%s)", conv_id, msg_id)
                 return
-        if "<at>" in text:  # strip the <at>BotName</at> tags Teams prepends for @mentions
-            text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
+        if "<at>" in text:  # bot tags go, other people's stay as @Name
+            text = self._resolve_mention_tags(text, activity, bot_ids)
         from_account = activity.from_
         user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
         source = self.build_source(
@@ -533,6 +533,31 @@ class TeamsAdapter(BasePlatformAdapter):
         await self.handle_message(MessageEvent(
             text=text, source=source, message_type=msg_type, message_id=msg_id,
             media_urls=[path for path, _, _ in media], media_types=[mt for _, mt, _ in media]))
+
+    @staticmethod
+    def _resolve_mention_tags(text: str, activity: Any, bot_ids: set) -> str:
+        """Drop the bot's own ``<at>`` tags and keep everyone else's as readable ``@Name``.
+
+        Teams renders every @mention as ``<at>Name</at>``; each mention entity carries the
+        rendered tag plus the mentioned account, so the bot's tags can be removed precisely
+        while other people's survive as ``@Name`` text — a blanket strip left group-chat
+        messages addressed to someone else looking like they were addressed to the agent.
+        Payloads without mention entities keep the legacy blanket strip: with nothing
+        identifying the bot's tags, keeping them would echo the bot's own name back forever.
+        """
+        mentions = [
+            e
+            for e in getattr(activity, "entities", None) or []
+            if getattr(e, "type", None) == "mention"
+        ]
+        if not mentions:
+            return re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
+        for e in mentions:
+            tag = getattr(e, "text", None)
+            mentioned_id = str(getattr(getattr(e, "mentioned", None), "id", ""))
+            if isinstance(tag, str) and tag and mentioned_id in bot_ids:
+                text = re.sub(re.escape(tag) + r"\s*", "", text, count=1)
+        return re.sub(r"<at>([^<]*)</at>", r"@\1", text).strip()
 
     @staticmethod
     def _activity_mentions_bot(activity: Any, bot_ids: set, text: str) -> bool:

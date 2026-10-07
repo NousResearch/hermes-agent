@@ -385,3 +385,51 @@ def test_ws_orphan_reap_rearm_spares_post_wake_reconnect(monkeypatch):
     clocks["wall"] += 18.0
     timers[1].callback()
     assert reaped == []
+
+
+def test_exhausted_interrupt_budget_keeps_the_session_open(monkeypatch):
+    """A detached turn that never settles inside the interrupt poll budget must
+    not have its row ended underneath it: the session stays open (and visibly
+    running) until the turn actually settles."""
+    timers = []
+
+    class Timer:
+        def __init__(self, delay, callback):
+            self.callback = callback
+            timers.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    sid = "slow-detached-turn"
+    session = dict(
+        transport=server._detached_ws_transport,
+        running=True,
+        agent=SimpleNamespace(get_activity_summary=lambda: {"seconds_since_activity": 0}),
+    )
+    monkeypatch.setattr(server, "_sessions", {sid: session})
+    monkeypatch.setattr(server, "_pending_ws_reaps", {})
+    monkeypatch.setattr(server.threading, "Timer", Timer)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20)
+    monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 0)
+    monkeypatch.setattr(server, "_session_has_active_delegations", lambda *a: False)
+    monkeypatch.setattr(server, "_interrupt_session_turn", lambda *a, **kw: False)
+
+    server._schedule_ws_orphan_reap(sid)
+    assert server._pending_ws_reaps[sid] is timers[-1]
+
+    # First fire: the stale detached turn is interrupted once and polled.
+    timers[-1].callback()
+    assert session.get("_client_gone_interrupt_requested")
+
+    # Drive the polls past the budget: the session must stay open, not reaped.
+    for _ in range(server._WS_ORPHAN_INTERRUPT_REAP_MAX_POLLS + 2):
+        timers[-1].callback()
+
+    assert sid in server._sessions
+    assert server._sessions[sid].get("running") is True
+    assert server._pending_ws_reaps.get(sid) is timers[-1]
+    assert session.get("_client_gone_slow_poll_logged") is True

@@ -84,6 +84,7 @@ class StreamJsonEmitter:
         data = result if isinstance(result, dict) else {"final_response": "" if result is None else str(result)}
         exit_code = exit_code or (1 if data.get("failed") else 0)
         payload = {"type": "result", "session_id": session_id or self._session_id, "exit_code": exit_code,
+                   "turn_exit_reason": data.get("turn_exit_reason"),
                    "text": data.get("final_response") or "",
                    "tokens": {"input": data.get("input_tokens") or 0, "output": data.get("output_tokens") or 0,
                               "total": data.get("total_tokens") or 0, "cache_read": data.get("cache_read_tokens") or 0,

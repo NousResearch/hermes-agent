@@ -286,8 +286,7 @@ dangerous-pattern rule key such as `script execution via heredoc` (the key shown
 in the approval prompt). Rule keys are honored on every surface, including
 unattended ones: a cron job, `hermes chat -q` run or webhook session under
 `cron_mode`/`single_query_mode`/`unattended_mode: deny` still runs a command whose
-detected rule key is in `command_allowlist`, while Tirith content-security
-findings on the same command continue to block it.
+detected rule key is in `command_allowlist`.
 
 The setting must be a list of strings. Legacy installs that stored a list as a
 quoted YAML/JSON string recover that list at load time and log a warning to
@@ -802,46 +801,24 @@ or `::/0`) is ignored with a warning rather than widening the guard. On a host w
 browser provider, the declared sentinel also stops counting as private for
 `browser.auto_local_for_private_urls`, so those pages keep going to the cloud browser.
 
-### Tirith Pre-Exec Security Scanning
+### Content-Level Command Checks
 
-Hermes integrates [tirith](https://github.com/sheeki03/tirith) for content-level command scanning before execution. Tirith detects threats that pattern matching alone misses:
+The dangerous-command detector also flags two content-level shapes that a
+destructive-verb list misses:
 
-- Homograph URL spoofing (internationalized domain attacks)
-- Pipe-to-interpreter patterns (`curl | bash`, `wget | sh`)
-- Terminal injection attacks
+- A `curl`/`wget` request body that carries a secret: a secret-named variable
+  (`-d "k=$OPENAI_API_KEY"`) or a credential file (`-F file=@.env`,
+  `-T ~/.ssh/id_rsa`, `--post-file=/etc/passwd`), or a credential file piped into
+  an uploading `curl`/`wget`. An `Authorization` header is ordinary API use and
+  is not flagged.
+- Invisible or bidirectional Unicode control characters (zero-width spaces,
+  right-to-left overrides, isolates), which make the command you approve differ
+  from the one that runs. Emoji joiner sequences are not flagged.
 
-Tirith requests a pinned [PM package](../reference/package-management.md#optional-security-tools)
-when enabled and absent. PM checks artifact hashes from `pm/lock.json` and
-calls the cosign checker when available. An explicit provenance rejection aborts
-installation. Startup requests installation in the background, subject to the
-lazy-install policy. PM owns durable installation state and recovery, not a
-separate `.tirith-install-failed` marker.
+Both go through the normal approval flow like every other dangerous pattern.
 
-An explicit `security.tirith_path` remains authoritative, even if the executable
-is missing. With the default name, lookup uses `PATH` before the PM selection.
-External binaries remain outside PM's hash and provenance checks.
-
-```yaml
-# In ~/.hermes/config.yaml
-security:
-  tirith_enabled: true       # Enable/disable tirith scanning (default: true)
-  tirith_path: "tirith"      # Path to tirith binary (default: PATH lookup)
-  tirith_timeout: 5          # Subprocess timeout in seconds
-  tirith_fail_open: true     # Allow execution when tirith is unavailable (default: true)
-```
-
-When `tirith_fail_open` is `true` (default), commands proceed if tirith is not installed or times out. Set to `false` in high-security environments to block commands when tirith is unavailable.
-
-Three consecutive operational failures (spawn error, timeout, crash) suspend scanning for five minutes so a broken binary cannot stall every command; after that window one command re-probes tirith, and any completed scan (allow, warn or block) resumes normal scanning. A probe that fails again re-arms the five-minute window.
-
-PM supports Tirith on Linux (x86_64 / aarch64) and macOS (x86_64 / arm64).
-With the default path, unsupported targets, including native Windows and
-Android/Termux, skip Tirith. Pattern-matching guards still run. To use the managed
-Tirith package on Windows, run Hermes under WSL.
-
-Tirith's verdict integrates with the approval flow: safe commands pass through, while both suspicious and blocked commands trigger user approval with the full tirith findings (severity, title, description, safer alternatives). Users can approve or deny — the default choice is deny to keep unattended scenarios secure.
-
-Two known Tirith false positives are downgraded to "allow" so they never prompt (or, in cron, never deny): a `lookalike_tld` warning whose only target is the legitimate `.app` gTLD, and a `variation_selector` warning when every selector in the command is U+FE0F directly after an emoji (folder names such as `🗞️ Journal/` or `▶️ Media/`). A variation selector after a letter or digit — the steganographic-obfuscation signal the rule exists for — still prompts.
+Earlier releases bundled the external tirith scanner here. It was removed;
+upgrading drops the `security.tirith_*` settings and enables nothing in its place.
 
 ### Context File Injection Protection
 

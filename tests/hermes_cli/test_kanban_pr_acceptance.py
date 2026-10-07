@@ -216,6 +216,33 @@ def test_assignee_without_own_gh_login_never_falls_through_to_ambient_login(tmp_
     assert "GH_TOKEN" not in captured and "GITHUB_TOKEN" not in captured
 
 
+@pytest.mark.platforms("posix")
+def test_gh_env_carries_only_gh_credentials_not_the_whole_profile_scope(tmp_path, monkeypatch):
+    """#134669: gh needs only its own login, so the child env must not overlay the assignee
+    profile's entire secret scope — provider keys and adapter secrets stay out — while the
+    #122689 identity guarantees still hold (the assignee's own GH_TOKEN wins over ambient)."""
+    from hermes_cli.kanban_pr_acceptance import _gh_env
+
+    launch_home = tmp_path / "home"
+    launch_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    assignee_home = launch_home / "profiles" / "b"
+    assignee_home.mkdir(parents=True)
+    (assignee_home / ".env").write_text(
+        "GH_TOKEN=b-token\nWEIXIN_ADAPTER_SECRET=wx-secret-xyz\nPROVIDER_API_KEY=sk-zzz-999\n",
+        encoding="utf-8")
+    # Ambient residue that must not decide the login.
+    monkeypatch.setenv("GH_TOKEN", "launch-token")
+
+    env = _gh_env(str(assignee_home)) or {}
+    assert env["GH_TOKEN"] == "b-token"  # assignee identity preserved over ambient
+    assert "WEIXIN_ADAPTER_SECRET" not in env  # non-gh profile secret stays out
+    assert "PROVIDER_API_KEY" not in env  # the assignee's provider key stays out too
+    # Ambient GH_CONFIG_DIR is dropped and no fail-closed pin fires (a GH_TOKEN exists),
+    # so gh's config dir is simply absent from the child env.
+    assert "GH_CONFIG_DIR" not in env
+
+
 def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, monkeypatch):
     """A card assigned to a profile that no longer exists must not run gh as the completing
     process's ambient login: classification `auth` naming the profile, gh never invoked."""

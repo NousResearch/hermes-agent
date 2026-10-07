@@ -30,6 +30,16 @@ DEVICE_FLOW_ERROR_COPY = {
 }
 
 
+class DeviceCodeExpired(TimeoutError):
+    """The device code ran out before the user approved it in the browser (not a network timeout)."""
+
+    code = "device_code_timeout"
+
+
+# ``AuthError.code`` values the device-code pollers raise when the code runs out.
+_DEVICE_CODE_EXPIRED_CODES = frozenset({"device_code_timeout", "timeout"})
+
+
 class SignInCopyError(RuntimeError):
     """Exception whose ``str()`` is already user copy (lead line + ``Details:`` line)."""
 
@@ -40,10 +50,16 @@ class SignInCopyError(RuntimeError):
 
 def is_network_error(exc: BaseException) -> bool:
     """True for connection/DNS/timeout failures from httpx, requests or the stdlib."""
-    if isinstance(exc, SignInCopyError):
+    if isinstance(exc, (SignInCopyError, DeviceCodeExpired)):
         return False
     names = {cls.__name__ for cls in type(exc).__mro__}
     return bool(names & _NETWORK_ERROR_TYPES) or isinstance(exc, (ConnectionError, TimeoutError))
+
+
+def is_device_code_expired(exc: BaseException) -> bool:
+    """True when a device-code sign-in ended because its code ran out (any provider)."""
+    return (getattr(exc, "code", None) in _DEVICE_CODE_EXPIRED_CODES
+            or getattr(exc, "oauth_error_code", "") == "expired_token")
 
 
 def is_cancelled(exc: BaseException) -> bool:

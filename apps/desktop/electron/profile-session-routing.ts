@@ -768,6 +768,126 @@ export async function fetchRemoteProfileSessions(
   }
 }
 
+/** Per-profile budget for one remote's session read inside a sidebar aggregate.
+ * A healthy remote answers in well under a second; a dead URL hangs until the
+ * 180s backend readiness deadline. The aggregate must not inherit that deadline
+ * (#75712) — each remote gets this budget, then contributes an error entry
+ * instead of rows. */
+export const REMOTE_PROFILE_SESSION_BUDGET_MS = 10_000
+
+/** One remote profile's settled contribution to a sidebar aggregate: rows when
+ *  it answered inside its budget, otherwise a named error. Never a rejection —
+ *  one dead remote must not take the other profiles' rows down with it. */
+export interface RemoteProfileSessionsOutcome {
+  profile: string
+  list: SessionListResponse | null
+  error: string | null
+}
+
+/**
+ * #75712: fetch every remote profile's session list, each under its own
+ * bounded budget, and settle each outcome instead of letting one unavailable
+ * remote block (or silently vanish from) the whole sidebar aggregate. The
+ * underlying fetch keeps running past its budget — a remote that is merely
+ * still booting can answer on a later refresh.
+ */
+export async function settleRemoteProfileSessions(
+  remoteProfiles: readonly string[],
+  fetchRemote: (profile: string) => Promise<unknown>,
+  options: { budgetMs?: number } = {}
+): Promise<RemoteProfileSessionsOutcome[]> {
+  const budgetMs = options.budgetMs ?? REMOTE_PROFILE_SESSION_BUDGET_MS
+
+  return Promise.all(
+    remoteProfiles.map(async profile => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+
+      try {
+        const list = (await Promise.race([
+          fetchRemote(profile),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error(`remote profile "${profile}" did not respond within ${budgetMs}ms`)),
+              budgetMs
+            )
+          })
+        ])) as SessionListResponse
+
+        return { profile, list, error: null }
+      } catch (error) {
+        return {
+          profile,
+          list: null,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      } finally {
+        if (timer) {
+          clearTimeout(timer)
+        }
+      }
+    })
+  )
+}
+
+/** Fold each settled remote outcome (#75712) into the unified aggregate:
+ *  answering remotes contribute rows and their real per-profile total; a
+ *  dead or still-pending remote drops its stale local total and is NAMED in
+ *  the returned error entries instead of silently vanishing. Returns the
+ *  updated grand total plus the collected errors so they can ride the
+ *  response payload. */
+export function applyRemoteProfileSessionOutcomes(
+  outcomes: readonly RemoteProfileSessionsOutcome[],
+  merged: unknown[],
+  profileTotals: Record<string, number>,
+  total: number
+): { total: number; errors: Array<{ profile: string; error: string }> } {
+  const errors: Array<{ profile: string; error: string }> = []
+
+  for (const { profile, list, error } of outcomes) {
+    if (!list) {
+      delete profileTotals[profile] // dead remote → drop its stale local total too
+      errors.push({ profile, error: error || 'unavailable' })
+
+      continue
+    }
+
+    const rows = rowsOf(list)
+    merged.push(...rows)
+    profileTotals[profile] = Number(list.total) || rows.length
+    total += profileTotals[profile]
+  }
+
+  return { total, errors }
+}
+
+/** Compose the unified aggregate's response (#75712): failures ride the
+ *  payload, not the void — base scan errors and each dead remote's named
+ *  error entry are merged into `errors` so a failed remote profile is
+ *  identifiable. */
+export function composeUnifiedSessionResponse(
+  base: unknown,
+  merged: unknown[],
+  offset: number,
+  limit: number,
+  total: number,
+  profileTotals: Record<string, number>,
+  extraErrors: Array<{ profile: string; error: string }>
+) {
+  const baseErrors = Array.isArray((base as { errors?: unknown })?.errors)
+    ? (base as { errors: Array<{ profile: string; error: string }> }).errors
+    : []
+
+  const scanErrors = [...baseErrors, ...extraErrors]
+
+  return {
+    ...(base as Record<string, unknown>),
+    sessions: mergeProfileSessionWindow(merged, offset, limit),
+    total,
+    profile_totals: profileTotals,
+    ...(scanErrors.length ? { errors: scanErrors } : {})
+  }
+}
+
 /**
  * #85834: which remote profile owns `sessionId`, when a /api/sessions/{id}
  * caller supplied no profile hint. Reads the same per-remote lists the list

@@ -541,30 +541,16 @@ security:
 地址段（连接仍然发往代理，由代理自行解析真实目标），回环、RFC 1918、链路本地、CGNAT 和云元数据
 目标依然被拦截。
 
-### Tirith 预执行安全扫描
+### 内容级命令检查
 
-Hermes 集成了 [tirith](https://github.com/sheeki03/tirith) 用于在执行前进行内容级命令扫描。Tirith 能检测单纯模式匹配所遗漏的威胁：
+危险命令检测器还会标记两类仅靠破坏性动词列表无法发现的内容：
 
-- 同形字 URL 欺骗（国际化域名攻击）
-- 管道传解释器模式（`curl | bash`、`wget | sh`）
-- 终端注入攻击
+- `curl`/`wget` 请求体中携带机密：机密命名的变量（`-d "k=$OPENAI_API_KEY"`）或凭据文件（`-F file=@.env`、`-T ~/.ssh/id_rsa`、`--post-file=/etc/passwd`），或把凭据文件通过管道传给上传中的 `curl`/`wget`。`Authorization` 请求头属于正常 API 用法，不会被标记。
+- 不可见或双向 Unicode 控制字符（零宽空格、从右到左覆盖、隔离符），它们会让你批准的命令与实际执行的命令不同。表情符号连接序列不会被标记。
 
-Tirith 在首次使用时从 GitHub Releases 自动安装，并进行 SHA-256 校验和验证（若 cosign 可用，还会进行 cosign 来源验证）。
+两者都和其他危险模式一样进入正常审批流程。
 
-```yaml
-# 在 ~/.hermes/config.yaml 中
-security:
-  tirith_enabled: true       # 启用/禁用 tirith 扫描（默认：true）
-  tirith_path: "tirith"      # tirith 二进制路径（默认：PATH 查找）
-  tirith_timeout: 5          # 子进程超时（秒）
-  tirith_fail_open: true     # tirith 不可用时允许执行（默认：true）
-```
-
-当 `tirith_fail_open` 为 `true`（默认）时，若 tirith 未安装或超时，命令照常执行。在高安全性环境中，将其设置为 `false` 可在 tirith 不可用时阻止命令执行。
-
-Tirith 为 Linux（x86_64 / aarch64）和 macOS（x86_64 / arm64）提供预构建二进制文件。在没有预构建二进制文件的平台（Windows 等）上，tirith 会被静默跳过——模式匹配防护仍然运行，CLI 不会显示"不可用"横幅。若要在 Windows 上使用 tirith，请在 WSL 下运行 Hermes。
-
-Tirith 的判定与审批流程集成：安全命令直接通过，可疑和被阻止的命令会触发用户审批，并附上完整的 tirith 发现（严重性、标题、描述、更安全的替代方案）。用户可以批准或拒绝——默认选择为拒绝，以确保无人值守场景的安全。
+早期版本在这里内置了外部 tirith 扫描器，现已移除；升级会删除 `security.tirith_*` 设置，且不会启用任何替代项。
 
 ### 上下文文件注入防护
 

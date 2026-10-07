@@ -108,8 +108,8 @@ _record_scope_trust` keys trust on the home; a secondary never adopts the launch
 for a same-named server, and `mcp_tool_handlers.py::_trust_gate_check` consults the calling
 session's profile.
 
-**Background-process teardown signals the parent first.** `process_registry.py::ProcessRegistry.
-_terminate_host_pid` snapshots the descendants, SIGTERMs only the recorded parent, waits
+**Background-process teardown signals the parent first.** `process_registry_termination.py::
+ProcessTerminationMixin._terminate_host_pid` snapshots the descendants, SIGTERMs only the recorded parent, waits
 `terminal.daemon_term_grace_seconds` for it to exit and reap its own children, then SIGTERMs the
 snapshot survivors and SIGKILLs whatever ignored both (so a supervisor that reaps its tree — a
 Chromium/Electron browser reaping its zygotes, a shell trap — exits cleanly, while a shell whose

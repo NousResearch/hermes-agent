@@ -426,7 +426,10 @@ def run_sign_in(
         yield Retired()
         return
     except TimeoutError as exc:
-        yield TimedOut(detail=str(exc))
+        # The code ran out while the token endpoint kept failing (``_poll_device_token_generic`` sets
+        # the cause): the service was unreachable, not a sign-in left unapproved.
+        outage = exc.__cause__ if isinstance(exc.__cause__, ConnectionError) else None
+        yield _failed_from_exception(outage) if outage else TimedOut(detail=str(exc))
         return
     except Exception as exc:
         yield _failed_from_exception(exc)

@@ -149,3 +149,22 @@ class TestMinimaxOauthAliases:
         for alias in ("minimax_oauth", "minimax-portal", "minimax-global"):
             resolved = providers.get_provider_profile(alias)
             assert resolved is not None and resolved.name == "minimax-oauth", alias
+
+
+class TestMinimaxM31CuratedFloor:
+    """#134659: MiniMax served ``MiniMax-M3.1`` before listing it on GET /v1/models.
+
+    With the vendor catalog lagging, the curated-first merge (neither direct-API
+    row is in ``_LIVE_FIRST_PICKER_PROVIDERS``) is the only surface that can
+    offer the model, so the curated floor must lead with it for both rows.
+    """
+
+    @pytest.mark.parametrize("provider_id", ["minimax", "minimax-cn"])
+    def test_m31_leads_the_curated_floor_for_both_direct_api_rows(self, provider_id):
+        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+        curated = _PROVIDER_MODELS[provider_id]
+        assert curated[0] == "MiniMax-M3.1", (
+            f"{provider_id} curated floor lost its MiniMax-M3.1 lead — the picker "
+            "cannot offer a model the vendor's /v1/models omits"
+        )

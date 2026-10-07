@@ -665,6 +665,34 @@ applied**, with an error naming the key the text sits in and where to move it.
 The targeted `patch` is preferred for updates — it's more token-efficient than a full rewrite because only the changed text appears in the tool call.
 :::
 
+### Keeping skill writes within a size budget
+
+Set an optional lower budget for the main `SKILL.md` to keep procedural memory concise:
+
+```yaml
+skills:
+  max_skill_md_chars: 12000
+  size_warn_chars: 9000
+```
+
+Both settings default to `null` (off). Positive integers count Unicode characters in
+the complete file, including frontmatter; zero, negative and non-integer values disable
+that setting. The existing fixed safety limit still applies. `skill_manage` refuses
+growth past `max_skill_md_chars` for create, targeted patch, full rewrite and
+`write_file` targeting the main `SKILL.md`, including path aliases. The error includes
+`current_chars`, `requested_delta` and `cap`, and directs the agent to move detail to
+`references/`. Supporting files, including `references/SKILL.md`, keep their existing limits.
+
+Lowering the budget does not prevent cleanup: an already-over-budget file may shrink
+or receive an equal-length update. Atomic batches roll back if any operation exceeds
+the growth budget. Approval delays the write; approved replays use the budget active
+when the write is applied.
+
+A successful main-file write at or above `size_warn_chars` includes a structured
+`size_warning`. The background review footer shows the skill name and character
+count in normal and verbose notification modes; `off` stays silent. The warning
+works independently of the hard budget.
+
 ### Gating agent skill writes (`skills.write_approval`)
 
 By default the agent writes skills freely — including from the [background

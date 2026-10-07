@@ -19031,6 +19031,45 @@
         "title": "MessageReactionPayload",
         "type": "object"
       },
+      "MessageUserEchoPayload": {
+        "additionalProperties": false,
+        "description": "``tui_gateway/methods_prompt.py`` prompt.submit user-echo (#55564): the submitted\ntext echoed to every OTHER transport watching the session (the submitter renders its own\noptimistic bubble). ``display_kind`` mirrors the submit's; the row id lets clients dedupe\nagainst the durable row a resume replays. ``text`` is the sanitized submit text.",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "display_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Kind"
+          },
+          "row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Id"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "MessageUserEchoPayload",
+        "type": "object"
+      },
       "MoaAggregatingPayload": {
         "additionalProperties": false,
         "properties": {
@@ -40201,6 +40240,18 @@
           "schema": {
             "type": "object",
             "additionalProperties": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "message.user_echo",
+      "summary": "A user message arrived from another client watching this session (#55564): render it as a user bubble.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/MessageUserEchoPayload"
           }
         }
       ]

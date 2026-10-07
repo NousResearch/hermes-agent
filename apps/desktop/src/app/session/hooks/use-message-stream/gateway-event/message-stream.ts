@@ -3,6 +3,7 @@ import type { BillingBlock } from '@hermes/shared'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { reportFirstBuildTurnComplete } from '@/components/onboarding-chat/first-build'
 import { translateNow } from '@/i18n'
+import { finalizeInterruptedMessages, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -82,6 +83,47 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     sessionStateByRuntimeIdRef,
     updateSessionState
   } = deps
+
+  if (event.type === 'message.user_echo') {
+    // #55564: a user message submitted from ANOTHER client watching this
+    // session (the CLI, a second window). The submitter already rendered its
+    // own optimistic bubble; without this echo the turn's answer would arrive
+    // over an invisible prompt — indicator-only chrome, no user bubble. Seed
+    // the same optimistic user row submit.ts's seedOptimistic would have.
+    if (!sessionId || payload?.display_kind === 'hidden') {
+      return true
+    }
+
+    const echoText = coerceGatewayText(payload?.text)
+
+    if (!echoText.trim()) {
+      return true
+    }
+
+    const rowId = typeof payload?.row_id === 'number' ? payload.row_id : undefined
+    const echoId = rowId !== undefined ? `user-echo-row-${rowId}` : `user-echo-${event.seq ?? Date.now()}`
+
+    updateSessionState(sessionId, state => ({
+      ...state,
+      // Idempotent by durable row (or echo key): a replayed ring must not
+      // double the bubble, and a hydrated copy of the same row wins.
+      messages: state.messages.some(m => m.id === echoId || (rowId !== undefined && m.rowId === rowId))
+        ? state.messages
+        : [...finalizeInterruptedMessages(state.messages, state.streamId), {
+          id: echoId,
+          role: 'user' as const,
+          parts: [textPart(echoText)],
+          timestamp: occurredAt,
+          ...(rowId !== undefined ? { rowId } : {})
+        }],
+      // The external submitter owns the turn's lifecycle end-to-end; we are a
+      // watcher, so mirror the busy chrome message.start will set shortly.
+      busy: true,
+      awaitingResponse: true
+    }))
+
+    return true
+  }
 
   if (event.type === 'message.start') {
     if (!sessionId) {

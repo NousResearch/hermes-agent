@@ -131,6 +131,8 @@ export type GatewayEventPayload = {
   // clarify.request
   request_id?: string
   question?: string
+  // message.user_echo (#55564) — external submit echo: hidden sends append no bubble
+  display_kind?: string
   // btw.complete / background.complete — id of the side/background task
   task_id?: string
   questions?: unknown

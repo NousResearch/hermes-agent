@@ -3,7 +3,9 @@
 import type { Mermaid as MermaidApi } from 'mermaid'
 import { useEffect, useState } from 'react'
 
+import { CopyButton } from '@/components/ui/copy-button'
 import { Zoomable } from '@/components/ui/zoomable'
+import { useI18n } from '@/i18n'
 import { copySvgAsPng, normalizeSvgSize } from '@/lib/svg-image'
 import { cn } from '@/lib/utils'
 
@@ -71,6 +73,7 @@ function svgAccessibleText(svg: string): string {
 // the source while the message streams (partial syntax throws) and falls back
 // to source on parse failure.
 export default function MermaidRenderer({ code, streaming }: RichFenceProps) {
+  const { t } = useI18n()
   const isDark = useIsDark()
   const [svg, setSvg] = useState('')
   const [failed, setFailed] = useState(false)
@@ -126,16 +129,26 @@ export default function MermaidRenderer({ code, streaming }: RichFenceProps) {
   // overlay keeps the diagram's natural width (capped to the viewport) so it
   // renders before any zoom; the inline version stays capped at 33dvh.
   return (
-    <Zoomable
-      label="Open diagram"
-      onCopy={() => copySvgAsPng(svg)}
-      overlay={
-        <img alt={imageAlt} className="mx-auto h-auto max-h-[80vh] max-w-[85vw]" draggable={false} src={imageSrc} />
-      }
-    >
-      <div className="overflow-hidden p-3">
-        <img alt={imageAlt} className="mx-auto h-auto max-h-[33dvh] max-w-full" draggable={false} src={imageSrc} />
-      </div>
-    </Zoomable>
+    <div className="group/mermaid relative">
+      <Zoomable
+        label="Open diagram"
+        onCopy={() => copySvgAsPng(svg)}
+        overlay={
+          <img alt={imageAlt} className="mx-auto h-auto max-h-[80vh] max-w-[85vw]" draggable={false} src={imageSrc} />
+        }
+      >
+        <div className="overflow-hidden p-3">
+          <img alt={imageAlt} className="mx-auto h-auto max-h-[33dvh] max-w-full" draggable={false} src={imageSrc} />
+        </div>
+      </Zoomable>
+      <CopyButton
+        appearance="icon"
+        buttonSize="icon-sm"
+        className="absolute left-2 top-2 opacity-0 shadow-sm backdrop-blur transition-opacity group-hover/mermaid:opacity-100 focus-visible:opacity-100"
+        label={t.assistant.tool.copyCode}
+        stopPropagation
+        text={code}
+      />
+    </div>
   )
 }

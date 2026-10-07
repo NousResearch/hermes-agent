@@ -1,5 +1,8 @@
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { I18nProvider } from '@/i18n'
+import { zhHant } from '@/i18n/zh-hant'
 
 const { initialize, renderMermaid } = vi.hoisted(() => ({
   initialize: vi.fn(),
@@ -45,5 +48,25 @@ describe('MermaidRenderer', () => {
       'Request flow — A sends data to B'
     ])
     expect(decodeURIComponent(images[0]?.src.split(',')[1] ?? '')).toContain('marker-end="url(#arrow)"')
+  })
+
+  it('copies the original Mermaid source from the rendered diagram', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const code = 'graph TD\n  A --> B'
+
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText }
+    })
+
+    render(
+      <I18nProvider configClient={null} initialLocale="zh-hant">
+        <MermaidRenderer code={code} />
+      </I18nProvider>
+    )
+
+    const copyButton = await screen.findByRole('button', { name: zhHant.assistant.tool.copyCode })
+    fireEvent.click(copyButton)
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(code))
   })
 })

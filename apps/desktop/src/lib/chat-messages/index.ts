@@ -1,5 +1,6 @@
 export { sameAttachmentTurn } from './attachment-turn'
 export { toChatMessages } from './hydration'
+export { parseTurnStats } from './parse-turn-stats'
 export {
   appendAssistantTextPart,
   appendReasoningPart,

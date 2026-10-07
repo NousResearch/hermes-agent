@@ -86,3 +86,42 @@ export function LiveDuration({ since }: { since: number | null | undefined }) {
 
   return <StableText>{formatDuration(now - since)}</StableText>
 }
+
+/** Seconds left on the prompt cache, or null when the route reports no window at all.
+ *  Zero is a real answer (the window lapsed) and is falsy, so callers can gate on it. */
+export function cacheTtlRemainingSeconds(
+  ttlS: number | undefined,
+  refreshedAt: number | undefined,
+  nowMs: number = Date.now()
+): number | null {
+  if (!ttlS || !refreshedAt) {
+    return null
+  }
+
+  return Math.max(0, Math.floor(refreshedAt + ttlS - nowMs / 1000))
+}
+
+/** `m:ss` left on the prompt cache; empty when the route reports no window. */
+export function cacheTtlRemainingLabel(
+  ttlS: number | undefined,
+  refreshedAt: number | undefined,
+  nowMs: number = Date.now()
+): string {
+  const remaining = cacheTtlRemainingSeconds(ttlS, refreshedAt, nowMs)
+
+  if (remaining === null) {
+    return ''
+  }
+
+  return `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, '0')}`
+}
+
+// Renders `0:00` rather than nothing once the window lapses: the statusbar slot keeps its
+// chrome either way, so an empty label leaves a hoverable gap next to a stale tooltip.
+export function CacheTtlCountdown({ ttlS, refreshedAt }: { ttlS: number; refreshedAt: number }) {
+  const [now, setNow] = useState(() => Date.now())
+
+  useViewedInterval(() => setNow(Date.now()), 1000, true)
+
+  return <StableText>{`cache ${cacheTtlRemainingLabel(ttlS, refreshedAt, now)}`}</StableText>
+}

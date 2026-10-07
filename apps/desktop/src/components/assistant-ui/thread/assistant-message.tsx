@@ -8,6 +8,7 @@ import {
   useMessageRuntime,
   useThreadRuntime
 } from '@assistant-ui/react'
+import { compactNumber } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { useInRouterContext, useNavigate } from 'react-router'
@@ -38,6 +39,7 @@ import { formatElapsed } from '@/components/chat/activity-timer'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useI18n } from '@/i18n'
 import {
   errorRecoveryPlan,
@@ -53,6 +55,7 @@ import { errorCardText } from '@/lib/error-surface-copy'
 import { triggerHaptic } from '@/lib/haptics'
 import {
   AudioLines,
+  BarChart3,
   GitForkIcon,
   KeyRound,
   Loader2Icon,
@@ -78,6 +81,7 @@ import { $connection, $currentModel, setModelPickerOpen } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { $voicePlayback } from '@/store/voice-playback'
+import type { TurnStats } from '@/types/hermes'
 
 // Stable empty identity for the settled-parts selector — a fresh [] per render
 // would re-derive the changed-files card on every message re-render.
@@ -248,6 +252,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   // Whole-turn wall-clock seconds (set once at completion — referentially
   // stable across the 30 Hz delta stream, so this adds no per-token renders).
   const turnDurationS = useAuiState(s => s.message.metadata?.custom?.durationS as number | undefined)
+  const turnStats = useAuiState(s => s.message.metadata?.custom?.turnStats as TurnStats | undefined)
 
   // Response-scope text accessors (#118864). The DEFAULT copy/read-aloud reads
   // only THIS message's text: joining the whole response group mixed sealed
@@ -352,6 +357,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
                 getMessageText={getMessageText}
                 messageId={messageId}
                 onBranchInNewChat={onBranchInNewChat}
+                turnStats={turnStats}
               />
             )}
           {/* Last thing in the turn — under the action bar, the way Cursor ends a
@@ -998,13 +1004,19 @@ const ErrorRecoveryActions: FC = () => {
   )
 }
 
-const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
+const AssistantActionBar: FC<
+  MessageActionProps & {
+    durationS?: number
+    turnStats?: TurnStats
+  }
+> = ({
   durationS,
   fullResponseAvailable,
   getFullResponseText,
   messageId,
   getMessageText,
-  onBranchInNewChat
+  onBranchInNewChat,
+  turnStats
 }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
@@ -1019,6 +1031,8 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
     },
     [react]
   )
+
+  const hasStats = Boolean(turnStats) || durationS !== undefined
 
   return (
     <div className="relative flex w-full shrink-0 items-center justify-end gap-1.5">
@@ -1040,7 +1054,9 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
           // invisible by default (opacity-0 + pointer-events-none, reveals on
           // hover), so keeping it mounted reserves stable layout height with
           // no visual change during streaming.
-          'relative flex flex-row items-center justify-end gap-1.5 py-1.5 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100'
+          // `has-[…]`: an open stats popover moves focus into its portal, so
+          // the bar would fade out from under the card it anchors.
+          'relative flex flex-row items-center justify-end gap-1.5 py-1.5 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100 has-[[data-state=open]]:pointer-events-auto has-[[data-state=open]]:opacity-100'
         }
         data-slot="aui_msg-actions"
       >
@@ -1055,6 +1071,18 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
           >
             <GitForkIcon className="size-3.5" />
           </TooltipIconButton>
+        )}
+        {hasStats && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <TooltipIconButton onClick={() => triggerHaptic('selection')} tooltip={copy.turnStats}>
+                <BarChart3 className="size-3.5" />
+              </TooltipIconButton>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-60 p-3" side="top">
+              <TurnStatsCard durationS={durationS} turnStats={turnStats} />
+            </PopoverContent>
+          </Popover>
         )}
         <CopyButton
           appearance="icon"
@@ -1188,7 +1216,11 @@ const ReadAloudButton: FC<{
   )
 }
 
-const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ durationS, ...props }) => {
+const AssistantFooter: FC<MessageActionProps & { durationS?: number; turnStats?: TurnStats }> = ({
+  durationS,
+  turnStats,
+  ...props
+}) => {
   return (
     <div className="flex min-h-6 flex-col items-end gap-1 pr-(--message-text-indent) pl-(--message-text-indent)">
       <BranchPickerPrimitive.Root
@@ -1205,7 +1237,70 @@ const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ dura
           <Codicon name="chevron-right" size="0.875rem" />
         </BranchPickerPrimitive.Next>
       </BranchPickerPrimitive.Root>
-      <AssistantActionBar durationS={durationS} {...props} />
+      <AssistantActionBar durationS={durationS} turnStats={turnStats} {...props} />
+    </div>
+  )
+}
+
+/** One label/value row; `hint` is the muted qualifier in front of the value (`92% hit`). */
+const TurnStatsRow: FC<{ hint?: string; indent?: boolean; label: string; value: string }> = ({
+  hint,
+  indent,
+  label,
+  value
+}) => (
+  <>
+    <span className={cn('text-muted-foreground', indent && 'pl-3')}>{label}</span>
+    <span className="text-right">
+      {hint && <span className="mr-1.5 text-muted-foreground">{hint}</span>}
+      {value}
+    </span>
+  </>
+)
+
+/** Per-turn stats card. Grouped by what the figures measure: prompt side (fresh input and
+ *  cache, with a hit meter), completion side (output, reasoning as a part of it), then run. */
+const TurnStatsCard: FC<{ durationS?: number; turnStats?: TurnStats }> = ({ durationS, turnStats }) => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
+  const stats = turnStats ?? {}
+
+  const elapsed = stats.durationS ?? durationS
+  const cacheRead = stats.cacheRead ?? 0
+  const cached = cacheRead + (stats.cacheWrite ?? 0)
+  const prompt = (stats.input ?? 0) + cached
+  const hitPct = cached > 0 && prompt > 0 ? Math.round((cacheRead / prompt) * 100) : undefined
+  // A single call is the common case and says nothing; only multi-call turns get the row.
+  const calls = stats.calls !== undefined && stats.calls > 1 ? stats.calls : undefined
+
+  const hasTokens = stats.input !== undefined || cached > 0 || stats.output !== undefined
+  const hasRun = elapsed !== undefined || calls !== undefined
+
+  return (
+    <div
+      className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-xs leading-5 tabular-nums select-none"
+      data-slot="aui_turn-stats"
+    >
+      {stats.input !== undefined && <TurnStatsRow label={copy.turnStatsInput} value={compactNumber(stats.input)} />}
+      {cached > 0 && (
+        <TurnStatsRow
+          hint={hitPct !== undefined ? copy.turnStatsHit(`${hitPct}%`) : undefined}
+          label={copy.turnStatsCached}
+          value={compactNumber(cached)}
+        />
+      )}
+      {hitPct !== undefined && (
+        <div aria-hidden className="col-span-2 mb-1 h-1 overflow-hidden rounded-full bg-muted">
+          <div className="h-full rounded-full bg-muted-foreground/60" style={{ width: `${hitPct}%` }} />
+        </div>
+      )}
+      {stats.output !== undefined && <TurnStatsRow label={copy.turnStatsOutput} value={compactNumber(stats.output)} />}
+      {stats.reasoning !== undefined && (
+        <TurnStatsRow indent label={copy.turnStatsReasoning} value={compactNumber(stats.reasoning)} />
+      )}
+      {hasTokens && hasRun && <div className="col-span-2 my-1 border-t border-(--ui-stroke-secondary)" role="none" />}
+      {elapsed !== undefined && <TurnStatsRow label={copy.turnStatsTime} value={formatElapsed(elapsed)} />}
+      {calls !== undefined && <TurnStatsRow label={copy.turnStatsCalls} value={calls.toLocaleString()} />}
     </div>
   )
 }

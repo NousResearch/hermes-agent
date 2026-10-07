@@ -7,6 +7,7 @@ import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { isTodoToolName } from '@/lib/todos'
 import type { MessageReaction, SessionMessage } from '@/types/hermes'
 
+import { parseTurnStats } from './parse-turn-stats'
 import {
   assistantTextPart,
   chatMessageText,
@@ -569,6 +570,13 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
           ...parts.map(part => part.timestamp)
         )
         absorbRows(activeAssistant, 1)
+        // The gateway stamps a turn's stats on its last row carrying text, which on a
+        // tool-calling turn is exactly the row being folded away here. Carry them onto the
+        // bubble that survives, or the strip disappears on reload.
+        const mergedTurnStats = parseTurnStats(parseDisplayMetadata(message.display_metadata)?.turn_stats)
+        if (mergedTurnStats) {
+          activeAssistant.turnStats = mergedTurnStats
+        }
 
         return
       }
@@ -592,6 +600,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     const reactions = messageReactions(message.display_metadata)
+    const turnStats = parseTurnStats(parseDisplayMetadata(message.display_metadata)?.turn_stats)
     // Gateway resume names the durable row id `row_id`; the REST transcript
     // prefetch ships the same messages.id as a numeric `id`. Either one lets
     // reactions address this exact row later.
@@ -609,6 +618,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
       ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),
+      ...(turnStats ? { turnStats } : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})
     })
 

@@ -1258,7 +1258,7 @@ class TestSessionFinalizeHook:
         assert "session:sess-b:turn:1" in mod._TRACE_STATE
         assert r1.ended is True
         assert r2.ended is False
-        assert flushes  # flushed at least once
+        assert not flushes  # session rotation must not wait for network export
 
     def test_finalize_without_session_closes_all(self, monkeypatch):
         mod = self._fresh_plugin()
@@ -1327,7 +1327,7 @@ class TestSessionFinalizeHook:
         for reason in ("session_boundary", "new_session", "session_expired", ""):
             mod.on_session_finalize(session_id="sess-a", reason=reason)
         assert "shutdown" not in events
-        assert "flush" in events
+        assert "flush" not in events
 
 
 # ---------------------------------------------------------------------------

@@ -666,6 +666,11 @@ def _flush(client: Any) -> None:
 
 
 def _finish_trace(task_key: str, *, output: Any = None) -> None:
+    """End spans locally; the SDK's background exporter owns delivery.
+
+    A synchronous flush here waits for network I/O, so an unavailable
+    observability backend can hold up a completed agent turn.
+    """
     client = _get_langfuse()
     with _STATE_LOCK:
         state = _TRACE_STATE.pop(task_key, None) if client is not None else None
@@ -689,8 +694,6 @@ def _finish_trace(task_key: str, *, output: Any = None) -> None:
         _debug(f"finish trace failed: {exc}")
         with contextlib.suppress(Exception):  # last-chance end so the root still exports
             state.root_span.end()
-    finally:
-        _flush(client)
 
 
 def _request_key(api_call_count: Any) -> str:
@@ -965,9 +968,9 @@ def on_api_request_error(*, task_id: str = "", session_id: str = "", api_call_co
 
 
 def on_session_finalize(*, session_id: str = "", reason: str = "", **_: Any) -> None:
-    """Session-end boundary: close still-open traces and flush. A turn ending on a
+    """Session-end boundary: close still-open traces. A turn ending on a
     tool-only or empty final response never reaches ``_finish_trace``; its root
-    would dangle until eviction and queued events could be lost on exit."""
+    would dangle until eviction. Only process shutdown waits for export."""
     # Never lazily initialize a client here — if init never happened there are no traces.
     client = _settled_client()
     if client is None or client is _INIT_FAILED or not hasattr(client, "flush"):
@@ -980,13 +983,18 @@ def on_session_finalize(*, session_id: str = "", reason: str = "", **_: Any) -> 
         keys = [k for k in _TRACE_STATE if not session_id or k == session_id or any(f in k for f in fragments)]
     for key in keys:
         _finish_trace(key)
+
+    # /new, expiry and other session boundaries must not wait for the backend.
+    # The SDK keeps exporting ended spans in its bounded background queue.
+    if reason != "shutdown":
+        return
     with _failsafe("finalize flush"):
         client.flush()
 
     # Shut down only at true process exit (not /new, /reset, session expiry: the
     # cached client must keep exporting). Doing it while modules are intact keeps
     # the SDK's atexit handler off torn-down opentelemetry globals (TypeError on quit).
-    if reason == "shutdown" and callable(getattr(client, "shutdown", None)):
+    if callable(getattr(client, "shutdown", None)):
         with _failsafe("langfuse shutdown"):
             client.shutdown()
 

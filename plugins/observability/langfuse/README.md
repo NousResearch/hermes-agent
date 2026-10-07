@@ -84,8 +84,18 @@ For personal sessions or shared Langfuse projects, prefer `metadata`.
 - Failed model requests (`api_request_error` hook) close their generation
   with `level=ERROR`, status code, retry counters, and a capture-mode-scrubbed
   error message. Non-retryable failures also finish the turn trace.
-- Session end/finalize closes any still-open traces for that session and
-  flushes queued events, so interrupted or tool-only turns don't dangle.
+- Session end/finalize closes any still-open traces for that session, so
+  interrupted or tool-only turns don't dangle.
+
+Ended observations export through the SDK's bounded background queue. Normal
+turn completion, API errors and session rotation (`/new`, `/reset`, expiry)
+do not wait for `flush()` or network delivery. A slow or unavailable Langfuse
+backend therefore does not hold up these hooks waiting for export.
+
+Explicit flushing is reserved for process shutdown/exit, which can still wait
+for the SDK. Traces may appear after the SDK's next batch; a full queue, failed
+export or abrupt process termination can lose telemetry. There is no durable
+offline spool or guaranteed backfill.
 
 ## Disable
 

@@ -1,7 +1,7 @@
 name: meshtastic-gateway
 repo: https://github.com/TakeshiTGAL/hermes-plugin-meshtastic-gateway
-sha: fa2258057912639d05dd48219d1fc574bc1fd110
-description: "Meshtastic API. Allowlisted DM only if pkiEncrypted is true. Empty answers nobody. Channel packets never answered. A channel key can impersonate. Final reply only; approval text for that node is sent. TCP only; serial, BLE refused. Decimal and uppercase ids become !aabbccdd. Fake radio, adapter, v0.21.4 and main. No physical radio. Disclosure — one URL; no allow-all; no 2nd prompt; gap 10-3600s; nodes.json after handoff; session has text; delete plugin data; <=200B, <=8 chunks, <=30/hour per adapter (recounts; last 100 ids); no daily cap; connect 20s then timeout cleared; config wait <=30s; partial send is final; host isolation does not load it; lost stops adapter; reconnects uncapped; not a sandbox; no cron; tests/ shipped, not loaded; meshtastic is not declared; install in Hermes venv."
+sha: b49a8b108c895789d50f86941b3b2d83a162d3e9
+description: "Meshtastic API. Allowlisted DM only if pkiEncrypted. Empty answers nobody. Channel packets never answered. A channel key can impersonate. Final reply only; approval prompt to that node. TCP only; serial, BLE refused. Fake radio, adapter, v0.21.4, main. No real radio. Disclosure — one URL; radio approval once only; /yolo, /approvals, always and session refused; no allow-all; no 2nd prompt; gap 10-3600s; nodes.json after handoff; session has text; delete plugin data; <=200B, <=8 chunks, <=30/hour per adapter (recounts; last 100 ids); no daily cap; connect 20s then timeout cleared; config wait <=30s; partial send is final; host isolation won't load it; lost stops adapter; reconnects uncapped; not a sandbox; no cron; tests/ shipped, not loaded; meshtastic undeclared; install in Hermes venv."
 maintainer: TakeshiTGAL
 tier: community
 category: platform

@@ -7,7 +7,6 @@ with no renderer/vision backend the existing NEEDS-OCR warning is returned.
 Hermetic: the rasterizer and the vision call are injected/monkeypatched, so
 no pypdfium2 install and no network are touched.
 """
-import io
 import os
 import sys
 import unittest

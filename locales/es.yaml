@@ -847,6 +847,9 @@ gateway:
     db_fts_corrupt: "⚠️ La base de datos de sesiones informó un error de corrupción limitado al índice de búsqueda (FTS5); las tablas de mensajes no están dañadas. Es posible que los mensajes no se guarden hasta repararlo: ejecuta `hermes {profile_arg}doctor --fix` y luego reinicia el gateway. No ejecutes herramientas de recuperación ni restaures una copia de seguridad a menos que `hermes {profile_arg}doctor` confirme daños."
     db_then_restart: "{action} Luego ejecuta `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Base de datos de sesiones no disponible — es posible que los mensajes no se guarden y /resume estará vacío. Causa: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ El almacén de cron {store} no admite escritura ({error}) desde {since}. Las tareas programadas se omiten hasta que vuelva a aceptar escrituras. Solución: {fix}."
+    recovered: "✅ El almacén de cron {store} vuelve a admitir escritura; {skipped} ejecución(es) omitida(s), cada tarea se recupera una vez."
   whoami:
     scope_dm: "MD"
     scope_group: "grupo/canal"
@@ -3674,7 +3677,7 @@ tips:
   t197: "El guardado de trayectorias (--save-trajectories) captura trazas completas de uso de herramientas para entrenar modelos."
   t198: "Tres tipos de plugin: generales (herramientas/hooks), proveedores de memoria y motores de contexto."
   t199: "hermes plugins install owner/repo instala plugins directamente desde GitHub."
-  t200: "Proveedores de memoria externos: OpenViking viene incluido; Honcho, Hindsight, Mem0 y otros vía hermes plugins install."
+  t200: "Proveedores de memoria externos: Honcho, Hindsight, Mem0, OpenViking y otros vía hermes plugins install."
   t201: "Los hooks de plugin incluyen pre/post_tool_call, pre/post_llm_call y transform_terminal_output para canonicalizar la salida."
   t202: "El caché de prompts (Anthropic) reduce costos reutilizando prefijos del prompt del sistema ya cacheados."
   t203: "El agente genera los títulos de sesión automáticamente en un hilo en segundo plano: sin impacto en la latencia."

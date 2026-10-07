@@ -847,6 +847,9 @@ gateway:
     db_fts_corrupt: "⚠️ O banco de dados de sessões relatou um erro de corrupção restrito ao índice de busca (FTS5); as tabelas de mensagens não estão danificadas. As mensagens podem não ser persistidas até o reparo: execute `hermes {profile_arg}doctor --fix` e depois reinicie o gateway. Não execute ferramentas de recuperação nem restaure um backup a menos que `hermes {profile_arg}doctor` confirme o dano."
     db_then_restart: "{action} Em seguida, `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Banco de dados de sessões indisponível — as mensagens podem não ser salvas e /resume ficará vazio. Causa: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ O armazenamento do cron {store} não aceita gravação ({error}) desde {since}. Os trabalhos agendados estão sendo ignorados até que volte a aceitar gravações. Correção: {fix}."
+    recovered: "✅ O armazenamento do cron {store} voltou a aceitar gravação; {skipped} execução(ões) ignorada(s), cada trabalho será recuperado uma vez."
   whoami:
     scope_dm: "DM"
     scope_group: "grupo/canal"
@@ -3674,7 +3677,7 @@ tips:
   t197: "O salvamento de trajetórias (--save-trajectories) captura rastros completos de uso de ferramentas para treinar modelos."
   t198: "Três tipos de plugin: geral (ferramentas/hooks), fornecedores de memória e motores de contexto."
   t199: "hermes plugins install owner/repo instala plugins diretamente do GitHub."
-  t200: "Fornecedores de memória externos: OpenViking incluído; Honcho, Hindsight, Mem0 e outros via hermes plugins install."
+  t200: "Fornecedores de memória externos: Honcho, Hindsight, Mem0, OpenViking e outros via hermes plugins install."
   t201: "Os hooks de plugin incluem pre/post_tool_call, pre/post_llm_call e transform_terminal_output para canonicalizar a saída."
   t202: "O cache de prompt (Anthropic) reduz custos ao reutilizar prefixos de prompt do sistema em cache."
   t203: "O agente gera títulos de sessão automaticamente em um tópico em segundo plano — sem impacto na latência."

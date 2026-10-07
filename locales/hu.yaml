@@ -859,6 +859,9 @@ gateway:
     db_fts_corrupt: "⚠️ A munkamenet-adatbázis a keresőindexre (FTS5) korlátozódó sérülési hibát jelzett; az üzenettáblák nem sérültek. A javításig az üzenetek mentése sikertelen lehet: futtasd a `hermes {profile_arg}doctor --fix` parancsot, majd indítsd újra az átjárót. Ne futtass helyreállító eszközöket, és ne állíts vissza biztonsági mentést, hacsak a `hermes {profile_arg}doctor` nem igazol sérülést."
     db_then_restart: "{action} Ezután: `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ A munkamenet-adatbázis nem érhető el — az üzenetek mentése sikertelen lehet, és a /resume üres lesz. Ok: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ A(z) {store} cron tároló {since} óta nem írható ({error}). Az ütemezett feladatok kimaradnak, amíg újra el nem fogadja az írást. Javítás: {fix}."
+    recovered: "✅ A(z) {store} cron tároló újra írható; {skipped} kihagyott futás, minden feladat egyszer pótlódik."
   whoami:
     scope_dm: "DM"
     scope_group: "csoport/csatorna"
@@ -3691,7 +3694,7 @@ tips:
   t197: "A trajektóriamentés (--save-trajectories) rögzíti a teljes eszközhasználati nyomokat a modelltanításhoz."
   t198: "Három plugintípus van: általános (eszközök/hookok), memóriaszolgáltatók és kontextusmotorok."
   t199: "A hermes plugins install owner/repo közvetlenül a GitHubról telepít plugint."
-  t200: "Külső memóriaszolgáltatók: az OpenViking beépített; a Honcho, a Hindsight, a Mem0 és mások a hermes plugins install parancson keresztül."
+  t200: "Külső memóriaszolgáltatók: a Honcho, a Hindsight, a Mem0, az OpenViking és mások a hermes plugins install parancson keresztül."
   t201: "A plugin hookok közé tartozik a pre/post_tool_call, a pre/post_llm_call és a transform_terminal_output a kimenet egységesítésére."
   t202: "A prompt-gyorsítótárazás (Anthropic) a rendszerprompt gyorsítótárazott előtagjainak újrahasznosításával csökkenti a költségeket."
   t203: "Az ügynök háttérszálon generálja a munkamenetek címét – nincs hatása a késleltetésre."

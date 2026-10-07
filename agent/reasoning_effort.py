@@ -187,6 +187,26 @@ def requested_effort(reasoning_config: Optional[dict]) -> Optional[str]:
     return str(reasoning_config.get("effort") or "").strip().lower() or None
 
 
+def tokenhub_effort(requested: Optional[str]) -> str:
+    """TokenHub's top-level ``reasoning_effort``: ``high`` when no level was chosen, else the
+    request clamped to low/medium/high. Shared by the tencent-tokenhub profile and the host-based
+    branch base_url-only agents take; callers handle thinking-off themselves."""
+    return "high" if requested is None else clamp_effort(requested, TOKENHUB_EFFORTS)
+
+
+def generic_nested_reasoning(reasoning_config: Optional[dict]) -> dict:
+    """The OpenAI-compatible ``extra_body`` fallback for a route whose profile declares no
+    reasoning shape: ``{}`` with no config, ``{"reasoning": {"enabled": False}}`` when disabled,
+    else ``{"reasoning": {"enabled": True, "effort": <effort or medium>}}``. Used by auxiliary
+    calls, and by a profile hook that wants that fallback (``handles_reasoning`` skips it for any
+    profile overriding ``build_api_kwargs_extras``)."""
+    if not reasoning_config or not isinstance(reasoning_config, dict):
+        return {}
+    if reasoning_config.get("enabled") is False:
+        return {"reasoning": {"enabled": False}}
+    return {"reasoning": {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}}
+
+
 def clamp_reasoning_config(reasoning_config: Optional[dict], supported: Sequence[str] = OPENAI_COMPAT_WIRE_EFFORTS) -> Optional[dict]:
     """Return ``reasoning_config`` with its ``effort`` clamped onto ``supported`` (non-dicts and
     configs without an effort pass through untouched).

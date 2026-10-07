@@ -21,8 +21,6 @@ _MACHINE_USE_ROWS = [
     {"id": "creative", "label": "Creative"},
     {"id": "mix", "label": "A bit of everything"},
 ]
-# The fork question when the /initiate-setup turn recorded none (host facts unknown).
-_FORK_QUESTION = "Know what you'd like it to make?"
 _NO_ANSWER = ("The card got no answer: it timed out, the turn was interrupted, or no Hermes desktop "
               "window answered.")
 # From the fork on, each skipped card steps down this ladder, so setup ends in a handoff or a stop.
@@ -62,8 +60,16 @@ _THEN: dict[str, Callable[[dict, object], str]] = {
     "layout": lambda cards, picked: "Send card tour: " + _card("tour", "Want a look around first?"),
     "tour": lambda cards, picked: (
         ("After the gui_tour call, send" if picked in ("basics", "tour") else "No tour. Send")
-        + " card fork in this same turn: " + _card("fork", (cards.get("fork") or {}).get("question") or _FORK_QUESTION)),
+        + " card fork in this same turn: " + _card("fork", (cards.get("fork") or {}).get("question") or _fork_question())),
 }
+
+
+def _fork_question() -> str:
+    # The fork question when the /initiate-setup turn recorded none (host facts unknown). Imported late: tool
+    # discovery imports this module, and the facts module loads the host probes.
+    from agent.initiate_setup_facts import FORK_QUESTION
+
+    return FORK_QUESTION
 
 
 def _normalize_options(options) -> tuple:
@@ -138,7 +144,7 @@ def _follow_up(kind: str, card: str, result: dict, rows: Optional[list], cards: 
         task_card = kind == "fork" or (kind == "question" and state.get("fork_seen"))
         return {**extra, "next": (_TYPED_TASK if task_card else _TYPED).format(card=card)}, state
     step = state.get("step", -1)
-    skipped = outcome == "cancelled" or (kind == "fork" and picked == "skip")
+    skipped = outcome == "cancelled"
     if skipped and kind == "machine_use":
         extra["next"] = _MACHINE_USE_SKIPPED
     elif skipped and (kind == "fork" or (kind == "question" and state.get("fork_seen"))):
@@ -180,7 +186,7 @@ def _remember(kind: str, question: str, result: dict, state: dict) -> dict:
 
 def _fork_rows(cards: dict) -> list:
     # Built when the card is shown: the apps and plugins cards before it have been answered by then.
-    from agent.initiate_setup_prompt import fork_card
+    from agent.initiate_setup_facts import fork_card
 
     return fork_card(cards)["options"]
 
@@ -256,8 +262,9 @@ def setup_choose_tool(kind: str = "", question: str = "", options=None, multi_se
     try:
         cards = read_cards(session_id) if session_id else {}
         if kind == "fork" and "fork" not in cards:
-            from agent.initiate_setup_prompt import collect_setup_cards
-            cards = {**cards, **collect_setup_cards()}
+            # Compression gave the conversation a new id, so its /initiate-setup turn recorded nothing here.
+            from agent.initiate_setup_facts import facts, setup_cards
+            cards = {**cards, **setup_cards(facts())}
         closed = _CLOSED[kind]() if kind in _CLOSED and normalized is None else None
         if closed:
             return json.dumps({"outcome": "no_answer", "picked": None, "notice": closed,

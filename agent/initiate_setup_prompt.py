@@ -9,17 +9,6 @@ HEADER = "[/initiate-setup]"
 INTRO = "Hi, I'm Hermes.\n\nLet's set things up for you. Then we'll get something cool done."
 
 
-def collect_setup_cards() -> dict:
-    """Card facts for a setup conversation whose ``/initiate-setup`` turn recorded none (compression gave
-    it a new id)."""
-    return initiate_setup_facts.setup_cards(initiate_setup_facts.facts())
-
-
-def fork_card(cards: dict) -> dict:
-    """The fork card as it is shown, its first rows built from the picks this setup conversation recorded."""
-    return initiate_setup_facts.fork_card(cards)
-
-
 def build_initiate_setup_prompt(surface: str, tools, primary_profile: str, session_id: str | None = None) -> str:
     """The skill, then one JSON block of facts the model reads as they are. ``session_id``: the desktop session
     the turn runs in; its ``setup_choose`` cards read the same facts."""

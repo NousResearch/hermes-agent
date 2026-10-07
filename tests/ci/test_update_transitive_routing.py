@@ -17,6 +17,7 @@ from tests.ci.test_update_ci_routing import _REPO, _ci_run, _consumers_reached, 
 # backup is the update transaction's pre-build step, not a build dependency.
 @pytest.mark.parametrize("path", [
     "hermes_cli/local_runtime/processes.py",
+    "hermes_cli/local_runtime/__init__.py",
     "agent/deadline.py",
     "agent/memory_provider.py",
     "pm/plugins_state.py",

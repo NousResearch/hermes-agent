@@ -292,6 +292,7 @@ _DESKTOP_BUILD_ENTRY_POINTS = (
 _UPDATE_DEPENDENCIES = (
     "hermes_cli/_subprocess_compat.py",  # update git env, process-tree kill, PM git exposure
     "hermes_cli/local_runtime/processes.py",  # bounded probes' spawn_server/job custody
+    "hermes_cli/local_runtime/__init__.py",  # runs before processes.py on every import of it
     "agent/deadline.py",  # bounded probes' process-tree timeout cleanup
     # migrate_all_homes' second-hop provider/profile decisions, run on every update. Its
     # plugin-install branch (plugins_cmd, plugins_cmd_install) runs only for a home whose

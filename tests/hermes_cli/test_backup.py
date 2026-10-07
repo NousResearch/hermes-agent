@@ -1658,10 +1658,9 @@ class TestQuickSnapshot:
 
 
 
-    def test_oversized_db_suppresses_pruning(self, hermes_home, capsys):
-        """#68805: an oversized state.db skipped for size must suppress
-        pruning so the older complete snapshot (containing the only
-        recoverable database) is preserved.
+    def test_oversized_db_keeps_latest_recovery_copy(self, hermes_home, capsys):
+        """#68805: an oversized state.db skipped for size must not prune the
+        older complete snapshot holding the only recoverable database.
 
         Reproduces the reviewer's scenario: keep=1 + a state.db exceeding
         the size cap → the new snapshot omits state.db, failed_dbs stays
@@ -1703,6 +1702,72 @@ class TestQuickSnapshot:
             f"(oversized) snapshot — the recovery copy was lost!"
         )
         assert second_id in snap_ids
+
+    @pytest.mark.parametrize("has_recovery_copy", [True, False])
+    @pytest.mark.parametrize("incomplete_kind", ["oversized", "failed"])
+    def test_repeated_incomplete_snapshots_stay_bounded(
+        self, hermes_home, monkeypatch, incomplete_kind, has_recovery_copy
+    ):
+        """Snapshots that keep omitting state.db are still pruned to ``keep``
+        (each holds a .env/auth.json copy); only the newest snapshot that
+        actually contains state.db survives past the limit."""
+        from hermes_cli import backup
+
+        root = hermes_home / "state-snapshots"
+        complete_id = None
+        if has_recovery_copy:
+            complete_id = backup.create_quick_snapshot(
+                label="complete", hermes_home=hermes_home, keep=1
+            )
+            assert (root / complete_id / "state.db").exists()
+
+        kwargs = {}
+        if incomplete_kind == "oversized":
+            kwargs["max_file_size"] = 1024
+        else:
+            monkeypatch.setattr(backup, "_safe_copy_db", lambda _src, _dst: False)
+
+        partial_ids = []
+        for index in range(4):
+            _advance_backup_clock()
+            partial_ids.append(backup.create_quick_snapshot(
+                label=f"partial-{index}", hermes_home=hermes_home, keep=2, **kwargs
+            ))
+        assert all(partial_ids)
+        assert not any((root / snap_id / "state.db").exists() for snap_id in partial_ids)
+
+        expected = set(partial_ids[-2:]) | ({complete_id} if complete_id else set())
+        snapshots = backup.list_quick_snapshots(limit=100, hermes_home=hermes_home)
+        assert {s["id"] for s in snapshots} == expected
+
+    def test_alternating_db_failures_keep_latest_copy_of_each_db(
+        self, hermes_home, monkeypatch
+    ):
+        """No snapshot is complete when two DBs fail in turn: each DB keeps
+        its own newest copy, and superseded partial snapshots are pruned."""
+        from hermes_cli import backup
+
+        conn = sqlite3.connect(hermes_home / "cron" / "executions.db")
+        conn.execute("CREATE TABLE executions (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        real_safe_copy = backup._safe_copy_db
+        ids = []
+        for failing in ("executions.db", "state.db", "executions.db", "state.db"):
+            monkeypatch.setattr(
+                backup, "_safe_copy_db",
+                lambda src, dst, failing=failing: src.name != failing and real_safe_copy(src, dst),
+            )
+            _advance_backup_clock()
+            ids.append(backup.create_quick_snapshot(hermes_home=hermes_home, keep=1))
+        assert all(ids)
+
+        root = hermes_home / "state-snapshots"
+        snapshots = backup.list_quick_snapshots(limit=100, hermes_home=hermes_home)
+        assert {s["id"] for s in snapshots} == {ids[2], ids[3]}
+        assert (root / ids[2] / "state.db").exists()
+        assert (root / ids[3] / "cron" / "executions.db").exists()
 
 
 class TestQuickSnapshotProjectsKanban:

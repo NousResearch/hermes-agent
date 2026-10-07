@@ -146,12 +146,14 @@ def _retirement_commit_proof(request: dict, terminal: dict, git_cmd, cwd,
                              strict: bool) -> bool:
     """Prove the installed source is not newer than the qualified retirement build.
 
-    Returns whether the ancestry was proven. Raises only for the rollback
-    shapes every transport can see: an installed version/commit newer than the
-    qualified build, or a descendant commit. Everything Git cannot decide is
-    fail-open for older-or-equal installs and reported as unverified instead of
-    stranding the retirement (main's posture, with the newer-source hole the
-    reviews demonstrated closed).
+    Returns whether the ancestry was proven. Raises for the rollback shapes
+    every transport can see: an installed version/commit newer than the
+    qualified build, a descendant commit, and — on the strict no-Git apply
+    path — an install that carries no evidence of being older than the
+    pinned build (no provably older version and no stamp naming it). Passive
+    checkers and Git-verified installs instead fail open to the unverified
+    answer rather than stranding the retirement (main's posture, with the
+    newer-source hole the reviews demonstrated closed).
 
     ``terminal["head"]`` is a raw record head (see :func:`_head`). The strict
     Git path never needs publication metadata from it; the no-Git stamp check
@@ -161,6 +163,7 @@ def _retirement_commit_proof(request: dict, terminal: dict, git_cmd, cwd,
     import tomllib
     if cwd is None:
         return True
+    proven_older_version = False
     version_file = Path(cwd) / "pyproject.toml"
     if version_file.exists():
         with version_file.open("rb") as file:
@@ -170,6 +173,7 @@ def _retirement_commit_proof(request: dict, terminal: dict, git_cmd, cwd,
             raise ValueError("Source retirement cannot verify the installed source version")
         if tuple(map(int, installed_version.split("."))) > tuple(map(int, request["sourceVersion"].split("."))):
             raise ValueError("Source retirement would downgrade a newer source version; select the destination channel explicitly")
+        proven_older_version = tuple(map(int, installed_version.split("."))) < tuple(map(int, request["sourceVersion"].split(".")))
     if git_cmd is not None:
         return _git_retirement_proof(request, terminal, git_cmd, cwd, strict)
     # No Git: the ZIP updater and the embedded desktop checker. The version
@@ -186,6 +190,22 @@ def _retirement_commit_proof(request: dict, terminal: dict, git_cmd, cwd,
     stamp = _stamp_commit(cwd)
     if stamp is not None and stamp == request["commit"]:
         return True
+    if strict and version_file.exists() and not proven_older_version:
+        # The strict apply path cannot treat unverified ordering as
+        # authorization when the tree carries build evidence: publication
+        # heads carry buildId/sequence/sha256 and no commit, so an equal
+        # version with a different (or absent) stamp is exactly the
+        # same-version different-build rollback the retirement pins — refuse
+        # it with the explicit-destination remedy instead of applying the
+        # pinned archive. A tree with no build evidence at all keeps main's
+        # permissive ZIP/desktop flow: the version floor and the packaged
+        # stamps are the only ordering authorities this transport has, and
+        # refusing evidence-less installs would strand the supported
+        # updater mode (the tagless-ZIP contract).
+        raise ValueError(
+            "Source retirement cannot verify that this install is not newer than the "
+            f"qualified {terminal['name']} build; select the destination channel explicitly "
+            f"(hermes update --channel {terminal['name']})")
     return False
 
 

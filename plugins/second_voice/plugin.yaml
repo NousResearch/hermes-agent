@@ -1,0 +1,5 @@
+name: second_voice
+version: 0.1.0
+description: "Opt-in 'Second Voice' step-reflection guardrail. An auxiliary-LLM referee in a strict, isolated context window reviews each gated tool call before it executes — checking logic, completeness (no lazy shortcuts), and compliance (not proceeding on a hallucinated assumption the user asked it to verify). On rejection it blocks the tool and feeds a critique back so the executor corrects course; after N consecutive rejections it escalates."
+author: "David Metcalfe"
+kind: standalone

@@ -249,8 +249,8 @@ def _format_search_files_result(tool_name: str, data: Args, args: Args) -> Optio
     # Surface file/image attachments as compact text markers. The thread-context fetch is text-only, so
     # without this the agent has no idea prior messages carried images/files at all (#69185, #32315): "@bot
     # what do you think of the chart above?" reads as a question about nothing. Markers keep context bounded
-    # — the agent can ask for a re-share (or the caller may separately deliver the thread root's image, see
-    # _collect_thread_root_images).
+    # — the agent can ask for a re-share (or the caller may separately deliver the thread's images, see
+    # _collect_thread_images).
     if isinstance(files, list):
         shown = min(len(files), 20)
         lines = ["File search results", f"Found {_plural(data.get('total_count', len(files)), 'file')}; showing {shown}.", ""]

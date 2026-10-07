@@ -6,6 +6,7 @@ import socket
 import sqlite3
 import stat
 import struct
+import sys
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -1970,6 +1971,46 @@ class TestPreUpdateBackup:
             names = zf.namelist()
             assert "skills/outside-link.txt" not in names
             assert all(zf.read(name) != b"outside secret\n" for name in names)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+    def test_pre_update_backup_owner_only_perms_under_umask(self, hermes_home):
+        """Archives carry credentials — zip 0o600 and backups/ 0o700 despite umask."""
+        from hermes_cli.backup import create_pre_update_backup
+
+        old_umask = os.umask(0o022)
+        try:
+            out = create_pre_update_backup(hermes_home=hermes_home)
+            assert out is not None and out.exists()
+            backup_dir = hermes_home / "backups"
+            assert stat.S_IMODE(backup_dir.stat().st_mode) == 0o700
+            assert stat.S_IMODE(out.stat().st_mode) == 0o600
+
+            # Existing world-readable backups/ must be tightened on the next run.
+            out.unlink()
+            backup_dir.chmod(0o755)
+            assert stat.S_IMODE(backup_dir.stat().st_mode) == 0o755
+            _advance_backup_clock()
+            out2 = create_pre_update_backup(hermes_home=hermes_home)
+            assert out2 is not None and out2.exists()
+            assert stat.S_IMODE(backup_dir.stat().st_mode) == 0o700
+            assert stat.S_IMODE(out2.stat().st_mode) == 0o600
+        finally:
+            os.umask(old_umask)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+    def test_atomic_output_path_publishes_with_mode_0600(self, tmp_path):
+        """Published archive must be owner-only even when umask would allow group/other."""
+        from hermes_cli.backup import _atomic_output_path
+
+        old_umask = os.umask(0o022)
+        try:
+            destination = tmp_path / "secret-backup.zip"
+            with _atomic_output_path(destination) as partial_path:
+                partial_path.write_bytes(b"credential-bearing-archive")
+            assert destination.exists()
+            assert stat.S_IMODE(destination.stat().st_mode) == 0o600
+        finally:
+            os.umask(old_umask)
 
 
 class TestRunPreUpdateBackup:

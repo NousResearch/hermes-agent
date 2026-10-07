@@ -1,18 +1,18 @@
-# Template only — substitute the verified immutable commit.
 name: jot
 repo: https://github.com/Totoro-qaq/hermes-jot
-sha: 'c4ce59153a60e28e16eed685b841bfcdfcbf273c'
-description: Human-editable notes, checklists and documents for Hermes Desktop, with optional agent collaboration.
+sha: '9e6f31616410a7282d18b6918b4b75a8672e0820'
+description: Notes, checklists and documents beside Hermes that your agent can read and update safely, with revision checks and one-click undo.
 maintainer: Totoro-qaq
 tier: community
 category: desktop
 requires_hermes: '>=0.21.5'
-version: '0.1.0'
+version: '0.2.0'
 title: 'Jot'
 readme: true
+image: https://raw.githubusercontent.com/Totoro-qaq/hermes-jot/9e6f31616410a7282d18b6918b4b75a8672e0820/assets/readme/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Totoro-qaq/hermes-jot/c4ce59153a60e28e16eed685b841bfcdfcbf273c/assets/readme/workspace.en.jpg
-  - https://raw.githubusercontent.com/Totoro-qaq/hermes-jot/c4ce59153a60e28e16eed685b841bfcdfcbf273c/assets/readme/sidebar.en.jpg
+  - https://raw.githubusercontent.com/Totoro-qaq/hermes-jot/9e6f31616410a7282d18b6918b4b75a8672e0820/assets/readme/workspace.en.jpg
+  - https://raw.githubusercontent.com/Totoro-qaq/hermes-jot/9e6f31616410a7282d18b6918b4b75a8672e0820/assets/readme/sidebar.en.jpg
 known_issues:
   - Requires a current Hermes Desktop build with SandboxedFrame and gateway file-download SDK support.
   - Word attachments use download or the default application; the tested host does not render DOCX.

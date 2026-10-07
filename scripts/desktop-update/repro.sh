@@ -36,6 +36,19 @@ SANDBOX_ROOT="$SANDBOX/hermes-agent"
 
 say() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 
+# The orchestrator re-execs detached (setsid+execve, posix.sh finish()), so the
+# parent returns before the result file lands. Bounded poll instead of an
+# immediate read (#108150): ~40 x 0.25s, then the caller's own assert fails
+# with the file's absence rather than a phantom parse error.
+poll_result() { # result-json path
+  local i
+  for i in $(seq 1 40); do
+    [ -f "$1" ] && return 0
+    sleep 0.25
+  done
+  return 0
+}
+
 ensure_sandbox_install() {
   if [ -x "$SANDBOX_ROOT/venv/bin/hermes" ]; then
     say "reusing sandbox install at $SANDBOX_ROOT"
@@ -112,7 +125,15 @@ case "$MODE" in
     expect "no chrome-sandbox (namespace)"      relaunch "$(decide --relaunch-target "$UNPACKED/hermes")"
 
     touch "$UNPACKED/chrome-sandbox"
-    expect "sandbox not root/setuid"            manual   "$(decide --relaunch-target "$UNPACKED/hermes")"
+    # #108150: the userns gate row must be HOST-DERIVED, like linux_gate itself
+    # (posix.sh runs `unshare --user --map-root-user` BEFORE the setuid check,
+    # so on userns-capable hosts a non-root chrome-sandbox legitimately returns
+    # relaunch — the hardcoded `manual` expectation failed on most modern Linux).
+    if unshare --user --map-root-user true 2>/dev/null; then
+      expect "sandbox not root/setuid"          relaunch "$(decide --relaunch-target "$UNPACKED/hermes")"
+    else
+      expect "sandbox not root/setuid"          manual   "$(decide --relaunch-target "$UNPACKED/hermes")"
+    fi
     expect "opt-out: --sandbox-fallback"        relaunch "$(decide --relaunch-target "$UNPACKED/hermes" --sandbox-fallback)"
     expect "opt-out: --no-sandbox launch arg"   relaunch "$(decide --relaunch-target "$UNPACKED/hermes" -- --no-sandbox)"
     expect "opt-out: ELECTRON_DISABLE_SANDBOX"  relaunch "$(ELECTRON_DISABLE_SANDBOX=1 decide --relaunch-target "$UNPACKED/hermes")"
@@ -120,8 +141,9 @@ case "$MODE" in
     # Result JSON must survive hostile strings (git allows `"` in branch
     # names; messages carry arbitrary text) -- parse it back with python.
     QHOME="$G/qhome"; mkdir -p "$QHOME/hermes-agent"
-    bash "$SCRIPT_DIR/posix.sh" --no-ui --no-marker-cleanup --desktop-pid 0 \
+    bash "$SCRIPT_DIR/posix.sh" --no-ui --no-notify --no-marker-cleanup --desktop-pid 0 \
       --install-root "$QHOME/hermes-agent" --branch 'evil"branch\n$(x)' >/dev/null 2>&1 || true
+    poll_result "$QHOME/.hermes-update-result.json"
     if python3 -c "import json,sys; d=json.load(open('$QHOME/.hermes-update-result.json')); sys.exit(0 if d['branch']=='evil\"branch\\\\n\$(x)' and d['ok']==False else 1)"; then
       printf 'ok   result JSON escapes hostile branch/message\n'
     else
@@ -139,6 +161,10 @@ case "$MODE" in
     L="$(mktemp -d -t hermes-launch-test.XXXXXX)"
     fails=0
     expect_msg() { # name python-expr
+      # The orchestrator re-execs detached (setsid+execve, posix.sh finish()):
+      # the parent returns before the result file is written. Bounded poll
+      # (~10s) instead of an immediate read (#108150).
+      poll_result "$L/.hermes-update-result.json"
       if python3 -c "import json,sys; d=json.load(open('$L/.hermes-update-result.json')); sys.exit(0 if ($2) else 1)"; then
         printf 'ok   %s\n' "$1"
       else
@@ -157,13 +183,13 @@ case "$MODE" in
     mkdir -p "$UNPACKED"
     printf '#!/bin/sh\nexit 1\n' > "$UNPACKED/hermes"; chmod +x "$UNPACKED/hermes"
     if [ "$(uname)" != "Darwin" ]; then
-      bash "$SCRIPT_DIR/posix.sh" --no-ui --desktop-pid 0 --install-root "$L/hermes-agent" \
+      bash "$SCRIPT_DIR/posix.sh" --no-ui --no-notify --desktop-pid 0 --install-root "$L/hermes-agent" \
         --relaunch-target "$UNPACKED/hermes" >/dev/null 2>&1 || true
       expect_msg "instant-exit relaunch downgrades to manual" "d['ok']==True and d['manual']==True and 'Reopen Hermes' in d['message']"
     else
       # mac: a SUPPLIED target that is missing is a REJECTED launch and
       # must downgrade to manual — never a clean "Update complete."
-      bash "$SCRIPT_DIR/posix.sh" --no-ui --desktop-pid 0 --install-root "$L/hermes-agent" \
+      bash "$SCRIPT_DIR/posix.sh" --no-ui --no-notify --desktop-pid 0 --install-root "$L/hermes-agent" \
         --relaunch-target "$L/NoSuch.app" >/dev/null 2>&1 || true
       expect_msg "missing bundle downgrades to manual" "d['ok']==True and d['manual']==True and 'Reopen Hermes' in d['message']"
     fi
@@ -171,7 +197,7 @@ case "$MODE" in
     # 2. gated skew: success result carries the skew message (the manual
     #    event's payload), never a bare "Update complete."
     stub_install
-    bash "$SCRIPT_DIR/posix.sh" --no-ui --desktop-pid 0 --install-root "$L/hermes-agent" \
+    bash "$SCRIPT_DIR/posix.sh" --no-ui --no-notify --desktop-pid 0 --install-root "$L/hermes-agent" \
       --relaunch-target /opt/Hermes/hermes >/dev/null 2>&1 || true
     if [ "$(uname)" != "Darwin" ]; then
       expect_msg "skew outcome surfaces in result message" "d['ok']==True and d['manual']==True and 'was not changed' in d['message']"

@@ -475,4 +475,26 @@ import {
   console.log('  ✓ plain audio without voice-note shape stays audio');
 }
 
+{
+  // PTV (video note) message
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'ptv-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+      messageTimestamp: 124,
+      message: {
+        ptvMessage: { mimetype: 'video/mp4', seconds: 15 },
+      },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15551234567@s.whatsapp.net',
+    senderNumber: '15551234567',
+    downloadMedia: async () => Buffer.from(''),
+  });
+  assert.equal(event.hasMedia, true);
+  assert.equal(event.mediaType, 'ptv');
+  assert.equal(event.nativeType, 'ptvMessage');
+  assert.deepEqual(event.nativeMetadata.video, { gifPlayback: false, ptv: true });
+  console.log('  ✓ ptvMessage (video note) classifies as ptv');
+}
+
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

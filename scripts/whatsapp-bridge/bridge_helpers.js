@@ -312,7 +312,7 @@ export function isVoiceNoteAudioMessage(item) {
   if (!item || typeof item !== 'object') return false;
   if (item.ptt) return true;
   const mime = String(item.mimetype || 'audio/ogg').toLowerCase();
-  return mime.startsWith('audio/ogg') && Boolean(item.waveform);
+  return (mime.startsWith('audio/ogg') || mime.startsWith('audio/opus')) && Boolean(item.waveform);
 }
 
 export async function extractBridgeEvent({
@@ -382,14 +382,14 @@ export async function extractBridgeEvent({
     nativeType = 'imageMessage';
     mime = item.mimetype || 'image/jpeg';
     await saveMedia({ mediaMessage: item, dir: cacheDirs.image, prefix: 'img', fallbackExt: '.jpg', type: 'image' });
-  } else if (messageContent.videoMessage) {
-    const item = messageContent.videoMessage;
+  } else if (messageContent.videoMessage || messageContent.ptvMessage) {
+    const item = messageContent.videoMessage || messageContent.ptvMessage;
     body = item.caption || '';
     hasMedia = true;
-    mediaType = item.gifPlayback ? 'gif' : 'video';
-    nativeType = 'videoMessage';
+    mediaType = messageContent.ptvMessage ? 'ptv' : (item.gifPlayback ? 'gif' : 'video');
+    nativeType = messageContent.ptvMessage ? 'ptvMessage' : 'videoMessage';
     mime = item.mimetype || 'video/mp4';
-    nativeMetadata.video = { gifPlayback: !!item.gifPlayback };
+    nativeMetadata.video = { gifPlayback: !!item.gifPlayback, ptv: !!messageContent.ptvMessage };
     await saveMedia({ mediaMessage: item, dir: cacheDirs.document, prefix: 'vid', fallbackExt: '.mp4', type: mediaType });
   } else if (messageContent.audioMessage || messageContent.pttMessage) {
     const item = messageContent.pttMessage || messageContent.audioMessage;

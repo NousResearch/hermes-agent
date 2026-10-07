@@ -245,6 +245,24 @@ def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
+def _category_descriptions() -> Dict[str, str]:
+    """DESCRIPTION.md prose per category — the same text the ``<available_skills>``
+    header lines render (and drop under ``skills.header_compact``), so the on-demand
+    listing stays complete. Same precedence as the prompt builder: non-local roots
+    first (setdefault), local dir wins on conflict."""
+    from agent.prompt_builder import _read_category_descriptions
+    from agent.skill_utils import TIER_LOCAL
+    found: Dict[str, str] = {}
+    roots, skills_dir = _skill_search_dirs()
+    for tier, root in roots:
+        if tier == TIER_LOCAL or root == skills_dir:
+            continue
+        for cat, desc in _read_category_descriptions(root, "Could not read external skill description %s: %s").items():
+            found.setdefault(cat, desc)
+    found.update(_read_category_descriptions(skills_dir, "Could not read skill description %s: %s"))
+    return found
+
+
 def skills_list(category: str = None, task_id: str = None) -> str:
     """Tier 1 listing: name + description (+ category) only; ``task_id`` is handler parity."""
     try:
@@ -267,8 +285,16 @@ def skills_list(category: str = None, task_id: str = None) -> str:
             all_skills = [s for s in all_skills if s.get("category") == category]
         all_skills = _sort_skills(all_skills)
         categories = sorted({s.get("category") for s in all_skills if s.get("category")})
+        try:
+            # Descriptions ride along only for the categories actually listed.
+            cat_descs = _category_descriptions()
+            category_descriptions = {c: cat_descs[c] for c in categories if c in cat_descs}
+        except Exception:
+            logger.debug("Category description scan failed", exc_info=True)
+            category_descriptions = {}
         return _json({
             "success": True, "skills": all_skills, "categories": categories,
+            "category_descriptions": category_descriptions,
             "count": len(all_skills),
             "hint": "Use skill_view(name) to see full content, tags, and linked files"})
     except Exception as e:

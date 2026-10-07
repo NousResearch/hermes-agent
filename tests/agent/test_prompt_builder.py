@@ -299,6 +299,39 @@ class TestBuildSkillsSystemPrompt:
 
 
 
+    def test_header_compact_drops_category_descriptions_only(self, monkeypatch, tmp_path):
+        """``skills.header_compact: true`` strips the prose from category header lines;
+        skill names, per-skill descriptions, grouping, and the cache split are kept."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cat_dir = tmp_path / "skills" / "github"
+        cat_dir.mkdir(parents=True)
+        (cat_dir / "DESCRIPTION.md").write_text(
+            "---\ndescription: GitHub workflows for repos and PRs\n---\n"
+        )
+        skill_dir = cat_dir / "github-pr-workflow"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: github-pr-workflow\ndescription: PR lifecycle bash gh\n---\n"
+        )
+
+        full = build_skills_system_prompt()
+        assert "  github: GitHub workflows for repos and PRs" in full
+
+        (tmp_path / "config.yaml").write_text("skills:\n  header_compact: true\n")
+        compacted = build_skills_system_prompt()
+        assert "  github:" in compacted
+        assert "GitHub workflows for repos and PRs" not in compacted
+        # Zero capability loss: names, per-skill descriptions, grouping, guidance all survive.
+        assert "github-pr-workflow" in compacted
+        assert "PR lifecycle bash gh" in compacted
+        assert "<available_skills>" in compacted
+
+        # The compacted entry must not be served to an un-set config (cache key split).
+        (tmp_path / "config.yaml").write_text("skills:\n  header_compact: false\n")
+        back = build_skills_system_prompt()
+        assert "GitHub workflows for repos and PRs" in back
+
+
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
         """Skills in the user's disabled list should not appear in the system prompt."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

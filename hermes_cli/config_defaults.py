@@ -1461,6 +1461,11 @@ DEFAULT_CONFIG = {
         # Resolved once when the agent's prompt is first built; missing/disabled names warn and
         # skip; HERMES_IGNORE_RULES suppresses the list like the other auto-injected context.
         "auto_load": [],
+        # Render <available_skills> category headers as bare "category:" lines, dropping the
+        # prose description that DESCRIPTION.md carries. Skill names, per-skill descriptions,
+        # grouping and load guidance are untouched; the category descriptions stay available
+        # on demand via skills_list(). Saves ~500 tokens/request on a ~100-skill host (#132965).
+        "header_compact": False,
         # Substitute ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in SKILL.md content.
         "template_vars": True,
         # Pre-execute !`cmd` snippets in SKILL.md, inlining stdout (dates, git state...). Off:

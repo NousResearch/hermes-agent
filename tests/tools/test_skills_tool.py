@@ -304,6 +304,30 @@ class TestSkillsList:
         assert filtered["count"] == 1
         assert filtered["skills"][0]["name"] == "skill-a"
 
+    def test_category_descriptions_included(self, tmp_path):
+        """skills_list carries the DESCRIPTION.md prose per category — the on-demand
+        counterpart of the <available_skills> header lines (skills.header_compact)."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "skill-a", category="devops")
+            (tmp_path / "devops").joinpath("DESCRIPTION.md").write_text(
+                "---\ndescription: DevOps and infra skills\n---\n")
+            _make_skill(tmp_path, "skill-b", category="mlops")
+            result = json.loads(skills_list())
+
+        assert result["category_descriptions"] == {"devops": "DevOps and infra skills"}
+
+    def test_category_descriptions_respect_filter(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "skill-a", category="devops")
+            (tmp_path / "devops" / "DESCRIPTION.md").write_text(
+                "---\ndescription: DevOps and infra skills\n---\n")
+            _make_skill(tmp_path, "skill-b", category="mlops")
+            (tmp_path / "mlops").joinpath("DESCRIPTION.md").write_text(
+                "---\ndescription: ML operations skills\n---\n")
+            filtered = json.loads(skills_list(category="devops"))
+
+        assert filtered["category_descriptions"] == {"devops": "DevOps and infra skills"}
+
     def test_category_filter_finds_symlinked_category(self, tmp_path):
         external_root = tmp_path / "repo"
         skills_root = tmp_path / "skills"

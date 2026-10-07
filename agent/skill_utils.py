@@ -242,6 +242,19 @@ def _skills_cfg_get(key: str) -> Any:
     return skills_cfg.get(key) if skills_cfg is not None else None
 
 
+def skills_header_compact() -> bool:
+    """Configured ``skills.header_compact``: render ``<available_skills>`` category
+    headers as bare ``category:`` lines (no prose description). Per-skill rows and
+    the category grouping are untouched; the descriptions stay available via
+    ``skills_list()``. Default off. Accepts ``true`` or a truthy string."""
+    raw = _skills_cfg_get("header_compact")
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("true", "1", "yes", "on")
+    return raw is not None and bool(raw)
+
+
 def _expand_path(entry: str) -> Path:
     """Expand ``~`` and ``${VAR}`` in a config path entry."""
     return Path(os.path.expanduser(os.path.expandvars(entry)))

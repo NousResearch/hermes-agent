@@ -25,7 +25,7 @@ from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS,
     TIER_LOCAL, extract_skill_conditions, extract_skill_description, get_disabled_skill_names, get_skill_search_roots,
     iter_skill_index_files, parse_frontmatter, skill_matches_apps, skill_matches_environment,
-    skill_matches_platform, skill_matches_platform_list,
+    skill_matches_platform, skill_matches_platform_list, skills_header_compact,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 from utils import atomic_json_write, file_signature
@@ -1402,9 +1402,12 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
     compact_categories: "frozenset[str] | None", available_tools: "set[str] | None", unloadable: "list[str]" = (),
+    header_compact: bool = False,
 ) -> str:
     """Render the ## Skills block; "" when there is nothing to list. *unloadable* names (different skills
-    sharing a name AND relative path within one tier — one root or several) get a rename note instead of a row skill_view would refuse."""
+    sharing a name AND relative path within one tier — one root or several) get a rename note instead of a row
+    skill_view would refuse. *header_compact* (``skills.header_compact``) renders category headers as bare
+    ``category:`` lines — names, descriptions, grouping and load guidance are untouched."""
     if not skills_by_category:
         return ""
     # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
@@ -1427,7 +1430,7 @@ def _render_skills_index(
         if category in demoted:
             index_lines.append(f"  {category} [names only]: {', '.join(sorted({n for n, _ in entries}))}")
             continue
-        cat_desc = category_descriptions.get(category, "")
+        cat_desc = "" if header_compact else category_descriptions.get(category, "")
         index_lines.append(f"  {category}: {cat_desc}" if cat_desc else f"  {category}:")
         seen = set()
         for name, desc in sorted(entries, key=lambda x: x[0]):  # stable: first entry per name wins
@@ -1475,12 +1478,14 @@ def _build_skills_system_prompt_inner(
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
+    header_compact = skills_header_compact()
     disabled = get_disabled_skill_names(_platform_hint or None)
     cache_key = (
         str(skills_dir), tuple((t, str(d)) for t, d in extra_roots),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        header_compact,
         _oneshot_prompt_variant(),
     )
     snapshot = _load_skills_snapshot(skills_dir)
@@ -1543,7 +1548,7 @@ def _build_skills_system_prompt_inner(
             logger.debug("Could not write skills prompt snapshot: %s", e)
 
     unloadable = sorted({e["name"] for e in visible_entries if not e["load_name"]})
-    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools, unloadable)
+    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools, unloadable, header_compact)
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

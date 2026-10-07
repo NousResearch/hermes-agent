@@ -820,6 +820,17 @@ skills:
 
 Resolved once per session when the system prompt is first built (so the prompt stays cache-stable; edits apply to the next session). Missing or disabled skills warn and are skipped; `--ignore-rules` / `HERMES_IGNORE_RULES=1` suppresses the list. Profile-scoped. See [CLI — persistent auto-load](./cli.md#persistent-auto-load-via-config).
 
+### Compact skill category headers
+
+Every turn, the `<available_skills>` block in the system prompt lists skill categories with a prose description read from each category's `DESCRIPTION.md`. The same descriptions are available on demand through `skills_list()`, so the ambient copy is duplicated context — roughly 500 tokens per request on a ~100-skill host. To drop it:
+
+```yaml
+skills:
+  header_compact: true   # default: false (category headers keep their descriptions)
+```
+
+With `header_compact: true`, category headers render as bare `category:` lines. Skill names, per-skill descriptions, the category grouping, and the load-a-skill guidance are all unchanged — nothing becomes harder to find, only the duplicate description text goes away. See [#132965](https://github.com/NousResearch/hermes-agent/issues/132965) for the measurement behind this option.
+
 ### Guard on agent-created skill writes
 
 When the agent uses `skill_manage` to create, edit, patch, or delete a skill, Hermes can optionally scan the new/updated content for dangerous keyword patterns (credential harvesting, obvious prompt injection, exfil instructions). The scanner is **off by default** — real agent workflows that legitimately touch `~/.ssh/` or mention `$OPENAI_API_KEY` were tripping the heuristic too often. Turn it back on if you want the scanner to prompt you before the agent's skill writes land:

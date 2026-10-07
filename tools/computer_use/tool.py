@@ -83,9 +83,6 @@ _backends: Dict[str, ComputerUseBackend] = {}
 _backend_call_locks: Dict[str, threading.RLock] = {}
 _backend_permission_modes: Dict[str, str] = {}
 _backend_displays: Dict[str, str] = {}  # DISPLAY the cached backend was spawned against (Bot Desktop rebind)
-# (home key, provider, model) → bool. The decision reads the active profile's config (auxiliary.vision
-# override, declared supports_vision), so a multiplexed process must not serve profile A's verdict to B.
-_AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
 # Approval grants live in the shared store (``tools.approval``: session set + permanent allowlist), keyed by the
 # gate's session key, so a computer_use "always" is one allowlist entry like any terminal pattern. Only the
 # once-per-session escalation warning is tracked here.
@@ -158,13 +155,8 @@ def _cua_permission_mode(session_id: str) -> str:
     return configured
 
 def _new_backend(permission_mode: str) -> ComputerUseBackend:
-    backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
-    if backend_name in {"cua", "cua-driver", ""}:
-        from tools.computer_use.cua_backend import CuaDriverBackend
-        return CuaDriverBackend(permission_mode=permission_mode)
-    if backend_name != "noop":
-        raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
-    return _NoopBackend()  # pragma: no cover
+    from plugins.computer_use import get_active_provider
+    return get_active_provider().create_backend(permission_mode=permission_mode)
 
 def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str) -> ComputerUseBackend:
     """Record a backend in the session caches (the empty session also mirrors it onto the ``_backend`` hook).
@@ -296,7 +288,6 @@ def _shutdown_backend_atexit() -> None:
 
 def reset_backend_for_tests() -> None:  # pragma: no cover — tear down the cached backend and per-session state
     _shutdown_backend_atexit()
-    _AUX_VISION_ROUTE_CACHE.clear()
     _reset_screenshot_dedup()
 
 def _noop_stub(name: str, *params: str, result: Any = None):
@@ -308,7 +299,7 @@ def _noop_stub(name: str, *params: str, result: Any = None):
     return method
 
 class _NoopBackend(ComputerUseBackend):  # pragma: no cover
-    """Test/CI stub (HERMES_COMPUTER_USE_BACKEND=noop). Records ``(name, kwargs)`` calls; returns trivial results."""
+    """Test stub (tests patch ``_new_backend`` to return it). Records ``(name, kwargs)`` calls; returns trivial results."""
 
     def __init__(self) -> None: self.calls: List[Tuple[str, Dict[str, Any]]] = []
     start = stop = lambda self: None
@@ -353,9 +344,11 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     try:
         backend = call.enter_context(_backend_for_call(session_id))
     except Exception as e:
-        return json.dumps({"error": f"computer_use backend unavailable: {e}",
-                           "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
-                                   "If a Python dependency is missing, the error above shows the exact install command."})
+        from plugins.computer_use import DEFAULT_BACKEND, configured_backend_name
+        hint = ({"hint": "If the cua-driver binary is missing, run `hermes computer-use install`. If a Python "
+                         "dependency is missing, the error above shows the exact install command."}
+                if configured_backend_name() == DEFAULT_BACKEND else {})
+        return json.dumps({"error": f"computer_use backend unavailable: {e}", **hint})
     try:
         with call:
             # Re-check under the dispatch lock: approval, backend start-up and lock waits above can take
@@ -532,6 +525,33 @@ def _classify_action_result(res: ActionResult) -> Dict[str, Any]:
         return {"decision": "verify_fresh_state", "hint": ("Input was delivered but not confirmed. Re-capture and check the "
                 "result BEFORE any retry — do not repeat the input on an escalation recommendation alone.")}
     if res.effect == "suspected_noop" or not res.ok or res.code is not None:
+        meta = res.meta if isinstance(res.meta, dict) else {}
+        delivered, requested = meta.get("delivered_chars"), meta.get("requested_chars")
+        if (
+            res.action in ("type", "type_text")
+            and res.code == "type_text_incomplete"
+            and isinstance(delivered, int)
+            and isinstance(requested, int)
+            and requested > 0
+            and delivered <= 0
+        ):
+            # Zero delivery on the driver's own partial-delivery verdict: the field swallowed every
+            # synthetic keystroke (trusted-event checks on web inputs do this). Neither rung of the
+            # delivery ladder can fix a target that drops events at the source — the AX set_value
+            # path writes the value directly and bypasses event filtering. The code gate matters:
+            # `type_text_synthesis_budget_exceeded` also reports delivered 0, but that is the bounded
+            # synthesis budget declining to emit at all, and the driver's own `chunk` recommendation
+            # stays the right next step there.
+            return {
+                "decision": "escalate",
+                "recommended": "set_value",
+                "hint": (
+                    "0 characters landed: this input drops synthetic keystrokes, so no delivery rung will fix it. "
+                    "Climb to the set_value action on the field's element index instead — it is an action, not a "
+                    "delivery mode, and sets the value through the accessibility API, bypassing event filtering. "
+                    "Re-capture first if the index is stale."
+                ),
+            }
         return {"decision": "escalate", **({"recommended": res.escalation.get("recommended")}
                                            if isinstance(res.escalation, dict) else {}), "hint": (
             "The input likely did not land. Climb one rung following `recommended`: 'px' → re-issue by coordinate; "
@@ -868,20 +888,19 @@ def _shrink_capture_for_vision(raw: bytes, ext: str, max_dim: int = _MAX_VISION_
 
 def _should_route_through_aux_vision() -> bool:
     """True when ``_capture_response`` should hand the PNG to aux vision. Any failure returns False (fail open) so a
-    broken config never silently drops the screenshot for vision-capable main models."""
+    broken config never silently drops the screenshot for vision-capable main models. Decided per capture (the
+    config read is the signature-cached ``load_config_readonly``), so ``/model``, a profile switch or an
+    ``image_input_mode`` edit applies to the next screenshot instead of a stale verdict."""
     stage = "import"
     try:
         from agent.auxiliary_client import _read_main_model, _read_main_provider
-        from hermes_cli.config import load_config
-        from hermes_constants import hermes_home_key
-        from tools.computer_use.vision_routing import should_route_capture_to_aux_vision
-        stage = "config read"
-        provider, model = _read_main_provider() or "", _read_main_model() or ""
-        if (cached := _AUX_VISION_ROUTE_CACHE.get(key := (hermes_home_key(), str(provider), str(model)))) is not None:
-            return cached
+        from hermes_cli.config import load_config_readonly
+        from tools.vision_tools import _native_tool_result_images
         stage = "decision"
-        _AUX_VISION_ROUTE_CACHE[key] = decision = bool(should_route_capture_to_aux_vision(provider, model, load_config()))
-        return decision
+        provider, model = _read_main_provider() or "", _read_main_model() or ""
+        # The shared native-tool-result gate (vision_analyze, browser screenshots, MCP images use it too), so a
+        # screenshot takes the same lane whichever tool produced it; anything it cannot vouch for goes to aux.
+        return not _native_tool_result_images(provider, model, load_config_readonly())
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("computer_use: aux-vision routing %s failed: %s", stage, exc)
         return False
@@ -947,17 +966,13 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str, *, visib
 
 # ── Availability check (used by the tool registry check_fn) ─────────────────
 def check_computer_use_requirements() -> bool:
-    """macOS/Windows/Linux + cua-driver binary (or env override). `hermes computer-use doctor` names blocked checks."""
-    if sys.platform not in ("darwin", "win32", "linux"):
-        return False
-    from tools.computer_use.cua_backend_driver import cua_driver_binary_available
-    if cua_driver_binary_available():
+    """The selected ``computer_use.backend``'s ``is_available()``. An unregistered name stays True so the call
+    surfaces the "not registered (available: ...)" error instead of the tool silently vanishing."""
+    from plugins.computer_use import get_active_provider
+    try:
+        return get_active_provider().is_available()
+    except LookupError:
         return True
-    # No host driver: the tool is still real when the desktop is placed inside a terminal backend whose image
-    # carries cua-driver (nousresearch/hermes-sandbox:desktop). Placement is config; the binary is probed lazily
-    # at first use, so this stays a cheap check_fn.
-    from tools.bot_desktop import placement
-    return placement.resolve().where == placement.TERMINAL
 
 def get_computer_use_schema() -> Dict[str, Any]:
     from tools.computer_use.schema import COMPUTER_USE_SCHEMA

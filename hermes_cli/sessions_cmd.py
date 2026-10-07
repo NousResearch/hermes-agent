@@ -340,13 +340,10 @@ def _cmd_export(db, args):
         from hermes_cli.session_export_md import redact_session_data
         return redact_session_data(data)
 
-    from hermes_cli.session_export import SAVE_TRANSCRIPT_FORMATS
+    from hermes_cli.session_export import SAVE_TRANSCRIPT_FORMATS, export_projection
     # --only is a transcript view too (md/jsonl of what the user saw); md/qmd without --only go to _export_markdown.
     shown = args.format in SAVE_TRANSCRIPT_FORMATS or bool(getattr(args, "only", None))
-
-    # The json/jsonl backup is the TRANSFER projection (every row with its active/compacted flags) so
-    # an import restores a compacted session's archived turns; a shown transcript is display history.
-    projection = {"include_compacted": True} if shown else {"include_inactive": True}
+    projection = export_projection(shown)
 
     def _too_large(session_ids=None) -> bool:
         """The transfer projection holds every stored row in memory: the console export's per-session

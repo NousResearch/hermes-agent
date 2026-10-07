@@ -72,6 +72,29 @@ def _task_parent_handle(session: _MetricsSession, task_id: str) -> Any:
     return session.relay_session.handle
 
 
+# Session sources a Hermes dispatcher stamps on the finite CLI child it spawns: a kanban worker
+# (``kanban_db_dispatch``) and an A2A forward (``--source a2a``). Nobody is at either keyboard.
+_DISPATCHED_SOURCES = frozenset({"a2a", "kanban"})
+
+
+def _with_launch_entrypoint(event: dict[str, Any]) -> dict[str, Any]:
+    """Declare the entrypoint of a finite CLI run (``hermes -z``, ``chat -q`` off a TTY, ``-Q``): the
+    ``HERMES_SINGLE_QUERY_SESSION`` marker those paths set (the same one ``cache_ttl: auto`` and the session
+    source read). ``background`` for a dispatcher-spawned child, else ``one_shot``; the REPL, other surfaces,
+    delegated children and an already-declared entrypoint are untouched."""
+    if (event.get("entrypoint") or event.get("parent_task_id") or event.get("parent_session_id")
+            or contract.execution_surface(event) != "cli"):
+        return event
+    from agent.oneshot_footprint import is_single_query_session
+
+    if not is_single_query_session():
+        return event
+    from gateway.session_context import get_session_env
+
+    source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip().lower()
+    return {**event, "entrypoint": "background" if source in _DISPATCHED_SOURCES else "one_shot"}
+
+
 def _elapsed_ms(started_ns: int) -> int:
     return max(0, (monotonic_ns() - started_ns) // 1_000_000)
 
@@ -324,7 +347,7 @@ class _Runtime:
                     return None
                 self._emit_client_active(session)
                 task_context = session.relay_session.context.copy()
-                start_fields = contract.task_start_fields(event)
+                start_fields = contract.task_start_fields(_with_launch_entrypoint(event))
                 handle = task_context.run(
                     self._with_scope_stack, self.relay.scope.push,
                     TASK_SCOPE, self.relay.ScopeType.Function,
@@ -1405,6 +1428,16 @@ def start_task_run(
         "start_task", retry_failed=True, session_id=session_id, task_id=task_id,
         platform=platform, parent_session_id=parent_session_id,
     )
+
+
+def shutdown_runtimes() -> None:
+    """Run each live runtime's exit flush now, for a process that leaves through ``os._exit`` (the
+    ``hermes -z`` exit) and so never reaches the atexit hook that closes sessions and writes
+    ``task_run.finished`` / ``session.count``."""
+    with _RUNTIME_LOCK:
+        runtimes = [runtime for runtime in _RUNTIMES.values() if isinstance(runtime, _Runtime)]
+    for runtime in runtimes:
+        runtime._safe(runtime.shutdown)
 
 
 def close_session_run(session_id: str) -> None:

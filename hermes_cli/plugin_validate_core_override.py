@@ -298,9 +298,9 @@ def core_override_findings(plugin_dir: Path) -> List[str]:
                        for stmt in func.body for n in _walk_scope(stmt)):
                     analysis.core_returners.add(func.name)
                 params = [a.arg for a in func.args.posonlyargs + func.args.args]
-                for index, param in enumerate(params):
-                    if index == 0 and is_method:
-                        continue
+                # A method is called as ``obj.bind(module, ...)``: its call-site args start after ``self``.
+                offset = 1 if is_method else 0
+                for index, param in enumerate(params[offset:]):
                     if any(analysis.rebinds(n, {param}) for stmt in func.body for n in _walk_scope(stmt)):
                         analysis.param_patchers.setdefault(func.name, set()).add(index)
         after = (len(analysis.core_returners), sum(len(v) for v in analysis.param_patchers.values()))

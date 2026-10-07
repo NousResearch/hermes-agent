@@ -203,7 +203,7 @@ def test_recovery_marks_unmarked_packs_and_retries_the_same_fetch(crash_stderr, 
 # `git gc --auto` (git's own gc.autoPackLimit decides when it is worth it). Real git against a
 # local blobless clone: these pin how the pieces interact, not their command lines.
 
-from hermes_cli.gitlock import consolidate_lazy_fetch_packs, disable_tree0_auto_maintenance  # noqa: E402
+from hermes_cli.gitlock import settle_partial_clone_maintenance, disable_tree0_auto_maintenance  # noqa: E402
 
 _GIT_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
@@ -245,24 +245,8 @@ def partial_clone(tmp_path: Path) -> Path:
     return clone
 
 
-def test_consolidate_folds_lazy_fetch_packs_that_the_maintenance_keys_leave_foldable(partial_clone: Path) -> None:
-    before = _packs(partial_clone)
-    assert len(before) > 2, "each on-demand fetch should have stranded its own packfile"
-    # gc.auto=0 here (an earlier cut of the maintenance keys) would turn the fold into a no-op.
-    disable_tree0_auto_maintenance(partial_clone)
-
-    folded = consolidate_lazy_fetch_packs(partial_clone)
-
-    remaining = _packs(partial_clone)
-    assert folded == len(before) - len(remaining) > 0
-    assert all(pack.with_suffix(".promisor").exists() for pack in remaining)
-    blob = _run_git("cat-file", "-p", _run_git("rev-parse", "HEAD:d1/f.txt", cwd=partial_clone), cwd=partial_clone,
-                    env={**_GIT_ENV, "GIT_NO_LAZY_FETCH": "1"})
-    assert blob == "v1", "the folded repository must still read its objects without the promisor"
-
-
-def test_fold_does_not_lazy_fetch_the_trees_of_commits_a_bloom_graph_has_not_seen(tmp_path: Path) -> None:
-    """The same gc that folds the packs, left to write a commit-graph, adds one pack per unseen commit."""
+def test_gits_own_gc_does_not_lazy_fetch_the_trees_of_commits_a_bloom_graph_has_not_seen(tmp_path: Path) -> None:
+    """A gc that folds the packs, left to write a commit-graph, adds one pack per unseen commit."""
     seed, up, clone = _blobless_clone(tmp_path, 12)
     full = tmp_path / "full"
     _run_git("clone", "-q", up.as_uri(), str(full), cwd=tmp_path)
@@ -280,7 +264,8 @@ def test_fold_does_not_lazy_fetch_the_trees_of_commits_a_bloom_graph_has_not_see
     _run_git("config", "gc.autoPackLimit", "3", cwd=clone)
     assert len(_packs(clone)) > 3
 
-    consolidate_lazy_fetch_packs(clone)
+    settle_partial_clone_maintenance(clone)
+    _run_git("-c", "gc.autoDetach=false", "gc", "--auto", cwd=clone)
 
     assert len(_packs(clone)) == 1
 
@@ -318,14 +303,15 @@ def test_an_operators_own_maintenance_auto_false_is_never_erased(repo: Path) -> 
     assert _run_git("config", "--local", "--get", "maintenance.auto", cwd=repo) == "false"
 
 
-def test_a_checkout_the_first_cut_configured_folds_on_update(partial_clone: Path) -> None:
+def test_a_checkout_the_first_cut_configured_folds_again(partial_clone: Path) -> None:
     """73c17151f61 persisted ``gc.auto=0`` (beside ``maintenance.auto=false`` and
     ``fetch.writeCommitGraph=false``); left in place, ``gc --auto`` is a no-op and no fold ever runs."""
     for key, value in (("gc.auto", "0"), ("fetch.writeCommitGraph", "false")):
         _run_git("config", key, value, cwd=partial_clone)
     assert len(_packs(partial_clone)) > 2
 
-    consolidate_lazy_fetch_packs(partial_clone)
+    settle_partial_clone_maintenance(partial_clone)
+    _run_git("-c", "gc.autoDetach=false", "gc", "--auto", cwd=partial_clone)
 
     assert len(_packs(partial_clone)) == 1
     left = subprocess.run(["git", "config", "--local", "--get-regexp", r"^(maintenance\.auto|gc\.auto)$"],
@@ -334,24 +320,7 @@ def test_a_checkout_the_first_cut_configured_folds_on_update(partial_clone: Path
 
 
 def test_non_partial_checkout_is_left_alone(repo: Path) -> None:
-    assert consolidate_lazy_fetch_packs(repo) == 0
+    settle_partial_clone_maintenance(repo)
     keys = subprocess.run(["git", "config", "--local", "--get-regexp", "maintenance|writecommitgraph"], cwd=repo,
                           capture_output=True, text=True).stdout
     assert keys == "", "a full clone keeps git's stock maintenance"
-
-
-def test_update_debris_cleanup_folds_and_reports_a_fold_that_runs_out_of_time(
-        partial_clone: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]) -> None:
-    """A killed fold restarts from scratch every update, so it must say so instead of returning 0."""
-    from hermes_cli import gitlock
-    from hermes_cli.update_cmd_check import clear_git_debris
-
-    before = len(_packs(partial_clone))
-    with monkeypatch.context() as patched:
-        patched.setattr(gitlock, "LAZY_FETCH_GC_TIMEOUT_SECONDS", 0)  # the real gc, killed by the real bound
-        clear_git_debris(partial_clone)
-    out = capfd.readouterr().out
-    assert f"Folding {before} lazy-fetch packs" in out and "gc.writeCommitGraph=false gc --auto" in out
-
-    clear_git_debris(partial_clone)
-    assert len(_packs(partial_clone)) < before

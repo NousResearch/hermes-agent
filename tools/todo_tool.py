@@ -36,12 +36,17 @@ class TodoStore:
         return self._normalize_order([self._validate(t) for t in self._dedupe_by_id(todos)])
 
     def write(self, todos: List[Dict[str, Any]], merge: bool = False) -> List[Dict[str, str]]:
-        """Replace the list (default) or merge by id; returns the full list after writing."""
+        """Replace the list (default) or merge by id; returns the full list after writing.
+        Raises ValueError (leaving the list untouched) if any item is invalid."""
         before = self.read()
-        if merge:
-            self._merge(todos)
-        else:
-            self._items = self._fresh_items(todos)
+        try:
+            if merge:
+                self._merge(todos)
+            else:
+                self._items = self._fresh_items(todos)
+        except ValueError:
+            self._items = before  # rejected write must not leave a partial list behind
+            raise
         del self._items[MAX_TODO_ITEMS:]  # keep the priority head; replays can't grow unbounded
         self._sanitize_parents(self._items)
         if self._items != before:
@@ -139,9 +144,14 @@ class TodoStore:
             return {"id": "?", "content": "(invalid item)", "status": "pending"}
         item_id = str(item.get("id", "")).strip() or "?"
         content = str(item.get("content", "")).strip()
+        if not content:
+            raise ValueError(
+                f"Todo item '{item_id}' has empty or missing content. "
+                "Each item must have a non-empty description."
+            )
         status = str(item.get("status", "pending")).strip().lower()
         result = {"id": item_id,
-                  "content": TodoStore._cap_content(content) if content else "(no description)",
+                  "content": TodoStore._cap_content(content),
                   "status": status if status in VALID_STATUSES else "pending"}
         parent = str(item.get("parent") or "").strip()
         if parent and parent != item_id:
@@ -198,7 +208,10 @@ def todo_tool(todos: Optional[List[Dict[str, Any]]] = None, merge: bool = False,
     else:
         if not isinstance(todos, list):
             return tool_error(f"todos must be a list, got {type(todos).__name__}")
-        items = store.write(todos, merge)
+        try:
+            items = store.write(todos, merge)
+        except ValueError as e:
+            return tool_error(str(e))
     summary = {"total": len(items)}
     for status in ("pending", "in_progress", "completed", "cancelled"):
         summary[status] = sum(1 for i in items if i["status"] == status)

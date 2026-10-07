@@ -644,4 +644,70 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     expect(client.getSeqWatermarks()).toEqual({ s1: 3 })
     client.close()
   })
+
+  it('prunes close_on_disconnect sidecar watermarks on disconnect instead of replaying dead sessions', async () => {
+    const client = makeClient()
+
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+
+    // A persistent session and a close_on_disconnect sidecar both emit seq'd events.
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 'real', seq: 2 } })
+    const created = client.request<{ session_id: string }>('session.create', { close_on_disconnect: true })
+    const createReq = sock.lastRequest()
+    sock.serverFrame({ jsonrpc: '2.0', id: createReq.id, result: { session_id: 'sidecar' } })
+    await created
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 'sidecar', seq: 7 } })
+    expect(client.getSeqWatermarks()).toEqual({ real: 2, sidecar: 7 })
+
+    // Drop: the gateway reaps the sidecar with the socket, so its watermark dies too.
+    client.invalidate('drop')
+    expect(client.getSeqWatermarks()).toEqual({ real: 2 })
+
+    // Reconnect: replay is requested for the persistent session only — pre-fix
+    // every reconnect replayed one dead sidecar per past connection (#134423).
+    const second = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await second
+
+    await vi.waitFor(() => {
+      expect(sock.lastRequest().method).toBe('session.events.since')
+    })
+    expect(sock.lastRequest().params).toMatchObject({ session_id: 'real', last_seen: 2 })
+
+    client.close()
+  })
+
+  it('keeps watermarks for sessions created without close_on_disconnect', async () => {
+    const client = makeClient()
+
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+
+    const created = client.request<{ session_id: string }>('session.create', {})
+    const createReq = sock.lastRequest()
+    sock.serverFrame({ jsonrpc: '2.0', id: createReq.id, result: { session_id: 'pers' } })
+    await created
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 'pers', seq: 4 } })
+
+    client.invalidate('drop')
+    expect(client.getSeqWatermarks()).toEqual({ pers: 4 })
+
+    const second = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await second
+
+    await vi.waitFor(() => {
+      expect(sock.lastRequest().method).toBe('session.events.since')
+    })
+    expect(sock.lastRequest().params).toMatchObject({ session_id: 'pers', last_seen: 4 })
+
+    client.close()
+  })
 })

@@ -129,6 +129,13 @@ export class JsonRpcGatewayClient {
   private readonly events = new GatewayEventHub()
   /** Last observed event seq per session_id — drives lossless reconnect replay. */
   private lastSeenSeq = new Map<string, number>()
+  /**
+   * session_ids created with close_on_disconnect on the current socket. The
+   * gateway reaps such sessions when the socket drops, so their watermarks
+   * can never be replayed — drop them on disconnect instead of sending one
+   * session.events.since per dead sidecar on every future reconnect (#134423).
+   */
+  private closeOnDisconnectSessions = new Set<string>()
   /** Invalidates an interrupted replay so its async cleanup cannot own a replacement socket. */
   private replayGeneration = 0
   /**
@@ -410,13 +417,33 @@ export class JsonRpcGatewayClient {
       return Promise.reject(new Error(this.options.notConnectedErrorMessage))
     }
 
-    return this.channel.request<T>(
+    const call = this.channel.request<T>(
       method,
       params,
       timeoutMs,
       signal,
       () => new Error(this.options.notConnectedErrorMessage)
     )
+
+    // Track close_on_disconnect sessions so dropSocket() can prune their
+    // watermarks (the gateway reaps them with the socket; #134423). The
+    // caller's own params are authoritative — the result echoes the flag
+    // only optionally.
+    if (method === 'session.create' && params.close_on_disconnect === true) {
+      void call
+        .then(result => {
+          const sid = (result as { session_id?: unknown } | null | undefined)?.session_id
+
+          if (typeof sid === 'string' && sid) {
+            this.closeOnDisconnectSessions.add(sid)
+          }
+        })
+        .catch(() => {
+          // Session creation failed; there is nothing to track.
+        })
+    }
+
+    return call
   }
 
   private handleEvent(event: GatewayEvent): void {
@@ -715,6 +742,15 @@ export class JsonRpcGatewayClient {
     // rejects its requests asynchronously, so clear its ownership now; the
     // next open can immediately schedule a replay of its own.
     this.cancelReplay(false)
+
+    // close_on_disconnect sessions were reaped with this socket — their
+    // watermarks can never be replayed, so prune them before the next
+    // connect schedules its replay sweep (#134423).
+    for (const sid of this.closeOnDisconnectSessions) {
+      this.lastSeenSeq.delete(sid)
+    }
+
+    this.closeOnDisconnectSessions.clear()
     this.socket = null
     this.channel.detach(error)
     this.setState('closed')

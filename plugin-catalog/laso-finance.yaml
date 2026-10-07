@@ -1,7 +1,7 @@
 name: laso-finance
 repo: https://github.com/LasoFinance/hermes-plugin
-sha: 0c752c52d99f0cf684fa02536d2a0db86ac2da40
-image: https://raw.githubusercontent.com/LasoFinance/hermes-plugin/0c752c52d99f0cf684fa02536d2a0db86ac2da40/assets/banner.png
+sha: 8a046544307af690f04277bcb04929e5d1d58970
+image: https://raw.githubusercontent.com/LasoFinance/hermes-plugin/8a046544307af690f04277bcb04929e5d1d58970/assets/banner.png
 description: 'Spend USDC in the real world from Hermes: prepaid cards, gift cards, push-to-card,
   Venmo/PayPal and bank payouts, through the Laso Finance API. Native plugin, standard library
   only. Sign-in is the OAuth device flow (link and code handed to the human, approved on any
@@ -13,7 +13,7 @@ maintainer: LasoFinance
 tier: community
 category: tools
 docs_url: https://github.com/LasoFinance/hermes-plugin#readme
-version: "1.1.0"
+version: "1.1.1"
 platforms: []
 capabilities:
   provides_tools:

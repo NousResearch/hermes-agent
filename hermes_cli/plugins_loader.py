@@ -158,6 +158,47 @@ def _evict_modules(module_name: str) -> None:
         del sys.modules[name]
 
 
+def _plugin_package_for_dir(plugin_dir: Path) -> Optional[str]:
+    """The registered ``hermes_plugins.<slug>`` whose ``__path__`` owns *plugin_dir*, or None.
+
+    Resolved by directory rather than assembled from the plugin id: ``_directory_module_name``
+    gives a second scope a ``__home_<digest>`` suffix, so a constructed name may not exist.
+    """
+    target = str(plugin_dir)
+    for name, module in list(sys.modules.items()):
+        if not name.startswith(_NS_PARENT + "."):
+            continue
+        paths = [str(p) for p in (getattr(module, "__path__", None) or [])]
+        if target in paths:
+            return name
+    return None
+
+
+def give_module_package_context(module: types.ModuleType, spec: Any, plugin_dir: Path) -> None:
+    """Point a file-loaded dashboard API module at its plugin package's ``dashboard`` subpackage.
+
+    The dashboard loaders (``plugin_host_child.py::op_asgi``,
+    ``web_server_dashboard.py::_mount_plugin_api_routes``) create the module from a bare
+    location, so ``__package__`` is empty and a relative import inside a plugin's
+    ``dashboard/plugin_api.py`` raises ``ImportError: attempted relative import with no known
+    parent package`` — every ``/api/plugins/<name>/`` route 500s, while the same plugin's
+    agent-side imports (``hermes_plugins.<slug>``) resolve (#134408). The agent-side package
+    is normally already registered by discovery before the dashboard mounts; when it is not,
+    this is a no-op and the loader keeps its previous behaviour.
+    """
+    package = _plugin_package_for_dir(plugin_dir)
+    if not package or spec is None:
+        return
+    module.__package__ = f"{package}.dashboard"
+    # ``ModuleSpec.parent`` is a read-only property derived from ``name``; aligning the spec
+    # keeps Python 3.14+ from warning that ``__package__ != __spec__.parent`` on every relative
+    # import. ``module.__name__`` stays as the caller registered it: pydantic/FastAPI resolve
+    # string annotations through it (`from __future__ import annotations`).
+    origin = getattr(spec, "origin", None) or getattr(module, "__file__", None)
+    if origin:
+        spec.name = f"{module.__package__}.{Path(origin).stem}"
+
+
 def _serialized_replacement(method):
     """Make snapshot → write → lease attachment one atomic transaction."""
     @wraps(method)

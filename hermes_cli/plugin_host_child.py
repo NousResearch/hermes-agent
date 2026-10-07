@@ -309,6 +309,9 @@ class HostRuntime:
             if spec is None or spec.loader is None:
                 raise ImportError(f"cannot load dashboard api {api_path}")
             module = importlib.util.module_from_spec(spec)
+            from hermes_cli.plugins_loader import give_module_package_context
+
+            give_module_package_context(module, spec, Path(str(params["dashboard_dir"])).parent)
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
             router = getattr(module, "router", None)

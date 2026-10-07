@@ -588,6 +588,38 @@ class TestRuntimeFtsRebuild:
         assert any("python language guide" in snippet for snippet in snippets)
         assert all("java" not in snippet for snippet in snippets)
 
+    def test_unavailable_fts_searches_bounded_canonical_rows(self, db, monkeypatch):
+        """Unavailable or missing derived FTS state must not manufacture a miss
+        when the canonical message table contains the requested history row."""
+        db.create_session("canonical", source="cli")
+        message_id = db.append_message(
+            "canonical", "user", "remember the cobalt fallback lantern"
+        )
+        db._fts_enabled = False
+        db._fts_stale = False
+
+        def assert_canonical_result():
+            results = db.search_messages(
+                "cobalt fallback lantern",
+                fields=("id", "session_id", "snippet"),
+            )
+            assert [row["id"] for row in results] == [message_id]
+            assert results[0]["session_id"] == "canonical"
+            assert "cobalt fallback lantern" in results[0]["snippet"]
+
+        assert_canonical_result()
+
+        read_all = db._read_all
+
+        def missing_fts(sql, params=()):
+            if "messages_fts" in sql:
+                raise sqlite3.OperationalError("no such table: messages_fts")
+            return read_all(sql, params)
+
+        db._fts_enabled = True
+        monkeypatch.setattr(db, "_read_all", missing_fts)
+        assert_canonical_result()
+
     def test_existing_peer_observes_fail_open_marker(
         self, db, tmp_path, monkeypatch
     ):

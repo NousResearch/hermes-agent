@@ -56,6 +56,14 @@ _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
 # purpose: inside a correlated subquery it binds to the innermost ``messages`` alias.
 DISPLAY_VISIBLE_SQL = (
     f" AND COALESCE({_sql_json_extract('display_metadata', '$.' + MODEL_ONLY_DISPLAY_METADATA_KEY)}, 0) = 0")
+_RECALL_VISIBLE_SQL = (
+    _DISPLAY_ACTIVE_CLAUSE
+    + " AND COALESCE(display_kind, '') <> 'hidden'"
+    + DISPLAY_VISIBLE_SQL
+)
+_RECALL_LIVE_VISIBLE_SQL = (
+    " AND active = 1 AND COALESCE(display_kind, '') <> 'hidden'" + DISPLAY_VISIBLE_SQL
+)
 _DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id IN ({ids})" + _DISPLAY_ACTIVE_CLAUSE
 # A display row is indexed only when both halves are set; the read path backfills before projecting, so
 # the in-transaction delete fence must refuse (not project) any session this probe still matches.
@@ -1450,22 +1458,123 @@ class SessionMessagesMixin:
                     ORDER BY id ASC""",
                 chunk)]
 
-    def get_messages_around(self, session_id: str, around_message_id: int, window: int = 5) -> Dict[str, Any]:
+    @staticmethod
+    def _bounded_recall_select(max_content_chars: int, max_tool_calls_chars: int) -> str:
+        """Minimal message projection whose variable-size fields are capped by SQLite."""
+        content_cap = max(1, int(max_content_chars))
+        tool_calls_cap = max(1, int(max_tool_calls_chars))
+        return (
+            "id, session_id, role, "
+            f"substr(content, 1, {content_cap}) AS content, "
+            "length(content) AS _original_content_chars, "
+            "tool_call_id, "
+            f"CASE WHEN length(tool_calls) <= {tool_calls_cap} THEN tool_calls END AS tool_calls, "
+            "length(tool_calls) AS _original_tool_calls_chars, tool_name, timestamp"
+        )
+
+    def _row_to_bounded_recall_message(self, row) -> Dict[str, Any]:
+        """Decode a bounded recall projection without materialising omitted payload tails."""
+        msg = dict(row)
+        original_content_chars = msg.pop("_original_content_chars", None)
+        raw_content = msg.get("content")
+        bounded_content_chars = len(raw_content) if isinstance(raw_content, str) else 0
+        content_truncated = (
+            isinstance(original_content_chars, int)
+            and original_content_chars > bounded_content_chars
+        )
+        content_json_prefix = getattr(self, "_CONTENT_JSON_PREFIX")
+        if content_truncated and isinstance(raw_content, str) and raw_content.startswith(content_json_prefix):
+            # A SQL-truncated structured value is no longer valid JSON. Return its
+            # bounded textual head rather than asking the decoder to allocate/fail it.
+            msg["content"] = raw_content[len(content_json_prefix):]
+        else:
+            msg["content"] = self._decode_content(raw_content)
+        if content_truncated:
+            msg["content_truncated"] = True
+            msg["original_content_chars"] = original_content_chars
+
+        original_tool_calls_chars = msg.pop("_original_tool_calls_chars", None)
+        if msg.get("tool_calls"):
+            msg["tool_calls"] = _json_or(
+                msg["tool_calls"], [],
+                "Failed to deserialize bounded recall tool_calls, falling back to []",
+            )
+        elif original_tool_calls_chars:
+            msg.pop("tool_calls", None)
+            msg["tool_calls_truncated"] = True
+            msg["original_tool_calls_chars"] = original_tool_calls_chars
+        return msg
+
+    def get_recall_session_page(
+        self, session_id: str, *, head: int = 20, tail: int = 10,
+        max_content_chars: int = 2000, max_tool_calls_chars: int = 4000,
+    ) -> Dict[str, Any]:
+        """Bounded active, human-visible head/tail for ``session_search`` read mode."""
+        head, tail = max(0, int(head)), max(0, int(tail))
+        select = self._bounded_recall_select(max_content_chars, max_tool_calls_chars)
+        with getattr(self, "_read_ctx")() as conn:
+            total = int(conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?" + _RECALL_LIVE_VISIBLE_SQL,
+                (session_id,),
+            ).fetchone()[0])
+            truncated = total > head + tail
+            if not truncated:
+                rows = conn.execute(
+                    f"SELECT {select} FROM messages WHERE session_id = ?"
+                    + _RECALL_LIVE_VISIBLE_SQL + " ORDER BY id ASC LIMIT ?",
+                    (session_id, total),
+                ).fetchall()
+            else:
+                first = conn.execute(
+                    f"SELECT {select} FROM messages WHERE session_id = ?"
+                    + _RECALL_LIVE_VISIBLE_SQL + " ORDER BY id ASC LIMIT ?",
+                    (session_id, head),
+                ).fetchall() if head else []
+                last = conn.execute(
+                    f"SELECT {select} FROM messages WHERE session_id = ?"
+                    + _RECALL_LIVE_VISIBLE_SQL + " ORDER BY id DESC LIMIT ?",
+                    (session_id, tail),
+                ).fetchall() if tail else []
+                rows = [*first, *reversed(last)]
+        return {
+            "messages": [self._row_to_bounded_recall_message(row) for row in rows],
+            "message_count": total,
+            "truncated": truncated,
+        }
+
+    def get_messages_around(
+        self, session_id: str, around_message_id: int, window: int = 5, *,
+        recall_visible: bool = False, max_content_chars: Optional[int] = None,
+        max_tool_calls_chars: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """Up to *window* messages either side of an anchor id (ascending). ``messages_before``/``_after`` count
-        strictly around the anchor (fewer than *window* = session boundary). Empty for a foreign anchor."""
+        strictly around the anchor (fewer than *window* = session boundary). Empty for a foreign anchor.
+        Recall callers may exclude hidden/rewound rows and cap payload columns before hydration."""
         window = max(window, 0)
+        bounded = max_content_chars is not None or max_tool_calls_chars is not None
+        select = (
+            self._bounded_recall_select(max_content_chars or 4000, max_tool_calls_chars or 4000)
+            if bounded else "*"
+        )
+        visible = _RECALL_VISIBLE_SQL if recall_visible else ""
         with self._read_ctx() as conn:
-            if not conn.execute("SELECT 1 FROM messages WHERE id = ? AND session_id = ? LIMIT 1",
+            if not conn.execute(f"SELECT 1 FROM messages WHERE id = ? AND session_id = ?{visible} LIMIT 1",
                                 (around_message_id, session_id)).fetchone():
                 return {"window": [], "messages_before": 0, "messages_after": 0}
             before_rows = conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? AND id <= ? ORDER BY id DESC LIMIT ?",
+                f"SELECT {select} FROM messages WHERE session_id = ? AND id <= ?{visible} "
+                "ORDER BY id DESC LIMIT ?",
                 (session_id, around_message_id, window + 1)).fetchall()
             after_rows = conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? AND id > ? ORDER BY id ASC LIMIT ?",
+                f"SELECT {select} FROM messages WHERE session_id = ? AND id > ?{visible} "
+                "ORDER BY id ASC LIMIT ?",
                 (session_id, around_message_id, window)).fetchall()
-        window_msgs = [self._row_to_message_dict(r, warn_context="get_messages_around", summary_flag=False)
-                       for r in (*reversed(before_rows), *after_rows)]
+        hydrate = self._row_to_bounded_recall_message if bounded else (
+            lambda row: self._row_to_message_dict(
+                row, warn_context="get_messages_around", summary_flag=False
+            )
+        )
+        window_msgs = [hydrate(r) for r in (*reversed(before_rows), *after_rows)]
         # before_rows includes the anchor itself.
         return {"window": window_msgs, "messages_before": max(0, len(before_rows) - 1), "messages_after": len(after_rows)}
 

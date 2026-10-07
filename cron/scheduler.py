@@ -3186,18 +3186,22 @@ def _is_transient_network_error(exc: BaseException) -> bool:
     known``), or as a bare ``TimeoutError`` / ``ConnectionError``. These mean
     the primary provider is unreachable *right now* — not that its credentials
     are dead — so ``run_job`` treats them like ``AuthError`` and walks
-    ``fallback_providers`` instead of killing the job (#83976). Walks the
-    cause chain (bounded) so SDK-wrapped errors still classify. Deliberately
-    does NOT treat every ``OSError`` as transient (e.g. ``FileNotFoundError``)
-    — only builtins with network/time semantics and transport type names.
+    ``fallback_providers`` instead of killing the job (#83976). Walks both
+    cause and context chains (bounded) so SDK-wrapped errors still classify.
+    Deliberately does NOT treat every ``OSError`` as transient (e.g.
+    ``FileNotFoundError``) — only builtins with network/time semantics and
+    transport type names.
     """
     seen: set[int] = set()
-    cur: Optional[BaseException] = exc
+    stack: list[BaseException] = [exc]
     depth = 0
-    while cur is not None and depth < 12:
+    while stack and depth < 20:
+        cur = stack.pop()
+        if cur is None:
+            continue
         ident = id(cur)
         if ident in seen:
-            break
+            continue
         seen.add(ident)
         depth += 1
         # ConnectionError / TimeoutError builtins carry network/time semantics
@@ -3207,7 +3211,10 @@ def _is_transient_network_error(exc: BaseException) -> bool:
             return True
         if type(cur).__name__ in _TRANSIENT_NETWORK_ERROR_TYPES:
             return True
-        cur = cur.__cause__ or cur.__context__
+        if cur.__cause__ is not None:
+            stack.append(cur.__cause__)
+        if cur.__context__ is not None:
+            stack.append(cur.__context__)
     return False
 
 

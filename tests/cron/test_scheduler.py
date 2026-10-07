@@ -856,6 +856,10 @@ class TestRunJobConfigEnvVarExpansion:
         wrapped = RuntimeError("upstream unavailable")
         wrapped.__cause__ = httpx.ConnectError("refused")
         assert _is_transient_network_error(wrapped) is True
+        # Also walks __context__ when an exception was raised while handling another.
+        wrapped_ctx = RuntimeError("generic error in handler")
+        wrapped_ctx.__context__ = httpx.ConnectError("refused in context")
+        assert _is_transient_network_error(wrapped_ctx) is True
         # Non-network failures must NOT trigger fallback.
         assert _is_transient_network_error(AuthError("No Codex credentials stored")) is False
         assert _is_transient_network_error(ValueError("bad config")) is False

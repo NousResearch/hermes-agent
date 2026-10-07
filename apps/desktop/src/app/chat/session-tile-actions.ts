@@ -55,15 +55,17 @@ import {
   deepReloadConfirmRequest,
   durableRowIdsForRebind,
   finalizeStoppedMessages,
+  planConfirmedEdit,
   planConfirmedReload,
-  planEdit,
   planRestore,
   rebindSurvivorRowIds,
   runRewindSubmit,
+  submitWithDeepTruncateConfirm,
   type SurvivorUserRowIds
 } from '../session/hooks/use-prompt-actions/rewind'
 import { useSubmitPrompt } from '../session/hooks/use-prompt-actions/submit'
 import {
+  isDeepTruncateRefusal,
   markSessionRecentlyInterrupted,
   shouldInterruptBeforeRewind,
   type SubmitTextOptions,
@@ -573,15 +575,20 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         // runRewindSubmit (withSessionNotFoundResume + runtime rebind), so the
         // PR-era inline prompt.submit wrapper is superseded on current main.
         applySurvivorRowIds(
-          await submitRewind(
-            plan.text,
-            plan.truncateOrdinal,
-            false,
-            plan.truncateMessageId,
-            plan.truncateRowId,
-            plan.sourceText,
-            durableRowIdsForRebind(messages),
-            plan.confirmDeepTruncate
+          await submitWithDeepTruncateConfirm(
+            confirmed =>
+              submitRewind(
+                plan.text,
+                plan.truncateOrdinal,
+                false,
+                plan.truncateMessageId,
+                plan.truncateRowId,
+                plan.sourceText,
+                durableRowIdsForRebind(messages),
+                confirmed
+              ),
+            plan.confirmDeepTruncate,
+            () => confirm(deepReloadConfirmRequest(t.assistant.thread))
           )
         )
       } catch (err) {
@@ -595,7 +602,11 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           turnStartedAt: null,
           messages
         }))
-        notifyError(err, copy.regenerateFailed)
+
+        // A declined deep-cut confirm is the user's answer, not a failure.
+        if (!isDeepTruncateRefusal(err)) {
+          notifyError(err, copy.regenerateFailed)
+        }
       }
     },
     [applySurvivorRowIds, copy.regenerateFailed, readState, submitRewind, t, update]
@@ -693,7 +704,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
   const editMessage = useCallback(
     async (edited: AppendMessage) => {
       const messages = readMessages()
-      const plan = planEdit(messages, edited)
+      const confirmDeep = () => confirm(deepReloadConfirmRequest(t.assistant.thread))
+      const plan = await planConfirmedEdit(messages, edited, confirmDeep)
 
       if (!plan) {
         return
@@ -714,15 +726,20 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
       try {
         applySurvivorRowIds(
-          await submitRewind(
-            plan.text,
-            plan.truncateOrdinal,
-            interruptFirst,
-            plan.truncateMessageId,
-            plan.truncateRowId,
-            plan.sourceText,
-            durableRowIdsForRebind(messages),
-            true
+          await submitWithDeepTruncateConfirm(
+            confirmed =>
+              submitRewind(
+                plan.text,
+                plan.truncateOrdinal,
+                interruptFirst,
+                plan.truncateMessageId,
+                plan.truncateRowId,
+                plan.sourceText,
+                durableRowIdsForRebind(messages),
+                confirmed
+              ),
+            plan.confirmDeepTruncate,
+            confirmDeep
           )
         )
       } catch (err) {
@@ -734,10 +751,13 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           turnStartedAt: null,
           messages
         }))
-        notifyError(err, copy.editFailed)
+
+        if (!isDeepTruncateRefusal(err)) {
+          notifyError(err, copy.editFailed)
+        }
       }
     },
-    [applySurvivorRowIds, copy.editFailed, readMessages, readState, submitRewind, update]
+    [applySurvivorRowIds, copy.editFailed, readMessages, readState, submitRewind, t, update]
   )
 
   // Branch-visibility sync (assistant-ui hides non-active branches).

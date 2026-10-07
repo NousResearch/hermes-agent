@@ -64,11 +64,13 @@ import {
   deepReloadConfirmRequest,
   durableRowIdsForRebind,
   finalizeStoppedMessages,
+  planConfirmedEdit,
   planConfirmedReload,
   planEdit,
   planRestore,
   rebindSurvivorRowIds,
   runRewindSubmit,
+  submitWithDeepTruncateConfirm,
   type SurvivorUserRowIds
 } from './rewind'
 import { useSlashCommand } from './slash'
@@ -80,6 +82,7 @@ import {
   friendlyRemoteAttachError,
   type GatewayRequest,
   inlineErrorMessage,
+  isDeepTruncateRefusal,
   markSessionRecentlyInterrupted,
   readFileDataUrlForAttach,
   readImageForRemoteAttach,
@@ -1020,16 +1023,21 @@ export function usePromptActions({
       updateSessionState(sessionId, state => applyReloadOptimistic(state, plan))
 
       try {
-        const survivorRowIds = await submitRewindPrompt(
-          sessionId,
-          plan.text,
-          plan.truncateOrdinal,
-          plan.truncateMessageId,
-          false,
-          plan.truncateRowId,
-          plan.sourceText,
-          durableRowIdsForRebind(messages),
-          plan.confirmDeepTruncate
+        const survivorRowIds = await submitWithDeepTruncateConfirm(
+          confirmed =>
+            submitRewindPrompt(
+              sessionId,
+              plan.text,
+              plan.truncateOrdinal,
+              plan.truncateMessageId,
+              false,
+              plan.truncateRowId,
+              plan.sourceText,
+              durableRowIdsForRebind(messages),
+              confirmed
+            ),
+          plan.confirmDeepTruncate,
+          () => confirm(deepReloadConfirmRequest(t.assistant.thread))
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1045,7 +1053,11 @@ export function usePromptActions({
           turnStartedAt: null,
           messages
         }))
-        notifyError(err, copy.regenerateFailed)
+
+        // A declined deep-cut confirm is the user's answer, not a failure.
+        if (!isDeepTruncateRefusal(err)) {
+          notifyError(err, copy.regenerateFailed)
+        }
       }
     },
     [activeSessionIdRef, applySurvivorRowIds, copy.regenerateFailed, submitRewindPrompt, t, updateSessionState]
@@ -1192,7 +1204,8 @@ export function usePromptActions({
       // Same dual-store read as reloadFromMessage (#68734).
       const messages = (sessionId ? $sessionStates.get()[sessionId]?.messages : null) ?? $messages.get()
 
-      const plan = sessionId ? planEdit(messages, edited) : null
+      const confirmDeep = () => confirm(deepReloadConfirmRequest(t.assistant.thread))
+      const plan = sessionId ? await planConfirmedEdit(messages, edited, confirmDeep) : null
 
       if (!sessionId || !plan) {
         return
@@ -1235,16 +1248,21 @@ export function usePromptActions({
       }
 
       try {
-        const survivorRowIds = await submitRewindPrompt(
-          sessionId,
-          plan.text,
-          plan.truncateOrdinal,
-          plan.truncateMessageId,
-          interruptFirst,
-          plan.truncateRowId,
-          plan.sourceText,
-          durableRowIdsForRebind(messages),
-          true
+        const survivorRowIds = await submitWithDeepTruncateConfirm(
+          confirmed =>
+            submitRewindPrompt(
+              sessionId,
+              plan.text,
+              plan.truncateOrdinal,
+              plan.truncateMessageId,
+              interruptFirst,
+              plan.truncateRowId,
+              plan.sourceText,
+              durableRowIdsForRebind(messages),
+              confirmed
+            ),
+          plan.confirmDeepTruncate,
+          confirmDeep
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1268,18 +1286,25 @@ export function usePromptActions({
 
             const refreshed = $messages.get()
             const retryPlan = planEdit(refreshed, edited)
+            // planEdit, not planConfirmedEdit: the user already answered for this edit; the retry only
+            // re-addresses the same turn after a history refresh.
 
             if (retryPlan && !retryPlan.isFailedTurn) {
-              const survivorRowIds = await submitRewindPrompt(
-                sessionId,
-                retryPlan.text,
-                retryPlan.truncateOrdinal,
-                retryPlan.truncateMessageId,
-                false,
-                retryPlan.truncateRowId,
-                retryPlan.sourceText,
-                durableRowIdsForRebind(refreshed),
-                true
+              const survivorRowIds = await submitWithDeepTruncateConfirm(
+                confirmed =>
+                  submitRewindPrompt(
+                    sessionId,
+                    retryPlan.text,
+                    retryPlan.truncateOrdinal,
+                    retryPlan.truncateMessageId,
+                    false,
+                    retryPlan.truncateRowId,
+                    retryPlan.sourceText,
+                    durableRowIdsForRebind(refreshed),
+                    confirmed
+                  ),
+                plan.confirmDeepTruncate,
+                confirmDeep
               )
 
               applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1308,7 +1333,11 @@ export function usePromptActions({
           turnStartedAt: null,
           messages
         }))
-        notifyError(surfaced, unavailable ? copy.editTurnUnavailable : copy.editFailed)
+
+        // A declined deep-cut confirm is the user's answer, not a failure.
+        if (!isDeepTruncateRefusal(surfaced)) {
+          notifyError(surfaced, unavailable ? copy.editTurnUnavailable : copy.editFailed)
+        }
       }
     },
     [
@@ -1320,6 +1349,7 @@ export function usePromptActions({
       resumeStoredSession,
       selectedStoredSessionIdRef,
       submitRewindPrompt,
+      t,
       updateSessionState
     ]
   )

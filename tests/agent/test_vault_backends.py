@@ -61,6 +61,7 @@ def fake_bw(tmp_path, monkeypatch):
     exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
     log = tmp_path / "bw.log"  # the backend runs bw with an allowlisted env, so the fake logs beside itself
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.delenv("BW_SESSION", raising=False)  # ambient-session tests set it deliberately
     unlock_mod.lock()
     yield exe, log
     unlock_mod.lock()
@@ -92,6 +93,62 @@ def test_locked_manager_is_reported_not_prompted_when_headless(fake_bw, monkeypa
         unlock_mod.set_unlock_prompt_callback(None)
     assert not log.exists(), "bw must not be invoked at all while locked in a headless session"
     assert not unlock_mod.is_unlocked("bitwarden")
+
+
+def test_ambient_bw_session_unlocks_headless_backend(fake_bw, monkeypatch):
+    """A persistent BW_SESSION in the environment unlocks the backend without a prompt.
+
+    Reproduction setup for #108316: a Vaultwarden/Bitwarden CLI kept unlocked
+    out-of-process (``bw unlock --raw`` token exported, e.g. via ``~/.hermes/.env``).
+    Headless sessions cannot prompt, but the ambient token must still work.
+    """
+    exe, log = fake_bw
+    from tools.browser_vault_tool import browser_vault_list
+
+    monkeypatch.setenv("BW_SESSION", "SESSION-TOKEN-123")
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")  # headless: nobody can answer a prompt
+    patcher, backend = _enabled(exe)
+    try:
+        with patcher, patch("agent.vault_backends.enabled_backends", return_value=[backend]):
+            assert backend.is_unlocked()
+            listed = json.loads(browser_vault_list())
+            assert listed["items"] == [{
+                "handle": "bw:abc", "backend": "bitwarden", "label": "Example",
+                "kind": "login", "origin": "https://example.com", "available": True,
+                "two_factor": "automatic if the manager stores a TOTP seed, else the user is asked",
+                "identifier": "jane@example.com", "identifier_type": "username",
+            }]
+            assert "locked" not in listed
+    finally:
+        unlock_mod.set_unlock_prompt_callback(None)
+    assert log.exists(), "the ambient session must be used for the list call"
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert all(c["BW_SESSION"] == "SESSION-TOKEN-123" for c in calls), "token travels via the child env only"
+
+
+def test_inprocess_unlock_precedence_and_no_token_stays_locked(fake_bw, monkeypatch):
+    """In-process unlock wins over the ambient token; with neither, behavior is unchanged."""
+    exe, log = fake_bw
+    patcher, backend = _enabled(exe)
+    monkeypatch.setenv("BW_SESSION", "STALE-TOKEN")
+    try:
+        with patcher, patch("agent.vault_backends.enabled_backends", return_value=[backend]):
+            # No in-process unlock, no ambient token: locked, as before.
+            monkeypatch.delenv("BW_SESSION")
+            assert not backend.is_unlocked()
+            assert backend.list_items() == []
+
+            # An in-process unlock takes precedence: a fill must not send the stale token.
+            with patch.object(backend, "unlock"):
+                unlock_mod.store_session_token("bitwarden", "SESSION-TOKEN-123")
+            assert backend.is_unlocked()
+            items = backend.list_items()
+            assert len(items) == 1 and items[0].id == "bw:abc"
+            calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            assert all(c["BW_SESSION"] == "SESSION-TOKEN-123" for c in calls)
+            assert all(c["BW_SESSION"] != "STALE-TOKEN" for c in calls)
+    finally:
+        unlock_mod.set_unlock_prompt_callback(None)
 
 
 def test_unlock_uses_vendor_passwordenv_contract_then_fill_routes_by_prefix(fake_bw):

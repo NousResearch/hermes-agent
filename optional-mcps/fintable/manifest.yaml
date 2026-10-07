@@ -1,7 +1,8 @@
 manifest_version: 1
 
 name: fintable
-description: Access connected bank accounts, balances, transactions, and investment holdings with Fintable.
+description: >-
+  Personal finance and banking: live bank feeds, balances, transactions, and investment holdings.
 source: https://fintable.io/ai
 
 transport:
@@ -14,6 +15,19 @@ auth:
 suggest:
   keywords:
     - fintable
+    - personal finance
+    - banking
+    - bank account
+    - bank accounts
+    - bank balance
+    - bank balances
+    - bank transactions
+    - bank feeds
+    - spending
+    - budgeting
+    - cash flow
+    - net worth
+    - investment holdings
   hosts:
     - fintable.io
 

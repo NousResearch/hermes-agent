@@ -88,8 +88,16 @@ def _op(home: Path, *args: str) -> tuple[int, str, str]:
 
 
 def _log(home: Path) -> str:
+    """The hand-off log so far. windows.ps1 appends with Add-Content, which holds the file without
+    read sharing for the length of each write: a read landing in that window is a sharing
+    violation (PermissionError), not a missing line, so it is retried."""
     path = home / 'logs/desktop-update-handoff.log'
-    return path.read_text(encoding='utf-8-sig') if path.exists() else ''
+    for _ in range(50):
+        try:
+            return path.read_text(encoding='utf-8-sig') if path.exists() else ''
+        except PermissionError:
+            time.sleep(0.1)
+    return path.read_text(encoding='utf-8-sig')
 
 
 def _custodian(home: Path, handoff: int) -> str:

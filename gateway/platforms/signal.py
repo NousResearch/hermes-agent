@@ -951,11 +951,19 @@ class SignalAdapter(BasePlatformAdapter):
         return (raw["sender"], raw["timestamp_ms"]) if ok else None
 
     def _reactions_enabled(self, event: "MessageEvent" = None) -> bool:
-        """SIGNAL_REACTIONS env gate, then the DM allowlist: reactions fire before run.py's auth gate,
-        so an unauthorized contact's 👀 would otherwise reveal a listening bot."""
+        """SIGNAL_REACTIONS env gate, then permitted groups, then the DM allowlist: reactions fire before
+        run.py's auth gate, so an unauthorized contact's 👀 would otherwise reveal a listening bot."""
         if str(_sig_secret("SIGNAL_REACTIONS", "true")).lower() in {"false", "0", "no"}:
             return False
-        sender = getattr(getattr(event, "source", None), "user_id", None) if event is not None else None
+        source = getattr(event, "source", None) if event is not None else None
+        # A permitted-group message already passed the SIGNAL_GROUP_ALLOWED_USERS intake gate, so it is
+        # trusted: react even when the sender is absent from the DM allowlist (blanking SIGNAL_ALLOWED_USERS
+        # to deny DMs must not silence reactions inside permitted groups). chat_id_alt is the bare group id.
+        if getattr(source, "chat_type", None) == "group":
+            gid = getattr(source, "chat_id_alt", None)
+            if "*" in self.group_allow_from or (gid and gid in self.group_allow_from):
+                return True
+        sender = getattr(source, "user_id", None)
         return not (sender and "*" not in self.dm_allow_from and sender not in self.dm_allow_from)
 
     async def on_processing_start(self, event: MessageEvent) -> None:

@@ -397,22 +397,81 @@ def test_retry_loop_rederivation_resanitizes_empty_tool_calls():
 
 
 def test_retry_loop_resanitizes_before_build_kwargs():
-    """Ordering invariant: the conversation retry loop must re-run the
-    pre-API sanitizer on the re-derived ``api_messages`` BEFORE building
-    request kwargs, so every retry payload is clean (DeepSeek ``tool_calls:
-    []`` HTTP 400 class, #6545). Locked against regression by source order,
-    mirroring test_prompt_caching.py's ordering tests."""
-    import inspect
+    """Behavioral regression test for #6545:
+    When an API call fails and the conversation retry loop runs a second attempt,
+    the re-derived api_messages passed to ``_build_api_kwargs`` must have any
+    empty ``tool_calls: []`` array stripped (re-sanitized) before building
+    request kwargs.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
 
-    from agent import conversation_loop
+    with (
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.deepseek.com/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
 
-    src = inspect.getsource(conversation_loop)
-    anchor = src.index("while retry_count < max_retries:")
-    build = src.index("api_kwargs = agent._build_api_kwargs(api_messages)", anchor)
-    sanitize = src.rindex("_sanitize_api_messages(api_messages)", anchor, build)
-    assert sanitize < build, (
-        "retry loop must re-sanitize api_messages before building api_kwargs"
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent.client = MagicMock()
+
+    choice = SimpleNamespace(
+        message=SimpleNamespace(content="ok", tool_calls=None),
+        finish_reason="stop",
     )
+    resp = SimpleNamespace(choices=[choice], model="deepseek-chat", usage=None)
+
+    # First attempt fails with a transport error, second succeeds.
+    agent.client.chat.completions.create.side_effect = [
+        ConnectionError("Connection reset by peer"),
+        resp,
+    ]
+
+    captured_kwargs_messages = []
+    orig_build_kwargs = agent._build_api_kwargs
+
+    def spy_build_kwargs(api_msgs, **kw):
+        captured_kwargs_messages.append([dict(m) for m in api_msgs])
+        return orig_build_kwargs(api_msgs, **kw)
+
+    agent._build_api_kwargs = spy_build_kwargs
+
+    # Re-decoration simulation: rederived messages carry an empty tool_calls array
+    def fake_redecorate(a, msgs, **kw):
+        copy_msgs = [dict(m) for m in msgs]
+        copy_msgs.append({"role": "assistant", "content": "prior", "tool_calls": []})
+        return copy_msgs, kw.get("moa_prepared"), kw.get("tools_for_api")
+
+    with (
+        patch("time.sleep"),
+        patch("agent.conversation_loop._redecorate_prompt_cache_for_provider", side_effect=fake_redecorate),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("hello")
+
+    assert result.get("completed") is True
+    # At least two attempts (attempt 1 and retry attempt 2)
+    assert len(captured_kwargs_messages) >= 2
+
+    # Assert that on attempt 2 (retry), messages were sanitized before _build_api_kwargs
+    for attempt_idx, attempt_msgs in enumerate(captured_kwargs_messages, 1):
+        for msg in attempt_msgs:
+            if msg.get("role") == "assistant":
+                assert msg.get("tool_calls") != [], (
+                    f"Attempt {attempt_idx} passed un-sanitized empty tool_calls to _build_api_kwargs"
+                )
 
 
 

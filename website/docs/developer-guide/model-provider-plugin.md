@@ -205,6 +205,16 @@ class AcmeProfile(ProviderProfile):
         """
         return None
 
+    def resolve_base_url(self, *, api_key, default_url, env_url, probe=True) -> str:
+        """The endpoint for this provider. default_url is the registry default,
+        env_url the *_BASE_URL override ("" when unset). Override when the
+        endpoint depends on the key (a key prefix, a region probe) or needs
+        normalising. probe=True is the runtime path (credential resolution,
+        credential-pool env seeding) and may do network or auth-store I/O;
+        probe=False is the status display and must not. Default: env_url
+        (trailing slash dropped when probing), else default_url."""
+        return super().resolve_base_url(api_key=api_key, default_url=default_url, env_url=env_url, probe=probe)
+
     def create_client(self, **client_kwargs):
         """Supply your own client object instead of the shared openai.OpenAI.
         Default returns None (= use the standard client). Override when the
@@ -297,7 +307,8 @@ Look at these bundled plugins for idioms:
 |---|---|
 | `plugins/model-providers/openrouter/` | Aggregator with provider preferences, public model catalog |
 | `plugins/model-providers/gemini/` | `thinking_config` translation (native + OpenAI-compat nested forms) |
-| `plugins/model-providers/kimi-coding/` | `OMIT_TEMPERATURE`, `extra_body.thinking`, top-level `reasoning_effort` |
+| `plugins/model-providers/kimi-coding/` | `OMIT_TEMPERATURE`, `extra_body.thinking`, top-level `reasoning_effort`, key-prefix `resolve_base_url` |
+| `plugins/model-providers/zai/` | `resolve_base_url` that probes regional endpoints and caches the winner (skipped when `probe=False`) |
 | `plugins/model-providers/qwen-oauth/` | Message normalization, `cache_control` injection, VL high-res |
 | `plugins/model-providers/nous/` | Attribution tags, "omit reasoning when disabled" |
 | `plugins/model-providers/custom/` | Ollama `num_ctx` + `think: false` quirks |

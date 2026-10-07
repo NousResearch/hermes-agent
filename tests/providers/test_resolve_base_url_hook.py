@@ -55,3 +55,76 @@ class TestKimiHook:
         profile = _profile("kimi-coding")
         url = profile.resolve_base_url(api_key="sk-kimi-abc", default_url=self.MOONSHOT, env_url="https://o.test/v1/")
         assert url == "https://o.test/v1/"
+
+
+class TestZaiHook:
+    DEFAULT = "https://api.z.ai/api/paas/v4"
+
+    def test_probe_detects_and_caches(self, monkeypatch):
+        from hermes_cli import auth_zai_kimi
+
+        monkeypatch.setattr(auth_zai_kimi, "_zai_probe_failed_until", {})
+        calls = []
+
+        def detect(api_key, timeout=8.0):
+            calls.append(api_key)
+            return {"id": "cn", "base_url": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-5", "label": "China"}
+
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", detect)
+        profile = _profile("zai")
+        for _ in range(2):
+            url = profile.resolve_base_url(api_key="glm-key", default_url=self.DEFAULT, env_url="")
+            assert url == "https://open.bigmodel.cn/api/paas/v4"
+        assert calls == ["glm-key"]  # second call answered from the auth.json cache
+
+    def test_status_variant_never_probes(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **k: pytest.fail("probed"))
+        profile = _profile("zai")
+        assert profile.resolve_base_url(api_key="glm-key", default_url=self.DEFAULT, env_url="", probe=False) == self.DEFAULT
+        assert profile.resolve_base_url(api_key="glm-key", default_url=self.DEFAULT, env_url="https://o.test/", probe=False) == "https://o.test/"
+
+    def test_env_override_and_missing_key_skip_probe(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **k: pytest.fail("probed"))
+        profile = _profile("zai")
+        assert profile.resolve_base_url(api_key="glm-key", default_url=self.DEFAULT, env_url="https://o.test/v4") == "https://o.test/v4"
+        assert profile.resolve_base_url(api_key="", default_url=self.DEFAULT, env_url="") == self.DEFAULT
+
+
+class TestCopilotHook:
+    DEFAULT = "https://api.githubcopilot.com"
+
+    def test_exchange_endpoint_wins(self, monkeypatch):
+        import hermes_cli.copilot_auth as copilot_auth
+
+        monkeypatch.setattr(copilot_auth, "resolve_copilot_token", lambda: ("ghu_x", "env"))
+        monkeypatch.setattr(copilot_auth, "get_copilot_api_token", lambda raw: ("tok", "https://api.ent.test"))
+        profile = _profile("copilot")
+        assert profile.resolve_base_url(api_key="tok", default_url=self.DEFAULT, env_url="") == "https://api.ent.test"
+
+    def test_no_exchange_endpoint_keeps_default_and_status_skips_exchange(self, monkeypatch):
+        import hermes_cli.copilot_auth as copilot_auth
+
+        monkeypatch.setattr(copilot_auth, "resolve_copilot_token", lambda: ("ghu_x", "env"))
+        monkeypatch.setattr(copilot_auth, "get_copilot_api_token", lambda raw: ("tok", None))
+        profile = _profile("copilot")
+        assert profile.resolve_base_url(api_key="tok", default_url=self.DEFAULT, env_url="https://o.test/") == "https://o.test"
+        monkeypatch.setattr(copilot_auth, "resolve_copilot_token", lambda: pytest.fail("exchanged"))
+        assert profile.resolve_base_url(api_key="tok", default_url=self.DEFAULT, env_url="", probe=False) == self.DEFAULT
+
+
+class TestLMStudioHook:
+    def test_runtime_normalises_to_v1_status_keeps_as_written(self):
+        profile = _profile("lmstudio")
+        kwargs = {"api_key": "", "default_url": "http://127.0.0.1:1234/v1", "env_url": "http://host:1234/api/v1"}
+        assert profile.resolve_base_url(**kwargs) == "http://host:1234/v1"
+        assert profile.resolve_base_url(**kwargs, probe=False) == "http://host:1234/api/v1"
+
+
+class TestActualHook:
+    @pytest.mark.parametrize("probe", [True, False])
+    def test_root_urls_gain_v1(self, probe):
+        profile = _profile("actual")
+        default = "https://api.actual.inc/v1"
+        assert profile.resolve_base_url(api_key="", default_url=default, env_url="http://127.0.0.1:8080", probe=probe) == "http://127.0.0.1:8080/v1"
+        assert profile.resolve_base_url(api_key="", default_url=default, env_url="https://api.actual.inc/", probe=probe) == default
+        assert profile.resolve_base_url(api_key="", default_url=default, env_url="", probe=probe) == default

@@ -5,14 +5,36 @@ this profile covers the chat_completions remainder: editor attribution headers
 (copilot_default_headers()) and catalog-gated GitHub Models reasoning.
 """
 
+import logging
 from typing import Any
 
 from providers import register_provider
 from providers.base import ProviderProfile
 
+# Same logger the resolver used in hermes_cli.auth, so existing log filters keep matching.
+logger = logging.getLogger("hermes_cli.auth")
+
 
 class CopilotProfile(ProviderProfile):
     """GitHub Copilot / GitHub Models — editor headers + reasoning."""
+
+    def resolve_base_url(self, *, api_key: str, default_url: str, env_url: str, probe: bool = True) -> str:
+        """Copilot's API base comes from the token-exchange response (endpoints.api, proxy-ep fallback),
+        authoritative for Enterprise / proxied accounts; falls back to the registry default.
+        ``probe=False`` skips the exchange."""
+        base_url = super().resolve_base_url(api_key=api_key, default_url=default_url, env_url=env_url, probe=probe)
+        if not probe:
+            return base_url
+        try:
+            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
+            raw_token, _ = resolve_copilot_token()
+            if raw_token:
+                resolved = (get_copilot_api_token(raw_token)[1] or "").strip()
+                if resolved:
+                    base_url = resolved
+        except Exception as exc:
+            logger.debug("Copilot base URL resolution fell back to default: %s", exc, exc_info=True)
+        return base_url
 
     def build_api_kwargs_extras(
         self, *, model: str | None = None, reasoning_config: dict | None = None,

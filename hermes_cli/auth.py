@@ -34,8 +34,7 @@ from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
-    KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_zai_base_url,
-    detect_zai_endpoint)
+    KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, detect_zai_endpoint)
 from hermes_cli.auth_model_picker import (  # noqa: F401  re-exported
     _prompt_model_selection, _save_model_choice)
 from hermes_cli.auth_device_flow import (  # noqa: F401  re-exported
@@ -2071,10 +2070,7 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
     # probe=False: a status read must not network-probe or write auth.json.
     base_url = resolve_provider_base_url(pconfig, api_key=api_key, env_url=_provider_env_base_url(pconfig), probe=False)
-    actual_local_noauth = False
-    if provider_id == "actual":
-        base_url = normalize_actual_base_url(base_url)
-        actual_local_noauth = not api_key and is_actual_local_base_url(base_url)
+    actual_local_noauth = provider_id == "actual" and not api_key and is_actual_local_base_url(base_url)
     configured = bool(api_key) or actual_local_noauth
     return {  # logged_in mirrors configured for compat with the OAuth status shape
         "configured": configured, "provider": provider_id, "name": pconfig.name,
@@ -2260,35 +2256,6 @@ def _get_azure_foundry_auth_status() -> Dict[str, Any]:
     return info
 
 
-def _default_api_key_base_url(api_key: str, default: str, env_url: str) -> str:
-    return env_url.rstrip("/") if env_url else default
-
-
-def _copilot_runtime_base_url(api_key: str, default: str, env_url: str) -> str:
-    """Copilot's API base comes from the token-exchange response (endpoints.api, proxy-ep fallback),
-    authoritative for Enterprise / proxied accounts; falls back to the registry default."""
-    base_url = _default_api_key_base_url(api_key, default, env_url)
-    try:
-        from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
-        raw_token, _ = resolve_copilot_token()
-        if raw_token:
-            resolved = (get_copilot_api_token(raw_token)[1] or "").strip()
-            if resolved:
-                base_url = resolved
-    except Exception as exc:
-        logger.debug("Copilot base URL resolution fell back to default: %s", exc)
-    return base_url
-
-
-# Providers whose runtime base URL is not simply env-override-or-registry-default:
-# ``(api_key, registry_default, env_override) -> base_url``.
-_API_KEY_BASE_URL_RESOLVERS: Dict[str, Callable[[str, str, str], str]] = {
-    "zai": _resolve_zai_base_url,
-    "copilot": _copilot_runtime_base_url,
-    "lmstudio": lambda *a: _normalize_lmstudio_runtime_base_url(_default_api_key_base_url(*a)),
-    "actual": lambda *a: normalize_actual_base_url(_default_api_key_base_url(*a))}
-
-
 def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve API key and base URL for an API-key provider."""
     pconfig = _registry_lookup(provider_id)
@@ -2305,11 +2272,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         key_source = key_source or "default"
 
     env_url = _provider_env_base_url(pconfig)
-    resolve_url = _API_KEY_BASE_URL_RESOLVERS.get(provider_id)
-    if resolve_url is not None:
-        base_url = resolve_url(api_key, pconfig.inference_base_url, env_url)
-    else:
-        base_url = resolve_provider_base_url(pconfig, api_key=api_key, env_url=env_url)
+    base_url = resolve_provider_base_url(pconfig, api_key=api_key, env_url=env_url)
     # An API-key provider must never hand back an empty base URL (a set-but-empty
     # COPILOT_API_BASE_URL or similar env override otherwise wedges chat inference).
     if not _nonempty_str(base_url):

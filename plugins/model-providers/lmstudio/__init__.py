@@ -4,8 +4,8 @@ Request quirk: reasoning goes out as top-level ``reasoning_effort``, gated on an
 the per-model ``allowed_options`` LM Studio publishes in ``/api/v1/models``. The agent probes
 and caches those options and passes them as ``lmstudio_reasoning_options``.
 
-Everything else stays where it lives today: endpoint, ``LM_API_KEY`` / ``LM_BASE_URL`` and the
-no-auth placeholder (``hermes_cli/auth.py`` registry row), the chat-model picker probe
+Runtime base-URL normalisation is ``resolve_base_url``. Everything else stays where it lives today:
+endpoint, ``LM_API_KEY`` / ``LM_BASE_URL`` and the no-auth placeholder (``hermes_cli/auth.py`` registry row), the chat-model picker probe
 (``hermes_cli/models_local.py``). Hence ``base_url`` is left empty: a loopback ``base_url``
 would map every ``127.0.0.1`` / ``localhost`` endpoint to LM Studio in URL->provider inference
 and disable local-server detection for Ollama, llama.cpp and vLLM.
@@ -21,6 +21,16 @@ from providers.base import ProviderProfile
 
 class LMStudioProfile(ProviderProfile):
     """LM Studio: top-level ``reasoning_effort`` from the model's published options."""
+
+    def resolve_base_url(self, *, api_key: str, default_url: str, env_url: str, probe: bool = True) -> str:
+        """Runtime base URL normalised to the ``/v1`` chat surface; the status variant
+        (``probe=False``) reports the configured URL as written."""
+        base_url = super().resolve_base_url(api_key=api_key, default_url=default_url, env_url=env_url, probe=probe)
+        if not probe:
+            return base_url
+        from hermes_cli.auth import _normalize_lmstudio_runtime_base_url
+
+        return _normalize_lmstudio_runtime_base_url(base_url)
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, supports_reasoning: bool = False,

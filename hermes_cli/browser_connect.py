@@ -233,89 +233,53 @@ def _classify_default(value: str, channels, table, match) -> str | None:
     return next((browser for frag, browser in table if match(value, frag)), None)
 
 
+_WINDOWS_HTTPS_ASSOC = r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https"
+
+
 def _windows_shell_progid(scheme: str) -> str | None:
-    """Return the effective ProgId for a URL scheme via the Windows Shell API."""
+    """Effective ProgId for a URL scheme as the Windows Shell resolves it."""
     try:
         import ctypes
         from ctypes import wintypes
 
-        # ASSOCSTR_PROGID from shlwapi.h.
-        assocstr_progid = 20
-
-        assoc_query = ctypes.WinDLL(
-            "Shlwapi.dll",
-            use_last_error=True,
-        ).AssocQueryStringW
-
-        assoc_query.argtypes = [
-            wintypes.DWORD,
-            wintypes.DWORD,
-            wintypes.LPCWSTR,
-            wintypes.LPCWSTR,
-            wintypes.LPWSTR,
-            ctypes.POINTER(wintypes.DWORD),
-        ]
-        assoc_query.restype = ctypes.c_long
-
-        length = wintypes.DWORD(0)
-
-        # First call obtains the required output buffer size.
-        assoc_query(
-            0,
-            assocstr_progid,
-            scheme,
-            None,
-            None,
-            ctypes.byref(length),
-        )
-
-        if not length.value:
+        query = ctypes.WinDLL("shlwapi", use_last_error=True).AssocQueryStringW
+        query.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                          wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+        query.restype = ctypes.c_long
+        buf = ctypes.create_unicode_buffer(256)
+        size = wintypes.DWORD(len(buf))
+        # 20 = ASSOCSTR_PROGID. ASSOCSTR_EXECUTABLE can fail (0x80070483) on 25H2.
+        if query(0, 20, scheme, None, buf, ctypes.byref(size)) != 0:
             return None
-
-        buffer = ctypes.create_unicode_buffer(length.value)
-
-        result = assoc_query(
-            0,
-            assocstr_progid,
-            scheme,
-            None,
-            buffer,
-            ctypes.byref(length),
-        )
-
-        return buffer.value if result == 0 else None
-
-    except (AttributeError, OSError):
+        return buf.value or None
+    except (AttributeError, OSError):  # non-Windows host
         return None
 
 
-def _detect_default_windows() -> str | None:
-    # Prefer the effective association reported by the Windows Shell.
-    # Modern Windows builds may no longer expose it through the legacy
-    # UserChoice\ProgId registry value.
-    prog_id = _windows_shell_progid("https")
-
-    # Compatibility fallback for older Windows versions/environments.
-    if not prog_id:
+def _windows_registry_progid() -> str | None:
+    """Registry fallback. Windows 11 25H2 Settings writes only ``UserChoiceLatest\\ProgId``;
+    the legacy ``UserChoice`` key can be stale, missing, or present without a value."""
+    try:
+        import winreg  # type: ignore
+    except ImportError:
+        return None
+    for sub in (r"UserChoiceLatest\ProgId", "UserChoice"):
         try:
-            import winreg  # type: ignore
-
-            with winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\Shell\Associations"
-                r"\UrlAssociations\https\UserChoice",
-            ) as key:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, rf"{_WINDOWS_HTTPS_ASSOC}\{sub}") as key:
                 prog_id, _ = winreg.QueryValueEx(key, "ProgId")
+        except OSError:
+            continue
+        if prog_id:
+            return str(prog_id)
+    return None
 
-        except (ImportError, OSError):
-            return None
 
-    return _classify_default(
-        str(prog_id or "").lower(),
-        _WINDOWS_CHANNEL_PROGIDS,
-        _WINDOWS_PROGID_MAP,
-        str.startswith,
-    )
+def _detect_default_windows() -> str | None:
+    prog_id = _windows_shell_progid("https") or _windows_registry_progid()
+    if not prog_id:
+        return None
+    return _classify_default(prog_id.lower(), _WINDOWS_CHANNEL_PROGIDS,
+                             _WINDOWS_PROGID_MAP, str.startswith)
 
 
 def _run_stdout(argv: list[str]) -> str | None:

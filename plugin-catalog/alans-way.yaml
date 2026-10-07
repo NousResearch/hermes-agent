@@ -1,8 +1,8 @@
 name: alans-way
 repo: https://github.com/capthvnsen/alans-way-agents
-sha: 8948c75c7192906e8853afffd1c8d826e52f8206
+sha: bb7dfc55653c28529dcfd97e73a2c757337f3861
 subdir: alans-way
-version: "0.6.1"
+version: "0.6.2"
 title: "Alan's Way"
 description: >-
   Proactive primary bot for a Hermes gateway running on a Linux machine or a macOS guest VM. After install,
@@ -15,7 +15,7 @@ maintainer: capthvnsen
 tier: community
 category: automation
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/capthvnsen/alans-way-agents/tree/8948c75c7192906e8853afffd1c8d826e52f8206/alans-way
+docs_url: https://github.com/capthvnsen/alans-way-agents/tree/bb7dfc55653c28529dcfd97e73a2c757337f3861/alans-way
 readme: true
 platforms: [linux, macos]
 known_issues:

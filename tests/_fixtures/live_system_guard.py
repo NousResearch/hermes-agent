@@ -46,6 +46,23 @@ _GATEWAY_LOOKALIKE_MARK = "spawns_gateway_lookalike"
 # Tests may designate a temporary repo to exercise the real guard safely.
 _LIVE_GUARD_PROTECTED_GIT_ROOTS = (PROJECT_ROOT,)
 
+# PIDs a fixture deliberately forked outside the test process's own subtree
+# (e.g. a simulated hand-off that itself forks a custodian — the custodian is
+# the test's "nephew", so no parent chain reaches the test pid). Registering
+# them here lets the guard's kill interceptor admit their teardown signals
+# without widening the subtree rule for anything the test did not create.
+_fixture_spawned_pids: set[int] = set()
+
+
+def register_fixture_spawned_pid(pid: int) -> None:
+    """Allow ``os.kill`` teardown signals to a process a fixture forked."""
+    _fixture_spawned_pids.add(int(pid))
+
+
+def unregister_fixture_spawned_pid(pid: int) -> None:
+    """Drop a fixture-spawned pid once it has been reaped."""
+    _fixture_spawned_pids.discard(int(pid))
+
 
 @pytest.fixture(autouse=True)
 def _live_system_guard(request, monkeypatch):
@@ -102,7 +119,7 @@ def _live_system_guard(request, monkeypatch):
             return True
         if pid < 0:
             return False
-        if pid == test_pid or pid in _initial_children:
+        if pid == test_pid or pid in _initial_children or pid in _fixture_spawned_pids:
             return True
         if _psutil is None:
             return False

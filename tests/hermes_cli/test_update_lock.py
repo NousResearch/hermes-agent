@@ -982,6 +982,7 @@ def test_checkout_lock_never_writes_through_a_link_to_a_file_outside_the_install
     assert outside.read_bytes() == b"PRECIOUS USER DATA"
 
 
+# --- main: whole-second creation-time test -----------------------------------------------
 def test_whole_second_creation_time_in_our_own_second_is_us(marker):
     """The macOS hand-off shell writes `ct:<secs>.000` (ps lstart has no sub-second part) for the
     update child it names as delegate. That is our incarnation, so the child adopts the claim
@@ -1000,3 +1001,204 @@ def test_whole_second_creation_time_in_our_own_second_is_us(marker):
     assert update_lock.judge_marker(marker.read_bytes())[0] == "ours"
     # A whole second from an EARLIER second is a killed update's pid reused: still not us.
     assert update_lock.incarnation_live(os.getpid(), float(math.floor(own)) - 1) is False
+# --- PR: real POSIX hand-off tree --------------------------------------------------------
+@pytest.fixture
+def handoff_with_custodian():
+    """A real POSIX hand-off tree: a live hand-off process that has forked one live custodian.
+
+    Returns ``(handoff_pid, custodian_pid)`` where ``custodian`` is a *sibling* of the
+    eventual updater — its parent is the hand-off, exactly as marker line 1 now names it
+    (scripts/desktop-update/marker.sh). Both children are reaped on teardown (the custodian
+    is reparented once the hand-off is killed, so kill it explicitly).
+    """
+    starter = (
+        "import subprocess, sys, time\n"
+        "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        "print(c.pid, flush=True)\n"
+        "time.sleep(120)\n"
+    )
+    handoff = subprocess.Popen(
+        [sys.executable, "-c", starter],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True)
+    assert handoff.stdout is not None
+    custodian = int(handoff.stdout.readline())
+    # The guard admits kills only inside the test's own subtree; both processes
+    # were forked by the fixture for the simulated hand-off topology, so register
+    # them for teardown (handoff.kill() below, custodian's explicit os.kill).
+    from tests._fixtures.live_system_guard import (
+        register_fixture_spawned_pid,
+        unregister_fixture_spawned_pid,
+    )
+    register_fixture_spawned_pid(handoff.pid)
+    register_fixture_spawned_pid(custodian)
+    try:
+        yield handoff.pid, custodian
+    finally:
+        handoff.kill()
+        handoff.wait()
+        try:
+            os.kill(custodian, 9)
+        except ProcessLookupError:
+            pass
+        unregister_fixture_spawned_pid(handoff.pid)
+        unregister_fixture_spawned_pid(custodian)
+
+
+class TestCustodianSiblingHandoff:
+    """Desktop update button: marker line 1 names the hand-off's custodian, a sibling.
+
+    The POSIX hand-off deliberately writes the custodian pid (not its own) on marker line 1,
+    so a SIGKILLed hand-off cannot leave a falsely-clean marker. Bash learned to accept that
+    pid (``marker_names_handoff`` also matches a process the hand-off forked); the Python
+    lock did not and refused its own custodian with exit 2 — "Another Hermes update is
+    already running" — so the desktop Update button failed 100% of the time (#134602).
+
+    Runs the real marker file and real process tree; no parent/pid mocks.
+    """
+
+    def test_custodian_sibling_claim_is_adopted(
+        self, marker, monkeypatch, handoff_with_custodian
+    ):
+        handoff_pid, custodian = handoff_with_custodian
+        _claim(marker, custodian)  # marker line 1 = the custodian the hand-off forked
+        monkeypatch.setenv(HANDOFF_PID_ENV, str(handoff_pid))
+
+        lock = UpdateLock(path=marker)
+        assert lock.acquire() is True, "the hand-off's custodian is the claim we run under"
+        assert lock.acquired is False, "the custodian's claim is not ours to own"
+
+        lock.release()
+        assert marker.exists(), "the hand-off still needs its marker after our stage ends"
+        assert int(marker.read_text(encoding="utf-8-sig").splitlines()[0]) == custodian
+
+    def test_live_holder_not_forked_by_handoff_is_still_refused(
+        self, marker, monkeypatch, handoff_with_custodian, other_pid
+    ):
+        """A live sibling that is NOT the hand-off's child gains nothing.
+
+        ``other_pid``'s parent is this test process, not the hand-off, so the custodian
+        exemption must not widen the lock to an unrelated concurrent updater.
+        """
+        handoff_pid, _custodian = handoff_with_custodian
+        _claim(marker, other_pid)
+        monkeypatch.setenv(HANDOFF_PID_ENV, str(handoff_pid))
+
+        assert UpdateLock(path=marker).acquire() is False
+
+    def test_custodian_without_handoff_env_is_refused(
+        self, marker, handoff_with_custodian
+    ):
+        """The parent relationship alone must not bypass the lock without the hand-off signal."""
+        _handoff_pid, custodian = handoff_with_custodian
+        _claim(marker, custodian)
+
+        assert UpdateLock(path=marker).acquire() is False
+
+    def test_handoff_child_helper_fails_closed_when_parent_unreadable(
+        self, monkeypatch, handoff_with_custodian
+    ):
+        import hermes_cli.update_lock as update_lock
+
+        handoff_pid, custodian = handoff_with_custodian
+        monkeypatch.setenv(HANDOFF_PID_ENV, str(handoff_pid))
+        assert update_lock._is_handoff_child(custodian) is True
+
+        # An unresolvable parent must fall back to refusal, not adoption.
+        monkeypatch.setattr(update_lock, "_stdlib_parent_pid", lambda pid: None)
+        assert update_lock._is_handoff_child(custodian) is False
+
+
+# A runtime host in the ancestor chain (#134678 review): when the POSIX hand-off
+# is started by an agent session or a gateway-hosted Hermes, the updater's ancestry
+# contains a process whose cmdline matches _is_runtime_host. The sibling custodian
+# must still be adopted on the hand-off relationship alone; a live holder the
+# hand-off did NOT fork must stay refused. The whole tree exits on its own (no kill
+# signals, so the live-system guard is not involved); only the short-lived updater
+# inherits the output pipe.
+
+_HOST_HANDOFF_PY = '''
+import os, subprocess, sys, time
+from pathlib import Path
+import psutil
+
+repo, marker, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, repo)
+
+QUIET = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+custodian = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"], **QUIET)
+time.sleep(0.3)
+
+if mode == "unrelated":
+    # A holder NOT forked by this hand-off: a middleman (forked here) forks the owner,
+    # whose parent is the middleman, not the hand-off.
+    mid = subprocess.Popen([sys.executable, "-c",
+        "import subprocess,sys,time;"
+        " subprocess.Popen([sys.executable,'-c','import time;time.sleep(10)'],"
+        " stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); time.sleep(10)"], **QUIET)
+    time.sleep(0.8)
+    owner = psutil.Process(mid.pid).children()[0].pid
+else:
+    owner = custodian.pid
+
+oct_ = psutil.Process(owner).create_time()
+Path(marker).write_text(f"{owner}\\n{int(time.time())}\\nct:{oct_:.3f}\\n")
+
+updater = (
+    "import sys; from pathlib import Path\\n"
+    f"sys.path.insert(0, {repo!r})\\n"
+    "from hermes_cli.update_lock import UpdateLock\\n"
+    f"ok = UpdateLock(path=Path({marker!r})).acquire()\\n"
+    "print('VERDICT:' + ('ADOPT' if ok else 'REFUSE'))\\n"
+)
+env = dict(os.environ)
+env["HERMES_UPDATE_HANDOFF_PID"] = str(os.getpid())
+p = subprocess.Popen([sys.executable, "-c", updater], env=env,
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+out, err = p.communicate(timeout=30)
+print(out.strip())
+if err:
+    print("UPDATER_ERR:" + err.strip())
+'''
+
+_HOST_BASH = '''#!/bin/bash
+# Keeps THIS process's cmdline as "<dir>/hermes gateway run" while spawning the
+# hand-off as a child (no exec, or the cmdline would change and stop matching).
+"$PY" "$SCRIPT" "$REPO" "$MARKER" "$MODE"
+'''
+
+
+def _run_under_fake_host(tmp_path, mode):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    script = tmp_path / "handoff.py"
+    script.write_text(_HOST_HANDOFF_PY)
+    marker = tmp_path / f"marker-{mode}"
+    hermes = bindir / "hermes"
+    hermes.write_text(_HOST_BASH)
+    hermes.chmod(0o755)
+    env = dict(os.environ)
+    env.update(PY=sys.executable, SCRIPT=str(script), REPO=str(REPO_ROOT),
+               MARKER=str(marker), MODE=mode)
+    proc = subprocess.run([str(hermes), "gateway", "run"], env=env,
+                          capture_output=True, text=True, timeout=60)
+    verdict = "?"
+    for line in proc.stdout.splitlines():
+        if line.startswith("VERDICT:"):
+            verdict = line.split(":", 1)[1]
+    return verdict, proc.stdout
+
+
+class TestRuntimeHostAboveHandOff:
+    @pytest.mark.allow_real_home_io
+    @pytest.mark.spawns_gateway_lookalike
+    def test_sibling_custodian_adopted_with_a_host_in_ancestry(self, tmp_path):
+        verdict, raw = _run_under_fake_host(tmp_path, "custodian")
+        assert verdict == "ADOPT", raw
+
+    @pytest.mark.allow_real_home_io
+    @pytest.mark.spawns_gateway_lookalike
+    def test_non_handoff_holder_refused_with_a_host_in_ancestry(self, tmp_path):
+        verdict, raw = _run_under_fake_host(tmp_path, "unrelated")
+        assert verdict == "REFUSE", raw
+
+

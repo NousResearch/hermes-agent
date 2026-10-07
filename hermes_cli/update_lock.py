@@ -487,6 +487,23 @@ def _is_ancestor_pid(pid: int) -> bool:
         return False
 
 
+def _is_handoff_child(pid: int) -> bool:
+    """True when live ``pid`` was forked by the orchestrating hand-off.
+
+    The POSIX hand-off names its **custodian** on marker line 1 (marker.sh: line 1 names
+    the custodian, not the hand-off, so a SIGKILLed hand-off can leave no false-clean
+    marker). That custodian is a *sibling* of this updater — not the hand-off pid and not
+    an ancestor — so neither :func:`_handoff_pid` nor :func:`_is_ancestor_pid` matches it.
+    A live process whose parent is the known hand-off pid can only be that custodian, so
+    it is a partner. This mirrors ``marker_names_handoff()`` on the bash side
+    (``pid_parent "$p" = hand-off``). An unresolvable parent fails closed.
+    """
+    handoff = _handoff_pid()
+    if not handoff or pid <= 0 or pid == os.getpid():
+        return False
+    return _stdlib_parent_pid(pid) == handoff
+
+
 def _is_runtime_host(cmdline: list[str]) -> bool:
     """A long-lived Hermes host (``gateway run`` / ``serve`` / ``dashboard``), by the canonical
     command-line matchers (profile flags, ``hermes_cli/main.py`` paths, inline bootstraps)."""
@@ -1531,13 +1548,25 @@ class UpdateLock:
 
     @staticmethod
     def _is_partner(pid: int) -> bool:
-        return pid == os.getpid() or (pid and (pid == _handoff_pid() or _is_ancestor_pid(pid)))
+        return pid == os.getpid() or (pid and (
+            pid == _handoff_pid() or _is_ancestor_pid(pid) or _is_handoff_child(pid)))
 
     def _adopt_or_refuse(self, existing: _Marker) -> bool:
         """C1 rule 4: a LIVE claim by us, an ancestor or the hand-off partner is run under.
         Called inside the marker mutex."""
         partners = _live_partners(existing)
-        if not any(self._is_partner(p) and (p == os.getpid() or not _runtime_host_below(p)) for p in partners):
+        # A holder that is the hand-off itself or the custodian it forked is adopted on the
+        # hand-off relationship alone. The runtime-host check walks our *ancestor* chain and
+        # cannot reach a sibling custodian, so it would climb past it to an unrelated host and
+        # refuse our own hand-off's claim (#134602). It still applies to an ancestor holder.
+        def _adoptable(p: int) -> bool:
+            if p == os.getpid():
+                return True
+            if p == _handoff_pid() or _is_handoff_child(p):
+                return True
+            return not _runtime_host_below(p)
+
+        if not any(self._is_partner(p) and _adoptable(p) for p in partners):
             self.holder = UpdateHolder(pid=partners[0], age_seconds=existing.age() if existing.started_at else 0.0)
             return False
         own = _identity_line()

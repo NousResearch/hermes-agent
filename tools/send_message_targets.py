@@ -27,6 +27,7 @@ _PHOTON_DM_GUID_RE = re.compile(r"^any;-;\+\d{6,}$")  # mirrors _DM_CHAT_GUID_RE
 # WhatsApp JIDs (@g.us, @s.whatsapp.net, @lid, broadcast/newsletter) and Buzz UUIDs are native targets
 # the adapter accepts verbatim — explicit, never home-channel. A valid email address likewise.
 _WHATSAPP_JID_RE = re.compile(r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|newsletter)\s*$", re.IGNORECASE)
+_SIGNAL_GROUP_ID_RE = re.compile(r"^\s*[A-Za-z0-9+/]{43}=\s*$")
 _BUZZ_UUID_RE = re.compile(r"^\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*$", re.IGNORECASE)
 _EMAIL_TARGET_RE = re.compile(r"^\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*$")
 # Exceptions to "<PLATFORM>_HOME_CHANNEL" for error hints (email reads EMAIL_HOME_ADDRESS).
@@ -91,12 +92,14 @@ def _parse_yuanbao(ref):
 
 
 def _parse_signal(ref):
-    # "group:<id>" is a native group target; an empty id is not explicit.
+    # "group:<id>" and bare signal-cli GV2 group IDs are native group targets.
     stripped = ref.strip()
-    if not stripped.startswith("group:"):
-        return None
-    group_id = stripped[len("group:"):].strip()
-    return (f"group:{group_id}", None) if group_id else _UNRESOLVED
+    if stripped.startswith("group:"):
+        group_id = stripped[len("group:"):].strip()
+        return (f"group:{group_id}", None) if group_id else _UNRESOLVED
+    if _SIGNAL_GROUP_ID_RE.fullmatch(stripped):
+        return f"group:{stripped}", None
+    return None
 
 
 _PLATFORM_PARSERS = {

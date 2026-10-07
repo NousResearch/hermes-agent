@@ -37,7 +37,7 @@ def manifest_version_error(manifest: dict, name: str) -> str | None:
 
     reason = requires_hermes_error(manifest)
     if reason:
-        return f"Plugin '{name}' {reason}"
+        return f"Plugin '{name}' {reason}."
     version = manifest.get("manifest_version")
     if version is None:
         return None

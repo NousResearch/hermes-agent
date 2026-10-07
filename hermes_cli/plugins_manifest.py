@@ -475,9 +475,21 @@ def version_satisfies(spec: str, current: str) -> bool:
     return True
 
 
+def requires_hermes_spec(data: Mapping) -> str:
+    """The ``requires_hermes`` spec a raw manifest declares: top-level in ``plugin.yaml``, or
+    ``extensions."com.nousresearch.hermes".requires_hermes`` in a portable ``plugin.json``. Clients
+    older than this key ignore unknown keys in that namespace, so a plugin can declare it safely."""
+    spec = data.get("requires_hermes")
+    if not spec:
+        extensions = data.get("extensions")
+        namespace = extensions.get("com.nousresearch.hermes") if isinstance(extensions, Mapping) else None
+        spec = namespace.get("requires_hermes") if isinstance(namespace, Mapping) else None
+    return str(spec or "").strip()
+
+
 def requires_hermes_error(manifest: "PluginManifest") -> Optional[str]:
     """Load-blocking reason when the manifest's ``requires_hermes`` rejects the running version."""
-    spec = manifest.get("requires_hermes", "") if isinstance(manifest, Mapping) else manifest.requires_hermes
+    spec = requires_hermes_spec(manifest) if isinstance(manifest, Mapping) else manifest.requires_hermes
     if not spec:
         return None
     current = running_hermes_version()
@@ -496,7 +508,7 @@ def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginMan
     return PluginManifest(
         name=data["name"], version=data.get("version", ""), description=data.get("description", ""),
         author=_display_author(data.get("author", "")), source=source, path=str(child), key=key,
-        portable=True, skill_namespace=_portable_skill_namespace(key),
+        portable=True, skill_namespace=_portable_skill_namespace(key), requires_hermes=requires_hermes_spec(data),
     )
 
 

@@ -241,10 +241,12 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
     """``_install_plugin_core`` at the catalog pin (an explicit *ref* wins) + provenance recorded on the
     install-metadata record at the sha ACTUALLY checked out (a ``--ref`` install is not at the reviewed
     pin, so ``update_available`` must say so). Returns the core's ``(target, manifest, installed_name)``."""
-    from hermes_cli.plugins_cmd import _install_plugin_core
+    from hermes_cli.plugins_cmd import _check_manifest_version, _install_plugin_core
     if not allow_removed:
         raise_if_removed(entry.name, entry.repo)
     _refuse_unsupported_catalog_platform(entry)
+    # The entry's requires_hermes, refused before cloning with the same message a manifest gets.
+    _check_manifest_version({"requires_hermes": entry.requires_hermes}, entry.name)
     target, manifest, installed_name = _install_plugin_core(
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
         reviewed_pin=entry.sha, python_deps=python_deps, assume_deps_consent=assume_deps_consent,
@@ -563,6 +565,9 @@ def repin_catalog_plugin(
     refuse_if_installed_removed(catalog_name, target)
     if at_catalog_pin(sidecar, entry.sha):
         return RepinResult(entry.sha, False, target.name, [])
+    from hermes_cli.plugins_cmd import _check_manifest_version
+    # Same gate as install_catalog_entry: a pin that needs a newer Hermes leaves the installed tree alone.
+    _check_manifest_version({"requires_hermes": entry.requires_hermes}, catalog_name)
 
     local, modified = _local_changes(target)
     old_sha8 = str(sidecar.get("sha") or "old")[:8]

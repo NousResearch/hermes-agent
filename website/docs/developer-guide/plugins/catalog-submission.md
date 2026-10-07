@@ -157,7 +157,10 @@ the gallery. There is no separate listing to maintain.
    entry PR; undisclosed behaviour found in review is a request for changes.
 14. **Compatibility metadata is truthful.** `requires_hermes` is a SemVer floor
    (`">=0.21.5"`), never a CalVer date, and never newer than the current release
-   (the loader skips the plugin otherwise). `version` matches the pinned code,
+   (install refuses and the loader skips the plugin otherwise). A portable
+   package declares it in `plugin.json` at
+   `extensions."com.nousresearch.hermes".requires_hermes`, and must set it when
+   its `servers` declarations use a shape older releases cannot parse. `version` matches the pinned code,
    and Python dependencies resolve under Hermes's core constraints
    (`hermes plugins validate --install-deps` is what CI runs).
 15. **No skins or forks of bundled plugins.** A change to a bundled plugin is a

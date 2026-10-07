@@ -464,16 +464,16 @@ class PluginLoaderMixin:
             "Loading plugin '%s' (source=%s, kind=%s, path=%s)",
             plugin_key, manifest.source, manifest.kind, manifest.path,
         )
-        if manifest.portable:
-            self._load_portable_plugin(manifest, loaded)
-            return
-        # requires_hermes gate: skip cleanly (no import, no traceback) on a version mismatch.
+        # requires_hermes gate (native and portable): skip cleanly (no import, no traceback) on a mismatch.
         from hermes_cli.plugins_manifest import requires_hermes_error
         reason = requires_hermes_error(manifest)
         if reason:
             loaded.error = reason
             logger.warning("Plugin '%s' skipped: %s", plugin_key, reason)
             self._plugins[plugin_key] = loaded
+            return
+        if manifest.portable:
+            self._load_portable_plugin(manifest, loaded)
             return
         registration_start = len(self._registration_order)
         module_name = self._policy_module_name(manifest)

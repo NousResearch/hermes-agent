@@ -187,8 +187,8 @@ For local commit builds, `HERMES_BUNDLE_ENV_JSON` accepts a JSON object whose
 string values are defaults and whose `null` values are explicit clears. For example,
 `{"HERMES_HOME":null,"HERMES_DATA_DIR_SUFFIX":"magic-test"}`. Only
 `HERMES_HOME`, `HERMES_DATA_DIR_SUFFIX`, `HERMES_DESKTOP_USER_DATA_DIR`,
-`HERMES_SHARED_AUTH_DIR`, `HERMES_GUEST_ONBOARDING`, and `HERMES_SKIP_INTRO`
-are accepted. Process-control variables such as `NODE_OPTIONS` and `PATH`
+`HERMES_SHARED_AUTH_DIR`, `HERMES_GUEST_ONBOARDING`, and
+`HERMES_PREVIEW_FULL_CONNECTORS` are accepted. Process-control variables such as `NODE_OPTIONS` and `PATH`
 are rejected. These settings are not applied to the build runner itself.
 Commit archive keys still use the SHA, so use a fresh commit for different
 defaults: an existing artifact is never overwritten with different bytes.
@@ -353,3 +353,11 @@ live in the [existing install/update family](../../tests/install/BUNDLED_UPDATES
 A helper test or unpacked-app smoke is not proof of native install, update,
 or automatic relaunch. Historical receipts and current unresolved gates are
 separate in [PM audit status](../../docs/pm-audit-status.md).
+
+## Rehearsing the guided onboarding
+
+From `apps/desktop`, use a fresh temporary directory for each rehearsal and run
+`env -u NODE_ENV HERMES_GUEST_ONBOARDING=1 HERMES_HOME=<tmp>/.hermes HERMES_DESKTOP_USER_DATA_DIR=<tmp>/electron-user-data npm run dev`
+(replace `<tmp>` with that directory). To use the portal stand-in, add
+`HERMES_PORTAL_BASE_URL=http://127.0.0.1:8765 HERMES_ANON_API_SECRET=test-secret HERMES_SHARED_AUTH_DIR=<tmp>/.hermes/shared`
+before `npm run dev`. Stop Electron and its dev server after the run.

@@ -15,6 +15,7 @@ from hermes_cli.config import (
     read_raw_config,
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
+from tools.transcription_common import STT_MODEL_CATALOG
 from tools.wake_word import _PROVIDER_PREFERENCE
 
 if TYPE_CHECKING:
@@ -123,17 +124,16 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "Text-to-speech provider",
         "edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper",
     ),
-    # "mistral" temporarily removed — mistralai PyPI package quarantined
-    # (malicious 2.4.6 release on 2026-05-12). Restore once available.
-    "stt.provider": _select("Speech-to-text provider", "local", "groq", "openai", "xai", "elevenlabs"),
-    "stt.local.model": _select("Local faster-whisper model size", "tiny", "base", "small", "medium", "large-v3"),
-    "stt.groq.model": _select(
-        "Groq Whisper model", "whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"
-    ),
-    "stt.openai.model": _select(
-        "OpenAI transcription model", "whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"
-    ),
-    "stt.elevenlabs.model_id": _select("ElevenLabs Scribe model", "scribe_v2", "scribe_v1"),
+    "stt.provider": _select(
+        "Speech-to-text provider", "local", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra"),
+    "stt.local.model": _select("Local faster-whisper model size", *STT_MODEL_CATALOG["local"]),
+    "stt.groq.model": _select("Groq Whisper model", *STT_MODEL_CATALOG["groq"]),
+    "stt.openai.model": _select("OpenAI transcription model", *STT_MODEL_CATALOG["openai"]),
+    "stt.openai.streaming_model": _select("OpenAI live transcription model (stt.streaming)", "gpt-live-transcribe",
+                                          "gpt-transcribe", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"),
+    "stt.mistral.model": _select("Mistral Voxtral transcription model", *STT_MODEL_CATALOG["mistral"]),
+    "stt.xai.model": _select("xAI transcription model", *STT_MODEL_CATALOG["xai"]),
+    "stt.elevenlabs.model_id": _select("ElevenLabs Scribe model", *STT_MODEL_CATALOG["elevenlabs"]),
     "display.skin": _select("CLI visual theme", "default", "ares", "mono", "slate"),
     "dashboard.theme": _select(
         "Web dashboard visual theme", "default", "midnight", "ember", "mono", "cyberpunk", "rose"
@@ -554,6 +554,31 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
 )
 
 
+def _plugin_aux_tasks() -> List[Dict[str, Any]]:
+    """Auxiliary tasks registered by plugins (``PluginContext.register_auxiliary_task``) for the
+    Hermes home active in this context.
+
+    Callers run inside ``_profile_scope`` / ``_config_profile_scope``, and ``get_plugin_manager()``
+    keys its manager on the same context-local home, so a request for profile B enumerates
+    B's plugins even though this process was started for profile A. Discovery failure is
+    fail-soft: the built-in slots must keep working without plugins.
+    """
+    try:
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        return [dict(entry) for entry in get_plugin_auxiliary_tasks()
+                if entry.get("key") and entry["key"] not in _AUX_TASK_SLOTS]
+    except Exception:  # health: allow BLE001 -- plugin discovery must never break the built-in slots
+        _log.debug("plugin auxiliary task lookup failed", exc_info=True)
+        return []
+
+
+def _aux_task_slots() -> Tuple[str, ...]:
+    """Every auxiliary slot the dashboard may read or assign: built-ins first (UI order), then
+    plugin-registered keys. The picker in ``hermes model`` (``main_provider_setup._all_aux_tasks``)
+    folds plugin tasks in the same way; the dashboard must not disagree with it."""
+    return _AUX_TASK_SLOTS + tuple(entry["key"] for entry in _plugin_aux_tasks())
+
+
 def _dashboard_code_skew_guard() -> Optional[str]:
     """Return a "restart required" message when this process runs stale code, else None.
 
@@ -636,10 +661,41 @@ def _apply_nous_gateway_defaults(cfg: dict) -> list:
         return []
 
 
+def _endpoint_known_to_config(cfg: dict, base_url: str) -> bool:
+    """True when *base_url* is already an endpoint fact in *cfg*: the inline ``model.base_url``,
+    a ``providers.<slug>`` entry, or a ``custom_providers`` row. Comparison is trailing-slash
+    and case insensitive (``_save_custom_provider`` dedups the same way)."""
+    wanted = str(base_url or "").strip().rstrip("/").lower()
+    if not wanted:
+        return False
+
+    def _matches(value: Any) -> bool:
+        return str(value or "").strip().rstrip("/").lower() == wanted
+
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict) and _matches(model_cfg.get("base_url")):
+        return True
+    for section_key in ("providers", "custom_providers"):
+        section = cfg.get(section_key)
+        entries: Any = section if isinstance(section, list) else (
+            list(section.values()) if isinstance(section, dict) else [])
+        for entry in entries:
+            if isinstance(entry, dict) and _matches(entry.get("base_url") or entry.get("url") or entry.get("api")):
+                return True
+    return False
+
+
 def _register_custom_endpoint(base_url: str, api_key: str, model: str) -> None:
     """Register a named ``custom_providers`` entry for a custom/local endpoint (mirrors the
     ``hermes model`` custom flow) so the picker gets a proper ready row instead of a "needs
-    setup" dead-end. Dedups by base_url; never blocks the already-persisted assignment."""
+    setup" dead-end. Dedups by base_url; never blocks the already-persisted assignment.
+
+    SKIPPED when the endpoint is already a fact in the config (#76324): the CLI gateway setup
+    writes ``provider: custom`` with an inline ``base_url`` + ``api_mode``, and re-registering
+    that same endpoint as a named ``custom:<slug>`` row on every dashboard re-save is what let
+    the picker rewrite the CLI's shape into ``custom:<slug>`` + ``base_url: ''``. Only a
+    GENUINELY new endpoint gets a named row.
+    """
     try:
         from hermes_cli.main_provider_setup import _auto_provider_name, _save_custom_provider
 
@@ -660,7 +716,7 @@ def _stale_aux_pins(cfg: dict, new_provider: str) -> list:
     aux_cfg = cfg.get("auxiliary", {})
     if not isinstance(aux_cfg, dict):
         return stale_aux
-    for slot in _AUX_TASK_SLOTS:
+    for slot in _aux_task_slots():
         slot_cfg = aux_cfg.get(slot)
         if not isinstance(slot_cfg, dict):
             continue
@@ -703,6 +759,13 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
     provider, model = result.target_provider, result.new_model
     provider_entry = _provider_entry(cfg, provider)
+    # Snapshot BEFORE the new assignment overwrites cfg["model"]: this is the state the user
+    # (CLI setup, a prior dashboard save) already had on disk, and it decides whether the
+    # endpoint is genuinely NEW (register a named custom_providers row) or already known
+    # (keep the existing shape — #76324).
+    provider_lc = provider.strip().lower()
+    endpoint_already_known = (
+        provider_lc in {"custom", "local"} and bool(base_url) and _endpoint_known_to_config(cfg, base_url))
     model_cfg = _apply_main_model_assignment(cfg.get("model", {}), result, api_key)
     _resolve_assignment_credentials(model_cfg, provider, provider_entry)
     cfg["model"] = model_cfg
@@ -710,7 +773,7 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     new_provider = provider.strip().lower()
     gateway_tools = _apply_nous_gateway_defaults(cfg) if new_provider == "nous" else []
     save_config(cfg)
-    if new_provider in {"custom", "local"} and base_url:
+    if new_provider in {"custom", "local"} and base_url and not endpoint_already_known:
         _register_custom_endpoint(base_url, api_key, model)
     # The serve process's boot record may still say "nothing configured"; the chat gates on it.
     reconcile_record()
@@ -756,10 +819,11 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
         return slot_cfg if isinstance(slot_cfg, dict) else {}
 
     effort = _normalize_aux_reasoning_effort(reasoning_effort) if reasoning_effort is not _UNSET else _UNSET
+    slots = _aux_task_slots()
 
     if task == "__reset__":
         # Reset every slot to provider="auto", model="", no effort override — keeps other fields intact.
-        for slot in _AUX_TASK_SLOTS:
+        for slot in slots:
             slot_cfg = _slot(slot)
             slot_cfg["provider"] = "auto"
             slot_cfg["model"] = ""
@@ -774,10 +838,10 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
     if not provider:
         raise HTTPException(status_code=400, detail="provider required for auxiliary")
 
-    targets = [task] if task else list(_AUX_TASK_SLOTS)
+    targets = [task] if task else list(slots)
     new_provider = provider.strip().lower()
     for slot in targets:
-        if slot not in _AUX_TASK_SLOTS:
+        if slot not in slots:
             raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")
         slot_cfg = _slot(slot)
         prev_provider = str(slot_cfg.get("provider") or "").strip().lower()

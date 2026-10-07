@@ -80,13 +80,19 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str, run_turn=None
     if not goal_text:
         return
 
-    def _quiet_turn(prompt: str) -> str:
+    def _quiet_turn(prompt: str) -> dict:
         result = cli.agent.run_conversation(user_message=prompt, conversation_history=cli.conversation_history)
         _sync_cli_session_id_from_agent(cli)
         resp = result.get("final_response", "") if isinstance(result, dict) else str(result)
         if resp:
             print(resp)
-        return resp or ""
+        # Carry failed/failure_reason so run_kanban_goal_loop can stop on a failed
+        # worker turn instead of grinding out empty continuation turns (#91264).
+        return {
+            "response": resp or "",
+            "failed": result.get("failed", False) if isinstance(result, dict) else False,
+            "failure_reason": result.get("failure_reason") if isinstance(result, dict) else None,
+        }
 
     def _task_status() -> "str | None":
         with _kbc.connect_closing() as c:

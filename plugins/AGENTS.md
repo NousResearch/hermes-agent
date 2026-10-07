@@ -16,15 +16,25 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 
 ## What may live in this tree (policy)
 
-- **No new in-tree memory providers (May 2026).** `plugins/memory/` is closed (mem0, byterover,
-  holographic, openviking, retaindb stay; bug fixes welcome). hindsight (Sep 2026), honcho and
-  supermemory (Oct 2026) moved to the plugin catalog — `plugin-catalog/<name>.yaml`, auto-installed by
+- **No new in-tree memory providers (May 2026).** `plugins/memory/` is closed (byterover,
+  holographic, retaindb stay until their Oct 15 2026 removal). hindsight (Sep 2026), honcho,
+  supermemory, mem0 and openviking (Oct 2026) moved to the plugin catalog — `plugin-catalog/<name>.yaml`, auto-installed by
   `hermes_cli/memory_provider_migration.py` for homes still configured for them. Host-side code a
   catalog provider still relies on (the `honcho_host_block` config storage kind, profile clone /
   rename / update-sync hooks) resolves the provider's modules through
   `plugins.memory.import_provider_module`, never a `plugins.memory.<name>` import. New
   backends ship as standalone repos implementing the same `MemoryProvider` ABC, discovered through
   the same path, integrated via `hermes memory setup` / `post_setup()`.
+- **Other features that leave core** (Home Assistant platform + toolset, Oct 2026 →
+  `plugin-catalog/homeassistant.yaml`) keep their names/config/env and get a row in
+  `hermes_cli/left_core_migration.py::LEFT_CORE` (catalog plugin + read-only "this home uses it"
+  predicate); `hermes update` and agent/gateway start install the plugin for homes that used it.
+  Installing and converting core-era state are separate steps: the toolset-scope conversion runs
+  once per home and row (`_left_core_scoped` in config.yaml) even when the plugin is already there.
+  The automatic install also happens once per home and row (`_left_core_installed`, written only
+  once the plugin dir exists): a later `hermes plugins remove` sticks, a failed install retries.
+  Core special cases become `PlatformEntry` seams the plugin sets (`trusted_inbound`,
+  `display_tier`, `shared_env_prefixes`), never a name check.
 - **No new third-party-product plugins (June 2026).** Observability/metrics backends, vendor SaaS
   connectors, analytics dashboards, paid-service tie-ins ship as standalone plugin repos
   (`~/.hermes/plugins/` or pip entry point) promoted in Discord `#plugins-skills-and-skins`. Reason:

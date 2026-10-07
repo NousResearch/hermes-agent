@@ -326,10 +326,20 @@ export const $newChatConnectionId = atom<null | string>(null)
 // source policy; only this pinned intent suppresses the ambient fallback.
 let legacyNewChatProfile: null | string = null
 
+// Bumped by every new-chat owner intent (each one captures its source). Async
+// work that re-homes the draft late compares it to tell a newer intent from
+// its own, even when the newer intent repeats the same route values.
+let newChatIntentRevision = 0
+
+export function currentNewChatIntent(): number {
+  return newChatIntentRevision
+}
+
 /** Capture the registry source a new-chat profile intent lands on — by
  *  default the active one; callers that dial a different door (a profile
  *  pick, see profilePickConnectionId) pass the source that door uses. */
 export function captureNewChatSource(connectionId: null | string = activeGatewayConnectionId()): void {
+  newChatIntentRevision += 1
   legacyNewChatProfile = null
   $newChatConnectionId.set(connectionId)
 }

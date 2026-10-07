@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
 from hermes_constants import (
@@ -91,7 +92,7 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # dashboard) skip bundled-skill seeding. Delete the file to opt back in.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 
-# ``profile.yaml`` ``role`` values. A role grants backend capabilities (the setup toolset), so
+# ``profile.yaml`` ``role`` values. A role marks a backend-created profile (setup) and grants no toolset;
 # only the backend writes one, and a copy of a profile (clone-all, import) never inherits it.
 SETUP_ROLE = "setup"
 PROFILE_ROLES = frozenset({SETUP_ROLE})
@@ -148,8 +149,8 @@ def _clone_all_copytree_ignore(source_dir: Path):
     return _ignore
 
 
-# OS credential dirs (file_safety.build_write_denied_prefixes) + direnv .envrc (_BLOCKED_PROJECT_ENV_BASENAMES).
-_OS_CREDENTIAL_STORES = (".ssh", ".aws", ".gnupg", ".kube", ".envrc")
+# OS credential dirs (file_safety.HOME_CREDENTIAL_DIRS) + direnv .envrc (_BLOCKED_PROJECT_ENV_BASENAMES).
+_OS_CREDENTIAL_STORES = (*HOME_CREDENTIAL_DIRS, ".envrc")
 
 # Credential stores in a profile home, as paths relative to it, plus the directories where Hermes
 # keeps recovery copies of them. Never shipped in a profile export, and user-owned (never
@@ -228,7 +229,7 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
     "hermes-agent",         # repo checkout (multi-GB)
     ".worktrees",           # git worktrees
     "profiles",             # other profiles — never recursive-export
-    "bin",                  # installed binaries (tirith, etc.)
+    "bin",                  # installed binaries
     "node_modules",         # npm packages
     ".hermes-runtime",      # managed runtime tree (install artifact)
     "node",                 # legacy pre-split managed Node tree
@@ -2234,7 +2235,7 @@ def _default_export_ignore(root_dir: Path):
         # Universal exclusions and credential names (any depth) plus npm lockfiles that can appear at root.
         ignored = _non_exportable_entries(directory, contents)
         ignored.update({"package.json", "package-lock.json"} & set(contents))
-        ignored.update(_EXPORT_CREDENTIAL_FILES & set(contents))
+        ignored.update(_export_credential_entries(directory, contents))
         if Path(directory) == root_dir:
             ignored.update(entry for entry in contents if entry not in _DEFAULT_EXPORT_INCLUDE_ROOT)
         return ignored
@@ -2247,6 +2248,15 @@ def _default_export_ignore(root_dir: Path):
 # its persistent Chromium profile (Cookies, Login Data — the bot's live web sessions), Xauthority, sockets.
 # The OS stores are dropped wherever they sit (a skill dir copied from a home carries its ``.ssh``).
 _EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env", "bot-desktop", *_OS_CREDENTIAL_STORES})
+_EXPORT_CREDENTIAL_PARTS = tuple(tuple(p.split("/")) for p in _EXPORT_CREDENTIAL_FILES)
+
+
+def _export_credential_entries(directory: str, contents: list) -> set:
+    """Entries of *directory* that are an _EXPORT_CREDENTIAL_FILES store: matched on trailing path
+    components, so ``.config/gh`` drops at any depth while the rest of ``.config`` ships."""
+    parts = Path(directory).parts
+    return {entry for entry in contents for store in _EXPORT_CREDENTIAL_PARTS
+            if entry == store[-1] and parts[len(parts) + 1 - len(store):] == store[:-1]}
 
 # Text/config suffixes secret-scrubbed on export; binary DBs, images etc. are left alone.
 _EXPORT_REDACT_SUFFIXES = frozenset({
@@ -2307,7 +2317,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
     # credential exclusion for named profiles.
     def _ignore_credentials(directory: str, contents: list) -> set:
         ignored = _non_exportable_entries(directory, contents)
-        ignored.update(_EXPORT_CREDENTIAL_FILES & set(contents))
+        ignored.update(_export_credential_entries(directory, contents))
         rel = Path(directory).relative_to(profile_dir).parts
         ignored.update(e for e in contents if profile_path_is_private((*rel, e)))
         if Path(directory) == profile_dir:

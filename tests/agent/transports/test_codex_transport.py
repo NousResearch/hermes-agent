@@ -53,7 +53,7 @@ class TestCodexBuildKwargs:
             reasoning_config=reasoning,
             github_reasoning_extra=ReasoningParamsMixin._github_models_reasoning_extra_body(agent),
         )
-        assert kw.get("reasoning") == ({"effort": expected} if expected else None)
+        assert kw.get("reasoning") == ({"effort": expected, "summary": "auto"} if expected else None)
 
     def test_astra_direct_request_applies_model_contract_after_overrides(self, transport):
         kw = transport.build_kwargs(

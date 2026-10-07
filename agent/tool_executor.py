@@ -1166,15 +1166,18 @@ def _persist_multimodal_text_parts(result: dict, tool_name: str, tool_call_id: s
     entirely and ride every later request inline. Image parts are left untouched (their size is
     governed by the vision embed budget); a fresh dict is returned so history is never mutated."""
     parts = result.get("content") or []
-    bounded_parts, first_replacement = [], None
+    bounded_parts, first_replacement, spilled = [], None, 0
     for part in parts:
         text = part.get("text") if isinstance(part, dict) and part.get("type") == "text" else None
         if isinstance(text, str):
-            replaced = maybe_persist_tool_result(content=text, tool_name=tool_name, tool_use_id=tool_call_id,
+            # One spill file per part: a second oversized part under the same id would overwrite the first's file.
+            part_id = tool_call_id if not spilled else f"{tool_call_id}_part{spilled}"
+            replaced = maybe_persist_tool_result(content=text, tool_name=tool_name, tool_use_id=part_id,
                                                  env=env, config=budget)
             if replaced != text:
                 part = {**part, "text": replaced}
                 first_replacement = first_replacement or replaced
+                spilled += 1
         bounded_parts.append(part)
     if first_replacement is None:
         return result

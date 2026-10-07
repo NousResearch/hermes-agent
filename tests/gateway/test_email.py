@@ -379,8 +379,12 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
     def test_only_a_missing_auth_results_header_warns_with_the_opt_out_hint(self):
         """A granted sender's mail with no Authentication-Results suggests a server that never stamps it, so the drop
         warns with the opt-out hint; no stamp from the pinned authserv-id warns to check authserv_id; a listed sender's
-        failing verdict warns without a hint; forged stranger mail under open access stays at debug."""
-        from plugins.platforms.email.adapter import _UNTRUSTED_AUTHSERV_REASON
+        failing verdict warns without a hint; forged stranger mail under open access stays at debug. A missing
+        authserv_id pin warns once per account from connect(), including when the account first comes up via a
+        reconnect after a failed initial connect."""
+        import asyncio
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import _MISSING_AUTHSERV_REASON, _UNTRUSTED_AUTHSERV_REASON, EmailAdapter
 
         adapter_log = "plugins.platforms.email.adapter"
         with self.assertLogs(adapter_log, level="WARNING") as logs:
@@ -391,6 +395,35 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
                                                    env={"EMAIL_ALLOWED_USERS": self.STRANGER}), [])
         self.assertIn("authserv_id", logs.output[0])
         self.assertNotIn("require_authenticated_sender", logs.output[0])
+        # No pin drops every message of the account, so connect() names the fix (pin, or the explicit opt-out) once
+        # per account: the first successful connect warns even when it is a reconnect after a failed startup, later
+        # reconnects do not, each unpinned mailbox warns once, pinned/opted-out stay quiet.
+        EmailAdapter._missing_pin_warned.clear()
+
+        def connect(address, extra=None, is_reconnect=False, fail=False):
+            with patch.dict(os.environ, {"EMAIL_ADDRESS": address, "EMAIL_PASSWORD": "secret",
+                                         "EMAIL_IMAP_HOST": "imap.test.com", "EMAIL_SMTP_HOST": "smtp.test.com"}):
+                adapter = EmailAdapter(PlatformConfig(enabled=True, extra=extra or {}))
+            imap = MagicMock()
+            imap.uid.return_value = ("OK", [b""])
+            imap_patch = patch("imaplib.IMAP4_SSL", side_effect=OSError("down")) if fail else patch("imaplib.IMAP4_SSL", return_value=imap)
+            with imap_patch, patch.object(adapter, "_connect_smtp"):
+                self.assertEqual(asyncio.run(adapter.connect(is_reconnect=is_reconnect)), not fail)
+
+        with self.assertLogs(adapter_log, level="WARNING") as logs:
+            connect("one@test.com", fail=True)
+            connect("one@test.com", is_reconnect=True)
+            connect("one@test.com", is_reconnect=True)
+            connect("two@test.com")
+            connect("pinned@test.com", {"authserv_id": "mx.ourserver.com"})
+            connect("optout@test.com", {"require_authenticated_sender": False})
+        logs.output[:] = [line for line in logs.output if _MISSING_AUTHSERV_REASON in line]
+        self.assertEqual([line.split(": ")[0] for line in logs.output],
+                         ["WARNING:plugins.platforms.email.adapter:[Email] one@test.com",
+                          "WARNING:plugins.platforms.email.adapter:[Email] two@test.com"], logs.output)
+        self.assertIn(_MISSING_AUTHSERV_REASON, logs.output[1])
+        self.assertIn("EMAIL_AUTHSERV_ID", logs.output[1])
+        self.assertIn("EMAIL_TRUST_FROM_HEADER=true", logs.output[1])
         with self.assertNoLogs(adapter_log, level="WARNING"):
             self.assertEqual(self._reached_gateway(authenticated=False, auth_reason="dmarc=fail",
                                                    env={"EMAIL_ALLOW_ALL_USERS": "true"}), [])
@@ -1289,7 +1322,8 @@ class TestSenderAuthentication(unittest.TestCase):
             msg["Authentication-Results"] = ar
         return msg
 
-    def _verify(self, from_addr, auth_results=None, authserv_id=""):
+    def _verify(self, from_addr, auth_results=None, authserv_id="mx.ourserver.com"):
+        """Rows stamp the pinned receiver's id, so a verdict is judged on its content, not on a pin mismatch."""
         from plugins.platforms.email.adapter import (
             _verify_sender_authentication,
             _extract_email_address,
@@ -1301,55 +1335,55 @@ class TestSenderAuthentication(unittest.TestCase):
     def test_auth_results_verdicts(self):
         ok, reason = self._verify(
             "Admin <admin@example.com>",
-            ["mx.google.com; dmarc=pass header.from=example.com; spf=pass"],
+            ["mx.ourserver.com; dmarc=pass header.from=example.com; spf=pass"],
         )
         self.assertTrue(ok, reason)
         # A dmarc=pass issued for another domain must not vouch for this From,
         # even when a later dkim clause carries an aligned header.from.
         # Verdict and header.from are read from the one dmarc clause, with (comments) stripped first.
-        for ar in ("mx.google.com; dmarc=pass header.from=evil.test",
-                   "mx.google.com; dmarc=pass header.from=evil.test; dkim=pass header.d=x.test header.from=example.com",
-                   "mx.google.com; dmarc=pass (p=none; sp=none) header.from=evil.test",
-                   "mx.google.com; dmarc=fail header.from=example.com; dmarc=pass header.from=evil.test",
+        for ar in ("mx.ourserver.com; dmarc=pass header.from=evil.test",
+                   "mx.ourserver.com; dmarc=pass header.from=evil.test; dkim=pass header.d=x.test header.from=example.com",
+                   "mx.ourserver.com; dmarc=pass (p=none; sp=none) header.from=evil.test",
+                   "mx.ourserver.com; dmarc=fail header.from=example.com; dmarc=pass header.from=evil.test",
                    # every header.from in the dmarc clause must align, not just one
-                   "mx.google.com; dmarc=pass header.from=evil.test header.from=example.com",
+                   "mx.ourserver.com; dmarc=pass header.from=evil.test header.from=example.com",
                    # ';' inside quoted-strings / nested comments must not split or smuggle a dmarc clause
-                   'mx.google.com; spf=pass smtp.mailfrom="x;dmarc=pass header.from=example.com x"@evil.test; '
+                   'mx.ourserver.com; spf=pass smtp.mailfrom="x;dmarc=pass header.from=example.com x"@evil.test; '
                    "dmarc=fail header.from=example.com",
-                   "mx.google.com; dmarc=pass (a (b) ; header.from=example.com) header.from=evil.test",
-                   'mx.google.com; dmarc=pass reason="a;b" header.from=evil.test',
-                   "mx.google.com; dmarc=pass a) ; header.from=evil.test",  # stray ')' is unbalanced
-                   "mx.google.com; dmarc=pass header.from=example.com; dmarc=pass header.from=evil.test",
-                   "mx.google.com; dmarc=pass (a ; header.from=evil.test",
-                   r'mx.google.com; spf=pass smtp.mailfrom="x\\";dmarc=pass header.from=example.com;x="y"; '
+                   "mx.ourserver.com; dmarc=pass (a (b) ; header.from=example.com) header.from=evil.test",
+                   'mx.ourserver.com; dmarc=pass reason="a;b" header.from=evil.test',
+                   "mx.ourserver.com; dmarc=pass a) ; header.from=evil.test",  # stray ')' is unbalanced
+                   "mx.ourserver.com; dmarc=pass header.from=example.com; dmarc=pass header.from=evil.test",
+                   "mx.ourserver.com; dmarc=pass (a ; header.from=evil.test",
+                   r'mx.ourserver.com; spf=pass smtp.mailfrom="x\\";dmarc=pass header.from=example.com;x="y"; '
                    "dmarc=fail header.from=example.com",
                    # spf/dkim verdicts and domains come only from their own clause, never quoted text or comments
-                   'mx.google.com; spf=fail smtp.mailfrom="x spf=pass smtp.mailfrom=example.com "@evil.test; '
+                   'mx.ourserver.com; spf=fail smtp.mailfrom="x spf=pass smtp.mailfrom=example.com "@evil.test; '
                    "dmarc=fail header.from=example.com",
-                   "mx.google.com; spf=fail (spf=pass) smtp.mailfrom=a@example.com",
-                   "mx.google.com; spf=fail smtp.mailfrom=a.spf=pass@example.com; dmarc=fail header.from=example.com",
-                   'mx.google.com; dkim=pass header.d=evil.test header.i="x header.d=example.com y"@evil.test',
-                   "mx.google.com; spf=pass smtp.mailfrom=example.com; spf=fail smtp.mailfrom=evil.test",
-                   "mx.google.com; spf=fail smtp.mailfrom=evil.test; spf=pass smtp.mailfrom=example.com",
-                   "mx.google.com; dkim=pass header.d=evil.test; dkim=fail header.d=example.com",
-                   'mx.google.com; dkim=pass header.i="x header.d=example.com"@evil.test',
+                   "mx.ourserver.com; spf=fail (spf=pass) smtp.mailfrom=a@example.com",
+                   "mx.ourserver.com; spf=fail smtp.mailfrom=a.spf=pass@example.com; dmarc=fail header.from=example.com",
+                   'mx.ourserver.com; dkim=pass header.d=evil.test header.i="x header.d=example.com y"@evil.test',
+                   "mx.ourserver.com; spf=pass smtp.mailfrom=example.com; spf=fail smtp.mailfrom=evil.test",
+                   "mx.ourserver.com; spf=fail smtp.mailfrom=evil.test; spf=pass smtp.mailfrom=example.com",
+                   "mx.ourserver.com; dkim=pass header.d=evil.test; dkim=fail header.d=example.com",
+                   'mx.ourserver.com; dkim=pass header.i="x header.d=example.com"@evil.test',
                    # an escaped quote keeps the quoted-string open, so no dmarc clause is smuggled out of it
-                   r'mx.google.com; spf=fail smtp.mailfrom="a\";dmarc=pass header.from=example.com;x=\""@evil.test'):
+                   r'mx.ourserver.com; spf=fail smtp.mailfrom="a\";dmarc=pass header.from=example.com;x=\""@evil.test'):
             ok, reason = self._verify("Admin <admin@example.com>", [ar])
             self.assertFalse(ok, ar)
         # Real MTA headers (multi-signature DKIM, comments, quoted values) keep authenticating.
-        for ar in ("mx.google.com; arc=pass (dmarc=fail header.from=evil.test); dmarc=pass header.from=example.com",
-                   'mx.google.com; dmarc=pass reason="a;b" header.from="example.com"',
-                   'mx.google.com; dmarc=pass reason="header.from=evil.test" header.from=example.com',
-                   "mx.google.com; dkim=pass header.i=@example.com header.s=s1 header.b=AbC; spf=pass (google.com: "
+        for ar in ("mx.ourserver.com; arc=pass (dmarc=fail header.from=evil.test); dmarc=pass header.from=example.com",
+                   'mx.ourserver.com; dmarc=pass reason="a;b" header.from="example.com"',
+                   'mx.ourserver.com; dmarc=pass reason="header.from=evil.test" header.from=example.com',
+                   "mx.ourserver.com; dkim=pass header.i=@example.com header.s=s1 header.b=AbC; spf=pass (google.com: "
                    "domain of admin@example.com designates 1.2.3.4 as permitted sender) smtp.mailfrom=admin@example.com; "
                    "dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=example.com",
-                   "spf=pass (sender IP is 1.2.3.4) smtp.mailfrom=example.com; dkim=pass (signature was verified) "
+                   "mx.ourserver.com; spf=pass (sender IP is 1.2.3.4) smtp.mailfrom=example.com; dkim=pass (signature was verified) "
                    "header.d=example.com;dmarc=pass action=none header.from=example.com;compauth=pass reason=100",
-                   "mail.example.org; dmarc=pass (p=none dis=none) header.from=example.com",
-                   'mail.example.org; dkim=pass (2048-bit key; unprotected) header.d=example.com header.i=@example.com '
+                   "mx.ourserver.com; dmarc=pass (p=none dis=none) header.from=example.com",
+                   'mx.ourserver.com; dkim=pass (2048-bit key; unprotected) header.d=example.com header.i=@example.com '
                    'header.b="AbC+/1"; spf=pass smtp.mailfrom=example.com',
-                   "mx.example.org; dkim=pass (1024-bit key) header.d=esp.test header.i=@esp.test; "
+                   "mx.ourserver.com; dkim=pass (1024-bit key) header.d=esp.test header.i=@esp.test; "
                    "dkim=pass (2048-bit key) header.d=example.com header.i=@example.com; spf=softfail "
                    "smtp.mailfrom=bounce@esp.test"):
             ok, reason = self._verify("Admin <admin@example.com>", [ar])
@@ -1359,7 +1393,7 @@ class TestSenderAuthentication(unittest.TestCase):
     def test_dkim_pass_aligned_authenticates(self):
         ok, reason = self._verify(
             "admin@example.com",
-            ["mx.google.com; dkim=pass header.d=example.com"],
+            ["mx.ourserver.com; dkim=pass header.d=example.com"],
         )
         self.assertTrue(ok, reason)
 
@@ -1367,7 +1401,7 @@ class TestSenderAuthentication(unittest.TestCase):
         # SPF passes for the envelope domain, but it doesn't match From: domain.
         ok, reason = self._verify(
             "admin@example.com",
-            ["mx.google.com; spf=pass smtp.mailfrom=bounce@evil.com"],
+            ["mx.ourserver.com; spf=pass smtp.mailfrom=bounce@evil.com"],
         )
         self.assertFalse(ok, reason)
 
@@ -1375,6 +1409,8 @@ class TestSenderAuthentication(unittest.TestCase):
     def test_only_topmost_exact_authserv_id_is_trusted(self):
         """Never search below the authoritative field or relax an authserv-id pin.
         The subdomain and comment-smuggled rows carry dmarc=pass, so only the exact pin rejects them."""
+        from plugins.platforms.email.adapter import _MISSING_AUTHSERV_REASON
+
         forged_lower = "mx.ourserver.com; dmarc=pass header.from=example.com"
         for topmost in (
             "mx.ourserver.com; dmarc=fail header.from=example.com",
@@ -1388,6 +1424,10 @@ class TestSenderAuthentication(unittest.TestCase):
                     authserv_id="mx.ourserver.com",
                 )
                 self.assertFalse(ok, reason)
+        # No pin at all: the topmost header may be one the sender wrote (a self-hosted MTA that stamps nothing).
+        ok, reason = self._verify("owner@allowed.example", ["attacker.self; dmarc=pass header.from=allowed.example"],
+                                  authserv_id="")
+        self.assertEqual((ok, reason), (False, _MISSING_AUTHSERV_REASON))
 
         # Matching remains case-insensitive and accepts RFC 8601 CFWS comments,
         # including a semicolon inside a nested comment.

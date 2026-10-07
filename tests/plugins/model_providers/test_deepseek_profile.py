@@ -74,6 +74,32 @@ class TestDeepSeekThinkingWireShape:
         # No effort when disabled — DeepSeek rejects it.
         assert top_level == {}
 
+    @pytest.mark.parametrize(
+        "reasoning_config",
+        [
+            {"effort": "none"},
+            {"effort": "false"},
+            {"effort": "disabled"},
+            {"effort": "NONE"},
+            {"enabled": True, "effort": "none"},
+        ],
+    )
+    def test_effort_none_without_enabled_false_sends_disabled(
+        self, deepseek_profile, reasoning_config
+    ):
+        """UI/CLI ``none`` can arrive as ``{effort: "none"}`` without ``enabled: False``.
+
+        ``_session_info`` / ``_cfg_get_reasoning`` already report that as Off, but
+        the plugin used to fall through to ``thinking: enabled`` (#107238).
+        """
+        extra_body, top_level = deepseek_profile.build_api_kwargs_extras(
+            reasoning_config=reasoning_config,
+            model="deepseek-v4.1-flash-expires-on-0910",
+        )
+        assert extra_body == {"thinking": {"type": "disabled"}}
+        assert top_level == {}
+        assert "reasoning_effort" not in top_level
+
     def test_disabled_ignores_effort_field(self, deepseek_profile):
         """Effort silently dropped when thinking is off."""
         _, top_level = deepseek_profile.build_api_kwargs_extras(
@@ -177,6 +203,55 @@ class TestDeepSeekFullKwargsIntegration:
         )
         assert "reasoning_effort" not in kwargs
         assert "extra_body" not in kwargs or "thinking" not in kwargs.get("extra_body", {})
+
+    def test_unset_full_kwargs_still_enable_thinking(self, deepseek_profile):
+        """CONTROL: rc=None on V4 must keep thinking=enabled (echo-trap / #106648)."""
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="deepseek-v4.1-flash-expires-on-0910",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=deepseek_profile,
+            reasoning_config=None,
+            base_url="https://api.deepseek.com/v1",
+            provider_name="deepseek",
+        )
+        assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+        assert "reasoning_effort" not in kwargs
+
+    def test_effort_none_full_kwargs_disable_thinking(self, deepseek_profile):
+        """CLI/UI ``none`` as ``{effort: "none"}`` (no enabled:False) must disable."""
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="deepseek-v4.1-flash-expires-on-0910",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=deepseek_profile,
+            reasoning_config={"effort": "none"},
+            base_url="https://api.deepseek.com/v1",
+            provider_name="deepseek",
+        )
+        assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert "reasoning_effort" not in kwargs
+
+    def test_cli_parse_none_full_kwargs_disable_thinking(self, deepseek_profile):
+        """``--reasoning none`` / ``parse_reasoning_effort('none')`` → disabled on the wire."""
+        from agent.transports.chat_completions import ChatCompletionsTransport
+        from hermes_constants import parse_reasoning_effort
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=deepseek_profile,
+            reasoning_config=parse_reasoning_effort("none"),
+            base_url="https://api.deepseek.com/v1",
+            provider_name="deepseek",
+        )
+        assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert "reasoning_effort" not in kwargs
 
 
 class TestDeepSeekAuxModel:

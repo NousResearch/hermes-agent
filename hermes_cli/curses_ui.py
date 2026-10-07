@@ -350,7 +350,20 @@ def _parse_csi_numbers(raw: str) -> list[int]:
     return [_parse_int(part.split(":", 1)[0]) for part in raw.split(";")]
 
 
-_ENHANCED_NAV = {10: NAV_SELECT, 13: NAV_SELECT, 27: NAV_CANCEL, 32: NAV_TOGGLE}
+_ENHANCED_NAV = {
+    10: NAV_SELECT, 13: NAV_SELECT, 27: NAV_CANCEL, 32: NAV_TOGGLE,
+    # kitty reports keypad keys as Private Use Area codepoints — its own encoding, with no
+    # xterm equivalent — so numpad navigation arrived here as an unrecognised codepoint and
+    # did nothing, while the arrow cluster kept working through the legacy CSI-letter path
+    # (_CSI_FINAL_NAV). Mirrors _decode_menu_key EXACTLY rather than inventing behaviour.
+    # KP_Right, KP_PageUp/PageDown and KP_Home/End are deliberately absent because the
+    # ordinary Right/PageUp/Home keys do nothing here either — the keypad should behave like
+    # the keys it stands in for, not gain navigation the arrow cluster lacks. KP_Enter is
+    # absent for the same reason: codepoint 13 above already covers Enter.
+    57419: NAV_UP,    # KP_Up
+    57420: NAV_DOWN,  # KP_Down
+    57417: NAV_BACK,  # KP_Left, matching curses.KEY_LEFT
+}
 
 
 def _enhanced_key_action(codepoint: int, modifier: int = 1) -> str:

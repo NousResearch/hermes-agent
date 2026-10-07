@@ -522,6 +522,25 @@ export function stashedDraftScopes(): string[] {
 }
 
 /**
+ * Append recovered text (an unsent clarify answer, #58783) to a session's
+ * stashed draft — never replacing text the user may have typed since. The
+ * composer's scope swap restores the stash, so the recovered answer reappears
+ * with the session instead of being silently destroyed.
+ */
+export function appendSessionDraft(scope: string | null | undefined, text: string) {
+  const value = text.trim()
+
+  if (!value) {
+    return
+  }
+
+  const current = takeSessionDraft(scope)
+  const separator = current.text && !current.text.endsWith('\n') ? '\n\n' : ''
+
+  stashSessionDraft(scope, `${current.text}${separator}${value}`, current.attachments)
+}
+
+/**
  * Move a stashed composer draft from one session key onto another.
  *
  * Auto-compression rotates the live stored tip id (root → continuation) while

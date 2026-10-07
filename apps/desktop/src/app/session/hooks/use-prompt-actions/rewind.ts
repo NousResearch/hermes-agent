@@ -771,6 +771,56 @@ export function revalidateEditPlan<P extends EditPlan>(
   return { ...plan, ...fresh, confirmDeepTruncate: (plan as P & { confirmDeepTruncate?: boolean }).confirmDeepTruncate }
 }
 
+/**
+ * Edit's plan step around the deep-cut confirm. Returns the plan and the transcript it is aimed at,
+ * null when there is nothing to send (declined, nothing changed, or the confirm was answered after
+ * the session switched away), or 'moved' when the edited turn moved during the confirm.
+ * *answeredFor* is the transcript a 4033 confirm already covered: the re-run forces the deep cut
+ * only while the transcript is still exactly that one.
+ */
+export async function planEditAfterConfirm(opts: {
+  answeredFor?: ChatMessage[]
+  confirmDeep: () => Promise<boolean>
+  current: () => ChatMessage[]
+  edited: AppendMessage
+  planning: ChatMessage[]
+  stillOwned: () => boolean
+}): Promise<'moved' | null | { messages: ChatMessage[]; plan: EditPlan & { confirmDeepTruncate: boolean } }> {
+  const { answeredFor, confirmDeep, current, edited, planning, stillOwned } = opts
+  const forceDeep = answeredFor !== undefined && answeredFor === planning
+  const planned = await planConfirmedEdit(planning, edited, forceDeep ? async () => true : confirmDeep)
+  const forced = planned && forceDeep ? { ...planned, confirmDeepTruncate: true } : planned
+
+  if (!forced || !stillOwned()) {
+    return null
+  }
+
+  // Edit interrupts a live turn on purpose, so busy is fine; after a confirm wait the plan is
+  // re-aimed at the current transcript (a stream may have grown it).
+  const messages = forced.confirmDeepTruncate ? current() : planning
+  const plan = messages === planning ? forced : revalidateEditPlan(forced, planning, messages, edited)
+
+  return plan ? { messages, plan } : 'moved'
+}
+
+/**
+ * A stale-target retry re-addresses the same turn after a history refresh. The user's deep-cut
+ * answer covers the later turns they saw; if the refresh shows more, the retry goes unconfirmed and
+ * the server gate decides.
+ */
+export function retryKeepsDeepConfirm(
+  plan: EditPlan & { confirmDeepTruncate: boolean },
+  planned: ChatMessage[],
+  retryPlan: EditPlan | null,
+  refreshed: ChatMessage[]
+): boolean {
+  return (
+    plan.confirmDeepTruncate &&
+    retryPlan !== null &&
+    laterVisibleUserTurns(refreshed, retryPlan.sourceIndex) === laterVisibleUserTurns(planned, plan.sourceIndex)
+  )
+}
+
 /** Optimistic rewind-to state for restore/edit: drop everything after the
  *  source turn (edit swaps in the edited message; restore keeps the original). */
 export function applyRewindOptimistic(

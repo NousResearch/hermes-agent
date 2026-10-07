@@ -451,7 +451,7 @@ _SPECS = [
              "class is reported and left untouched (fail-closed). Exits 0 when the DB is healthy "
              "or was repaired, non-zero when it is still corrupt."
          )),
-    _cmd("health", [_json_flag(help="Emit the health read as JSON")],
+    _cmd("health", [_json_flag(help="Emit the health read as JSON"), _TENANT],
          help="Report whether the ready queue can move, and name what holds it back",
          description=(
              "The board-health read that tells a STARVED board from an idle one: ready_total "
@@ -460,8 +460,9 @@ _SPECS = [
              "vocabulary), unavailable_by_reason (rows the queue never offers: unassigned, not a "
              "profile, claimed, per-profile cap) and state=starved|dispatchable|idle. A board "
              "whose every spawnable row is suppressed reports state=starved, whatever the row "
-             "count; an empty board reports state=idle. Read-only, and the same tuple the "
-             "dashboard renders and the dispatcher escalates as a card."
+             "count; an empty board reports state=idle. --tenant scopes the ready-lane read to "
+             "one tenant (omit for the whole board). Read-only, and the same tuple the dashboard "
+             "renders and the dispatcher escalates as a card."
          )),
 ]
 

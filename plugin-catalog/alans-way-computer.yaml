@@ -1,0 +1,31 @@
+name: alans-way-computer
+repo: https://github.com/capthvnsen/alans-way-agents
+sha: 09c6d3c2682013123be042ed8a9e4a3dba54fca8
+subdir: alans-way-computer
+version: "0.6.0"
+title: "Alan's Way Computer"
+description: >-
+  Computer-use provider for Hermes: the stock computer_use tool drives desktop apps on the user's computer
+  through the Alan's Way app, and on the VM's own desktop when the computer is offline. Needs the alans-way
+  plugin's workspace setup. Select it with computer_use.backend: alans-way-computer.
+  Disclosure: starts the workspace router from the profile's workspace_browser MCP block as a long-running
+  node child and talks to it over stdio (app screenshots, element lists and input actions); the router reaches the
+  user's computer over SSH on the user's tailnet. It never takes the focused window, and Hermes's computer_use
+  approval gate is unchanged.
+maintainer: capthvnsen
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/capthvnsen/alans-way-agents/tree/09c6d3c2682013123be042ed8a9e4a3dba54fca8/alans-way-computer
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Needs a Hermes build with the pluggable computer-use API (merged to main after 0.21.5). On older Hermes the plugin installs and does nothing. Install alans-way first and run its workspace setup, which writes the workspace_browser block this provider reuses."
+  - "Hermes asks for approval on every computer_use action type until it is granted. For an unattended Telegram bot, grant them once with Always in Telegram, or add cua:<action>:background entries to command_allowlist (see the README). Takes effect after a gateway restart."
+  - "Runs only in the plugin host: it cannot load under plugins.isolation: host, because the provider hands Hermes a live router session."
+  - "Typing without a target field is not available because the app never takes focus: the agent uses set_value on a field instead."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

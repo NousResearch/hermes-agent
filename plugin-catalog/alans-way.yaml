@@ -1,10 +1,15 @@
 name: alans-way
 repo: https://github.com/capthvnsen/alans-way-agents
-sha: a4cd39ad41a6da68149e74bd0876cf7945c0ba63
+sha: 09c6d3c2682013123be042ed8a9e4a3dba54fca8
 subdir: alans-way
-version: "0.5.0"
+version: "0.6.0"
 title: "Alan's Way"
-description: Proactive primary bot for a Hermes gateway running on a remote Linux machine or a macOS VM. After install, the workspace-setup skill walks that agent through a separate companion app and Tailscale setup on the user's computer (macOS or Windows).
+description: >-
+  Proactive primary bot for a Hermes gateway running on a Linux machine or a macOS guest VM. After install,
+  the workspace-setup skill walks that agent through a separate companion app and Tailscale setup on the
+  user's computer (macOS, Windows or Linux). Setup configures every bot profile and turns off the stock
+  browser and computer_use toolsets in favor of the workspace tools. Watches are propose-only: a proposed
+  watch runs only after the user approves it.
 maintainer: capthvnsen
 tier: community
 category: automation
@@ -13,7 +18,8 @@ docs_url: https://github.com/capthvnsen/alans-way
 readme: true
 platforms: [linux, macos]
 known_issues:
-  - "Install this on the machine that runs Hermes — a remote Linux host or a macOS guest VM — not on the user's primary computer. The companion app runs on Apple Silicon macOS or Windows x64. Ask the agent to set up Alan's Way. If the plugin is already installed, that setup must pass --skip-plugin so this pin stays."
+  - "Install this on the machine that runs Hermes (a Linux host or a macOS guest VM), not on the user's primary computer. Windows guests are new and untested on real hardware. If the plugin is already installed from the catalog, setup leaves it as it is, so this pin stays."
+  - "Setup turns off Hermes's browser and computer_use toolsets for Telegram so the agent uses the workspace tools. Pass --keep-browser or --keep-computer-use to leave them on."
 capabilities:
   provides_tools:
     - proactive_control

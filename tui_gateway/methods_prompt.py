@@ -436,6 +436,12 @@ def _row_ids_of(messages) -> set:
     return {row_id for message in messages if isinstance((row_id := _message_row_id(message)), int)}
 
 
+# Rollout (#133716, maintainer decision G15-B): one release warn-only, so an older Desktop or a
+# third-party client that predates confirm_deep_truncate keeps working while upgraded clients ask
+# before a deep cut on their own. The next release flips this to refuse with 4033.
+DEEP_TRUNCATE_ENFORCED = False
+
+
 def _archived_user_turns(session, sid, history, cut_index, survivor_ids) -> int:
     """User turns a cut at *cut_index* drops. A repaired live carrier stands for its whole merged
     run (own id + ``_absorbed_row_ids``), which can mix real user rows with display markers
@@ -501,15 +507,17 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
         archived_messages = len(history) - (
             cut_index if durable_prefix is not None else len(truncated))
         logger.warning(
-            "prompt.submit: REFUSED deep truncation of session %s (%d messages / %d user "
-            "turns would be archived; ordinal=%d).",
+            "prompt.submit: %s unconfirmed deep truncation of session %s (%d messages / %d user "
+            "turns; ordinal=%d).",
+            "REFUSED" if DEEP_TRUNCATE_ENFORCED else "ALLOWED (warn-only release)",
             sid, archived_messages, archived_user_turns, ordinal)
-        return _err(
-            rid, 4033,
-            "truncation would archive later user turns; resubmit with "
-            "confirm_deep_truncate=true if this is intended",
-            data={"archived_messages": archived_messages,
-                  "archived_user_turns": archived_user_turns}), {}
+        if DEEP_TRUNCATE_ENFORCED:
+            return _err(
+                rid, 4033,
+                "truncation would archive later user turns; resubmit with "
+                "confirm_deep_truncate=true if this is intended",
+                data={"archived_messages": archived_messages,
+                      "archived_user_turns": archived_user_turns}), {}
     log_fn = logger.warning if not truncated else logger.info
     log_fn(
         "prompt.submit: truncating session %s history %d -> %d messages (ordinal=%d)",

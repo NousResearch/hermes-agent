@@ -244,6 +244,10 @@ def test_skipped_oneshot_survives_recovery_by_any_save(cron_store, monkeypatch):
     clock["now"] = FIXED_NOW + timedelta(minutes=10)
     save_jobs(load_jobs() + [dict(_due_job("other"), next_run_at=(clock["now"] + timedelta(hours=1)).isoformat())])
     assert store_health.degraded_record(cron_store / "cron") is None
+    with monkeypatch.context() as m:  # fails again before the scan's save lands: still not missed
+        m.setattr(cronjobs, "_stage_jobs_payload", _enospc)
+        assert [d["id"] for d in get_due_jobs()] == ["once"]
+    save_jobs(load_jobs())  # second recovery
     assert [d["id"] for d in get_due_jobs()] == ["once"]
     stale = dict(once, id="stale")  # due during the outage, first scanned after the recovery scan
     save_jobs(load_jobs() + [stale])
@@ -301,9 +305,23 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
     from gateway.cron_store_notices import install_cron_store_notices
     from hermes_cli import cron as cron_cli
 
+    from cron import scheduler
+
     save_jobs([_due_job()])
     cron_dir = cron_store / "cron"
     monkeypatch.setattr(cron_cli, "_active_cron_provider_name", lambda: "chronos")
+    monkeypatch.setattr(scheduler, "_should_yield_tick_to_fresh_gateway", lambda: None)
+    monkeypatch.setattr(scheduler, "_sweep_mcp_orphans", lambda: None)
+
+    def read_only_lock(_path):
+        raise OSError(errno.EROFS, "Read-only file system")
+
+    with monkeypatch.context() as m:  # a read-only mount: .tick.lock cannot be opened for writing
+        m.setattr(scheduler, "_acquire_tick_lock", read_only_lock)
+        m.setattr(scheduler, "_get_lock_paths", lambda: (cron_dir, cron_dir / ".tick.lock"))
+        assert scheduler.tick(verbose=False, sync=True) == 0  # degrade, do not raise
+    assert "lock" in store_health.degraded_record(cron_dir).sites
+    store_health._degraded.clear()
     os.chmod(cron_dir, 0o500)
     try:
         cron_cli.cron_status()

@@ -25,6 +25,8 @@ from typing import Callable, Iterable, Optional
 logger = logging.getLogger("cron.jobs")
 
 PROBE_INTERVAL_SECONDS = 60.0
+# Store-write failures that degrade the store (the tick keeps running) instead of failing the tick.
+UNWRITABLE_ERRNOS = frozenset({errno.EROFS, errno.EACCES, errno.EPERM, errno.ENOSPC, errno.EDQUOT})
 # Below this the probe reports ENOSPC: an empty temp file can still be created on a full disk.
 _PROBE_MIN_FREE_BYTES = 1 << 20
 # `hermes doctor` warns below this, before the store actually starts failing.
@@ -62,7 +64,7 @@ class StoreDegraded:
 
 _DISPATCH_SITES = frozenset({"advance", "claim"})
 _degraded: dict[str, StoreDegraded] = {}
-# Each store's just-ended outage, kept until the next due scan (``outage_covers``): the save that
+# Each store's just-ended outage, kept until a due scan's save lands (``outage_covers``): the save that
 # ends an outage is often another job's heartbeat, landing before the scan that fires the
 # one-shots the outage skipped.
 _recovered: dict[str, StoreDegraded] = {}
@@ -104,8 +106,10 @@ def note_unwritable(exc: OSError, consequence: str, site: str, skipped_jobs: Ite
     with _lock:
         record = _degraded.get(store)
         entered = record is None
-        if entered:
-            record = _degraded[store] = StoreDegraded(store, time.time(), describe_error(exc))
+        if entered:  # an ended outage not yet seen by a saved scan carries over: keep its start
+            ended = _recovered.pop(store, None)
+            since = ended.since if ended is not None else time.time()
+            record = _degraded[store] = StoreDegraded(store, since, describe_error(exc))
         new_site = site not in record.sites
         record.sites.add(site)
         # A failed dispatch write throttles the next attempt; once dispatch has been tried, a failed
@@ -179,7 +183,7 @@ def dispatch_blocked(due_jobs: list) -> bool:
 
 
 def end_recovery_window(cron_dir: Path) -> None:
-    """A due scan ran after the outage ended: later scans apply the normal grace window again."""
+    """A due scan's save landed after the outage ended: normal grace applies again."""
     if _recovered:
         with _lock:
             _recovered.pop(str(cron_dir), None)

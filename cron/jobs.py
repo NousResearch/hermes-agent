@@ -3346,13 +3346,14 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 "Skipping malformed cron job %r during due scan",
                 job.get("name") or job.get("id") or "?")
 
-    store_health.end_recovery_window(_current_cron_store().cron_dir)
     if scan.needs_save:
         try:
             save_jobs(raw_jobs, removed_ids=scan.removed or None)
         except OSError as exc:  # repairs live in memory; the next tick retries the persist
             store_health.note_unwritable(exc, "due-scan repairs not persisted", "scan")
             return due
+    # Only now is a skipped one-shot claimed or durably due on disk: normal grace applies again.
+    store_health.end_recovery_window(_current_cron_store().cron_dir)
     for emit in scan.on_saved:
         emit()
     return due

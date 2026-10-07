@@ -57,7 +57,15 @@ def _tick_admitted(
 
     lock_dir, lock_file = _sched._get_lock_paths()
     _sched._ensure_cron_dir(lock_dir)
-    lock_fd = _sched._acquire_tick_lock(lock_file)
+    try:
+        lock_fd = _sched._acquire_tick_lock(lock_file)
+    except OSError as exc:
+        if exc.errno not in store_health.UNWRITABLE_ERRNOS:
+            raise  # EMFILE/ENFILE etc. stay a FAILED tick (#87644)
+        # Read-only/full/denied store: the lock file cannot be created, so nothing can dispatch.
+        store_health.note_unwritable(exc, "tick lock unavailable", "lock", cron_dir=lock_dir)
+        _sched._sweep_mcp_orphans()
+        return 0
     if lock_fd is None:
         return 0
 

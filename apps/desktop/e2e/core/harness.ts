@@ -78,11 +78,8 @@ export function createCoreSandbox(label: string): CoreSandbox {
 }
 
 /**
- * Sandbox config: only the scripted provider. The external tirith scanner is
- * off: with none on PATH the backend downloads it from GitHub on the first
- * terminal command (network in a required lane), and with one on PATH it
- * fetched a 12 MB threat DB that was still being written after quit. The
- * approval prompts under test come from Hermes's own detector.
+ * Sandbox config: only the scripted provider. The approval prompts under test
+ * come from Hermes's own detector.
  */
 export function providerConfigYaml(providerUrl: string, extra = '', approvals: 'manual' | 'off' = 'off'): string {
   return `model:
@@ -100,8 +97,6 @@ providers:
 auxiliary:
   title_generation:
     enabled: false
-security:
-  tirith_enabled: false
 approvals:
   mode: "${approvals}"
 ${extra}`

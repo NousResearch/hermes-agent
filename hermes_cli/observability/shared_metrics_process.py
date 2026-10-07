@@ -71,6 +71,20 @@ def _excepthook(previous: Any) -> Any:
     return hook
 
 
+def purge_pending_receipts(home: Path) -> None:
+    """Collection is off: drop the files kept for a later start to count (parked update receipts,
+    installer receipts). Every opt-out answer calls this too, not only an opted-out start, so a
+    receipt never survives a "No" to be counted after a later opt-in. Never raises."""
+    try:
+        from .shared_metrics_install_run import purge_pending_installs
+        from .shared_metrics_update import purge_pending_updates
+
+        purge_pending_updates(home)
+        purge_pending_installs(home)
+    except Exception:
+        logger.debug("Pending shared-metrics receipts not purged", exc_info=True)
+
+
 def begin_process(kind: str) -> None:
     """Mark this process as a running ``kind`` and report dead predecessors. Once per process."""
     try:
@@ -78,14 +92,14 @@ def begin_process(kind: str) -> None:
 
         from .shared_metrics_desktop import ONBOARDING_LATCH_DIRNAME
         from .shared_metrics_setup import markers_dir as setup_markers_dir
-        from .shared_metrics_update import _collection_on, purge_pending_updates
+        from .shared_metrics_update import _collection_on
 
         if _STATE:
             return
         _STATE["kind"] = kind  # watchdog turn rows name the surface even when this home is off
         if not _collection_on():
             home = get_hermes_home()
-            purge_pending_updates(home)  # parked while on, never to be counted once off
+            purge_pending_receipts(home)  # parked while on / left by the installer, never counted once off
             latches = home / "telemetry" / "shared_metrics" / ONBOARDING_LATCH_DIRNAME  # an opt-out outside Desktop
             for directory in (markers_dir(home), setup_markers_dir(home), latches):  # likewise pending exits/setups
                 shutil.rmtree(directory, ignore_errors=True)
@@ -200,6 +214,11 @@ def _report_dead_markers(home: Path, own: Path) -> None:
 
         report_pending_updates()
         report_abandoned_setups(home)
+        # ---- iuf c2 ----
+        from .shared_metrics_install_run import report_pending_installs
+
+        report_pending_installs(home)
+        # ---- end iuf c2 ----
     except Exception:
         logger.debug("Dead process markers not reported", exc_info=True)
     finally:

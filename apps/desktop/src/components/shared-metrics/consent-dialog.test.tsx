@@ -67,8 +67,9 @@ describe('SharedMetricsConsentDialog', () => {
   it('details decide nothing when closed and record a chosen answer as both opt-ins', async () => {
     const { calls, requestGateway } = backend({ enabled: false, send: false, decided: false })
 
-    render(<SharedMetricsConsentDialog enabled profile="default" requestGateway={requestGateway} />)
+    render(<SharedMetricsConsentDialog enabled profile="havoc" requestGateway={requestGateway} />)
     await waitFor(() => expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(true))
+    expect(calls.find(c => c.method === 'shared_metrics.status')?.params).toEqual({ profile: 'havoc' })
 
     $sharedMetricsDetailsOpen.set(true)
     await screen.findByRole('dialog')
@@ -88,7 +89,8 @@ describe('SharedMetricsConsentDialog', () => {
     expect(calls.find(c => c.method === 'shared_metrics.set')?.params).toEqual({
       enabled: true,
       send: false,
-      first_run: true
+      first_run: true,
+      profile: 'havoc'
     })
   })
 })

@@ -753,8 +753,10 @@ class GatewayModelCommandsMixin:
             source=event.source, session_key=session_key, model=_session_model,
         )
         platform_key = _platform_config_key(event.source.platform)
-        if raw_args:  # typed path — same applier the picker uses
-            return self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
+        if args:  # typed path; bare "--global" leaves args empty: picker (#134257)
+            return self._apply_reasoning_selection(
+                session_key, platform_key, args, persist_global=persist_global
+            )
         rc = self._reasoning_config
         # Labels tell the truth about the route: a Hermes-internal step (``ultra``) that the wire
         # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
@@ -780,9 +782,13 @@ class GatewayModelCommandsMixin:
         display_state = t("gateway.reasoning.display_on") if self._show_reasoning else t("gateway.reasoning.display_off")
         has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
+        if persist_global:  # picked levels persist to config.yaml (#134257)
+            scope = t("gateway.reasoning.scope_global")
 
         async def _on_reasoning_choice(_chat_id: str, value: str) -> str:
-            return self._apply_reasoning_selection(session_key, platform_key, value)
+            return self._apply_reasoning_selection(
+                session_key, platform_key, value, persist_global=persist_global
+            )
 
         picker_sent = await self._try_send_choice_picker(
             event,

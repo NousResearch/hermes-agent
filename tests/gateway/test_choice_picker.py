@@ -106,6 +106,45 @@ class TestReasoningChoicePicker:
         override = runner._session_reasoning_overrides.get(session_key)
         assert override == {"enabled": True, "effort": "ultra"}
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("text", ["/reasoning --global", "/reasoning —global"])
+    async def test_global_reasoning_with_no_level_opens_the_picker(
+        self, tmp_path, monkeypatch, text
+    ):
+        """/reasoning --global with no level opens the picker like /model --global
+        does, instead of failing with ``unknown_arg`` for the empty level (#134257)."""
+        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+        adapter = _PickerAdapter()
+        runner = _make_runner(adapter)
+
+        result = await runner._handle_reasoning_command(_make_event(text))
+
+        assert result is None  # picker sent — not the unknown-argument error
+        assert len(adapter.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_global_reasoning_picker_selection_persists_to_config(
+        self, tmp_path, monkeypatch
+    ):
+        """A level picked from the /reasoning --global picker lands in config.yaml —
+        the same destination the typed ``/reasoning <level> --global`` path uses."""
+        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+        adapter = _PickerAdapter()
+        runner = _make_runner(adapter)
+        event = _make_event("/reasoning --global")
+        session_key = runner._session_key_for_source(event.source)
+
+        await runner._handle_reasoning_command(event)
+        on_choice = adapter.calls[0]["on_choice_selected"]
+
+        reply = await on_choice(event.source.chat_id, "high")
+
+        assert "high" in reply
+        config_text = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+        assert "reasoning_effort: high" in config_text
+        # Global wins: no session override is left behind.
+        assert session_key not in (runner._session_reasoning_overrides or {})
+
 
 class TestFastChoicePicker:
     def _patch_fast_support(self, monkeypatch, tmp_path):

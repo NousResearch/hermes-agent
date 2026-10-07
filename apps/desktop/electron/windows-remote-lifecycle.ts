@@ -39,8 +39,16 @@ function stripPowerShellNoise(stdout) {
 // Keep long probes out of the remote command line. Windows' default OpenSSH
 // command shell is commonly cmd.exe, whose command-line limit is 8191 chars.
 // SshConnection.exec already supports streaming stdin to the remote command.
+// The short wrapper itself must travel as an -EncodedCommand token: when the
+// remote OpenSSH DefaultShell is PowerShell, that outer shell re-parses the
+// command line, evaluates the bare `-Command` expression itself, and dies with
+// "[System.String] does not contain a method named 'Invoke'" (#134629). A
+// base64 token is an ordinary argument to every outer shell.
+const PS_STDIN_WRAPPER =
+  '[ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))).Invoke()'
+
 function powerShellStdinCommand() {
-  return 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command [ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))).Invoke()'
+  return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedPowerShell(PS_STDIN_WRAPPER)}`
 }
 
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {

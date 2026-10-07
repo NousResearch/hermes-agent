@@ -137,7 +137,15 @@ function scriptFromInvocation(command: string, options: SshExecOptions = {}) {
   const encoded = command.match(/-EncodedCommand\s+([^\s]+)$/)?.[1]
 
   if (encoded) {
-    return Buffer.from(encoded, 'base64').toString('utf16le')
+    const decoded = Buffer.from(encoded, 'base64').toString('utf16le')
+
+    // The stdin transport carries only the short wrapper on the command line;
+    // the actual probe script rides stdin behind it.
+    if (decoded.includes('[Console]::In.ReadToEnd()')) {
+      return Buffer.from(String(options.stdinData || '').trim(), 'base64').toString('utf16le')
+    }
+
+    return decoded
   }
 
   return Buffer.from(String(options.stdinData || '').trim(), 'base64').toString('utf16le')
@@ -480,12 +488,51 @@ test('Windows platform probe streams long PowerShell scripts over stdin', async 
   })
 
   assert.equal(result.os, 'Windows')
-  assert.match(command, /-Command \[ScriptBlock\]::Create/)
-  assert.doesNotMatch(command, /-EncodedCommand/)
+  // The wrapper must be an -EncodedCommand token: when OpenSSH's DefaultShell is
+  // PowerShell, that outer shell re-parses the command line, evaluates a bare
+  // `-Command` expression itself, and dies with "[System.String] does not
+  // contain a method named 'Invoke'" (#134629).
+  const wrapper = command.match(/-EncodedCommand\s+([^\s]+)$/)?.[1] || ''
+  const decodedWrapper = Buffer.from(wrapper, 'base64').toString('utf16le')
+  assert.match(command, /powershell\.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand /)
+  assert.doesNotMatch(command, /-Command \[/)
+  assert.ok(decodedWrapper.includes('[ScriptBlock]::Create('))
+  assert.ok(decodedWrapper.includes('[Console]::In.ReadToEnd()'))
+  assert.ok(decodedWrapper.includes('.Invoke()'))
   assert.ok(command.length < 1024)
   assert.match(stdinData, /^[A-Za-z0-9+/=\r\n]+$/)
   const decodedScript = Buffer.from(stdinData.trim(), 'base64').toString('utf16le')
   assert.match(decodedScript, /Assert-NoReparse/)
+})
+
+test('stdin-transport probes send the wrapper as one EncodedCommand token, not a bare expression (#134629)', async () => {
+  // With OpenSSH's DefaultShell set to PowerShell, that outer shell re-parses
+  // the command line and evaluates a bare `-Command` wrapper expression itself,
+  // so the probe dies with "[System.String] does not contain a method named
+  // 'Invoke'". A base64 token is an ordinary argument to every outer shell;
+  // the long probe script keeps streaming over stdin.
+  const commands: string[] = []
+
+  const ssh = sshWith(async (command, options) => {
+    commands.push(command)
+    const script = scriptFromInvocation(command, options)
+
+    if (script.includes('.hermes-update-in-progress')) {
+      return 'CLEAR'
+    }
+
+    return JSON.stringify({ os: 'Windows', arch: 'AMD64' })
+  })
+
+  await probeWindowsRemote(ssh)
+  await assertWindowsRemoteInstallUpdateClear(ssh, 'C:\\h')
+
+  assert.equal(commands.length, 2)
+
+  for (const command of commands) {
+    assert.match(command, /-EncodedCommand [A-Za-z0-9+/=]+$/)
+    assert.doesNotMatch(command, /-Command \[/)
+  }
 })
 
 test('Windows platform probe preserves Unicode paths in its UTF-16LE stdin payload', async () => {
@@ -631,7 +678,7 @@ test('platform detection preserves POSIX and falls back to Windows PowerShell', 
   )
 
   assert.equal(result.os, 'Windows')
-  assert.match(calls[1], /-Command \[ScriptBlock\]::Create/)
+  assert.match(calls[1], /-EncodedCommand /)
 })
 
 test('platform detection surfaces transport failures as themselves, not unsupported-platform', async () => {

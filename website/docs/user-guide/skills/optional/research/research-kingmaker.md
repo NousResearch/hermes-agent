@@ -30,9 +30,9 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # Kingmaker Skill
 
-Keeps the Hermes main model on the highest-scoring Hermes Index model whose
-measured average $/task is strictly under a per-task budget the user chooses, by
-installing a no_agent cron job.
+Keeps the main model on the highest-scoring Hermes Index model whose measured
+average $/task is strictly under a per-task budget the user chooses. Setup
+installs a no_agent cron job; a tick then costs nothing.
 
 ## First-time setup
 
@@ -60,7 +60,7 @@ One run: show the live board, ask, install, record, create the job.
    shipped; the answers are a file, not constants to edit.
    *Done when:* the file exists there, is executable, and runs with no output.
 6. **Record the answers.** Run `--setup --cap <n|none> --mode <apply|notify>
-   --cadence "<cron>" --deliver <route>` (see Commands) -- it writes
+   --cadence "<cron>" --deliver <route>` (see Commands); it writes
    `answers.json` beside `SKILL.md`. Re-running merges and never loses the job id.
    *Done when:* the command prints the answers it wrote.
 7. **Create the job** from `references/cron-job.md` with `cronjob_manage`
@@ -71,15 +71,15 @@ One run: show the live board, ask, install, record, create the job.
    reconfigure updates that job instead of creating a second one.
    *Done when:* `--setup` shows that `cron_job_id`.
 9. **Verify the tick.** Fire the job once with `cronjob_manage` (`action: run`).
-   *Done when:* the run reports ok with empty output -- a silent tick, because
-   the chosen model either already matches the configured one or was applied.
+   *Done when:* the run reports ok with empty output: a silent tick, since the
+   chosen model either already matches the configured one or was applied.
 
 ## Where the answers live
 
 `answers.json` beside `SKILL.md` is this install's only storage; the tick reads
 it. The only Hermes config this skill ever writes is the main model, via
-`hermes config set model.default`. Runtime state (`latest.json`, `ledger.jsonl`,
-apply receipt/state) is derived and lives in `$HERMES_HOME/data/kingmaker/`.
+`hermes config set model.default`. Derived state (`latest.json`, `apply_state.json`,
+`apply_receipt.json`, `ledger.jsonl`) lives in `$HERMES_HOME/data/kingmaker/`.
 
 ## Commands
 
@@ -100,7 +100,7 @@ One-off overrides on any run: `--cap 0.25`, `--cap none`, `--apply-main`, `--not
   string similarity; an unmapped-but-stronger in-budget row blocks the switch and
   is surfaced, never silently skipped.
 - Provisional rows marked with `*` never qualify.
-- The budget is measured `$/task`, strictly under -- not a token price; the pick
+- The budget is measured `$/task`, strictly under, not a token price; the pick
   maximizes index score inside the cap.
 - Decided outcomes (page changed, no eligible model, refused smoke or apply,
   concurrent manual change) print a notice and exit 0, so the job delivers a

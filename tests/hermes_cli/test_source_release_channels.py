@@ -824,3 +824,59 @@ def test_missing_pointers_fall_back_only_to_published_releases(releases, channel
     )
     assert not any("/tags?" in path for path in releases.requests)
     assert f"/repos/NousResearch/hermes-agent/releases/tags/{releases.tags[channel]}" not in releases.requests
+
+
+def test_retirement_no_git_strict_apply_refuses_same_version_unknown_stamp(tmp_path):
+    """The strict no-Git apply path cannot treat unverified ordering as
+    authorization: an install carrying build evidence (a version file) at the
+    SAME version as the pinned build, stamped with an unrelated commit, is
+    exactly the same-version different-build rollback the retirement pins, so
+    it refuses with the explicit-destination remedy instead of applying."""
+    from hermes_cli.source_releases import _retirement_commit_proof
+
+    request = {"commit": "a" * 40, "sourceVersion": "1.2.3", "sequence": 1}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n', encoding="utf-8")
+    (tmp_path / "install-stamp.json").write_text(
+        json.dumps({"commit": "c" * 40}), encoding="utf-8")
+    with pytest.raises(ValueError, match="select the destination channel explicitly"):
+        _retirement_commit_proof(request, terminal, None, tmp_path, True)
+
+
+def test_retirement_no_git_strict_apply_admits_provably_older_version(tmp_path):
+    """The stated policy boundary: a provably OLDER semantic version may
+    proceed (unverified commit ancestry), the same-version shape may not."""
+    from hermes_cli.source_releases import _retirement_commit_proof
+
+    request = {"commit": "a" * 40, "sourceVersion": "1.2.3", "sequence": 1}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.2.2"\n', encoding="utf-8")
+    (tmp_path / "install-stamp.json").write_text(
+        json.dumps({"commit": "c" * 40}), encoding="utf-8")
+    assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is False
+
+
+def test_retirement_no_git_strict_apply_admits_evidence_less_zip_tree(tmp_path):
+    """A packaged tree with no build evidence at all (no version file, no
+    stamp) keeps main's permissive tagless-ZIP apply flow: the version floor
+    and packaged stamps are the only ordering authorities this transport has,
+    and refusing evidence-less installs would strand the supported mode."""
+    from hermes_cli.source_releases import _retirement_commit_proof
+
+    request = {"commit": "a" * 40, "sourceVersion": "1.2.3", "sequence": 1}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+    assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is False
+
+
+def test_retirement_no_git_passive_check_stays_permissive_on_same_version(tmp_path):
+    """The passive checker (source_check, strict=False) keeps the unverified
+    permissive answer even for the same-version shape — only the apply path
+    refuses."""
+    from hermes_cli.source_releases import _retirement_commit_proof
+
+    request = {"commit": "a" * 40, "sourceVersion": "1.2.3", "sequence": 1}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n', encoding="utf-8")
+    (tmp_path / "install-stamp.json").write_text(
+        json.dumps({"commit": "c" * 40}), encoding="utf-8")
+    assert _retirement_commit_proof(request, terminal, None, tmp_path, False) is False

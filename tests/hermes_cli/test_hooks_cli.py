@@ -76,6 +76,30 @@ class TestHooksList:
 
 
 @pytest.mark.platforms("linux")
+class TestStatusBarRenderIsPythonOnly:
+    def test_shell_hook_config_is_refused_loudly(self, tmp_path, caplog):
+        """on_status_bar_render returns a scalar fragment, which the shell-hook
+        response parser has no channel for: a configured script would render a
+        dict literal in the footer, so the registration must be refused."""
+        script = _hook_script(
+            tmp_path, "#!/usr/bin/env bash\nprintf '\"quota 42%%\"\\n'\n",
+        )
+        cfg = {"hooks": {"on_status_bar_render": [{"command": str(script)}]}}
+
+        with caplog.at_level("WARNING", logger="agent.shell_hooks"):
+            registered = shell_hooks.register_from_config(cfg, accept_hooks=True)
+
+        assert registered == []
+        assert shell_hooks.iter_configured_hooks(cfg) == []
+        assert any(
+            "on_status_bar_render" in r.getMessage() and "Python-plugin-only" in r.getMessage()
+            for r in caplog.records
+        )
+        from hermes_cli.plugins import invoke_hook
+        assert invoke_hook("on_status_bar_render", snapshot={}) == []
+
+
+@pytest.mark.platforms("linux")
 class TestHooksTest:
     def test_synthetic_payload_matches_production_shape(self, tmp_path):
         """`hermes hooks test` must feed the script stdin in the same

@@ -1,12 +1,17 @@
 import type { Unstable_TriggerItem } from '@assistant-ui/core'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import type { ComposerAttachment } from '@/store/composer'
+
 import {
   acceptsTriggerCompletion,
   implicitSlashAcceptIndex,
   isPendingDraftPersistCurrent,
   liveComposerDraft,
   type PendingDraftPersist,
+  queuedEditBufferClean,
+  queuedEditStashPlan,
+  type QueueEditState,
   shouldDisableComposerInput,
   slashArgStage,
   slashChipKindForItem,
@@ -219,5 +224,64 @@ describe('liveComposerDraft (stale-mirror guard for the ArrowUp recall)', () => 
 
   it('falls back to the mirror before the editor mounts', () => {
     expect(liveComposerDraft(null, 'mirrored draft')).toBe('mirrored draft')
+  })
+})
+
+describe('queuedEditBufferClean / queuedEditStashPlan (payload-aware dirty decision, #88621 review R2)', () => {
+  const fileA: ComposerAttachment = { id: 'file:a', kind: 'file', label: 'a.txt' }
+  const fileA_clone = { ...fileA }
+  const fileB: ComposerAttachment = { id: 'file:b', kind: 'file', label: 'b.txt' }
+
+  const editing: QueueEditState = {
+    attachments: [fileB],
+    draft: 'original draft',
+    entryId: 'e1',
+    entryText: 'queued words',
+    entryAttachments: [fileA],
+    sessionKey: 's1'
+  }
+
+  it('clean = untouched text AND untouched attachment set', () => {
+    expect(queuedEditBufferClean(editing, 'queued words', [fileA])).toBe(true)
+    expect(queuedEditBufferClean(editing, 'queued words', [fileA_clone])).toBe(true)
+  })
+
+  it('a chip added with unchanged text is DIRTY — the old text-only check destroyed it', () => {
+    expect(queuedEditBufferClean(editing, 'queued words', [fileA, fileB])).toBe(false)
+  })
+
+  it('a chip removed with unchanged text is DIRTY', () => {
+    expect(queuedEditBufferClean(editing, 'queued words', [])).toBe(false)
+  })
+
+  it('changed text stays dirty regardless of attachments', () => {
+    expect(queuedEditBufferClean(editing, 'edited words', [fileA])).toBe(false)
+  })
+
+  it('a reordering of the same chips is dirty (order is part of the payload)', () => {
+    const first: ComposerAttachment = { id: 'file:1', kind: 'file', label: '1' }
+    const second: ComposerAttachment = { id: 'file:2', kind: 'file', label: '2' }
+    const reordered: QueueEditState = { ...editing, entryAttachments: [first, second] }
+
+    expect(queuedEditBufferClean(reordered, 'queued words', [second, first])).toBe(false)
+    expect(queuedEditBufferClean(reordered, 'queued words', [first, second])).toBe(true)
+  })
+
+  it('clean stash plan keeps the pre-edit draft with ITS OWN attachments', () => {
+    const plan = queuedEditStashPlan(editing, 'queued words', [fileA])
+
+    expect(plan.text).toBe('original draft')
+    expect(plan.attachments).toEqual([fileB])
+  })
+
+  it('dirty (attachment-only) stash plan keeps the DISPLACED draft; the buffer rides the notice (R1)', () => {
+    const live = [fileA, fileB]
+
+    const plan = queuedEditStashPlan(editing, 'queued words', live)
+
+    // R1: the stash is the displaced pre-edit draft's owner — the dirty
+    // buffer is published separately by the caller as a salvage notice.
+    expect(plan.text).toBe('original draft')
+    expect(plan.attachments).toEqual([fileB])
   })
 })

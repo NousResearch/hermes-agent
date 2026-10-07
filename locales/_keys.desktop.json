@@ -928,6 +928,8 @@
     "composer.repairSuggestions.workingTip",
     "composer.restoredDraftNotice",
     "composer.restoredDraftUndo",
+    "composer.salvagedEditNotice",
+    "composer.salvagedEditUndo",
     "composer.send",
     "composer.skillSuggestions.done",
     "composer.skillSuggestions.doneTip",

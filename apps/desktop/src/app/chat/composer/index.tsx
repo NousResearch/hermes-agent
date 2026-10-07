@@ -387,6 +387,7 @@ export function ChatBar({
     onSubmit,
     queueEditRef,
     queueSessionKey,
+    readLiveText: syncDraftFromEditor,
     sessionId
   })
 
@@ -1525,8 +1526,17 @@ export function ChatBar({
                   <ContribSlot area={COMPOSER_AREAS.top} />
                   <RestoredDraftNotice
                     freshDraft={activeQueueSessionKey === null}
+                    onRestored={(text, attachments) =>
+                      // Undo paints the salvaged payload — text AND its own
+                      // chips (#88621 review N1); when the record carried no
+                      // attachments (a reload rehydrated text-only) keep the
+                      // live chips as-is rather than clearing them.
+                      loadIntoComposer(text, attachments ?? scope.attachments.$attachments.get())
+                    }
                     onUndone={clearDraft}
                     readLiveText={syncDraftFromEditor}
+                    sessionKey={activeQueueSessionKey}
+                    surfaceId={surfaceId}
                   />
                   <VoiceActivity state={voiceActivityState} />
                   <VoicePlaybackActivity />

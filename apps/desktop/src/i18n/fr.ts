@@ -4080,6 +4080,8 @@ export const frOverrides = {
     editingQueuedInComposer: "Modification du tour en file d'attente dans le compositeur",
     restoredDraftNotice: 'Votre message non envoyé a été restauré',
     restoredDraftUndo: 'Annuler',
+    salvagedEditNotice: 'Votre texte modifié a été conservé',
+    salvagedEditUndo: 'Le remettre',
     queueEdit: 'Modifier',
     queueExpand: 'Déplier',
     queueCollapse: 'Replier',

@@ -6,11 +6,13 @@ import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import {
   $freshDraftKey,
   $restoredDraftNotice,
+  $salvagedEditNoticesBySession,
   announceGoneSessionDraft,
   announceNewSessionDraftKey,
   clearSessionDraft,
   type ComposerAttachment,
   dismissRestoredDraftNotice,
+  getSalvagedEditNotice,
   mainComposerScope,
   NEW_SESSION_DRAFT_KEY,
   rotateFreshDraftKey,
@@ -28,13 +30,26 @@ import { type ComposerScope, ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '
 import { useComposerDraft } from './use-composer-draft'
 
 const mockComposerApi = { setText: vi.fn() }
+// The composer-runtime mirror the mocked useComposerRuntime reports; tests
+// that simulate typing write here and poke `mockComposerListener` (the
+// editor DOM is not mounted in this harness, so this stands in for the
+// DOM→draftRef rAF flush).
+let mockComposerText = ''
+let mockComposerListener: ((state: { text: string }) => void) | null = null
 
 vi.mock('@assistant-ui/react', () => ({
   useAui: () => ({ composer: () => mockComposerApi }),
-  useAuiState: (selector: (state: { composer: { text: string } }) => unknown) => selector({ composer: { text: '' } }),
+  useAuiState: (selector: (state: { composer: { text: string } }) => unknown) =>
+    selector({ composer: { text: mockComposerText } }),
   useComposerRuntime: () => ({
-    getState: () => ({ text: '' }),
-    subscribe: () => () => undefined
+    getState: () => ({ text: mockComposerText }),
+    subscribe: (listener: (state: { text: string }) => void) => {
+      mockComposerListener = listener
+
+      return () => {
+        mockComposerListener = null
+      }
+    }
   })
 }))
 
@@ -67,6 +82,183 @@ function ProbeHarness({ activeQueueSessionKey, onLayoutSnapshot, onTextSnapshot,
 
   return null
 }
+
+
+interface QueueEditProbeProps {
+  activeQueueSessionKey: string | null
+  onSnapshot: () => void
+  queueEditRef: { current: QueueEditState | null }
+  sessionId: string
+}
+
+function QueueEditProbe({ activeQueueSessionKey, onSnapshot, queueEditRef, sessionId }: QueueEditProbeProps) {
+  useComposerDraft({
+    activeQueueSessionKey,
+    focusKey: null,
+    inputDisabled: false,
+    queueEditRef,
+    sessionId
+  })
+
+  useLayoutEffect(() => {
+    onSnapshot()
+  })
+
+  return null
+}
+
+describe('useComposerDraft — a clean queued edit restores the pre-edit draft with its own attachments (#88621)', () => {
+  afterEach(() => {
+    cleanup()
+    mainComposerScope.clear()
+    clearSessionDraft('edit-session-a')
+    clearSessionDraft('edit-session-b')
+  })
+
+  it('A → B → A with a DIRTY edit keeps the displaced draft in the stash and the replacement in the notice (#88621 review R1)', () => {
+    const originalAttachment: ComposerAttachment = { id: 'file:orig', kind: 'file', label: 'draft.txt' }
+    const entryAttachment: ComposerAttachment = { id: 'file:queued', kind: 'file', label: 'queued.txt' }
+
+    stashSessionDraft('edit-session-a', 'original draft', [originalAttachment])
+
+    const queueEditRef: { current: QueueEditState | null } = {
+      current: {
+        attachments: [originalAttachment],
+        draft: 'original draft',
+        entryId: 'entry-1',
+        entryText: 'original queued words',
+        entryAttachments: [entryAttachment],
+        sessionKey: 'edit-session-a'
+      }
+    }
+
+    const { rerender } = render(
+      <QueueEditProbe
+        activeQueueSessionKey="edit-session-a"
+        onSnapshot={() => undefined}
+        queueEditRef={queueEditRef}
+        sessionId="edit-session-a"
+      />
+    )
+
+    // The user typed a replacement over the entry text; the rAF flush has
+    // landed in the mirror.
+    mockComposerText = 'unsaved replacement typed over the entry'
+    act(() => {
+      mockComposerListener?.({ text: mockComposerText })
+    })
+
+    // Switch to B: the swap cleanup must keep BOTH — the displaced draft in
+    // the stash, the dirty buffer in the salvage notice.
+    act(() => {
+      rerender(
+        <QueueEditProbe
+          activeQueueSessionKey="edit-session-b"
+          onSnapshot={() => undefined}
+          queueEditRef={queueEditRef}
+          sessionId="edit-session-b"
+        />
+      )
+    })
+
+    // Back to A: the restored draft is the ORIGINAL (X), not the replacement.
+    act(() => {
+      rerender(
+        <QueueEditProbe
+          activeQueueSessionKey="edit-session-a"
+          onSnapshot={() => undefined}
+          queueEditRef={queueEditRef}
+          sessionId="edit-session-a"
+        />
+      )
+    })
+
+    const restored = takeSessionDraft('edit-session-a')
+    expect(restored.text).toBe('original draft')
+    expect(restored.attachments).toEqual([originalAttachment])
+
+    // And the replacement (Z) is recoverable through the notice, described
+    // against the state the composer now shows (X).
+    const notice = getSalvagedEditNotice('edit-session-a')
+    expect(notice?.undoText).toBe('unsaved replacement typed over the entry')
+    expect(notice?.currentText).toBe('original draft')
+  })
+
+  it('A → B → A with an untouched edit keeps the original draft text AND its attachments', () => {
+    // Opening a queued entry for edit, changing nothing, and switching away
+    // must bring the ORIGINAL draft (text + attachments) back on return —
+    // not the original text wearing the queued entry's attachments. The
+    // editor is the source of truth: syncDraftFromEditor reads the DOM, and
+    // the mounted composer paints the stashed A draft, so seed the editor DOM
+    // with the entry text (what beginQueuedEdit paints) and keep the buffer
+    // clean relative to that entry.
+    const originalAttachment: ComposerAttachment = { id: 'file:orig', kind: 'file', label: 'draft.txt' }
+    const queuedAttachment: ComposerAttachment = { id: 'file:queued', kind: 'file', label: 'queued.txt' }
+
+    stashSessionDraft('edit-session-a', 'original draft', [originalAttachment])
+
+    const queueEditRef: { current: QueueEditState | null } = {
+      current: {
+        attachments: [originalAttachment],
+        draft: 'original draft',
+        entryId: 'entry-1',
+        // The editor holds exactly the entry's text: beginQueuedEdit painted
+        // it and the user typed nothing (clean buffer). The harness composer
+        // loads the stashed draft at mount, so the entry under edit shares
+        // that text here. The entry's painted attachment payload must match
+        // what the live scope holds at the swap (the queued entry's chips):
+        // under the payload-aware dirty check (#88621 review R2), a chip set
+        // that differs from the entry's painted set is DIRTY.
+        entryText: 'original draft',
+        entryAttachments: [queuedAttachment],
+        sessionKey: 'edit-session-a'
+      }
+    }
+
+    const { rerender } = render(
+      <QueueEditProbe
+        activeQueueSessionKey="edit-session-a"
+        onSnapshot={() => undefined}
+        queueEditRef={queueEditRef}
+        sessionId="edit-session-a"
+      />
+    )
+
+    // The live scope shows the queued entry's chips (painted at
+    // beginQueuedEdit) — NOT the original draft's.
+    mainComposerScope.$attachments.set([queuedAttachment])
+
+    // Switch to B: the scope-swap cleanup stashes per the plan (clean →
+    // pre-edit snapshot text + its OWN attachments).
+    act(() => {
+      rerender(
+        <QueueEditProbe
+          activeQueueSessionKey="edit-session-b"
+          onSnapshot={() => undefined}
+          queueEditRef={queueEditRef}
+          sessionId="edit-session-b"
+        />
+      )
+    })
+
+    // Back to A: the stash must be the pre-edit draft with ITS OWN
+    // attachments — the queued entry's chips must not have been grafted on.
+    act(() => {
+      rerender(
+        <QueueEditProbe
+          activeQueueSessionKey="edit-session-a"
+          onSnapshot={() => undefined}
+          queueEditRef={queueEditRef}
+          sessionId="edit-session-a"
+        />
+      )
+    })
+
+    const restored = takeSessionDraft('edit-session-a')
+    expect(restored.text).toBe('original draft')
+    expect(restored.attachments).toEqual([originalAttachment])
+  })
+})
 
 describe('useComposerDraft — attachment scope stays coherent with the committed session on switch (#59305)', () => {
   afterEach(() => {
@@ -794,5 +986,118 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
     expect(composerPlainText(draft.editorRef.current!)).toBe('rejected draft')
     expectForegroundSelectionPreserved(foreground)
     foreground.editor.remove()
+  })
+})
+
+// #88621 review R5: the pagehide/reload boundary keeps a dirty queued edit.
+// The flush must NOT simply skip an active edit (the old behavior dropped the
+// replacement), nor stash the replacement as the draft while losing the
+// displaced original — it keeps BOTH: the pre-edit draft stashed per the
+// plan, the dirty buffer published as a durable salvage record.
+describe('useComposerDraft — pagehide keeps a dirty queued edit (#88621 review R5)', () => {
+  afterEach(() => {
+    cleanup()
+    mainComposerScope.clear()
+    clearSessionDraft('pagehide-edit-session')
+    $salvagedEditNoticesBySession.set({})
+    window.localStorage.clear()
+    mockComposerText = ''
+  })
+
+  it('a dirty edit at pagehide keeps the replacement durable alongside the displaced draft', () => {
+    const originalAttachment: ComposerAttachment = { id: 'file:orig', kind: 'file', label: 'draft.txt' }
+    const entryAttachment: ComposerAttachment = { id: 'file:queued', kind: 'file', label: 'queued.txt' }
+
+    stashSessionDraft('pagehide-edit-session', 'original unsent draft', [originalAttachment])
+
+    const queueEditRef: { current: QueueEditState | null } = {
+      current: {
+        attachments: [originalAttachment],
+        draft: 'original unsent draft',
+        entryId: 'entry-1',
+        entryText: 'original queued words',
+        entryAttachments: [entryAttachment],
+        sessionKey: 'pagehide-edit-session'
+      }
+    }
+
+    render(
+      <QueueEditProbe
+        activeQueueSessionKey="pagehide-edit-session"
+        onSnapshot={() => undefined}
+        queueEditRef={queueEditRef}
+        sessionId="pagehide-edit-session"
+      />
+    )
+
+    // The user typed a replacement into the queued edit; the rAF flush has
+    // carried it to the composer mirror (draftRef), as it would before a
+    // reload. The edit is DIRTY against the entry it was editing.
+    mockComposerText = 'replacement typed into queued edit'
+    act(() => {
+      mockComposerListener?.({ text: mockComposerText })
+    })
+
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'))
+    })
+
+    // Three payloads, three owners (R1): the displaced original draft stays
+    // the stash owner…
+    const stashed = takeSessionDraft('pagehide-edit-session')
+    expect(stashed.text).toBe('original unsent draft')
+    expect(stashed.attachments).toEqual([originalAttachment])
+
+    // …and the dirty replacement is durable through the salvage record (R5):
+    // the bytes are on disk the moment pagehide runs, before unmount.
+    const durable = window.localStorage.getItem('hermes.desktop.salvagedEdits.v1')
+
+    expect(durable).toContain('"pagehide-edit-session"')
+    expect(durable).toContain('replacement typed into queued edit')
+    // The record describes the state Undo returns to (the displaced draft).
+    expect(getSalvagedEditNotice('pagehide-edit-session')?.currentText).toBe('original unsent draft')
+  })
+
+  it('a clean edit at pagehide stashes the displaced draft with no salvage record', () => {
+    const originalAttachment: ComposerAttachment = { id: 'file:orig', kind: 'file', label: 'draft.txt' }
+    const entryAttachment: ComposerAttachment = { id: 'file:queued', kind: 'file', label: 'queued.txt' }
+
+    stashSessionDraft('pagehide-edit-session', 'original unsent draft', [originalAttachment])
+
+    const queueEditRef: { current: QueueEditState | null } = {
+      current: {
+        attachments: [originalAttachment],
+        draft: 'original unsent draft',
+        entryId: 'entry-1',
+        entryText: 'original queued words',
+        entryAttachments: [entryAttachment],
+        sessionKey: 'pagehide-edit-session'
+      }
+    }
+
+    render(
+      <QueueEditProbe
+        activeQueueSessionKey="pagehide-edit-session"
+        onSnapshot={() => undefined}
+        queueEditRef={queueEditRef}
+        sessionId="pagehide-edit-session"
+      />
+    )
+
+    // Clean buffer: the mirror holds exactly the entry's painted text…
+    mockComposerText = 'original queued words'
+    act(() => {
+      mockComposerListener?.({ text: mockComposerText })
+    })
+    // …and the live chips match the entry's painted set.
+    mainComposerScope.$attachments.set([{ ...entryAttachment }])
+
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'))
+    })
+
+    expect(takeSessionDraft('pagehide-edit-session').text).toBe('original unsent draft')
+    expect(getSalvagedEditNotice('pagehide-edit-session')).toBeNull()
+    expect(window.localStorage.getItem('hermes.desktop.salvagedEdits.v1')).toBeNull()
   })
 })

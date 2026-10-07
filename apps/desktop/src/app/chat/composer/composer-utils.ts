@@ -208,10 +208,81 @@ export interface QueueEditState {
   attachments: ComposerAttachment[]
   draft: string
   entryId: string
+  /** The entry text as painted when the edit began — proves the buffer dirty. */
+  entryText: string
+  /** The entry's attachments as painted when the edit began. The edit is
+   * dirty when the buffer diverges from EITHER half of the entry payload
+   * (#88621 review): an attachment added or removed with unchanged text is
+   * as much user work as a rewritten line, and must never be repainted away
+   * by a text-only comparison. `attachments` above stays what the PRE-EDIT
+   * DRAFT owned (the cancel-restore payload), never the entry's set. */
+  entryAttachments: ComposerAttachment[]
   sessionKey: string
 }
 
 export const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.map(a => ({ ...a }))
+
+/** Attachment identity that survives draft cloning: `id` names the content
+ * (path/ref-derived), `occurrenceId` the renderer-lifetime occurrence. Two
+ * cloned copies of the same attachment share both; a removed and re-added
+ * chip changes the occurrence. Order is part of the payload the user sees,
+ * so a reordering is a divergence, not a match. */
+export const attachmentsEqual = (a: readonly ComposerAttachment[], b: readonly ComposerAttachment[]): boolean => {
+  if (a.length !== b.length) {
+    return false
+  }
+
+  return a.every((attachment, index) => {
+    const other = b[index]
+
+    return (
+      attachment.id === other.id &&
+      attachment.occurrenceId === other.occurrenceId
+    )
+  })
+}
+
+/** Whether the live buffer still equals the queued entry's payload as painted
+ * when the edit began (#88621 review): BOTH the text and the attachment set.
+ * Text-only was a silent loss path — adding a chip with unchanged text read
+ * as "clean" and the restore repaint destroyed the addition. */
+export const queuedEditBufferClean = (
+  editing: QueueEditState | null | undefined,
+  latestText: string,
+  latestAttachments?: readonly ComposerAttachment[]
+): boolean => {
+  if (!editing) {
+    return false
+  }
+
+  if (latestText !== editing.entryText) {
+    return false
+  }
+
+  return latestAttachments === undefined || attachmentsEqual(latestAttachments, editing.entryAttachments)
+}
+
+/**
+ * What a scope swap must stash for a queued edit in progress (#88621): the
+ * DISPLACED pre-edit draft — text AND its own attachments — so the draft the
+ * user comes back to is the one they were writing before opening the queue
+ * entry. The queued entry keeps its own text/attachments in the queue, and a
+ * DIRTY buffer (see queuedEditBufferClean) is published separately as a
+ * salvage notice by the caller (#88621 review R1: three payloads — displaced
+ * draft, queued entry, edited replacement — need three owners; the stash
+ * holding the replacement left the displaced draft with none).
+ */
+export function queuedEditStashPlan(
+  editing: QueueEditState | null | undefined,
+  latestText: string,
+  latestAttachments?: readonly ComposerAttachment[]
+): { attachments: ComposerAttachment[] | undefined; text: string } {
+  if (editing) {
+    return { attachments: editing.attachments, text: editing.draft }
+  }
+
+  return { attachments: latestAttachments === undefined ? undefined : [...latestAttachments], text: latestText }
+}
 
 export interface PendingDraftPersist {
   scope: string | null

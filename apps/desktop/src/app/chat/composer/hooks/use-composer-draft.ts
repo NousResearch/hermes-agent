@@ -16,6 +16,7 @@ import { useStoreSelector } from '@/lib/use-session-slice'
 import {
   adoptGoneSessionDraft,
   adoptNewSessionDraft,
+  announceSalvagedEdit,
   type ComposerAttachment,
   type ComposerDraftSyncMode,
   freshDraftScope,
@@ -30,9 +31,12 @@ import { $composerPopout } from '@/store/composer-popout'
 import { clearDraftSuggestions, sampleComposerDraft } from '@/store/composer-suggestions'
 
 import {
+  attachmentsEqual,
   cloneAttachments,
   DRAFT_PERSIST_DEBOUNCE_MS,
   isPendingDraftPersistCurrent,
+  queuedEditBufferClean,
+  queuedEditStashPlan,
   type QueueEditState
 } from '../composer-utils'
 import {
@@ -57,7 +61,7 @@ import {
   REF_RE,
   renderComposerContents
 } from '../rich-editor'
-import { useComposerScope } from '../scope'
+import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 import { useComposerVisible } from '../visibility'
 
@@ -94,6 +98,12 @@ export function useComposerDraft({
   const floating = useStoreSelector($composerPopout, state => state.poppedOut)
   // Which composer this is on the focus bus + which attachment set it owns.
   const { attachments: attachmentScope, target } = useComposerScope()
+  // Which mounted composer surface this hook drives (#88621 review R7): a
+  // salvage record names the surface whose buffer it describes, so a sibling
+  // pane on the same session never consumes another pane's recovery.
+  const surfaceId = useComposerSurfaceId()
+  const surfaceIdRef = useRef(surfaceId)
+  surfaceIdRef.current = surfaceId
 
   // Coarse edges only — these flip rarely (empty↔non-empty, the `?` help sigil,
   // steerable-vs-slash), so typing within a line costs no render.
@@ -564,7 +574,32 @@ export function useComposerDraft({
       const editing = queueEditStateRef.current
 
       if (editing?.sessionKey === activeQueueSessionKey) {
-        stashAt(activeQueueSessionKey, editing.draft, editing.attachments)
+        // #88621 review R1: three payloads, three owners. The stash ALWAYS
+        // takes the DISPLACED pre-edit draft (text + its own attachments) —
+        // the queued entry keeps its own text in the queue, and a DIRTY
+        // buffer is published as a salvage notice below so the replacement
+        // is recoverable without displacing anything. The dirty decision
+        // covers BOTH payload halves (R2) — a chip added with unchanged
+        // text must not read as clean, or the swap repaint destroys it.
+        const latestAttachments = attachmentScope.$attachments.get()
+        const plan = queuedEditStashPlan(editing, latestText, latestAttachments)
+        stashAt(activeQueueSessionKey, plan.text, plan.attachments ?? latestAttachments)
+
+        // The notice is only for work that is NOT already safe somewhere: a
+        // buffer reading exactly the displaced pre-edit draft (text AND
+        // chips) IS that draft — restored by a previous leg, or untouched —
+        // and the stash owns it. Announcing it would clobber an existing
+        // record's real replacement with the draft text (a stale queue-edit
+        // ref across remounts, #88621 review R1).
+        const bufferIsTheDisplacedDraft =
+          latestText === editing.draft && attachmentsEqual(latestAttachments, editing.attachments)
+
+        if (!queuedEditBufferClean(editing, latestText, latestAttachments) && !bufferIsTheDisplacedDraft) {
+          announceSalvagedEdit(editing.sessionKey, plan.text, latestText, {
+            attachments: cloneAttachments(latestAttachments),
+            surfaceKey: surfaceIdRef.current ?? undefined
+          })
+        }
       } else if (!isBrowsingHistory(sessionId)) {
         stashAt(activeQueueSessionKey, latestText)
       }
@@ -617,7 +652,39 @@ export function useComposerDraft({
       const scope = draftScopeRef.current
       const editing = queueEditStateRef.current
 
-      if (editing?.sessionKey === scope || isBrowsingHistory(sessionIdRef.current)) {
+      if (isBrowsingHistory(sessionIdRef.current)) {
+        return
+      }
+
+      // A queued edit in progress owns the editor: the ordinary flush must NOT
+      // file the queued entry's text as the session draft. But the reload
+      // boundary still has to keep every unsent payload (#88621 review R5):
+      // the stash takes the DISPLACED pre-edit draft (the queue entry keeps
+      // its own text), and a dirty buffer is additionally published as a
+      // durable salvage record — a reload would otherwise destroy the only
+      // copy of the replacement. Three payloads, three owners (R1).
+      if (editing?.sessionKey === scope) {
+        const latestText = syncDraftFromEditor()
+        const latestAttachments = attachmentScope.$attachments.get()
+        const plan = queuedEditStashPlan(editing, latestText, latestAttachments)
+
+        stashAt(scope, plan.text, plan.attachments ?? latestAttachments)
+
+        // Same ownership rule as the scope swap above: a buffer that IS the
+        // displaced draft is already safe in the stash — never announce it
+        // over an existing record's real replacement (#88621 review R1).
+        const bufferIsTheDisplacedDraft =
+          latestText === editing.draft && attachmentsEqual(latestAttachments, editing.attachments)
+
+        if (!queuedEditBufferClean(editing, latestText, latestAttachments) && !bufferIsTheDisplacedDraft) {
+          announceSalvagedEdit(editing.sessionKey, plan.text, latestText, {
+            attachments: cloneAttachments(latestAttachments),
+            surfaceKey: surfaceIdRef.current ?? undefined
+          })
+        }
+
+        pendingDraftPersistRef.current = null
+
         return
       }
 
@@ -632,7 +699,7 @@ export function useComposerDraft({
       window.removeEventListener('pagehide', flushPendingDraftPersist)
       flushPendingDraftPersist()
     }
-  }, [syncDraftFromEditor])
+  }, [syncDraftFromEditor]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return {
     activeQueueSessionKeyRef,

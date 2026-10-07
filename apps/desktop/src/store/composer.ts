@@ -1,4 +1,4 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import { deriveDraftTitle } from '@/lib/draft-title'
 import { triggerHaptic } from '@/lib/haptics'
@@ -646,6 +646,361 @@ export function adoptGoneSessionDraft(): boolean {
 export function dismissRestoredDraftNotice(): void {
   recordFriction('notice_dismissed', 'restored_draft')
   $restoredDraftNotice.set(null)
+}
+
+/**
+ * Salvage for a dirty queued-edit buffer (#88621). A background event can tear
+ * an in-place queued-prompt edit down (the entry was drained or deleted out
+ * from under it) exactly when the composer holds unsaved typed work. The
+ * teardown itself no longer repaints over the buffer, and a cancel keeps its
+ * designed pre-edit repaint — either way the typed text must stay recoverable,
+ * never destroyed. The notice is session-scoped: it renders only on the
+ * composer whose session it names, offers (never hijacks) Undo, and fires
+ * once — it is consumed by the undo or by dismissal.
+ *
+ * Records are keyed per session: two sessions can each lose an edit
+ * independently (a cancel in A, then a cancel in B), and B publishing its
+ * recovery must never erase A's — the composer notices render per session and
+ * each undo/dismiss consumes only its own session's record.
+ *
+ * The recovery payload is text AND attachment membership (the chips the user
+ * added during the edit — #88621 review N1: restoring the typed words on top
+ * of the pre-edit draft's chips mixed two owners' payloads). Attachments are
+ * memory-only (blobs, upload state); the record is durable by its TEXT
+ * (#88621 review N2): reload rehydrates the undoable words — the same
+ * best-effort contract the ordinary draft stash has — so a renderer reload no
+ * longer destroys the one copy the UI promised to keep. A reload drops the
+ * attachment half (blobs do not survive the renderer), which is why Undo
+ * applies the whole payload only while the live buffer still matches the
+ * record; otherwise it dismisses, exactly like the ordinary restore notice.
+ */
+export interface SalvagedEditNotice {
+  /** The text the composer shows now (pre-edit draft or empty). */
+  currentText: string
+  /** The salvaged typed text Undo would put back into the composer. */
+  undoText: string
+  /** The attachment membership the edit carried when it was salvaged. Undo
+   * repaints these with the text; a reloaded (text-only) record leaves them
+   * undefined so the live chips are kept as-is. */
+  undoAttachments?: ComposerAttachment[]
+  /** Which surface key's live buffer this record's `currentText` describes.
+   * A record published by pane A must not be consumed by pane B's mismatched
+   * buffer (#88621 review R7): consumption checks the surface identity as
+   * well as the text. */
+  surfaceKey?: string
+}
+
+/** One pending salvage record per queue session key. */
+export const $salvagedEditNoticesBySession = atom<Readonly<Record<string, SalvagedEditNotice>>>({})
+
+/** Back-compat read surface: the record for `sessionKey`, when one exists. */
+export const $salvagedEditNotice = computed($salvagedEditNoticesBySession, bySession => {
+  const keys = Object.keys(bySession)
+
+  return keys.length === 1 ? (bySession[keys[0]!] ?? null) : null
+})
+
+// Durable half of the salvage record (#88621 review N2): the undoable TEXT of
+// an unsent queued edit, keyed by queue session key. Attachments (blobs) and
+// the matched live-buffer snapshot are renderer-lifetime state and ride only
+// the in-memory record above; this store keeps the promise that a reload does
+// not destroy the words the notice said were kept. Best-effort like the draft
+// stash itself — quota/private-mode must never break the teardown paths.
+const SALVAGED_EDITS_STORAGE_KEY = 'hermes.desktop.salvagedEdits.v1'
+
+const loadSalvagedEditTexts = (): Record<string, string> => {
+  try {
+    const raw = window.localStorage.getItem(SALVAGED_EDITS_STORAGE_KEY)
+
+    if (!raw) {
+      return {}
+    }
+
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (Object.fromEntries(Object.entries(parsed).filter(([, text]) => typeof text === 'string')) as Record<string, string>)
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+const persistSalvagedEditTexts = (texts: Record<string, string>): void => {
+  try {
+    if (Object.keys(texts).length === 0) {
+      window.localStorage.removeItem(SALVAGED_EDITS_STORAGE_KEY)
+    } else {
+      window.localStorage.setItem(SALVAGED_EDITS_STORAGE_KEY, JSON.stringify(texts))
+    }
+  } catch {
+    // Best-effort only.
+  }
+}
+
+const salvagedEditTexts: Record<string, string> =
+  typeof window === 'undefined' ? {} : loadSalvagedEditTexts()
+
+// Reload rehydration (#88621 review N2): a pending recovery's durable half
+// comes back as a notice whose Undo offers the words (attachments, being blob
+// resources, do not survive the renderer). currentText is unknown after a
+// reload — undoSalvagedEdit then applies whenever the live buffer is empty,
+// which is the pre-edit state a reload lands on. An empty live buffer with a
+// record whose currentText is unknown is also the exact state the user left.
+if (typeof window !== 'undefined' && typeof document !== 'undefined' && document.readyState === 'loading') {
+  const rehydrate = () => {
+    const texts = loadSalvagedEditTexts()
+
+    if (Object.keys(texts).length === 0) {
+      return
+    }
+
+    const bySession = $salvagedEditNoticesBySession.get()
+    const next: Record<string, SalvagedEditNotice> = { ...bySession }
+
+    for (const [key, text] of Object.entries(texts)) {
+      if (bySession[key]) {
+        continue // a fresher in-memory record wins
+      }
+
+      next[key] = { currentText: '', undoText: text }
+    }
+
+    $salvagedEditNoticesBySession.set(next)
+  }
+
+  document.addEventListener('DOMContentLoaded', rehydrate, { once: true })
+}
+
+/** Retained blob: preview ownership (#88621 review R8). A dirty queued-edit
+ * stash keeps clones of the entry's attachments alive; deleting the queue
+ * entry must not revoke a preview URL another owner still holds. Registered
+ * owners are (for now) draft stashes and salvage records; when the LAST owner
+ * of a URL goes away, the resource is released there. */
+const retainedPreviewUrls = new Map<string, number>()
+
+const retainPreviewUrl = (url: string | null | undefined): void => {
+  if (url?.startsWith('blob:')) {
+    retainedPreviewUrls.set(url, (retainedPreviewUrls.get(url) ?? 0) + 1)
+  }
+}
+
+const releasePreviewUrl = (url: string | null | undefined): void => {
+  if (!url?.startsWith('blob:')) {
+    return
+  }
+
+  const owners = retainedPreviewUrls.get(url)
+
+  if (owners === undefined || owners <= 1) {
+    retainedPreviewUrls.delete(url)
+
+    return
+  }
+
+  retainedPreviewUrls.set(url, owners - 1)
+}
+
+/** Retain every blob: preview the attachments hold (clone owners). */
+const retainAttachmentPreviews = (attachments: readonly ComposerAttachment[]): void => {
+  for (const attachment of attachments) {
+    retainPreviewUrl(attachment.previewUrl)
+  }
+}
+
+const releaseAttachmentPreviews = (attachments: readonly ComposerAttachment[]): void => {
+  for (const attachment of attachments) {
+    releasePreviewUrl(attachment.previewUrl)
+  }
+}
+
+/** The retained-owner count for a preview URL (test/diagnostic surface). */
+export const retainedPreviewOwnerCount = (url: string): number | undefined => retainedPreviewUrls.get(url)
+
+/**
+ * Publish the salvage notice for `sessionKey`. `currentText` is what the
+ * composer is showing after the teardown (its pre-edit draft — the cancel
+ * repaint — or the dirty buffer itself when the teardown left it in place);
+ * `undoText` is the typed work that would otherwise be lost. Replacing a
+ * session's own earlier record is fine (latest recovery wins); other
+ * sessions' records are untouched. The undoable text is made durable so a
+ * reload cannot destroy the only copy (#88621 review N2), and the record's
+ * attachment membership is registered as a preview owner (#88621 review R8).
+ */
+export function announceSalvagedEdit(
+  sessionKey: string | null | undefined,
+  currentText: string,
+  undoText: string,
+  options?: { attachments?: ComposerAttachment[]; surfaceKey?: string }
+): void {
+  const key = sessionKey?.trim()
+
+  if (!key || !undoText.trim()) {
+    return
+  }
+
+  const previous = $salvagedEditNoticesBySession.get()[key]
+  const attachments = options?.attachments
+
+  if (previous?.undoAttachments) {
+    releaseAttachmentPreviews(previous.undoAttachments)
+  }
+
+  const notice: SalvagedEditNotice = {
+    currentText,
+    undoText,
+    ...(attachments ? { undoAttachments: attachments } : {}),
+    ...(options?.surfaceKey ? { surfaceKey: options.surfaceKey } : {})
+  }
+
+  $salvagedEditNoticesBySession.set({ ...$salvagedEditNoticesBySession.get(), [key]: notice })
+  retainAttachmentPreviews(notice.undoAttachments ?? [])
+
+  salvagedEditTexts[key] = undoText
+  persistSalvagedEditTexts(salvagedEditTexts)
+}
+
+export function dismissSalvagedEdit(sessionKey: string): void {
+  const bySession = $salvagedEditNoticesBySession.get()
+
+  if (!(sessionKey in bySession)) {
+    return
+  }
+
+  consumeSalvagedEdit(sessionKey)
+}
+
+/** Remove the record AND its durable text; releases preview ownership. */
+function consumeSalvagedEdit(sessionKey: string): void {
+  const bySession = $salvagedEditNoticesBySession.get()
+  const notice = bySession[sessionKey]
+
+  if (!notice) {
+    return
+  }
+
+  if (notice.undoAttachments) {
+    releaseAttachmentPreviews(notice.undoAttachments)
+  }
+
+  const next = { ...bySession }
+  delete next[sessionKey]
+  $salvagedEditNoticesBySession.set(next)
+
+  if (salvagedEditTexts[sessionKey] !== undefined) {
+    delete salvagedEditTexts[sessionKey]
+    persistSalvagedEditTexts(salvagedEditTexts)
+  }
+}
+
+/**
+ * Undo the teardown/restore: put the salvaged payload back into the composer.
+ * Only while the live text still equals `currentText` — once the user has
+ * typed something new, Undo would destroy their work, so it only dismisses.
+ * A record whose `surfaceKey` names another composer surface never applies
+ * OR consumes (#88621 review R7): a second pane on the same session has its
+ * own live buffer, and the mismatch means the record belongs to the pane
+ * that published it. Returns the payload to paint into the composer, or null
+ * when the record is not this caller's to apply.
+ */
+export function undoSalvagedEdit(sessionKey: string, liveText: string, surfaceKey?: string): string | null {
+  const notice = $salvagedEditNoticesBySession.get()[sessionKey]
+
+  if (!notice) {
+    return null
+  }
+
+  if (surfaceKey && notice.surfaceKey && surfaceKey !== notice.surfaceKey) {
+    return null // another pane's record — never consume what we don't own
+  }
+
+  consumeSalvagedEdit(sessionKey)
+
+  if (liveText !== notice.currentText) {
+    return null
+  }
+
+  return notice.undoText
+}
+
+/** The attachments Undo should paint with the text (see announceSalvagedEdit);
+ * consumed with the record, so the caller's repaint is the last reference. */
+export function takeSalvagedEditAttachments(sessionKey: string): ComposerAttachment[] {
+  const notice = $salvagedEditNoticesBySession.get()[sessionKey]
+
+  if (!notice?.undoAttachments) {
+    return []
+  }
+
+  // Hand ownership of the clones to the painter; the record keeps its
+  // registration until it is consumed, at which point the painter is the
+  // sole owner and a later removal revokes normally.
+  return cloneDraft({ attachments: notice.undoAttachments, text: '' }).attachments
+}
+
+/** The pending salvage record for a queue session key, if any. */
+export function getSalvagedEditNotice(sessionKey: string | null | undefined): SalvagedEditNotice | null {
+  const key = sessionKey?.trim()
+
+  return key ? ($salvagedEditNoticesBySession.get()[key] ?? null) : null
+}
+
+/**
+ * Move a pending salvage record with the same-conversation tip→root key
+ * handoff (#88621 review R6): drafts and queued prompts already migrate at
+ * that boundary (ChatView); the recovery record must follow or the undoable
+ * text strands under a key no composer will ever resolve again. Mirrors
+ * migrateSessionDraft's guards: same keys no-op, a non-empty destination
+ * record is preserved (the fresher recovery wins), and the source is
+ * consumed by the move. Preserves durability by re-keying the stored text.
+ */
+export function migrateSalvagedEdit(fromKey: string | null | undefined, toKey: string | null | undefined): boolean {
+  const from = fromKey?.trim()
+  const to = toKey?.trim()
+
+  if (!from || !to || from === to) {
+    return false
+  }
+
+  const bySession = $salvagedEditNoticesBySession.get()
+  const source = bySession[from]
+
+  if (!source) {
+    return false
+  }
+
+  const next = { ...bySession }
+
+  if (next[to]) {
+    // A destination record already holds this session's recovery — the
+    // later one (already keyed where the composer will read it) wins;
+    // just drop the stranded source.
+    delete next[from]
+    $salvagedEditNoticesBySession.set(next)
+
+    if (source.undoAttachments) {
+      releaseAttachmentPreviews(source.undoAttachments)
+    }
+
+    if (salvagedEditTexts[from] !== undefined) {
+      delete salvagedEditTexts[from]
+      persistSalvagedEditTexts(salvagedEditTexts)
+    }
+
+    return false
+  }
+
+  delete next[from]
+  next[to] = source
+  $salvagedEditNoticesBySession.set(next)
+
+  if (salvagedEditTexts[from] !== undefined) {
+    salvagedEditTexts[to] = salvagedEditTexts[from]
+    delete salvagedEditTexts[from]
+    persistSalvagedEditTexts(salvagedEditTexts)
+  }
+
+  return true
 }
 
 /**

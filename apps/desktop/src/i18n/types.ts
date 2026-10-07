@@ -3111,6 +3111,8 @@ export interface Translations extends NoticeTranslations {
     editingQueuedInComposer: string
     restoredDraftNotice: string
     restoredDraftUndo: string
+    salvagedEditNotice: string
+    salvagedEditUndo: string
     queueEdit: string
     queueExpand: string
     queueCollapse: string

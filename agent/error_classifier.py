@@ -1493,3 +1493,5 @@ def _extract_upstream_provider_name(body: Any) -> Optional[str]:
     metadata = _error_obj(body).get("metadata")
     name = metadata.get("provider_name") if isinstance(metadata, dict) else None
     return name.strip() if isinstance(name, str) and name.strip() else None
+
+# canary

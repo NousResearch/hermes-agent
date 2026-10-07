@@ -72,3 +72,24 @@ def test_existing_hermes_goal_is_not_stolen_on_config_switch(monkeypatch):
     GoalManager('legacy-owner').set('ongoing work')
     monkeypatch.setattr(cfg, 'load_config', lambda: {'model':{'openai_runtime':'codex_app_server'},'goals':{'runtime':'codex'}})
     assert not isinstance(goal_manager_for_session('legacy-owner'), CodexGoalManager)
+
+
+def test_profile_config_drives_goal_owner_budget_and_wait_policy(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from hermes_cli.codex_goals import goal_manager_for_session, CodexGoalManager
+    from agent.codex_runtime_goals import run_app_server_work
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    (tmp_path / 'config.yaml').write_text(
+        'model:\n  openai_runtime: codex_app_server\n'
+        'goals:\n  runtime: codex\n  codex_token_budget: 91000\n'
+        'agent:\n  codex_turn_timeout: 0\n  codex_idle_timeout: 123\n'
+    )
+    mgr = goal_manager_for_session('real-config-reader')
+    assert isinstance(mgr, CodexGoalManager) and mgr.token_budget == 91000
+    observed = {}
+    def run_turn(**options):
+        observed.update(options)
+        return 'accepted'
+    agent = SimpleNamespace(session_id=None, _codex_session=SimpleNamespace(run_turn=run_turn))
+    assert run_app_server_work(agent, 'test', messages=[]) == 'accepted'
+    assert observed == {'user_input':'test', 'turn_timeout':0, 'idle_timeout':123}

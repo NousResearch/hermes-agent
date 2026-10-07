@@ -2,7 +2,7 @@ import type { ModelOptionProvider } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { persistString, storedString } from '@/lib/storage'
-import { $gateway, activeGateway } from '@/store/gateway'
+import { $activeGatewayRoute, $gateway, activeGatewayProfileKey, requestGatewayForProfile } from '@/store/gateway'
 
 const STORAGE_KEY = 'hermes.desktop.visible-models'
 
@@ -120,11 +120,16 @@ function allFamilyKeys(providers: readonly ModelOptionProvider[]): Set<string> {
  *  waits on a round-trip, and a disconnected gateway is not an error — the next
  *  edit and the next connect both retry. */
 function pushVisibleModels(keys: null | Set<string> | readonly string[]): void {
-  void activeGateway()
-    ?.request('config.set', { key: 'visible_models', value: keys === null ? null : [...keys] })
-    .catch(() => {
-      // Not connected, or a gateway too old to know the key.
-    })
+  if (!$gateway.get()) {
+    return
+  }
+
+  void requestGatewayForProfile(activeGatewayProfileKey(), 'config.set', {
+    key: 'visible_models',
+    value: keys === null ? null : [...keys]
+  }).catch(() => {
+    // Not connected, or a gateway too old to know the key.
+  })
 }
 
 /** Adopt the roster the backend holds. Called on connect: a gateway that already
@@ -146,31 +151,55 @@ export function adoptVisibleModels(keys: null | readonly string[]): void {
  *  editing its settings or the daemon adopting a config change) and apply it
  *  without a reload. Unsubscribe on disconnect. */
 export function initVisibleModelsGatewaySync(): () => void {
-  return $gateway.subscribe(gateway => {
+  let offEvent: (() => void) | undefined
+  let generation = 0
+  const bind = () => {
+    offEvent?.()
+    offEvent = undefined
+    const currentGeneration = ++generation
+    const gateway = $gateway.get()
+    const profile = activeGatewayProfileKey()
+    const isCurrent = () =>
+      generation === currentGeneration && $gateway.get() === gateway && activeGatewayProfileKey() === profile
+    let receivedUpdate = false
+
     if (!gateway) {
       return
     }
 
-    // 1. Initial connect / reconnect read:
-    void gateway
-      .request('config.get', { key: 'visible_models' })
+    // Live updates win over an in-flight initial read.
+    offEvent = gateway.onEvent(event => {
+      if (!isCurrent() || (event.profile && event.profile !== profile)) {
+        return
+      }
+      if ((event.type as string) === 'visible_models.changed') {
+        const payload = event.payload as { value?: null | readonly string[] } | undefined
+        if (payload && 'value' in payload) {
+          receivedUpdate = true
+          adoptVisibleModels(payload.value ?? null)
+        }
+      }
+    })
+
+    void requestGatewayForProfile<{ value?: null | readonly string[] }>(profile, 'config.get', {
+      key: 'visible_models'
+    })
       .then(result => {
-        const value = (result as { value?: null | readonly string[] } | undefined)?.value
+        if (!isCurrent() || receivedUpdate) {
+          return
+        }
+        const value = result?.value
 
         if (value === undefined) {
           return
         }
 
         if (value === null) {
-          // The backend has no roster yet. A renderer that already has one is
-          // the only answer available, so seed the backend instead of wiping
-          // the operator's list.
+          // Seed an uncustomised backend from the renderer's existing roster.
           const local = $visibleModels.get()
-
           if (local !== null) {
             pushVisibleModels(local)
           }
-
           return
         }
 
@@ -179,22 +208,20 @@ export function initVisibleModelsGatewaySync(): () => void {
       .catch(() => {
         // Older gateway: keep the renderer-local list.
       })
+  }
 
-    // 2. Cross-client live sync: listen for broadcast events from the daemon
-    // or another client modifying display.visible_models.
-    const offEvent = gateway.onEvent(event => {
-      if ((event.type as string) === 'visible_models.changed') {
-        const payload = event.payload as { value?: null | readonly string[] } | undefined
-        if (payload && 'value' in payload) {
-          adoptVisibleModels(payload.value ?? null)
-        }
-      }
-    })
-
-    return () => {
-      offEvent?.()
-    }
-  })
+  // nanostores ignores cleanup returned from subscribe callbacks. Own both
+  // subscriptions and the socket listener explicitly; profiles can share a socket.
+  const offGateway = $gateway.listen(bind)
+  const offProfile = $activeGatewayRoute.listen(bind)
+  bind()
+  return () => {
+    ++generation
+    offGateway()
+    offProfile()
+    offEvent?.()
+    offEvent = undefined
+  }
 }
 
 if (typeof window !== 'undefined') {

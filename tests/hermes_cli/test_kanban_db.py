@@ -551,6 +551,11 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
         assert kbd.check_respawn_guard(conn, spawn_failed_id) == "blocker_auth"
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="simulates managed-systemd topology: restart_safe_gateway_child_argv "
+    "short-circuits to in_process off Linux, so the expected infra raise never fires",
+)
 def test_infrastructure_spawn_refusal_never_charges_the_card(
     kanban_home, monkeypatch, all_assignees_spawnable,
 ):

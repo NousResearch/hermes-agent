@@ -167,7 +167,7 @@ def store_key(home) -> str:
     return _key(Path(home) / "cron")
 
 
-def forget_homes(stores) -> None:
+def forget_stores(stores) -> None:
     """Drop the state of ``stores`` (``store_key`` values, resolved while each home existed) whose
     profile this process no longer ticks, so a profile that left this gateway cannot keep the
     host-wide gauges at writable=0."""

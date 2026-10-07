@@ -2679,7 +2679,7 @@ def clear_run_claim(job_id: str) -> bool:
     def apply(jobs, _i, job):
         claim = job.get("run_claim")
         if job.get("schedule", {}).get("kind") != "once" or claim in (None, {"outage": True}):
-            return False  # recurring, or already cleared
+            return False  # recurring, already cleared, or already reduced to the outage marker
         # Keep the outage marker (no "at": a stale claim, so it re-dispatches) or the skipped
         # one-shot, past its grace, is retired as missed on the next scan.
         job["run_claim"] = {"outage": True} if isinstance(claim, dict) and claim.get("outage") else None

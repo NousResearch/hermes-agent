@@ -69,6 +69,9 @@ class CanonicalUsage:
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     reasoning_tokens: int = 0
+    # The part of ``cache_write_tokens`` Anthropic reports as 1h-TTL writes
+    # (``cache_creation.ephemeral_1h_input_tokens``); it bills above the 5m write rate.
+    cache_write_1h_tokens: int = 0
     request_count: int = 1
     raw_usage: Optional[dict[str, Any]] = None
 
@@ -106,6 +109,9 @@ class PricingEntry:
     output_cost_per_million: Optional[Decimal] = None
     cache_read_cost_per_million: Optional[Decimal] = None
     cache_write_cost_per_million: Optional[Decimal] = None
+    # 1h-TTL cache writes (``prompt_caching.cache_ttl: 1h`` / ``auto``). None: the route
+    # publishes no separate rate, so 1h writes bill at ``cache_write_cost_per_million``.
+    cache_write_1h_cost_per_million: Optional[Decimal] = None
     request_cost: Optional[Decimal] = None
     source: CostSource = "none"
     source_url: Optional[str] = None
@@ -253,12 +259,20 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     }),
 )
 
+
+def _with_anthropic_1h_write(entry: PricingEntry) -> PricingEntry:
+    """Anthropic bills a 1h cache write at 2x base input (5m writes: 1.25x)."""
+    return replace(entry, cache_write_1h_cost_per_million=entry.input_cost_per_million * 2)
+
+
 _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {}
 for _provider, _url, _version, _rows in _SNAPSHOTS:
     for _models, _rates in _rows.items():
         _entry = _snap(*_rates, version=_version, url=_url)
         for _model in ((_models,) if isinstance(_models, str) else _models):
-            _OFFICIAL_DOCS_PRICING[(_provider, _model)] = _entry
+            _OFFICIAL_DOCS_PRICING[(_provider, _model)] = (
+                _with_anthropic_1h_write(_entry) if _provider == "anthropic" else _entry
+            )
 del _SNAPSHOTS, _provider, _url, _version, _rows, _models, _rates, _entry, _model
 
 # GPT-6 Astra uses whole-request pricing above the 272K prompt tier.  Keep this
@@ -327,7 +341,8 @@ _OFFICIAL_DOCS_PRICING[("google", "gemini-2.5-pro")] = _snap(
 # Anthropic fast mode (``speed: "fast"``): a premium on the whole context window, with the
 # prompt-caching multipliers applied on top. Selected per response by ``usage.speed``.
 _ANTHROPIC_FAST_MODE_PRICING: Dict[str, PricingEntry] = {
-    _model: _snap(*_rates, version="anthropic-fast-mode-2026-09", url=f"{_ANTHROPIC_URL}#fast-mode-pricing")
+    _model: _with_anthropic_1h_write(
+        _snap(*_rates, version="anthropic-fast-mode-2026-09", url=f"{_ANTHROPIC_URL}#fast-mode-pricing"))
     for _models, _rates in (
         (("claude-opus-4-8", "claude-opus-5"), ("10.00", "50.00", "1.00", "12.50")),
         (("claude-opus-5-5",), ("8.00", "40.00", "0.40", "10.00")),
@@ -633,6 +648,9 @@ def normalize_usage(
     input_tokens = prompt_total if shape is _ANTHROPIC_USAGE_SHAPE else max(
         0, prompt_total - cache_read_tokens - cache_write_tokens
     )
+    # Only the Anthropic wire splits cache writes by TTL.
+    cache_write_1h_tokens = min(cache_write_tokens, _usage_field(
+        u, "cache_creation", "ephemeral_1h_input_tokens")) if shape is _ANTHROPIC_USAGE_SHAPE else 0
 
     # Responses API: output_tokens_details.reasoning_tokens. Chat Completions
     # (OpenAI, OpenRouter, DeepSeek, ...): completion_tokens_details.reasoning_tokens.
@@ -659,6 +677,7 @@ def normalize_usage(
     return CanonicalUsage(
         input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens, reasoning_tokens=reasoning_tokens,
+        cache_write_1h_tokens=cache_write_1h_tokens,
         raw_usage=dict(u) if isinstance(u, dict) else (u.model_dump() if callable(getattr(u, 'model_dump', None)) else None),
     )
 
@@ -699,13 +718,21 @@ def estimate_usage_cost(
     # threshold the *_above rates apply to the entire request; None falls back.
     above = entry.tier_threshold_tokens is not None and usage.prompt_tokens > entry.tier_threshold_tokens
     amount = _ZERO
+    write_note = ("cache-write pricing unavailable for route",)
+    write_1h = min(usage.cache_write_1h_tokens, usage.cache_write_tokens)
+    write_1h_row = (
+        (write_1h, entry.cache_write_1h_cost_per_million, None, write_note)
+        if entry.cache_write_1h_cost_per_million is not None else
+        (write_1h, entry.cache_write_cost_per_million, entry.cache_write_cost_per_million_above, write_note)
+    )
     for tokens, rate, rate_above, note in (
         (usage.input_tokens, entry.input_cost_per_million, entry.input_cost_per_million_above, ()),
         (usage.output_tokens, entry.output_cost_per_million, entry.output_cost_per_million_above, ()),
         (usage.cache_read_tokens, entry.cache_read_cost_per_million, entry.cache_read_cost_per_million_above,
          ("cache-read pricing unavailable for route",)),
-        (usage.cache_write_tokens, entry.cache_write_cost_per_million, entry.cache_write_cost_per_million_above,
-         ("cache-write pricing unavailable for route",)),
+        (usage.cache_write_tokens - write_1h, entry.cache_write_cost_per_million,
+         entry.cache_write_cost_per_million_above, write_note),
+        write_1h_row,
     ):
         if above and rate_above is not None:
             rate = rate_above

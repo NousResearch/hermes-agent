@@ -98,11 +98,19 @@ export function formatGroupDeltaLines(delta: GroupMessage[], viewer: GroupChatLi
   return lines
 }
 
+/** Sibling-thread lines a freshly minted thread session gets for orientation. */
+const FRESH_THREAD_ROOM_CONTEXT_LIMIT = 20
+
+/** Heads the per-thread delta; the room context is spliced in right above it. */
+const GROUP_DELTA_HEADER = 'New messages in the room since your last turn (oldest first):'
+
 /** A newly-created thread session has no transcript of its sibling threads.
  * Give it a bounded room-level tail without changing the normal per-thread
  * delta: entries from the active thread are already in `deltaLines`, so they
  * are excluded here rather than showing the newest instruction twice. Thread
- * ids stay on each line because chronology can interleave several threads. */
+ * ids stay on each line because chronology can interleave several threads.
+ * Room scoping is the caller's job: `log` must be this room's log only;
+ * `group` only labels the lines. */
 export function formatFreshThreadRoomContext(
   log: GroupMessage[],
   viewer: GroupChatLineViewer,
@@ -113,7 +121,7 @@ export function formatFreshThreadRoomContext(
   const lines: string[] = []
   let chars = 0
 
-  for (let i = candidates.length - 1; i >= 0 && lines.length < 20; i--) {
+  for (let i = candidates.length - 1; i >= 0 && lines.length < FRESH_THREAD_ROOM_CONTEXT_LIMIT; i--) {
     const entry = candidates[i]
 
     const line = `[thread ${groupThreadOf(entry)}] ${formatGroupChatLine(
@@ -136,9 +144,10 @@ export function formatFreshThreadRoomContext(
 /** Insert historical room context before the fresh delta. The explicit label
  * is part of the safety boundary: these are prior messages for orientation,
  * not a second set of current instructions. Empty rooms remain byte-for-byte
- * unchanged. */
+ * unchanged. The replacer is a function so `$&`/`$'`-style text in another
+ * member's message lands verbatim instead of re-expanding the delta header. */
 export function addFreshThreadRoomContext(prompt: string, contextLines: string[]) {
-  const marker = '\n\nNew messages in the room since your last turn (oldest first):'
+  const marker = `\n\n${GROUP_DELTA_HEADER}`
 
   if (!contextLines.length || !prompt.includes(marker)) {
     return prompt
@@ -151,7 +160,7 @@ export function addFreshThreadRoomContext(prompt: string, contextLines: string[]
     ...contextLines.map(line => `  ${line}`)
   ].join('\n')
 
-  return prompt.replace(marker, `${context}${marker}`)
+  return prompt.replace(marker, () => `${context}${marker}`)
 }
 
 function viewerNameOf(viewer: GroupChatLineViewer): string {
@@ -224,7 +233,7 @@ export function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLine
   return [
     `${GROUP_PROMPT_HEADER_PREFIX}${groupName}"] You are @${botMentionTag(viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
     '',
-    'New messages in the room since your last turn (oldest first):',
+    GROUP_DELTA_HEADER,
     ...deltaLines.map(line => `  ${line}`),
     '',
     'Rules for this room:',

@@ -348,6 +348,73 @@ def test_decode_tail_skips_its_tick_during_an_idle_unload(monkeypatch, tmp_path)
     assert loads == [], "a mid-flight idle unload was fought by reloading the model"
 
 
+def _lazy_failure(message: str):
+    """faster-whisper's transcribe() is lazy: the CUDA dlopen-on-first-use raises while
+    segments are ITERATED (transcription_tools #103793), not when transcribe() returns."""
+    def segments():
+        raise RuntimeError(message)
+        yield  # pragma: no cover
+    return segments()
+
+
+def test_decode_tail_recovers_from_iteration_time_cuda_failure(monkeypatch, tmp_path):
+    """A CUDA lib failing mid-iteration poisons the SHARED cached model — the partial tick
+    must evict + retry on CPU exactly like _transcribe_local does, or every later tick and
+    the final pass fail on the same poisoned model (measured live on WSL: libcublas.so.12)."""
+    import tools.transcription_tools as tt
+    import tools.voice_partial as vp
+
+    wav = tmp_path / "tail.wav"
+    wav.write_bytes(b"\0" * 8)
+    replacements: list[str] = []
+
+    class PoisonedModel:
+        supported_languages = {"en": "English"}
+
+        def transcribe(self, path, **kwargs):
+            return _lazy_failure("Library libcublas.so.12 is not found or cannot be loaded"), MagicMock()
+
+    class CpuModel:
+        supported_languages = {"en": "English"}
+
+        def transcribe(self, path, **kwargs):
+            return iter([FakeSegment("recovered on cpu")]), MagicMock()
+
+    def replace(name):
+        replacements.append(name)
+        return CpuModel()
+
+    _stub_local_model(monkeypatch, PoisonedModel())
+    monkeypatch.setattr(tt, "_replace_cached_model_on_cpu", replace)
+
+    assert vp._decode_tail(str(wav)) == "recovered on cpu"
+    assert replacements == ["base"], "the poisoned cached model was not evicted for a CPU reload"
+
+
+def test_decode_tail_does_not_retry_a_real_runtime_failure(monkeypatch, tmp_path):
+    """'CUDA out of memory' is a real failure, not a missing lib: surface it, never mask it
+    by silently reloading (mirrors _transcribe_local's deliberate narrowness)."""
+    import tools.transcription_tools as tt
+    import tools.voice_partial as vp
+
+    wav = tmp_path / "tail.wav"
+    wav.write_bytes(b"\0" * 8)
+    replacements: list[str] = []
+
+    class Model:
+        supported_languages = {"en": "English"}
+
+        def transcribe(self, path, **kwargs):
+            return _lazy_failure("CUDA out of memory"), MagicMock()
+
+    _stub_local_model(monkeypatch, Model())
+    monkeypatch.setattr(tt, "_replace_cached_model_on_cpu", lambda name: replacements.append(name))
+
+    with pytest.raises(RuntimeError, match="CUDA out of memory"):
+        vp._decode_tail(str(wav))
+    assert replacements == []
+
+
 def test_concurrent_decodes_are_serialized(monkeypatch, tmp_path):
     """A partial and the final pass must never drive one CT2 model at the same time."""
     import tools.voice_partial as vp

@@ -83,7 +83,8 @@ def _stt_is_local(stt_config: Dict[str, Any]) -> bool:
 
 
 def _decode_tail(wav_path: str) -> Optional[str]:
-    """Transcribe one tail snapshot with the SAME model + kwargs the final pass uses.
+    """Transcribe one tail snapshot with the SAME model + kwargs (and the SAME CUDA-recovery
+    contract) the final pass uses.
 
     Serialized with the final transcription via the shared inference lock; the lazy segment
     iterator is consumed inside the lock (the decode happens on first ``next()``).
@@ -91,6 +92,7 @@ def _decode_tail(wav_path: str) -> Optional[str]:
     from tools import transcription_tools as tt
     from tools.transcription_local import (
         _join_confident_segments,
+        _looks_like_cuda_lib_error,
         _normalize_local_stt_language,
         build_local_transcribe_kwargs,
     )
@@ -114,7 +116,18 @@ def _decode_tail(wav_path: str) -> Optional[str]:
         else:
             kwargs.pop("language", None)
         segments, _info = model.transcribe(wav_path, **kwargs)
-        segments = list(segments)
+        try:
+            segments = list(segments)
+        except Exception as exc:
+            # Same contract as _transcribe_local: a CUDA lib failing at dlopen-on-first-use
+            # (during the lazy iteration) poisons the shared cached model. Without the evict +
+            # CPU retry here, a partial tick would record last_error forever and every later
+            # final pass would have to recover from the same failure.
+            if not _looks_like_cuda_lib_error(exc):
+                raise
+            model = tt._replace_cached_model_on_cpu(model_name)
+            segments, _info = model.transcribe(wav_path, **kwargs)
+            segments = list(segments)
     transcript = (_join_confident_segments(segments, local_cfg) or "").strip()
     if not transcript or is_whisper_hallucination(transcript):
         return None

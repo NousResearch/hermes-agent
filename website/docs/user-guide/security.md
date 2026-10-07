@@ -650,6 +650,8 @@ Core shell variables (`PATH`, `HOME`, `LANG`, `LC_*`, `TERM`, `TZ`, …), `HERME
 
 ### What it does not cover {#secret-isolation-limits}
 
+Secret isolation narrows the local backend and the Docker image; it does not turn either into a sandbox. For agents that read untrusted content, use a whole-process wrapper as described in [SECURITY.md](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md) §2.2.
+
 - **In-process code and direct children.** Plugins, gateway hooks and the file tools run inside the Hermes process; MCP servers are spawned by it with their own environment filter but full file access. Of these, only `hooks/` and `plugins/` are additionally write-protected from the agent.
 - **Operator-configured scripts.** Webhook filter scripts and `config.yaml` shell-hook commands run outside the ruleset.
 - **Other same-user processes.** `/proc/<pid>/environ` of any other process running as your user (an MCP server, for example) stays readable. Keep secrets in `$HERMES_HOME/.env` rather than passing them as container environment (`podman -e`, `--env-file`), which puts them in every process's initial environment.

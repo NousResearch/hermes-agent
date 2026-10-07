@@ -16,11 +16,6 @@ OTHER = "!chat:example.org"
 OPT_OUT = {"m.url_previews": [], "com.beeper.linkpreviews": []}
 
 
-@pytest.fixture(autouse=True)
-def _no_env(monkeypatch):
-    monkeypatch.delenv("MATRIX_DISABLE_LINK_PREVIEWS", raising=False)
-
-
 def _adapter(value=None) -> MatrixAdapter:
     extra = {"homeserver": "https://matrix.example.org", "user_id": "@bot:example.org"}
     if value is not None:
@@ -64,13 +59,6 @@ def test_listed_room_gets_empty_preview_bundle_other_rooms_do_not():
 def test_true_applies_to_every_room():
     adapter = _adapter(True)
     asyncio.run(adapter.send(OTHER, "https://example.org"))
-    assert {k: _sent(adapter)[k] for k in OPT_OUT} == OPT_OUT
-
-
-def test_env_overrides_yaml(monkeypatch):
-    monkeypatch.setenv("MATRIX_DISABLE_LINK_PREVIEWS", ROOM)
-    adapter = _adapter(False)
-    asyncio.run(adapter.send(ROOM, "https://example.org"))
     assert {k: _sent(adapter)[k] for k in OPT_OUT} == OPT_OUT
 
 

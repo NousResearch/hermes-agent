@@ -42,12 +42,15 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
 
 from html import escape as _html_escape
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from agent.i18n import t
 from agent.secret_scope import get_secret
+from plugins.platforms.matrix.adapter_html import MatrixHtmlSanitizer as _MatrixHtmlSanitizer
+from plugins.platforms.matrix.adapter_link_previews import (
+    apply_link_preview_opt_out as _apply_link_preview_opt_out, link_previews_disabled as _link_previews_disabled,
+    parse_link_preview_opt_out as _parse_link_preview_opt_out)
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
     get_scoped_secret as _get_scoped_secret, send_error
@@ -256,74 +259,6 @@ def _split_reply_fallback(body: str) -> tuple[str, str]:
         idx += 1  # the blank line separating the quote from the reply belongs to the quote
     head = "\n".join(lines[:idx])
     return (head, "") if idx >= len(lines) else (head + "\n", "\n".join(lines[idx:]))
-
-
-class _MatrixHtmlSanitizer(HTMLParser):
-    """Allowlist sanitizer for Matrix-compatible formatted HTML."""
-
-    _ALLOWED_TAGS = {
-        "a", "b", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "li", "ol",
-        "p", "pre", "s", "strike", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul"}
-    _VOID_TAGS = {"br", "hr"}
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=False)
-        self._parts: list[str] = []
-        self._skip_depth = 0
-
-    @staticmethod
-    def _safe_url(value: str) -> str:
-        stripped = re.sub(r"[\x00-\x1f\x7f]+", "", value or "").strip()
-        match = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*):", stripped)
-        scheme = match.group(1).lower() if match else ""
-        if scheme and scheme not in {"http", "https", "matrix", "mailto"}:
-            return ""
-        return stripped
-
-    def _safe_attrs(self, tag: str, attrs: list[tuple[str, str | None]]) -> str:
-        safe: list[str] = []
-        for key, value in attrs:
-            attr = str(key or "").lower()
-            raw_value = "" if value is None else str(value)
-            if tag == "a" and attr == "href":
-                href = self._safe_url(raw_value)
-                if href:
-                    safe.append(f' href="{_html_escape(href, quote=True)}"')
-            elif tag == "code" and attr == "class" and re.fullmatch(r"language-[A-Za-z0-9_+.-]{1,64}", raw_value):
-                safe.append(f' class="{_html_escape(raw_value, quote=True)}"')
-        return "".join(safe)
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        tag = tag.lower()
-        if tag in {"script", "style"}:
-            self._skip_depth += 1
-        elif not self._skip_depth and tag in self._ALLOWED_TAGS:
-            self._parts.append(f"<{tag}>" if tag in self._VOID_TAGS else f"<{tag}{self._safe_attrs(tag, attrs)}>")
-
-    def handle_endtag(self, tag: str) -> None:
-        tag = tag.lower()
-        if tag in {"script", "style"} and self._skip_depth:
-            self._skip_depth -= 1
-            return
-        if self._skip_depth or tag not in self._ALLOWED_TAGS or tag in self._VOID_TAGS:
-            return
-        self._parts.append(f"</{tag}>")
-
-    def _emit(self, text: str) -> None:
-        if not self._skip_depth:
-            self._parts.append(text)
-
-    def handle_data(self, data: str) -> None:
-        self._emit(_html_escape(data))
-
-    def handle_entityref(self, name: str) -> None:
-        self._emit(f"&{name};")
-
-    def handle_charref(self, name: str) -> None:
-        self._emit(f"&#{name};")
-
-    def get_html(self) -> str:
-        return "".join(self._parts)
 
 
 @dataclass(frozen=True)
@@ -555,38 +490,6 @@ def _thread_root(relates_to: dict) -> Optional[str]:
 def _extra_csv_set(config, key: str, env_name: str) -> Set[str]:
     """Resolve a room/user list: scoped env var → config.extra[key] → empty."""
     return _csv_set(_extra_or_secret(config.extra, key, env_name, "", blank_is_unset=False))
-
-
-# Bundled link previews (MSC4095): a sender may attach its own previews to an event. An EMPTY list
-# is an explicit "no previews for this event" that clients honoring bundled previews (Sable,
-# Beeper) render as no cards, without the reader's global or the room's preview settings changing.
-# ``com.beeper.linkpreviews`` is the unstable name older clients still read.
-_LINK_PREVIEW_OPT_OUT_KEYS = ("m.url_previews", "com.beeper.linkpreviews")
-_TRUE_WORDS = frozenset({"true", "1", "yes", "on", "all"})
-_FALSE_WORDS = frozenset({"", "false", "0", "no", "off", "none"})
-
-
-def _parse_link_preview_opt_out(raw: Any) -> tuple[bool, Set[str]]:
-    """``disable_link_previews`` → ``(all_rooms, room_ids)``: true opts out every room, a room-ID
-    list/CSV only those rooms, unset/false none."""
-    if raw is None or isinstance(raw, bool):
-        return bool(raw), set()
-    if isinstance(raw, str) and raw.strip().lower() in _TRUE_WORDS:
-        return True, set()
-    if isinstance(raw, str) and raw.strip().lower() in _FALSE_WORDS:
-        return False, set()
-    return False, _csv_set(raw)
-
-
-def _link_previews_disabled(opt_out: tuple[bool, Set[str]], room_id: Any) -> bool:
-    all_rooms, rooms = opt_out
-    return all_rooms or str(room_id) in rooms
-
-
-def _apply_link_preview_opt_out(msg_content: Dict[str, Any]) -> None:
-    """Mark a text event as carrying no link previews (see ``_LINK_PREVIEW_OPT_OUT_KEYS``)."""
-    for key in _LINK_PREVIEW_OPT_OUT_KEYS:
-        msg_content[key] = []
 
 
 def _recovery_key_output_path() -> Optional[Path]:
@@ -893,8 +796,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # If non-empty, bot ONLY responds in these rooms (whitelist); DMs exempt.
         self._allowed_rooms: Set[str] = _extra_csv_set(config, "allowed_rooms", "MATRIX_ALLOWED_ROOMS")
         # Rooms whose outbound text carries an empty bundled-preview list (no preview cards).
-        self._link_preview_opt_out = _parse_link_preview_opt_out(_extra_or_secret(
-            config.extra, "disable_link_previews", "MATRIX_DISABLE_LINK_PREVIEWS", None))
+        self._link_preview_opt_out = _parse_link_preview_opt_out((config.extra or {}).get("disable_link_previews"))
         self._allow_room_mentions: bool = _env_truthy("MATRIX_ALLOW_ROOM_MENTIONS", "false")
         # Extra-first: the YAML bridge seeds these into extra and skips the env write under a
         # multiplexed secondary scope, where os.environ holds the DEFAULT profile's flags.
@@ -3176,7 +3078,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                     return {"success": True, "platform": "matrix", "chat_id": chat_id,
                             "message_id": data.get("event_id")}
             opt_out = _parse_link_preview_opt_out(
-                _extra_or_secret(extra, "disable_link_previews", "MATRIX_DISABLE_LINK_PREVIEWS", None))
+                extra.get("disable_link_previews"))
             for payload in _standalone_payloads(message):
                 if _link_previews_disabled(opt_out, chat_id):
                     _apply_link_preview_opt_out(payload)
@@ -3279,14 +3181,17 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),
     ("allowed_rooms", "MATRIX_ALLOWED_ROOMS", "csv"), ("ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "csv"),
     ("max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", "str"),
-    ("disable_link_previews", "MATRIX_DISABLE_LINK_PREVIEWS", "csv"),
 )
 
 
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
     """``apply_yaml_config_fn`` (#24849): config.yaml matrix: keys → MATRIX_* env (env wins; skipped under a
     multiplexed secondary profile's scope) + ``PlatformConfig.extra`` (extra-first readers)."""
-    return _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE)
+    seeded = _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE) or {}
+    # Behaviour, not a secret: config.yaml only, seeded straight into extra (no env bridge).
+    if matrix_cfg.get("disable_link_previews") is not None:
+        seeded["disable_link_previews"] = matrix_cfg["disable_link_previews"]
+    return seeded or None
 
 
 

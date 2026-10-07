@@ -923,6 +923,11 @@ def _mount_plugin_api_routes():
             mod = importlib.util.module_from_spec(spec)
             # Register in sys.modules BEFORE exec_module so pydantic/FastAPI can resolve
             # string annotations (``from __future__ import annotations``) by module name.
+            # A relative import inside the API file needs the plugin's own package context,
+            # which the bare file location does not carry (#134408).
+            from hermes_cli.plugins_loader import give_module_package_context
+
+            give_module_package_context(mod, spec, dashboard_dir.parent)
             sys.modules[module_name] = mod
             try:
                 spec.loader.exec_module(mod)

@@ -435,14 +435,14 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             task, current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id)
         ) if task else None}
         # Dispatcher-presence warning so the UI can banner a ready+assigned task that would
-        # otherwise sit idle (no gateway / dispatch_in_gateway=false); triage/todo are expected
-        # to wait, unassigned tasks can't dispatch anyway. Probe the request's active home: the
-        # dashboard backend may run under a different HERMES_HOME than the board's profile.
+        # otherwise sit idle (no store dispatcher); triage/todo are expected to wait, and
+        # unassigned tasks can't dispatch anyway. The probe is store-scoped — it reads the
+        # SAME owner record the CLI reads — so the dashboard backend's own HERMES_HOME
+        # (which may differ from the board's profile) cannot make the two surfaces disagree.
         if task and task.status == "ready" and task.assignee:
             try:
                 from hermes_cli.kanban import _check_dispatcher_presence
-                from hermes_constants import get_hermes_home
-                running, message = _check_dispatcher_presence(hermes_home=get_hermes_home())
+                running, message = _check_dispatcher_presence()
                 if not running and message:
                     body["warning"] = message
             except Exception:

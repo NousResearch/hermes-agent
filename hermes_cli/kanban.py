@@ -96,46 +96,38 @@ def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
     return branch
 
 
-def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool, str]:
-    """``(running, message)`` for the "will anything dispatch this?" warning: True when a gateway is
-    alive for this HERMES_HOME with ``kanban.dispatch_in_gateway`` on, else False + human guidance.
-    Fails OPEN (probe/config errors -> ``(True, "")``) — a missed warning beats crying wolf.
-    ``hermes_home`` scopes the probe to a profile dir (dashboard backend); CLI callers pass None.
+def _check_dispatcher_presence() -> tuple[bool, str]:
+    """``(running, message)`` for the "will anything dispatch this?" warning.
 
-    The dashboard plugin API passes it because the dashboard backend process can be running under a
-    different HERMES_HOME than the profile the request targets, which otherwise produced a "no gateway is
-    running" warning against a perfectly healthy profile gateway (#71211).
+    The board STORE is the unit of dispatcher ownership: whichever gateway wins the
+    store's ``.dispatcher.lock`` serves its dispatcher and writes the store's owner
+    record. So this probe answers from THAT record — store-scoped and process-verified
+    — never from a gateway PID file (which lives under the gateway's own ``HERMES_HOME``
+    and says nothing about which store it serves) and never from the CALLER's config
+    (the dashboard backend can run under a different HERMES_HOME than the board's).
+    "Running" means a live dispatcher owns this store; "not running" therefore covers
+    both "no gateway" and "a live gateway with dispatch off", because a gateway that
+    is not dispatching writes no record — so the guidance must name both.
 
-    When ``hermes_home`` is ``None`` (the CLI), the probe resolves to the *kanban store's* home
-    (``kanban_home()``), not the active profile's ``HERMES_HOME``: the board is shared at the root home by
-    design (``kanban_db.kanban_home``), so a profile-scoped shell must not warn "no gateway" against a
-    healthy root gateway just because the profile's own ``gateway.pid`` is absent.
+    Fails OPEN (``(True, "")``) on any probe error: a missed warning beats crying wolf.
     """
     try:
-        from gateway.status import resolve_gateway_liveness  # type: ignore
+        from gateway.kanban_watchers_common import read_dispatcher_owner  # type: ignore
 
-        # Same ladder as the dashboard status endpoints so PID-file-less / cross-container gateways
-        # aren't misreported; use_cache=False because this one-shot probe must see the state now.
-        probe_dir = hermes_home if hermes_home is not None else kb.kanban_home()
-        liveness = resolve_gateway_liveness(profile_dir=probe_dir, use_cache=False)
+        owner = read_dispatcher_owner(kb.kanban_home())
     except Exception:
         return (True, "")  # can't probe — silent
-    if liveness.probe_error:  # resolver swallows per-rung failures; "can't tell" != "no gateway"
-        return (True, "")
-    pid = liveness.pid
-    # Even if the gateway is up, dispatch_in_gateway may be off (can't tell -> assume default).
-    if pid and bool(_kanban_config().get("dispatch_in_gateway", True)):
-        return (True, f"gateway pid={pid}, dispatch enabled")
-    if pid:
-        return (False, "Gateway is running but kanban.dispatch_in_gateway=false in "
-                "config.yaml — the task will sit in 'ready' until you flip it "
-                "back on and restart the gateway, OR run the legacy "
-                "standalone daemon (`hermes kanban daemon --force`).")
-    return (False, "No gateway is running — the task will sit in 'ready' until you "
-            "start it. Run:\n    hermes gateway start\n"
-            "The gateway hosts an embedded dispatcher (tick interval 60s by "
-            "default); your task will be picked up on the next tick after "
-            "the gateway comes up.")
+    if owner:
+        return (True, f"gateway pid={owner.get('pid')}, dispatch enabled "
+                      f"(owner {owner.get('home')})")
+    return (False, (
+        "No active dispatcher holds this board's store — the task will sit in 'ready' "
+        "until one picks it up. Start the gateway (it hosts an embedded dispatcher, "
+        "tick interval 60s by default); if a gateway is already running, check that "
+        "kanban.dispatch_in_gateway is true in its config.yaml and that "
+        "HERMES_KANBAN_DISPATCH_IN_GATEWAY is not disabling it; or run the standalone "
+        "dispatcher with `hermes kanban daemon --force`."
+    ))
 
 
 # --- Command dispatch ---

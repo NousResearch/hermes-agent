@@ -22,7 +22,9 @@ from gateway.kanban_watchers_common import (
     _resolve_auto_decompose_settings,
     _gc_retention_days,
     _to_thread_process_service,
+    clear_dispatcher_owner,
     logger,
+    write_dispatcher_owner,
 )
 from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
 from gateway.kanban_watchers_dispatcher import (
@@ -44,9 +46,16 @@ class GatewayKanbanWatchersMixin:
         return getattr(self, "_kanban_dispatcher_lock_handle", None) is not None
 
     def _release_kanban_dispatcher_lock(self) -> None:
-        """Clear notifier-visible ownership before releasing the OS lock."""
+        """Drop our dispatcher-owner record, then release the OS lock.
+
+        Order matters: the record announces that this store HAS a dispatcher, so it
+        must go before the lock frees up — otherwise a reader between the two would
+        see a healthy record for a store nobody is serving.
+        """
         handle = getattr(self, "_kanban_dispatcher_lock_handle", None)
         self._kanban_dispatcher_lock_handle = None
+        if handle is not None:
+            clear_dispatcher_owner()
         _release_singleton_lock(handle)
 
     async def _sleep_between_ticks(self, interval: float) -> None:
@@ -248,6 +257,10 @@ class GatewayKanbanWatchersMixin:
             return None
         if _lock_state == "held":
             self._kanban_dispatcher_lock_handle = _lock_handle  # hold for process lifetime
+            # Held-only: this gateway now owns the store and is the store's dispatcher,
+            # so it announces that for the CLI/dashboard presence probe. A contended
+            # gateway owns no store and must never claim one.
+            write_dispatcher_owner(_kb.kanban_home())
             logger.info("kanban dispatcher: holding singleton dispatcher lock (%s)", _lock_path)
         else:
             logger.warning("kanban dispatcher: advisory lock unavailable at %s; proceeding "

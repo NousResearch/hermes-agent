@@ -34,7 +34,7 @@ description: "リポジトリを監視し、プルリクエストをレビュー
 
 ## 前提条件
 
-- **Hermes Agentがインストール済み** — [インストールガイド](/docs/getting-started/installation)を参照
+- **Hermes Agentがインストール済み** — [インストールガイド](../getting-started/installation.md)を参照
 - cronジョブ用に**ゲートウェイが実行中**：
   ```bash
   hermes gateway install   # サービスとしてインストール
@@ -50,7 +50,7 @@ description: "リポジトリを監視し、プルリクエストをレビュー
   # 認証
   gh auth login
   ```
-- **メッセージングの設定**（オプション） — [Telegram](/docs/user-guide/messaging/telegram)または[Discord](/docs/user-guide/messaging/discord)
+- **メッセージングの設定**（オプション） — [Telegram](../user-guide/messaging/telegram.md)または[Discord](../user-guide/messaging/discord.md)
 
 :::tip メッセージングがなくても問題なし
 `deliver: "local"` を使うと、レビューを `~/.hermes/cron/output/` に保存できます。通知を接続する前のテストに最適です。
@@ -297,7 +297,7 @@ GitHubは認証済みユーザーに対して1時間あたり5,000 APIリクエ�
 ## 次のステップ
 
 - **[WebhookベースのPRレビュー](./webhook-github-pr-review.md)** — PRが開かれたときに即座にレビューを受け取る（公開エンドポイントが必要）
-- **[デイリーブリーフィングボット](/docs/guides/daily-briefing-bot)** — PRレビューを朝のニュースダイジェストと組み合わせる
-- **[プラグインを構築する](/docs/guides/build-a-hermes-plugin)** — レビューロジックを共有可能なプラグインにラップする
-- **[プロファイル](/docs/user-guide/profiles)** — 独自のメモリと設定を持つ専用のレビュアープロファイルを実行する
-- **[フォールバックプロバイダー](/docs/user-guide/features/fallback-providers)** — あるプロバイダーがダウンしてもレビューが実行されるようにする
+- **[デイリーブリーフィングボット](./daily-briefing-bot.md)** — PRレビューを朝のニュースダイジェストと組み合わせる
+- **[プラグインを構築する](../developer-guide/plugins/index.md)** — レビューロジックを共有可能なプラグインにラップする
+- **[プロファイル](../user-guide/profiles.md)** — 独自のメモリと設定を持つ専用のレビュアープロファイルを実行する
+- **[フォールバックプロバイダー](../user-guide/features/fallback-providers.md)** — あるプロバイダーがダウンしてもレビューが実行されるようにする

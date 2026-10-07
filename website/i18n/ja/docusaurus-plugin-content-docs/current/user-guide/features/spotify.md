@@ -1,6 +1,6 @@
 # Spotify
 
-Hermesは、Spotifyの公式Web API（PKCE OAuth付き）を使って、Spotifyを直接制御できます — 再生、キュー、検索、プレイリスト、保存したトラック/アルバム、再生履歴など。トークンは `~/.hermes/auth.json` に保存され、401時に自動でリフレッシュされます。マシンごとに一度ログインするだけで済みます。
+Hermesは、Spotifyの公式Web API（PKCE OAuth付き）を使って、Spotifyを直接制御できます — 再生、キュー、検索、プレイリスト、保存したトラック/アルバム、再生履歴など。トークンは `~/.hermes/auth.json` に保存され、401時に自動でリフレッシュされます。マシンごとに一度ログインするだけで済みます（リフレッシュトークンは約6か月で失効します。失効したら `hermes auth spotify` を再実行してください）。
 
 Hermesの組み込みOAuth連携（Google、GitHub Copilot、Codex）とは異なり、Spotifyは各ユーザーが独自の軽量な開発者アプリを登録する必要があります。Spotifyは、誰でも使えるパブリックなOAuthアプリをサードパーティが配布することを認めていません。所要時間は約2分で、`hermes auth spotify` がその手順を案内してくれます。
 
@@ -12,7 +12,7 @@ Hermesの組み込みOAuth連携（Google、GitHub Copilot、Codex）とは異�
 
 ## セットアップ
 
-### 一発で: `hermes tools`
+### 一発で: `hermes tools` または初回セットアップ
 
 最速の経路です。実行します。
 
@@ -20,7 +20,9 @@ Hermesの組み込みOAuth連携（Google、GitHub Copilot、Codex）とは異�
 hermes tools
 ```
 
-`🎵 Spotify` までスクロールし、スペースを押してオンに切り替え、次に `s` で保存します。Hermesはそのまま直接OAuthフローに進みます — まだSpotifyアプリを持っていない場合は、その場でインラインに作成手順を案内してくれます。完了すると、ツールセットの有効化と認証が一度に行われます。
+`🎵 Spotify` までスクロールし、スペースを押してオンに切り替え、次に `s` で保存します。同じトグルは、初回の `hermes setup` / `hermes setup tools` フローでも利用できます。Spotifyはオプトインのままなので、そこで有効にすると `hermes tools` と同じプロバイダー対応の設定が実行されます。
+
+Hermesはそのまま直接OAuthフローに進みます — まだSpotifyアプリを持っていない場合は、その場でインラインに作成手順を案内してくれます。完了すると、ツールセットの有効化と認証が一度に行われます。
 
 手順を別々に行いたい場合（または後で再認証する場合）は、以下の2ステップのフローを使ってください。
 
@@ -68,7 +70,13 @@ hermes auth spotify
 
 ### SSH経由 / ヘッドレス環境での実行
 
-`SSH_CLIENT` または `SSH_TTY` が設定されている場合、HermesはウィザードとOAuthステップの両方で自動的なブラウザ起動をスキップします。Hermesが表示するダッシュボードURLと認可URLをコピーし、ローカルマシンのブラウザでそれらを開いて、通常どおり進めてください — ローカルのHTTPリスナーは、リモートホストのポート43827で引き続き動作します。SSHトンネル経由でそこに到達する必要がある場合は、そのポートをフォワードします: `ssh -L 43827:127.0.0.1:43827 remote`。
+`SSH_CLIENT` または `SSH_TTY` が設定されている場合、HermesはウィザードとOAuthステップの両方で自動的なブラウザ起動をスキップします。Hermesが表示するダッシュボードURLと認可URLをコピーし、ローカルマシンのブラウザでそれらを開いて、通常どおり進めてください — ローカルのHTTPリスナーは、リモートホストのポート `43827` で引き続き動作します。ノートPCのブラウザは、SSHのローカルフォワードなしではリモートのループバックに到達できません。
+
+```bash
+ssh -N -L 43827:127.0.0.1:43827 user@remote-host
+```
+
+ジャンプボックス / 踏み台サーバーの構成やその他の注意点（mosh、tmux、ポートの競合）については、[SSH / リモートホスト経由のOAuth](../../guides/oauth-over-ssh.md)を参照してください。
 
 ## 確認
 
@@ -118,6 +126,12 @@ hermes auth status spotify
 |--------|---------|
 | `list` | アカウントから見えるすべてのSpotify Connectデバイス |
 | `transfer` | 再生を `device_id` に移す。任意の `play: true` で移行時に再生を開始 |
+
+### Home Assistantで管理されているスピーカー
+
+Home Assistantが、すでにSpotify Connectに対応したスピーカー（例: Sonos、Echo、Nest、その他のConnect対応スピーカー）を管理している場合、Spotifyがそれらを認識していれば `spotify_devices list` に自動的に表示されます。この経路では、HermesにHome Assistant ↔ Spotifyのブリッジは不要です — デバイスのルーティングはSpotifyがネイティブに処理します。
+
+スピーカーの表示名でHermesに再生の移行を依頼する（例:「Spotifyをキッチンのスピーカーに切り替えて」）か、スクリプトで扱う場合は `spotify_devices list` を呼び出し、正確な `device_id` を `spotify_devices transfer` に渡してください。スピーカーが表示されない場合は、Spotifyアプリまたはスピーカー側のSpotify連携を一度開き、SpotifyにアクティブなConnectターゲットとして登録させてください。
 
 #### `spotify_queue`
 | アクション | 目的 | Premium? |

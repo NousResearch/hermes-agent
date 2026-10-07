@@ -6,6 +6,10 @@ description: "iLink Bot APIを介してHermes Agentを個人WeChatアカウン�
 
 # Weixin（WeChat）
 
+このページの Python 依存関係コマンドは、
+[PM で準備済みのソースチェックアウト](../../reference/package-management.md#developer-workflow)を前提としています。
+依存関係を変更した後は、チェックアウトを再アクティベートして Hermes を再起動してください。
+
 Hermesを、Tencentの個人向けメッセージングプラットフォームである[WeChat](https://weixin.qq.com/)（微信）に接続します。アダプターは個人WeChatアカウント向けにTencentの **iLink Bot API** を使用します — これはWeCom（企業向けWeChat）とは別物です。メッセージはロングポーリングで配信されるため、公開エンドポイントやwebhookは不要です。
 
 :::info
@@ -32,9 +36,8 @@ QRログインは、Hermesを **iLinkボットのアイデンティティ**（�
 必要な依存関係をインストールします：
 
 ```bash
-pip install aiohttp cryptography
-# オプション: ターミナルでのQRコード表示用
-pip install hermes-agent[messaging]
+# aiohttp とターミナルでのQRコード表示のサポートを含みます
+python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"
 ```
 
 ## セットアップ
@@ -123,6 +126,8 @@ hermes gateway
 | `allow_from` | `[]` | DMを許可するユーザーID（dm_policy=allowlist のとき） |
 | `group_allow_from` | `[]` | 許可するグループID（group_policy=allowlist のとき） |
 | `split_multiline_messages` | `false` | `true` のとき、複数行の返信を複数のチャットメッセージに分割（従来の振る舞い）。`false` のとき、長さ上限を超えない限り複数行の返信を1つのメッセージとして保持。 |
+| `text_batch_delay_seconds` | `0.3` | 短時間に連続して届いたテキストメッセージをバッファし、1つにまとめたリクエストとして送出するまでの待機時間（秒、最大 `2.0`）。iLinkはメッセージを個別に配信するため、このデバウンスにより断片ごとにエージェントが呼び出されるのを防ぎます。`0` に設定すると各メッセージを即座にディスパッチします。 |
+| `text_batch_split_delay_seconds` | `1.0` | 最新の断片が分割しきい値に近い場合（iLinkがチャンク分割した可能性のある長いメッセージ）に使われる、延長された送出遅延（最大 `4.0`。`text_batch_delay_seconds` を下回ることはありません）。 |
 
 ## アクセスポリシー
 
@@ -141,6 +146,17 @@ hermes gateway
 WEIXIN_DM_POLICY=allowlist
 WEIXIN_ALLOWED_USERS=user_id_1,user_id_2
 ```
+
+`WEIXIN_ALLOWED_USERS` は**受信フィルター**であり、招待の仕組みではありません。QRログインは、1つのiLinkボットのアイデンティティをHermesに接続します。他の人が自分のアカウントでHermesのQRコードをスキャンするのではありません。彼らはWeChatを通じて接続済みのiLinkボット/連絡先にメッセージを送る必要があり、Hermesは送信者のWeixinユーザーIDが `WEIXIN_ALLOWED_USERS` に含まれている場合にのみそのDMを処理します。
+
+実用的なセットアップの流れは次のとおりです：
+
+1. `hermes gateway setup` でHermesを一度ペアリングし、接続されたiLinkボットのアカウントを控えておきます。
+2. 許可する各ユーザーに、そのボット/連絡先へダイレクトメッセージを送ってもらいます。
+3. ゲートウェイのログまたは受信イベントのペイロードから、送信者/ユーザーIDを読み取ります。
+4. それらのIDを `WEIXIN_ALLOWED_USERS` に追加し、ゲートウェイを再起動します。
+
+QRコードをスキャンしたアカウントしかHermesと会話できない場合は、他のユーザーが、QRログインを行った個人WeChatアカウントではなく、iLinkボットのアイデンティティそのものにメッセージを送っているか確認してください。iLinkボットは別個のアイデンティティであり、通常のWeChatの連絡先/グループのルーティングはTencentのiLinkの挙動によって制限される場合があります。
 
 ### グループポリシー
 
@@ -296,11 +312,12 @@ APIエラー時、アダプターはシンプルな再試行戦略を使いま�
 
 | 問題 | 修正 |
 |---------|-----|
-| `Weixin startup failed: aiohttp and cryptography are required` | 両方をインストール: `pip install aiohttp cryptography` |
+| `Weixin startup failed: aiohttp and cryptography are required` | 両方をインストール: `python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"` |
 | `Weixin startup failed: WEIXIN_TOKEN is required` | `hermes gateway setup` を実行してQRログインを完了するか、`WEIXIN_TOKEN` を手動で設定 |
 | `Weixin startup failed: WEIXIN_ACCOUNT_ID is required` | `.env` に `WEIXIN_ACCOUNT_ID` を設定するか `hermes gateway setup` を実行 |
 | `Another local Hermes gateway is already using this Weixin token` | もう一方のゲートウェイインスタンスを先に停止 — トークンごとに1つのポーラーのみ許可される |
 | セッション期限切れ（`errcode=-14`） | ログインセッションが期限切れです。`hermes gateway setup` を再実行して新しいQRコードをスキャン |
+| 能動的な送信（cron / 通知）が `ret=-2 errmsg=prepare failed` または `unknown error` で失敗する | 相手の `context_token` が古くなっています（相手からの最近の受信メッセージがない）。アダプターはこれをレート制限ではなく古いセッションとして扱い、トークンなしで一度だけ再送するため、メッセージは届きます。それでもiLinkが `prepare failed` を返す場合（または破棄するトークンがなかった場合 — ペアリングしたばかりのボット）、送信（テキストまたはメディア）は `iLink sendmessage session not ready … the user must send the bot a message first (or re-pair)` で失敗します。この場合、レート制限のクールダウンは発動しません。レート制限のバックオフ/クールダウンを引き起こすのはそれ以外の `-2` 応答のみで、そのクールダウンのエラーには生の `ret`/`errcode`/`errmsg` が含まれます |
 | セットアップ中にQRコードが期限切れ | QRは最大3回まで自動更新されます。それでも期限切れが続く場合は、ネットワーク接続を確認 |
 | ボットがDMに応答しない | `WEIXIN_DM_POLICY` を確認 — `allowlist` に設定されている場合、送信者は `WEIXIN_ALLOWED_USERS` に含まれている必要がある |
 | ボットがグループメッセージを無視する | グループポリシーはデフォルトで `disabled` です。`WEIXIN_GROUP_POLICY=open` または `allowlist` を設定 — ただし、QRログインのiLinkボットアイデンティティ（`...@im.bot`）は通常、通常のWeChatグループメッセージをまったく受信できないことに注意。ゲートウェイログにグループメッセージの生の受信イベントが表示されない場合、制限はiLink側にあり、Hermes側ではありません。 |
@@ -309,4 +326,4 @@ APIエラー時、アダプターはシンプルな再試行戦略を使いま�
 | 音声メッセージがテキストとして表示される | WeChatが書き起こしを提供している場合、アダプターはテキストを使用します。これは期待される動作です |
 | メッセージが重複して見える | アダプターはメッセージIDで重複排除します。重複が見られる場合、複数のゲートウェイインスタンスが実行されていないか確認 |
 | `iLink POST ... HTTP 4xx/5xx` | iLinkサービスからのAPIエラー。トークンの有効性とネットワーク接続を確認 |
-| ターミナルのQRコードがレンダリングされない | messagingエクストラ付きで再インストール: `pip install hermes-agent[messaging]`。あるいは、QRの上に表示されたURLを開く |
+| ターミナルのQRコードがレンダリングされない | messagingエクストラ付きで再インストール: `cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"`。あるいは、QRの上に表示されたURLを開く |

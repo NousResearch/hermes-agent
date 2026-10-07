@@ -21,7 +21,7 @@ Git の **worktree** は、リポジトリ全体を複製することなく、�
 Hermes は**カレントワーキングディレクトリ**をプロジェクトルートとして扱います:
 
 - CLI: `hermes` または `hermes chat` を実行するディレクトリ
-- メッセージングゲートウェイ: `MESSAGING_CWD` で設定されたディレクトリ
+- メッセージングゲートウェイ: `~/.hermes/config.yaml` の `terminal.cwd` で設定されたディレクトリ
 
 **同じチェックアウト**で複数のエージェントを実行すると、それらの変更が互いに干渉する可能性があります:
 
@@ -36,6 +36,18 @@ worktree を使うと、各エージェントは次を得ます:
 関連項目: [チェックポイントと /rollback](./checkpoints-and-rollback.md)。
 
 ## クイックスタート: worktree の作成
+
+### セッション内から: `/worktree new`
+
+最も手早い方法です（Copilot CLI の `/worktree new` にインスパイアされています）。対話型の CLI セッションから次を実行します:
+
+```
+/worktree new my-experiment
+```
+
+Hermes はリポジトリ内に `.worktrees/my-experiment/` を作成し（ブランチは `hermes/my-experiment`。`worktree_sync: false` でない限り、直前にフェッチしたリモートの先端をベースにします）、セッションのターミナルツールとファイルツールの対象をその中へ切り替えます — 再起動は不要です。名前を省略すると、ランダムな `hermes-<id>` ツリーになります。`/worktree` だけを実行するとアクティブなツリーを表示し、`/worktree list` ですべてのツリーを一覧表示します。終了時、ツリーは未プッシュのコミットがある場合にのみ保持されます。これは `hermes -w` とまったく同じ動作です。
+
+### git で手動で作成する
 
 メインリポジトリ（`.git/` を含む）から、フィーチャーブランチ用の新しい worktree を作成します:
 
@@ -152,10 +164,12 @@ Hermes は次のようにします:
 - 分離されたブランチ（例: `hermes/hermes-<hash>`）をチェックアウトします。
 - その worktree 内で完全な CLI セッションを実行します。
 
+Hermes は、リポジトリ独自の git 設定を実行せずに worktree をチェックアウトします: そのチェックアウトではフック、`core.fsmonitor`、clean/smudge フィルターが無効になります。これは Hermes がカンバンのタスクやサブエージェント用に作成する worktree と同じです。Git LFS でファイルを保存しているリポジトリでは、そこにはポインターファイルが置かれます。セッションでそれらの内容が必要な場合は、worktree 内で `git lfs pull` を実行してください。
+
 これが worktree の分離を得る最も簡単な方法です。単一のクエリと組み合わせることもできます:
 
 ```bash
-hermes -w -q "Fix issue #123"
+hermes -w -z "Fix issue #123"
 ```
 
 並列エージェントの場合、複数のターミナルを開いてそれぞれで `hermes -w` を実行します — 各呼び出しが自動的に独自の worktree とブランチを取得します。
@@ -171,3 +185,7 @@ hermes -w -q "Fix issue #123"
 - 異なるエージェントや実験が互いに干渉しないという強力な保証。
 - 不適切な編集から簡単に回復できる、高速な反復サイクル。
 - クリーンでレビューしやすいプルリクエスト。
+
+## 複数の worktree にまたがる UI 部分の開発
+
+TypeScript の部分（`ui-tui/`、`apps/desktop/`）はそれぞれ `node_modules` を必要とし、worktree ごとに `npm ci` を実行すると、すべてのブランチで重複してしまいます。複数の worktree から TUI やデスクトップアプリを開発する場合は、シンボリックリンクで 1 つのインストールを共有する `htui` / `hgui` ヘルパーについて [worktree からの TUI とデスクトップ開発](../developer-guide/worktree-ui-dev.md) を参照してください。

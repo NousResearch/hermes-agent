@@ -8,6 +8,10 @@ sidebar_position: 1
 
 Hermes Agent には、基本的なチャットをはるかに超える豊富な機能が備わっています。永続メモリやファイルを認識するコンテキストから、ブラウザ自動化や音声会話まで、これらの機能が連携することで、Hermes は強力な自律アシスタントになります。
 
+:::tip どこから始めればよいかわからない場合
+`hermes setup --portal` を使えば、モデルプロバイダーと 4 つの Tool Gateway ツール（Web 検索、画像生成、TTS、ブラウザ）をすべて 1 つのコマンドでセットアップできます。[Nous Portal](../../integrations/nous-portal.md) を参照してください。
+:::
+
 ## コア
 
 - **[ツールとツールセット](tools.md)** — ツールはエージェントの機能を拡張する関数です。論理的なツールセットにまとめられ、プラットフォームごとに有効・無効を切り替えられます。Web 検索、ターミナル実行、ファイル編集、メモリ、委譲などをカバーします。
@@ -28,9 +32,10 @@ Hermes Agent には、基本的なチャットをはるかに超える豊富な�
 ## メディアと Web
 
 - **[ボイスモード](voice-mode.md)** — CLI とメッセージングプラットフォーム全体での完全な音声対話。マイクを使ってエージェントに話しかけ、音声の返答を聞き、Discord のボイスチャンネルでライブの音声会話ができます。
-- **[ブラウザ自動化](browser.md)** — 複数のバックエンドに対応した完全なブラウザ自動化: Browserbase クラウド、Browser Use クラウド、CDP 経由のローカル Chrome、またはローカル Chromium。Web サイトの操作、フォーム入力、情報抽出を行います。
+- **[ウェイクワード](./wake-word.md)** — CLI、TUI、デスクトップアプリ向けのハンズフリーな「Hey Hermes」トリガー。デバイス上で動作するホットワードリスナーが、ウェイクフレーズを話すと音声セッションを開始します。
+- **[ブラウザ自動化](browser.md)** — 複数のバックエンドに対応した完全なブラウザ自動化: Browserbase クラウド、Browser Use クラウド、CDP 経由のローカル Chrome/Brave/Chromium/Edge、またはローカル Chromium。Web サイトの操作、フォーム入力、情報抽出を行います。
 - **[ビジョンと画像貼り付け](vision.md)** — マルチモーダルなビジョンサポート。クリップボードから CLI に画像を貼り付け、ビジョン対応モデルを使ってエージェントに分析・説明・処理を依頼できます。
-- **[画像生成](image-generation.md)** — FAL.ai を使ってテキストプロンプトから画像を生成します。9 つのモデルに対応（FLUX 2 Klein/Pro、GPT-Image 1.5/2、Nano Banana Pro、Ideogram V3、Recraft V4 Pro、Qwen、Z-Image Turbo）。`hermes tools` で選択します。
+- **[画像生成](image-generation.md)** — FAL.ai を使ってテキストプロンプトから画像を生成します。11 のモデルに対応（FLUX 2 Klein/Pro、GPT-Image 1.5/2、Nano Banana Pro、Ideogram V3、Recraft V4 Pro、Qwen、Z-Image Turbo、Krea V2 Medium/Large）。`hermes tools` で選択します。
 - **[音声と TTS](tts.md)** — すべてのメッセージングプラットフォームでのテキスト読み上げ出力と音声メッセージの文字起こし。10 種類のネイティブプロバイダーオプション（Edge TTS（無料）、ElevenLabs、OpenAI TTS、MiniMax、Mistral Voxtral、Google Gemini、xAI、NeuTTS、KittenTTS、Piper）に加え、任意のローカル TTS CLI 向けのカスタムコマンドプロバイダーに対応します。
 
 ## 連携
@@ -39,10 +44,11 @@ Hermes Agent には、基本的なチャットをはるかに超える豊富な�
 - **[プロバイダールーティング](provider-routing.md)** — どの AI プロバイダーがリクエストを処理するかをきめ細かく制御します。ソート、ホワイトリスト、ブラックリスト、優先順位付けにより、コスト、速度、品質を最適化します。
 - **[フォールバックプロバイダー](fallback-providers.md)** — プライマリモデルがエラーに遭遇したときに、バックアップの LLM プロバイダーへ自動フェイルオーバーします。ビジョンや圧縮といった補助タスク向けの独立したフォールバックも含みます。
 - **[クレデンシャルプール](credential-pools.md)** — 同一プロバイダーの複数のキーに API 呼び出しを分散します。レート制限や失敗時には自動でローテーションします。
-- **[メモリプロバイダー](memory-providers.md)** — 外部のメモリバックエンド（Honcho、OpenViking、Mem0、Hindsight、Holographic、RetainDB、ByteRover、Supermemory）を組み込み、組み込みのメモリシステムを超えたセッション横断のユーザーモデリングとパーソナライズを実現します。
+- **[プロンプトキャッシュ](../configuration#prompt-caching)** — ネイティブの Anthropic、OpenRouter、Nous Portal 上の Claude 向けに、セッションをまたぐ 1 時間のプレフィックスキャッシュを組み込みで提供します。常時有効で、設定は不要です。
+- **[メモリプロバイダー](memory-providers.md)** — 外部のメモリバックエンド（Holographic、RetainDB、ByteRover に加え、プラグインカタログから Honcho、Hindsight、Supermemory、Mem0、OpenViking）を組み込み、組み込みのメモリシステムを超えたセッション横断のユーザーモデリングとパーソナライズを実現します。
 - **[API サーバー](api-server.md)** — Hermes を OpenAI 互換の HTTP エンドポイントとして公開します。OpenAI 形式を話す任意のフロントエンド（Open WebUI、LobeChat、LibreChat など）を接続できます。
 - **[IDE 連携（ACP）](acp.md)** — VS Code、Zed、JetBrains など ACP 互換のエディタ内で Hermes を使います。チャット、ツールの動作、ファイルの差分、ターミナルコマンドがエディタ内に表示されます。
-- **[RL トレーニング](rl-training.md)** — 強化学習やモデルのファインチューニング向けに、エージェントセッションからトラジェクトリデータを生成します。
+- **[バッチ処理](batch-processing.md)** — CLI から多数のプロンプトやタスクに対してエージェントを並列実行します。評価や下流のトレーニングパイプラインに適した構造化出力とトラジェクトリの記録を備えています。
 
 ## カスタマイズ
 

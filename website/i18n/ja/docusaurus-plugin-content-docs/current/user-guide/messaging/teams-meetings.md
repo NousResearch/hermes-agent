@@ -8,13 +8,17 @@ description: "Microsoft Graph の webhook を使って Microsoft Teams のミー
 
 HermesにMicrosoft Graphのミーティングイベントを取り込ませ、まずトランスクリプトを取得し、必要に応じて録画とSTTにフォールバックし、構造化された要約を下流のシンクに配信させたい場合は、Teamsミーティングパイプラインを使用します。
 
+前提条件: 基盤となるボット／認証情報のセットアップについては [Microsoft Teams](./teams.md) を参照してください。
+
+> `hermes gateway setup` を実行して **Teams Meetings** を選ぶと、ガイド付きのセットアップを利用できます。
+
 このページはセットアップと有効化に焦点を当てています。
 - Graph認証情報
 - webhookリスナーの設定
 - Teamsの配信モード
 - パイプライン設定の形
 
-day-2運用、本番稼働前のチェック、オペレーター用ワークシートについては、専用ガイドを使用してください: [Teamsミーティングパイプラインの運用](/docs/guides/operate-teams-meeting-pipeline)。
+day-2運用、本番稼働前のチェック、オペレーター用ワークシートについては、専用ガイドを使用してください: [Teamsミーティングパイプラインの運用](../../guides/operate-teams-meeting-pipeline.md)。
 
 ## この機能が行うこと
 
@@ -38,7 +42,7 @@ hermes teams-pipeline maintain-subscriptions
 ミーティングパイプラインを有効化する前に、次が揃っていることを確認してください。
 
 - 動作するHermesインストール
-- Teamsのアウトバウンド配信が必要な場合は、既存の [Microsoft Teamsボットのセットアップ](/docs/user-guide/messaging/teams)
+- Teamsのアウトバウンド配信が必要な場合は、既存の [Microsoft Teamsボットのセットアップ](./teams.md)
 - サブスクライブ予定のミーティングリソースに必要な権限を持つMicrosoft Graphアプリケーション認証情報
 - webhook配信のためにMicrosoft Graphが呼び出せるパブリックHTTPS URL
 - 録画＋STTのフォールバックが必要な場合は `ffmpeg` がインストールされていること
@@ -70,6 +74,8 @@ MSGRAPH_WEBHOOK_CLIENT_STATE=<random-shared-secret>
 MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES=communications/onlineMeetings
 ```
 
+バインドホストは `config.yaml` のプラットフォームの `extra.host` から読み込まれます（`MSGRAPH_WEBHOOK_HOST` という環境変数はありません — [webhookリスナーのリファレンス](msgraph-webhook.md)を参照）。
+
 リスナーは次を公開します。
 - `/msgraph/webhook` — Graph通知用
 - `/health` — シンプルなヘルスチェック用
@@ -91,6 +97,7 @@ platforms:
   msgraph_webhook:
     enabled: true
     extra:
+      host: 127.0.0.1
       port: 8646
       client_state: "replace-me"
       accepted_resources:
@@ -119,6 +126,8 @@ platforms:
         linear:
           enabled: false
 ```
+
+リスナーを `0.0.0.0` のような非ループバックのホストにバインドする場合は、`allowed_source_cidrs` にMicrosoftのwebhook送信元レンジも設定する必要があります。ループバックへのバインド（`127.0.0.1` / `::1`）は、開発用トンネルやローカルのリバースプロキシ構成を想定したものです。
 
 ## Teamsの配信モード
 
@@ -196,11 +205,11 @@ hermes teams-pipeline subscribe \
 
 :::warning Graphサブスクリプションは72時間で期限切れになります
 
-Microsoft Graphはwebhookサブスクリプションを72時間に制限しており、自動更新しません。本番稼働の前に `hermes teams-pipeline maintain-subscriptions` をスケジュールする必要があります。さもなければ、手動でサブスクリプションを作成してから3日後に通知が黙って止まります。オペレーター用ランブックの[サブスクリプション更新の自動化](/docs/guides/operate-teams-meeting-pipeline#automating-subscription-renewal-required-for-production)を参照してください — 3つの選択肢（Hermes cron、systemdタイマー、素のcrontab）があります。
+Microsoft Graphはwebhookサブスクリプションを72時間に制限しており、自動更新しません。本番稼働の前に `hermes teams-pipeline maintain-subscriptions` をスケジュールする必要があります。さもなければ、手動でサブスクリプションを作成してから3日後に通知が黙って止まります。オペレーター用ランブックの[サブスクリプション更新の自動化](../../guides/operate-teams-meeting-pipeline.md#automating-subscription-renewal-required-for-production)を参照してください — 3つの選択肢（Hermes cron、systemdタイマー、素のcrontab）があります。
 
 :::
 
-サブスクリプションの保守とday-2のオペレーターフローについては、ガイドに進んでください: [Teamsミーティングパイプラインの運用](/docs/guides/operate-teams-meeting-pipeline)。
+サブスクリプションの保守とday-2のオペレーターフローについては、ガイドに進んでください: [Teamsミーティングパイプラインの運用](../../guides/operate-teams-meeting-pipeline.md)。
 
 ## バリデーション
 
@@ -229,5 +238,5 @@ hermes teams-pipeline subscriptions
 
 ## 関連ドキュメント
 
-- [Microsoft Teamsボットのセットアップ](/docs/user-guide/messaging/teams)
-- [Teamsミーティングパイプラインの運用](/docs/guides/operate-teams-meeting-pipeline)
+- [Microsoft Teamsボットのセットアップ](./teams.md)
+- [Teamsミーティングパイプラインの運用](../../guides/operate-teams-meeting-pipeline.md)

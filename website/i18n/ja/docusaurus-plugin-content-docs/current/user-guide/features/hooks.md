@@ -802,7 +802,7 @@ def my_callback(session_id: str, platform: str, **kwargs):
 
 ---
 
-完全なウォークスルー（ツールスキーマ、ハンドラー、高度なフックパターンを含む）については、**[プラグイン構築ガイド](/docs/guides/build-a-hermes-plugin)** を参照してください。
+完全なウォークスルー（ツールスキーマ、ハンドラー、高度なフックパターンを含む）については、**[プラグイン構築ガイド](/docs/developer-guide/plugins)** を参照してください。
 
 ---
 

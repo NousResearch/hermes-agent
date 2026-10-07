@@ -8,7 +8,7 @@ description: "スキルを見つけ、インストールし、使い、作成す
 
 スキルは、ASCIIアートの生成からGitHub PRの管理まで、特定のタスクをHermesがどう処理するかを教えるオンデマンドの知識ドキュメントです。このガイドでは、日々の使い方を一通り説明します。
 
-完全な技術リファレンスについては、[スキルシステム](/docs/user-guide/features/skills)を参照してください。
+完全な技術リファレンスについては、[スキルシステム](../user-guide/features/skills.md)を参照してください。
 
 ---
 
@@ -95,7 +95,7 @@ hermes skills install official/research/arxiv
 # チャットセッション内でハブからインストールする
 /skills install official/creative/songwriting-and-ai-music
 
-# 任意のHTTP(S) URLから単一ファイルのSKILL.mdを直接インストールする
+# HTTP(S) URLからSKILL.mdとそれが参照するサポートファイルをインストールする
 hermes skills install https://sharethis.chat/SKILL.md
 /skills install https://example.com/SKILL.md --name my-skill
 ```
@@ -135,7 +135,7 @@ skill_view("writing-plans")
 
 プラグインスキルはシステムプロンプトに**列挙されず**、`skills_list` にも表示されません。これらはオプトインで、プラグインが提供していると分かっているときに明示的に読み込みます。読み込まれると、エージェントには同じプラグインの兄弟スキルを列挙したバナーが表示されます。
 
-独自のプラグインでスキルを同梱する方法については、[Hermesプラグインを構築する → スキルを同梱する](/docs/guides/build-a-hermes-plugin#bundle-skills)を参照してください。
+独自のプラグインでスキルを同梱する方法については、[Hermesプラグインを構築する → スキルを同梱する](../developer-guide/plugins/index.md#bundle-skills)を参照してください。
 
 ---
 
@@ -162,7 +162,7 @@ CLIからスキル設定を管理します。
 hermes skills config gif-search
 
 # すべてのスキル設定を表示する
-hermes config get skills.config
+hermes config get skills.config --json
 ```
 
 ---
@@ -287,4 +287,4 @@ hermes skills
 
 ---
 
-*完全なスキルリファレンス（frontmatterフィールド、条件付き有効化、外部ディレクトリなど）については、[スキルシステム](/docs/user-guide/features/skills)を参照してください。*
+*完全なスキルリファレンス（frontmatterフィールド、条件付き有効化、外部ディレクトリなど）については、[スキルシステム](../user-guide/features/skills.md)を参照してください。*

@@ -9,7 +9,7 @@ description: "Hermes Agentに同梱され、ライフサイクルフック経由
 
 Hermesには、リポジトリに同梱された少数のプラグインが付属しています。これらは `<repo>/plugins/<name>/` 配下にあり、`~/.hermes/plugins/` のユーザーインストール済みプラグインと並んで自動的に読み込まれます。これらはサードパーティプラグインと同じプラグイン面（フック、ツール、スラッシュコマンド）を使用し、ツリー内でメンテナンスされる点だけが異なります。
 
-一般的なプラグインシステムについては[プラグイン](/docs/user-guide/features/plugins)ページを、独自のものを書くには[Hermesプラグインを構築する](/docs/guides/build-a-hermes-plugin)を参照してください。
+一般的なプラグインシステムについては[プラグイン](/docs/user-guide/features/plugins)ページを、独自のものを書くには[Hermesプラグインを構築する](/docs/developer-guide/plugins)を参照してください。
 
 ## ディスカバリーの仕組み
 
@@ -261,7 +261,7 @@ hermes plugins enable google_meet
 
 ## 同梱プラグインを追加する
 
-同梱プラグインは、他のあらゆるHermesプラグインとまったく同じように書かれます。[Hermesプラグインを構築する](/docs/guides/build-a-hermes-plugin)を参照してください。唯一の違いは次のとおりです。
+同梱プラグインは、他のあらゆるHermesプラグインとまったく同じように書かれます。[Hermesプラグインを構築する](/docs/developer-guide/plugins)を参照してください。唯一の違いは次のとおりです。
 
 - ディレクトリが `~/.hermes/plugins/<name>/` ではなく `<repo>/plugins/<name>/` にある
 - マニフェストのソースが `hermes plugins list` で `bundled` として報告される

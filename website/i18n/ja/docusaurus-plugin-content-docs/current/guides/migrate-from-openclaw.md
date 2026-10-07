@@ -8,6 +8,14 @@ description: "OpenClaw / Clawdbot のセットアップを Hermes Agent に移�
 
 `hermes claw migrate` は、OpenClaw（または旧 Clawdbot/Moldbot）のセットアップを Hermes にインポートします。このガイドでは、何が移行されるか、設定キーのマッピング、移行後に何を確認すべきかを正確に説明します。
 
+:::note
+**Claude Code** や **OpenAI Codex CLI** から移行する場合は、[`hermes import-agent`](../user-guide/import-from-other-agents.md) を使ってください。
+:::
+
+:::tip
+OpenClaw のセットアップが複数プロバイダー構成だった場合、`hermes setup --portal` で 1 つの OAuth にまとめられます — 1 回のログインで 300 以上のモデルと Tool Gateway が使えます。[Nous Portal](../integrations/nous-portal.md) を参照してください。
+:::
+
 ## クイックスタート
 
 ```bash
@@ -69,7 +77,7 @@ hermes claw migrate --preset full --migrate-secrets --yes
 | 内容 | OpenClaw の設定パス | Hermes の宛先 | 備考 |
 |------|---------------------|-------------------|-------|
 | デフォルトモデル | `agents.defaults.model` | `config.yaml` → `model` | 文字列または `{primary, fallbacks}` オブジェクト |
-| カスタムプロバイダー | `models.providers.*` | `config.yaml` → `custom_providers` | `baseUrl`、`apiType`/`api` をマッピング — 短形式（"openai"、"anthropic"）とハイフン形式（"openai-completions"、"anthropic-messages"、"google-generative-ai"）の両方の値を処理 |
+| カスタムプロバイダー | `models.providers.*` | `config.yaml` → `custom_providers`（次回の `hermes update` の設定移行で正規の `providers:` 辞書へ自動移行されます） | `baseUrl`、`apiType`/`api` をマッピング — 短形式（"openai"、"anthropic"）とハイフン形式（"openai-completions"、"anthropic-messages"、"google-generative-ai"）の両方の値を処理 |
 | プロバイダーの APIキー | `models.providers.*.apiKey` | `~/.hermes/.env` | `--migrate-secrets` が必要。下記の [APIキーの解決](#api-key-resolution) を参照。 |
 
 ### エージェントの動作
@@ -88,15 +96,9 @@ hermes claw migrate --preset full --migrate-secrets --yes
 | Docker サンドボックス | `agents.defaults.sandbox.backend` | `terminal.backend` | "docker" → "docker" |
 | Docker イメージ | `agents.defaults.sandbox.docker.image` | `terminal.docker_image` | そのままコピー |
 
-### セッションリセットポリシー
+### セッションの有効期間
 
-| OpenClaw の設定パス | Hermes の設定パス | 備考 |
-|---------------------|-------------------|-------|
-| `session.reset.mode` | `session_reset.mode` | "daily"、"idle"、または両方 |
-| `session.reset.atHour` | `session_reset.at_hour` | 日次リセットの時刻（0〜23） |
-| `session.reset.idleMinutes` | `session_reset.idle_minutes` | 非アクティブの分数 |
-
-注: OpenClaw には `session.resetTriggers`（`["daily", "idle"]` のような単純な文字列配列）もあります。構造化された `session.reset` が存在しない場合、移行は `resetTriggers` からの推論にフォールバックします。
+アイドルリセットと日次リセットのタイマーはインポートされません: Hermes の会話は、明示的に `/new` または `/reset` を実行するまで保持されます。高度なセッション設定（アイデンティティリンク、スレッドバインディング、メンテナンス、スコープ、送信ポリシー）は参照用にアーカイブされたまま残ります。
 
 ### MCP サーバー
 
@@ -156,7 +158,7 @@ TTS 設定は、次の優先順位で **2つの** OpenClaw の設定場所から
 | ブラウザのヘッドレス | `browser.headless` | `config.yaml` → `browser.headless` | |
 | Brave 検索キー | `tools.web.search.brave.apiKey` | `.env` → `BRAVE_API_KEY` | `--migrate-secrets` が必要 |
 | ゲートウェイ認証トークン | `gateway.auth.token` | `.env` → `HERMES_GATEWAY_TOKEN` | `--migrate-secrets` が必要 |
-| 作業ディレクトリ | `agents.defaults.workspace` | `.env` → `MESSAGING_CWD` | |
+| 作業ディレクトリ | `agents.defaults.workspace` | `config.yaml` → `terminal.cwd` | 旧来の移行では、互換性のためのフォールバックとして引き続き `MESSAGING_CWD` が出力される場合があります |
 
 ### アーカイブ（直接の Hermes 相当物なし）
 
@@ -169,7 +171,7 @@ TTS 設定は、次の優先順位で **2つの** OpenClaw の設定場所から
 | `HEARTBEAT.md` | `archive/workspace/HEARTBEAT.md` | 定期的なタスクには cronジョブを使用 |
 | `BOOTSTRAP.md` | `archive/workspace/BOOTSTRAP.md` | コンテキストファイルまたはスキルを使用 |
 | cronジョブ | `archive/cron-config.json` | `hermes cron create` で再作成 |
-| プラグイン | `archive/plugins-config.json` | [プラグインガイド](/docs/user-guide/features/hooks) を参照 |
+| プラグイン | `archive/plugins-config.json` | [プラグインガイド](../user-guide/features/hooks.md) を参照 |
 | フック／Webhook | `archive/hooks-config.json` | `hermes webhook` またはゲートウェイフックを使用 |
 | メモリバックエンド | `archive/memory-backend-config.json` | `hermes honcho` で設定 |
 | スキルレジストリ | `archive/skills-registry-config.json` | `hermes skills config` を使用 |
@@ -225,7 +227,7 @@ TTS 設定は、次の優先順位で **2つの** OpenClaw の設定場所から
 
 5. **メッセージングをテストする** — プラットフォームトークンを移行した場合は、ゲートウェイを再起動します: `systemctl --user restart hermes-gateway`
 
-6. **セッションポリシーを確認する** — `hermes config get session_reset` が期待どおりか検証します。
+6. **セッションのアーカイブを確認する** — アーカイブされた高度な設定を確認します。アイドルリセットと日次リセットのタイマーは意図的にインポートされません。
 
 7. **WhatsApp を再ペアリングする** — WhatsApp はトークン移行ではなく QRコードペアリング（Baileys）を使用します。`hermes whatsapp` を実行してペアリングします。
 

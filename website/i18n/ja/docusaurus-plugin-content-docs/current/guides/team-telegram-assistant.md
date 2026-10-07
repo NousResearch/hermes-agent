@@ -24,7 +24,7 @@ description: "コードのヘルプ、リサーチ、システム管理などを
 
 始める前に、次を用意してください:
 
-- **Hermes Agentがインストール済み**のサーバーまたはVPS（ノートPCではなく — ボットは常時稼働し続ける必要があります）。まだの場合は[インストールガイド](/docs/getting-started/installation)に従ってください。
+- **Hermes Agentがインストール済み**のサーバーまたはVPS（ノートPCではなく — ボットは常時稼働し続ける必要があります）。まだの場合は[インストールガイド](../getting-started/installation.md)に従ってください。
 - あなた自身の（ボットオーナー用の）**Telegramアカウント**
 - **LLMプロバイダーの設定** — 最低限、OpenAI、Anthropic、またはその他のサポート対象プロバイダーのAPIキーを `~/.hermes/.env` に設定
 
@@ -291,7 +291,7 @@ display:
 
 `~/.hermes/SOUL.md` を編集して、ボットのコミュニケーション方法をカスタマイズします:
 
-詳しいガイドは [HermesでSOUL.mdを使う](/docs/guides/use-soul-with-hermes) を参照してください。
+詳しいガイドは [HermesでSOUL.mdを使う](./use-soul-with-hermes.md) を参照してください。
 
 ```markdown
 # Soul
@@ -374,8 +374,8 @@ cronジョブのプロンプトは、過去の会話の記憶を持たない完�
 
 ```bash
 # ~/.hermes/.env 内
-TERMINAL_BACKEND=docker
-TERMINAL_DOCKER_IMAGE=nikolaik/python-nodejs:python3.11-nodejs20
+TERMINAL_ENV=docker
+TERMINAL_DOCKER_IMAGE=nousresearch/hermes-sandbox:desktop
 ```
 
 または `~/.hermes/config.yaml` で:
@@ -428,13 +428,13 @@ hermes gateway stop && hermes gateway start
 
 これで動作するチーム向けTelegramアシスタントが手に入りました。次のステップをいくつか紹介します:
 
-- **[セキュリティガイド](/docs/user-guide/security)** — 認可、コンテナの分離、コマンド承認の詳細
-- **[メッセージングゲートウェイ](/docs/user-guide/messaging)** — ゲートウェイのアーキテクチャ、セッション管理、チャットコマンドの完全リファレンス
-- **[Telegramセットアップ](/docs/user-guide/messaging/telegram)** — ボイスメッセージやTTSを含むプラットフォーム固有の詳細
-- **[スケジュールタスク](/docs/user-guide/features/cron)** — 配信オプションやcron式を使った高度なcronスケジューリング
-- **[コンテキストファイル](/docs/user-guide/features/context-files)** — プロジェクト知識のためのAGENTS.md、SOUL.md、.cursorrules
-- **[パーソナリティ](/docs/user-guide/features/personality)** — 組み込みのパーソナリティプリセットとカスタムペルソナの定義
-- **プラットフォームを追加する** — 同じゲートウェイで [Discord](/docs/user-guide/messaging/discord)、[Slack](/docs/user-guide/messaging/slack)、[WhatsApp](/docs/user-guide/messaging/whatsapp) を同時に動かせます
+- **[セキュリティガイド](../user-guide/security.md)** — 認可、コンテナの分離、コマンド承認の詳細
+- **[メッセージングゲートウェイ](../user-guide/messaging/index.md)** — ゲートウェイのアーキテクチャ、セッション管理、チャットコマンドの完全リファレンス
+- **[Telegramセットアップ](../user-guide/messaging/telegram.md)** — ボイスメッセージやTTSを含むプラットフォーム固有の詳細
+- **[スケジュールタスク](../user-guide/features/cron.md)** — 配信オプションやcron式を使った高度なcronスケジューリング
+- **[コンテキストファイル](../user-guide/features/context-files.md)** — プロジェクト知識のためのAGENTS.md、SOUL.md、.cursorrules
+- **[パーソナリティ](../user-guide/features/personality.md)** — 組み込みのパーソナリティプリセットとカスタムペルソナの定義
+- **プラットフォームを追加する** — 同じゲートウェイで [Discord](../user-guide/messaging/discord.md)、[Slack](../user-guide/messaging/slack.md)、[WhatsApp](../user-guide/messaging/whatsapp.md) を同時に動かせます
 
 ---
 

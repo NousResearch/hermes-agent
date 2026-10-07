@@ -950,7 +950,7 @@ hermes plugins [subcommand]
 
 一般プラグインの無効化リストは `config.yaml` の `plugins.disabled` に保存されます。
 
-[プラグイン](../user-guide/features/plugins.md)と[Hermesプラグインを作る](../guides/build-a-hermes-plugin.md)を参照してください。
+[プラグイン](../user-guide/features/plugins.md)と[Hermesプラグインを作る](../developer-guide/plugins/index.md)を参照してください。
 
 ## `hermes tools`
 

@@ -124,7 +124,7 @@ You optimize for truth, clarity, and usefulness over politeness theater.
 - プロンプトインジェクションのスキャン
 - 大きすぎる場合の切り詰め
 
-ファイルが空、空白のみ、または読み込めない場合、Hermesは組み込みのデフォルトのアイデンティティ（"You are Hermes Agent, an intelligent AI assistant created by Nous Research..."）にフォールバックします。このフォールバックは `skip_context_files` が設定されている場合（例: サブエージェント/委譲のコンテキスト）にも適用されます。
+ファイルが空、空白のみ、または読み込めない場合、Hermesは組み込みのデフォルトのアイデンティティ（"You are Hermes Agent, built by Nous Research. Be direct: match the length of your reply to the weight of the ask..."）にフォールバックします。このフォールバックは `skip_context_files` が設定されている場合（例: サブエージェント/委譲のコンテキスト）にも適用されます。
 
 ## セキュリティスキャン
 
@@ -211,7 +211,7 @@ Hermesには `/personality` で切り替えられる組み込みパーソナリ�
 
 ## 設定でのカスタムパーソナリティ
 
-`~/.hermes/config.yaml` の `agent.personalities` 配下で、名前付きのカスタムパーソナリティを定義することもできます。
+組み込みパーソナリティは、すべてのサーフェス（CLI、メッセージングプラットフォーム、TUI、デスクトップアプリ）で常に利用できます。独自のパーソナリティを追加したり、名前を再利用して組み込みのものを上書きしたりするには、`~/.hermes/config.yaml` の `agent.personalities` 配下に定義します（トップレベルの `personalities:` ブロックも使えます。両方に同じ名前がある場合は `agent.personalities` が優先されます）。
 
 ```yaml
 agent:
@@ -226,6 +226,24 @@ agent:
 ```text
 /personality codereviewer
 ```
+
+選択内容は `display.personality` に名前として保存されます。パーソナリティが `agent.system_prompt` に触れることはありません — このフィールドは自分で書く手動のシステムプロンプト用に予約されており、パーソナリティが選択されていない場合にのみ適用されます。
+
+## デフォルトに戻す
+
+アクティブなパーソナリティのオーバーレイを解除し、ベースの動作（`SOUL.md` のペルソナと、設定している場合は `agent.system_prompt`）に戻すには、次のいずれかを使います:
+
+```text
+/personality none
+/personality default
+/personality neutral
+```
+
+3 つとも選択（`display.personality`）をクリアし、変更は次のメッセージから有効になります。引数なしで `/personality` を実行すると、利用可能なプリセットと並んで `none` も一覧表示され、アクティブなものにマークが付きます。
+
+:::note アップグレード時の一度きりのリセット
+古いバージョンの Hermes では、パーソナリティの状態がサーフェス間で一貫せずに保存されており、以前にオフにしたパーソナリティが再び有効になることがありました。アップグレード後の初回実行時に、保存されているパーソナリティの選択は一度だけ `none` にリセットされます（移行処理は、どのパーソナリティがクリアされたかを表示します）。引き続き使いたい場合は、`/personality <name>` で再度有効にしてください。手動で書いた `agent.system_prompt` のテキストには一切手を加えません。
+:::
 
 ## 推奨ワークフロー
 
@@ -256,10 +274,10 @@ agent:
 
 ## 関連ドキュメント
 
-- [コンテキストファイル](/docs/user-guide/features/context-files)
-- [設定](/docs/user-guide/configuration)
-- [ヒントとベストプラクティス](/docs/guides/tips)
-- [SOUL.mdガイド](/docs/guides/use-soul-with-hermes)
+- [コンテキストファイル](./context-files.md)
+- [設定](../configuration.md)
+- [ヒントとベストプラクティス](../../guides/tips.md)
+- [SOUL.mdガイド](../../guides/use-soul-with-hermes.md)
 
 ## CLIの外観と会話のパーソナリティ
 

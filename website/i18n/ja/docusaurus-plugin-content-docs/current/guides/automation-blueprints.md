@@ -1,19 +1,21 @@
 ---
 sidebar_position: 15
-title: "自動化テンプレート"
-description: "すぐに使える自動化レシピ — スケジュールタスク、GitHubイベントトリガー、APIウェブフック、マルチスキルワークフロー"
+title: "自動化ブループリント"
+description: "すぐに使える自動化ブループリント — スケジュールタスク、GitHubイベントトリガー、APIウェブフック、マルチスキルワークフロー"
 ---
 
-# 自動化テンプレート
+# 自動化ブループリント
 
-よくある自動化パターンのコピー＆ペースト用レシピです。各テンプレートは、時間ベースのトリガーにHermesの組み込み[cronスケジューラ](/docs/user-guide/features/cron)を、イベント駆動のトリガーに[ウェブフックプラットフォーム](/docs/user-guide/messaging/webhooks)を使用します。
+よくある自動化パターンのコピー＆ペースト用ブループリントです。各ブループリントは、時間ベースのトリガーにHermesの組み込み[cronスケジューラ](../user-guide/features/cron.md)を、イベント駆動のトリガーに[ウェブフックプラットフォーム](../user-guide/messaging/webhooks.md)を使用します。
 
-すべてのテンプレートは**任意のモデル**で動作します — 特定のプロバイダーに固定されません。
+すべてのブループリントは**任意のモデル**で動作します — 特定のプロバイダーに固定されません。
+
+cron構文の代わりにフォームを使うパラメータ化されたブループリントについては、[自動化ブループリントカタログ](../reference/automation-blueprints-catalog.mdx)を参照してください。
 
 :::tip 3種類のトリガー
 | トリガー | 仕組み | ツール |
 |---------|-----|------|
-| **スケジュール** | 一定の間隔（毎時、毎晩、毎週）で実行 | `cronjob` ツールまたは `/cron` スラッシュコマンド |
+| **スケジュール** | 一定の間隔（毎時、毎晩、毎週）で実行 | `cronjob_manage` ツールまたは `/cron` スラッシュコマンド |
 | **GitHubイベント** | PRのオープン、プッシュ、issue、CI結果で発火 | ウェブフックプラットフォーム（`hermes webhook subscribe`） |
 | **API呼び出し** | 外部サービスがエンドポイントにJSONをPOST | ウェブフックプラットフォーム（config.yamlのルートまたは `hermes webhook subscribe`） |
 
@@ -74,7 +76,7 @@ Review for:
 - Missing tests for new behavior
 
 Post a concise review. If the PR is a trivial docs/typo change, say so briefly." \
-  --skill github-code-review \
+  --skills github-code-review \
   --deliver github_comment
 ```
 
@@ -104,11 +106,11 @@ platforms:
             pr_number: "{pull_request.number}"
 ```
 
-その後、GitHubで: **Settings → Webhooks → Add webhook** → Payload URL: `http://your-server:8644/webhooks/github-pr-review`、Content type: `application/json`、Secret: `github-webhook-secret`、Events: **Pull requests** を設定します。
+次にGitHubで: **Settings → Webhooks → Add webhook** → Payload URL: `http://your-server:8644/webhooks/github-pr-review`、Content type: `application/json`、Secret: `github-webhook-secret`、Events: **Pull requests**。
 
-### ドキュメントのドリフト検出
+### ドキュメントの乖離検出
 
-マージ済みのPRを毎週スキャンし、ドキュメント更新が必要なAPI変更を見つけます。
+マージされたPRを毎週スキャンし、ドキュメントの更新が必要なAPI変更を見つけます。
 
 **トリガー:** スケジュール（毎週）
 
@@ -132,7 +134,7 @@ Report any gaps where code changed but docs didn't. If everything is in sync, re
 
 ### 依存関係のセキュリティ監査
 
-プロジェクトの依存関係に既知の脆弱性がないか毎日スキャンします。
+プロジェクトの依存関係にある既知の脆弱性を毎日スキャンします。
 
 **トリガー:** スケジュール（毎日）
 
@@ -140,9 +142,9 @@ Report any gaps where code changed but docs didn't. If everything is in sync, re
 hermes cron create "0 6 * * *" \
   "Run a dependency security audit on the hermes-agent project.
 
-1. cd ~/.hermes/hermes-agent && source .venv/bin/activate
-2. Run: pip audit --format json 2>/dev/null || pip audit 2>&1
-3. Run: npm audit --json 2>/dev/null (in website/ directory if it exists)
+1. Locate the hermes-agent checkout and its pyproject.toml and uv.lock. Do not activate or mutate Hermes's dependency environment.
+2. Scan uv.lock with an independently installed scanner that supports that lock format (check its --help). Preserve the complete findings and errors. If no scanner is available, report the blocker; do not install one into Hermes.
+3. Run: npm audit --json in website/ if it exists. Preserve stderr and distinguish findings from a failed scan.
 4. Check for any CVEs with CVSS score >= 7.0
 
 If vulnerabilities found:
@@ -159,9 +161,9 @@ If no vulnerabilities, respond with [SILENT]." \
 
 ## DevOpsとモニタリング
 
-### デプロイ検証
+### デプロイの検証
 
-デプロイのたびにスモークテストをトリガーします。デプロイが完了すると、CI/CDパイプラインがウェブフックにPOSTします。
+デプロイのたびにスモークテストを実行します。デプロイ完了時にCI/CDパイプラインがウェブフックへPOSTします。
 
 **トリガー:** API呼び出し（ウェブフック）
 
@@ -184,7 +186,7 @@ If healthy, keep it brief. If degraded or failed, provide detailed diagnostics."
   --deliver telegram
 ```
 
-CI/CDパイプラインからトリガーします:
+CI/CDパイプラインからは次のようにトリガーします:
 
 ```bash
 curl -X POST http://your-server:8644/webhooks/deploy-verify \
@@ -193,9 +195,9 @@ curl -X POST http://your-server:8644/webhooks/deploy-verify \
   -d '{"service":"api","environment":"prod","version":"2.1.0","deployer":"ci","health_url":"https://api.example.com/health"}'
 ```
 
-### アラートトリアージ
+### アラートのトリアージ
 
-モニタリングのアラートを最近の変更と関連付けて、対応案を下書きします。Datadog、PagerDuty、Grafana、またはJSONをPOSTできる任意のアラートシステムで動作します。
+モニタリングアラートを最近の変更と関連付けて、対応案を作成します。Datadog、PagerDuty、Grafana、またはJSONをPOSTできる任意のアラートシステムで動作します。
 
 **トリガー:** API呼び出し（ウェブフック）
 
@@ -220,9 +222,9 @@ Be concise. This goes to the on-call channel." \
   --deliver slack
 ```
 
-### 稼働監視
+### 稼働状況モニター
 
-30分ごとにエンドポイントをチェックします。ダウンしているときだけ通知します。
+30分ごとにエンドポイントをチェックします。何かがダウンしているときだけ通知します。
 
 **トリガー:** スケジュール（30分ごと）
 
@@ -270,7 +272,7 @@ hermes cron create "every 30m" \
 
 ### 競合リポジトリの偵察
 
-競合のリポジトリを監視し、興味深いPR、機能、アーキテクチャ上の決定を追跡します。
+競合リポジトリを監視し、興味深いPR、機能、アーキテクチャ上の決定を追跡します。
 
 **トリガー:** スケジュール（毎日）
 
@@ -303,7 +305,7 @@ If there are findings, organize by repo with brief analysis of each item." \
 
 ### AIニュースダイジェスト
 
-AI/MLの動向を毎週まとめます。
+AI/ML分野の動向を毎週まとめます。
 
 **トリガー:** スケジュール（毎週）
 
@@ -326,9 +328,9 @@ Keep each item to 1-2 sentences. Include links. Total under 600 words." \
   --deliver telegram
 ```
 
-### ノート付きの論文ダイジェスト
+### ノート付き論文ダイジェスト
 
-毎日arXivをスキャンし、要約をノート管理システムに保存します。
+arXivを毎日スキャンし、要約をノートシステムに保存します。
 
 **トリガー:** スケジュール（毎日）
 
@@ -342,11 +344,11 @@ hermes cron create "0 8 * * *" \
 
 ---
 
-## GitHubイベント自動化
+## GitHubイベントの自動化
 
 ### issueの自動ラベル付け
 
-新しいissueに自動的にラベルを付け、応答します。
+新しいissueに自動でラベルを付け、返信します。
 
 **トリガー:** GitHubウェブフック
 
@@ -378,7 +380,7 @@ CIの失敗を分析し、診断結果をPRに投稿します。
 **トリガー:** GitHubウェブフック
 
 ```yaml
-# config.yaml route
+# config.yaml のルート
 platforms:
   webhook:
     enabled: true
@@ -408,7 +410,7 @@ platforms:
 
 ### リポジトリ間での変更の自動移植
 
-あるリポジトリでPRがマージされると、同等の変更を別のリポジトリに自動的に移植します。
+あるリポジトリでPRがマージされたら、同等の変更を別のリポジトリへ自動的に移植します。
 
 **トリガー:** GitHubウェブフック
 
@@ -430,17 +432,17 @@ If action is 'closed' and pull_request.merged is true:
 5. Reference the original PR in the new PR description
 
 If action is not 'closed' or not merged, respond with [SILENT]." \
-  --skill github-pr-workflow \
+  --skills github-pr-workflow \
   --deliver log
 ```
 
 ---
 
-## 業務オペレーション
+## ビジネスオペレーション
 
-### Stripe決済モニタリング
+### Stripe決済のモニタリング
 
-決済イベントを追跡し、失敗の要約を取得します。
+決済イベントを追跡し、失敗の要約を受け取ります。
 
 **トリガー:** API呼び出し（ウェブフック）
 
@@ -470,7 +472,7 @@ Keep responses concise for the ops channel." \
 
 ### 日次売上サマリー
 
-主要なビジネス指標を毎朝まとめます。
+毎朝、主要なビジネス指標をまとめます。
 
 **トリガー:** スケジュール（毎日）
 
@@ -495,7 +497,7 @@ Deliver as a clean, scannable message." \
 
 ### セキュリティ監査パイプライン
 
-複数のスキルを組み合わせて、包括的な週次セキュリティレビューを実施します。
+複数のスキルを組み合わせて、包括的なセキュリティレビューを毎週行います。
 
 **トリガー:** スケジュール（毎週）
 
@@ -521,7 +523,7 @@ If nothing found, report a clean bill of health." \
 
 ### コンテンツパイプライン
 
-スケジュールに沿って、コンテンツのリサーチ・下書き・準備を行います。
+スケジュールに沿って、リサーチ・下書き・コンテンツの準備を行います。
 
 **トリガー:** スケジュール（毎週）
 
@@ -553,10 +555,10 @@ Keep the outline to ~300 words. This is a starting point, not a finished post." 
 |-----------|---------|
 | `every 30m` | 30分ごと |
 | `every 2h` | 2時間ごと |
-| `0 2 * * *` | 毎日午前2:00 |
-| `0 9 * * 1` | 毎週月曜日の午前9:00 |
-| `0 9 * * 1-5` | 平日の午前9:00 |
-| `0 3 * * 0` | 毎週日曜日の午前3:00 |
+| `0 2 * * *` | 毎日 午前2:00 |
+| `0 9 * * 1` | 毎週月曜日 午前9:00 |
+| `0 9 * * 1-5` | 平日 午前9:00 |
+| `0 3 * * 0` | 毎週日曜日 午前3:00 |
 | `0 */6 * * *` | 6時間ごと |
 
 ### 配信先
@@ -568,7 +570,7 @@ Keep the outline to ~300 words. This is a starting point, not a finished post." 
 | Telegram | `--deliver telegram` | ホームチャンネル、または特定の宛先には `telegram:CHAT_ID` |
 | Discord | `--deliver discord` | ホームチャンネル、または `discord:CHANNEL_ID` |
 | Slack | `--deliver slack` | ホームチャンネル |
-| SMS | `--deliver sms:+15551234567` | 電話番号へ直接 |
+| SMS | `--deliver sms:+15551234567` | 電話番号に直接送信 |
 | 特定のスレッド | `--deliver telegram:-100123:456` | Telegramのフォーラムトピック |
 
 ### ウェブフックのテンプレート変数
@@ -578,16 +580,16 @@ Keep the outline to ~300 words. This is a starting point, not a finished post." 
 | `{pull_request.title}` | PRのタイトル |
 | `{issue.number}` | issue番号 |
 | `{repository.full_name}` | `owner/repo` |
-| `{action}` | イベントのアクション（opened、closed など） |
-| `{__raw__}` | 完全なJSONペイロード（4000文字で切り詰め） |
+| `{action}` | イベントのアクション（opened、closedなど） |
+| `{__raw__}` | JSONペイロード全体（4000文字で切り詰め） |
 | `{sender.login}` | イベントをトリガーしたGitHubユーザー |
 
 ### [SILENT] パターン
 
-cronジョブの応答に `[SILENT]` が含まれている場合、配信は抑制されます。これを使って、変化のない実行で通知が溢れるのを防ぎます:
+cronジョブの応答に `[SILENT]` が含まれている場合、配信は抑制されます。何も起きなかった実行で通知が乱発されるのを防ぐために使います:
 
 ```
 If nothing noteworthy happened, respond with [SILENT].
 ```
 
-これにより、エージェントが報告すべきことがあるときだけ通知を受け取れます。
+これにより、エージェントに報告すべきことがあるときだけ通知を受け取れます。

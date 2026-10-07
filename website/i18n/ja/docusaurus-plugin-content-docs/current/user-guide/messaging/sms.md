@@ -7,10 +7,14 @@ description: "Twilio を使って Hermes Agent を SMS チャットボットと�
 
 # SMS セットアップ（Twilio）
 
+このページの Python 依存関係コマンドは、
+[PM で準備済みのソースチェックアウト](../../reference/package-management.md#developer-workflow)を前提としています。
+依存関係を変更した後は、チェックアウトを再アクティベートして Hermes を再起動してください。
+
 Hermes は [Twilio](https://www.twilio.com/) API を通じて SMS に接続します。人々があなたの Twilio 電話番号にテキストを送ると、AI の応答が返ってきます — Telegram や Discord と同じ会話体験を、標準のテキストメッセージ越しに得られます。
 
 :::info 共有クレデンシャル
-SMS ゲートウェイは、オプションの [telephony スキル](/docs/reference/skills-catalog) とクレデンシャルを共有します。音声通話や一度限りの SMS のために既に Twilio をセットアップしている場合、ゲートウェイは同じ `TWILIO_ACCOUNT_SID`、`TWILIO_AUTH_TOKEN`、`TWILIO_PHONE_NUMBER` で動作します。
+SMS ゲートウェイは、オプションの [telephony スキル](../../reference/skills-catalog.md) とクレデンシャルを共有します。音声通話や一度限りの SMS のために既に Twilio をセットアップしている場合、ゲートウェイは同じ `TWILIO_ACCOUNT_SID`、`TWILIO_AUTH_TOKEN`、`TWILIO_PHONE_NUMBER` で動作します。
 :::
 
 ---
@@ -20,7 +24,7 @@ SMS ゲートウェイは、オプションの [telephony スキル](/docs/refer
 - **Twilio アカウント** — [twilio.com でサインアップ](https://www.twilio.com/try-twilio)（無料トライアルあり）
 - **SMS 機能付きの Twilio 電話番号**
 - **公開アクセス可能なサーバー** — SMS が到着すると Twilio がサーバーに Webhook を送信します
-- **aiohttp** — `pip install 'hermes-agent[sms]'`
+- **aiohttp** — `cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['sms'], explicit=True)"`
 
 ---
 
@@ -126,7 +130,7 @@ Twilio の番号にテキストを送ると — Hermes が SMS で応答しま�
 | `TWILIO_PHONE_NUMBER` | はい | あなたの Twilio 電話番号（E.164 形式） |
 | `SMS_WEBHOOK_URL` | はい | Twilio 署名検証用の公開 URL — Twilio Console の Webhook URL と一致する必要がある |
 | `SMS_WEBHOOK_PORT` | いいえ | Webhook リスナーポート（デフォルト: `8080`） |
-| `SMS_WEBHOOK_HOST` | いいえ | Webhook バインドアドレス（デフォルト: `0.0.0.0`） |
+| `SMS_WEBHOOK_HOST` | いいえ | Webhook バインドアドレス（デフォルト: `127.0.0.1`） |
 | `SMS_INSECURE_NO_SIGNATURE` | いいえ | `true` に設定すると署名検証を無効化（ローカル開発のみ — **本番では使用しない**） |
 | `SMS_ALLOWED_USERS` | いいえ | チャットを許可する E.164 電話番号のカンマ区切り |
 | `SMS_ALLOW_ALL_USERS` | いいえ | `true` に設定すると誰でも許可（非推奨） |

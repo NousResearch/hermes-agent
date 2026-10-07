@@ -93,9 +93,8 @@ Hermes は、すべて同じ `gateway` サブシステムを通じて設定さ�
 ## プラグイン
 
 - **[プラグインシステム](/docs/user-guide/features/plugins)** — コアコードを変更せずに、カスタムツール、ライフサイクルフック、CLI コマンドで Hermes を拡張します。プラグインは、`~/.hermes/plugins/`、プロジェクトローカルの `.hermes/plugins/`、pip インストールされたエントリーポイントから発見されます。
-- **[プラグインの構築](/docs/guides/build-a-hermes-plugin)** — ツール、フック、CLI コマンドを備えた Hermes プラグインを作成するためのステップバイステップガイド。
+- **[プラグインの構築](/docs/developer-guide/plugins)** — ツール、フック、CLI コマンドを備えた Hermes プラグインを作成するためのステップバイステップガイド。
 
 ## トレーニングと評価
 
-- **[RL トレーニング](/docs/user-guide/features/rl-training)** — 強化学習とモデルのファインチューニングのために、エージェントセッションから軌跡データを生成します。カスタマイズ可能な報酬関数を備えた Atropos 環境をサポートします。
 - **[バッチ処理](/docs/user-guide/features/batch-processing)** — 何百ものプロンプトにわたってエージェントを並列実行し、トレーニングデータ生成または評価のために、構造化された ShareGPT 形式の軌跡データを生成します。

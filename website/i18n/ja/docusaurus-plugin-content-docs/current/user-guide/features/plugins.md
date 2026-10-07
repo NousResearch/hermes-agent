@@ -14,7 +14,7 @@ Hermes には、コアコードを変更せずにカスタムツール、フッ�
 道です。開発者ガイドの [ツールの追加](/docs/developer-guide/adding-tools) ページは、`tools/` と
 `toolsets.py` に存在する組み込みの Hermes コアツール向けです。
 
-**→ [Hermes プラグインを作る](/docs/guides/build-a-hermes-plugin)** — 完全な動作例を含む
+**→ [Hermes プラグインを作る](/docs/developer-guide/plugins)** — 完全な動作例を含む
 ステップバイステップのガイドです。
 
 ## クイック概要
@@ -252,9 +252,9 @@ Hermes には 4 種類のプラグインがあります。
 
 | 追加したいもの… | 方法 | 作成ガイド |
 |---|---|---|
-| LLM が呼び出せる**ツール** | Python プラグイン — `ctx.register_tool()` | [Hermes プラグインを作る](/docs/guides/build-a-hermes-plugin) · [ツールの追加](/docs/developer-guide/adding-tools) |
-| **ライフサイクルフック**（LLM の前後、セッションの開始／終了、ツールフィルタ） | Python プラグイン — `ctx.register_hook()` | [フックリファレンス](/docs/user-guide/features/hooks) · [Hermes プラグインを作る](/docs/guides/build-a-hermes-plugin) |
-| CLI／ゲートウェイ向けの**スラッシュコマンド** | Python プラグイン — `ctx.register_command()` | [Hermes プラグインを作る](/docs/guides/build-a-hermes-plugin) · [CLI の拡張](/docs/developer-guide/extending-the-cli) |
+| LLM が呼び出せる**ツール** | Python プラグイン — `ctx.register_tool()` | [Hermes プラグインを作る](/docs/developer-guide/plugins) · [ツールの追加](/docs/developer-guide/adding-tools) |
+| **ライフサイクルフック**（LLM の前後、セッションの開始／終了、ツールフィルタ） | Python プラグイン — `ctx.register_hook()` | [フックリファレンス](/docs/user-guide/features/hooks) · [Hermes プラグインを作る](/docs/developer-guide/plugins) |
+| CLI／ゲートウェイ向けの**スラッシュコマンド** | Python プラグイン — `ctx.register_command()` | [Hermes プラグインを作る](/docs/developer-guide/plugins) · [CLI の拡張](/docs/developer-guide/extending-the-cli) |
 | `hermes <thing>` 向けの**サブコマンド** | Python プラグイン — `ctx.register_cli_command()` | [CLI の拡張](/docs/developer-guide/extending-the-cli) |
 | プラグインが同梱する**スキル** | Python プラグイン — `ctx.register_skill()` | [スキルの作成](/docs/developer-guide/creating-skills) |
 | **推論バックエンド**（LLM プロバイダー: OpenAI 互換、Codex、Anthropic-Messages、Bedrock） | プロバイダープラグイン — `plugins/model-providers/<name>/` で `register_provider(ProviderProfile(...))` | **[モデルプロバイダープラグイン](/docs/developer-guide/model-provider-plugin)** · [プロバイダーの追加](/docs/developer-guide/adding-providers) |
@@ -391,4 +391,4 @@ ctx.inject_message("New data arrived from the webhook", role="user")
 :::
 
 ハンドラの契約、スキーマの形式、フックの挙動、エラー処理、よくある間違いについては、
-**[完全なガイド](/docs/guides/build-a-hermes-plugin)** を参照してください。
+**[完全なガイド](/docs/developer-guide/plugins)** を参照してください。

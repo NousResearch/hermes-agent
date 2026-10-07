@@ -21,13 +21,12 @@ Yuanbao は、主に Tencent 内およびエンタープライズ環境で使用
 
 - ボット作成権限を持つ Yuanbao アカウント
 - Yuanbao の APP_ID と APP_SECRET（プラットフォーム管理者から取得）
-- Python パッケージ: `websockets` と `httpx`
-- メディアサポート用: `aiofiles`
+- Python パッケージ: `websockets` と `httpx`（どちらも Hermes のコア依存関係）
 
-必要な依存関係をインストールします。
+これらのコア依存関係が壊れている場合は、選択中の環境を修復します。
 
 ```bash
-pip install websockets httpx aiofiles
+hermes pm repair
 ```
 
 ## セットアップ
@@ -106,6 +105,7 @@ hermes gateway
 - **自動再接続** — WebSocket の切断を指数バックオフで処理する
 - **グループ情報のクエリ** — グループの詳細とメンバー一覧を取得する
 - **ステッカー／絵文字のサポート** — 会話で TIMFaceElem ステッカーと絵文字を送信する
+- **WeChat の転送チャット履歴のサポート** — ユーザーが WeChat のチャット履歴バンドルを Yuanbao に転送すると、アダプターは転送されたレコード（送信者のニックネーム、テキスト、ネストされた転送を含むマルチメディアエントリ）をデコードして会話に注入するため、エージェントは転送されたスレッド全体を読むことができる
 - **自動 sethome** — 最初にボットにメッセージを送ったユーザーが自動的にホームチャネルの所有者になる
 - **低速応答の通知** — エージェントが想定より時間がかかっている場合に待機メッセージを送信する
 
@@ -258,7 +258,7 @@ Please analyze this document
 1. ゲートウェイのログでエラーパターンを確認します
 2. 接続設定でハートビートタイムアウトを増やします
 3. Yuanbao API への安定したネットワーク接続を確保します
-4. 詳細ログの有効化を検討します: `HERMES_LOG_LEVEL=debug`
+4. 詳細ログの有効化を検討します: `hermes gateway run -vv`
 
 ## アクセス制御
 
@@ -317,7 +317,7 @@ Yuanbao には最大メッセージサイズがあります。Hermes は、Markd
 接続の問題をトラブルシューティングするために、デバッグログを有効にします。
 
 ```bash
-HERMES_LOG_LEVEL=debug hermes gateway
+hermes gateway run -vv
 ```
 
 ## 他の機能との統合
@@ -337,7 +337,7 @@ Yuanbao で実行されるタスクをスケジュールします。
 会話をブロックせずに長時間の操作を実行します。
 
 ```
-/background Analyze all files in the archive
+/bg Analyze all files in the archive
 ```
 
 ### クロスプラットフォームメッセージ
@@ -351,6 +351,6 @@ hermes chat -q "Send 'Hello from CLI' to yuanbao:group:group_code"
 ## 関連ドキュメント
 
 - [メッセージングゲートウェイの概要](./index.md)
-- [スラッシュコマンドリファレンス](/docs/reference/slash-commands.md)
-- [cron ジョブ](/docs/user-guide/features/cron.md)
-- [バックグラウンドセッション](/docs/user-guide/cli#background-sessions)
+- [スラッシュコマンドリファレンス](../../reference/slash-commands.md)
+- [cron ジョブ](../features/cron.md)
+- [バックグラウンドセッション](../cli.md#background-sessions)

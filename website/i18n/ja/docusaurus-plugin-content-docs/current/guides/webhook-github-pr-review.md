@@ -16,7 +16,7 @@ PRが作成または更新されると、GitHubはあなたのHermesインスタ
 :::
 
 :::info リファレンスドキュメント
-webhookプラットフォームの完全なリファレンス（すべての設定オプション、配信タイプ、動的サブスクリプション、セキュリティモデル）については、[Webhooks](/docs/user-guide/messaging/webhooks)を参照してください。
+webhookプラットフォームの完全なリファレンス（すべての設定オプション、配信タイプ、動的サブスクリプション、セキュリティモデル）については、[Webhooks](../user-guide/messaging/webhooks.md)を参照してください。
 :::
 
 :::warning プロンプトインジェクションのリスク
@@ -88,7 +88,7 @@ platforms:
 | `deliver_extra.pr_number` | ペイロードからPR番号に解決される。 |
 
 :::note ペイロードにはコードが含まれない
-GitHubのwebhookペイロードにはPRのメタデータ（タイトル、説明文、ブランチ名、URL）が含まれますが、**diffは含まれません**。上記のプロンプトは、実際の変更を取得するためにエージェントに `gh pr diff` を実行するよう指示しています。`terminal` ツールはデフォルトの `hermes-webhook` ツールセットに含まれているため、追加の設定は不要です。
+GitHubのwebhookペイロードにはPRのメタデータ（タイトル、説明文、ブランチ名、URL）が含まれますが、**diffは含まれません**。上記のプロンプトは、実際の変更を取得するためにエージェントに `gh pr diff` を実行するよう指示しています。webhookのペイロードには信頼できないコンテンツが含まれうるため、デフォルトの `hermes-webhook` ツールセットは意図的に制限されています（ウェブ検索/抽出、vision、clarify — **terminalなし**）。このルートで `gh` を実行できるようにするには、ルート単位のツールセット付与を追加します: ルート設定に `toolsets: ["terminal", "web"]` を指定してください — [ルート単位のツールセット](../user-guide/messaging/webhooks.md#per-route-toolsets)を参照してください。
 :::
 
 ---
@@ -182,12 +182,20 @@ tail -f "${HERMES_HOME:-$HOME/.hermes}/logs/gateway.log"
 
 ## 特定のアクションへのフィルタリング
 
-GitHubは多くのアクションについて `pull_request` イベントを送信します：`opened`、`synchronize`、`reopened`、`closed`、`labeled` などです。`events` リストは `X-GitHub-Event` ヘッダー値だけでフィルタリングします — ルーティングレベルでアクションのサブタイプではフィルタリングできません。
+GitHubは多くのアクションについて `pull_request` イベントを送信します：`opened`、`synchronize`、`reopened`、`closed`、`labeled` などです。`events` リストは `X-GitHub-Event` ヘッダー値でフィルタリングし、ルートレベルの `filters` で `action` などのペイロードフィールドによってさらに絞り込めます。
 
 ステップ1のプロンプトは、`closed` および `labeled` イベントについてエージェントが早期に停止するよう指示することで、これにすでに対処しています。
 
 :::warning エージェントは依然として実行され、トークンを消費する
-「stop here」の指示は意味のあるレビューを防ぎますが、アクションに関わらず、すべての `pull_request` イベントに対してエージェントは最後まで実行されます。GitHubのwebhookはイベントタイプ（`pull_request`、`push`、`issues` など）でしかフィルタリングできません — アクションのサブタイプ（`opened`、`closed`、`labeled`）ではフィルタリングできません。サブアクション用のルーティングレベルのフィルタは存在しません。トラフィックの多いリポジトリでは、このコストを受け入れるか、条件付きでwebhook URLを呼び出すGitHub Actionsワークフローで上流側でフィルタリングしてください。
+「stop here」の指示は意味のあるレビューを防ぎますが、アクションに関わらず、すべての `pull_request` イベントに対してエージェントは最後まで実行されます。エージェントが起動する前にフィルタリングすることをおすすめします:
+
+```yaml
+filters:
+  - field: "action"
+    in: ["opened", "synchronize", "reopened"]
+```
+
+トラフィックの多いリポジトリでは、引き続き、条件付きでwebhook URLを呼び出すGitHub Actionsワークフローで上流側でフィルタリングすることもできます。
 :::
 
 > Jinja2や条件分岐のテンプレート構文はありません。`{field}` と `{nested.field}` がサポートされている唯一の置換です。それ以外はすべてそのままエージェントに渡されます。
@@ -196,7 +204,7 @@ GitHubは多くのアクションについて `pull_request` イベントを送�
 
 ## 一貫したレビュースタイルのためにスキルを使う
 
-[Hermesスキル](/docs/user-guide/features/skills)を読み込むことで、エージェントに一貫したレビューのペルソナを与えられます。`config.yaml` の `platforms.webhook.extra.routes` 内のルートに `skills` を追加します：
+[Hermesスキル](../user-guide/features/skills.md)を読み込むことで、エージェントに一貫したレビューのペルソナを与えられます。`config.yaml` の `platforms.webhook.extra.routes` 内のルートに `skills` を追加します：
 
 ```yaml
 platforms:
@@ -274,7 +282,7 @@ GitLabのペイロードフィールドはGitHubのものとは異なります �
 - **本番環境では決して `INSECURE_NO_AUTH` を使わないでください** — 署名検証が完全に無効になります。これはローカル開発専用です。
 - **webhookシークレットを定期的にローテーションし**、GitHub（webhook設定）と `config.yaml` の両方で更新してください。
 - **レート制限**はデフォルトでルートごとに30 req/分です（`extra.rate_limit` で設定可能）。これを超えると `429` を返します。
-- **重複配信**（webhookの再試行）は、1時間の冪等性キャッシュによって重複排除されます。キャッシュキーは、存在すれば `X-GitHub-Delivery`、次に `X-Request-ID`、次にミリ秒タイムスタンプです。どちらの配信IDヘッダーも設定されていない場合、再試行は重複排除**されません**。
+- **重複配信**（webhookの再試行）は、1時間の冪等性キャッシュによって重複排除されます。キャッシュキーは、存在すれば `X-GitHub-Delivery`、次に `X-Request-ID`、次にリクエストごとのランダムIDです。どちらの配信IDヘッダーも設定されていない場合、再試行は重複排除**されません**。
 - **プロンプトインジェクション:** PRのタイトル、説明文、コミットメッセージは攻撃者が制御可能です。悪意あるPRはエージェントのアクションを操作しようとする可能性があります。公開インターネットに公開する場合は、ゲートウェイをサンドボックス環境（Docker、VM）で実行してください。
 
 ---
@@ -303,7 +311,6 @@ platforms:
   webhook:
     enabled: true
     extra:
-      host: "0.0.0.0"         # バインドアドレス（デフォルト: 0.0.0.0）
       port: 8644               # リッスンポート（デフォルト: 8644）
       secret: ""               # オプションのグローバルフォールバックシークレット
       rate_limit: 30           # ルートごとの1分あたりリクエスト数
@@ -324,6 +331,6 @@ platforms:
 ## 次のステップ
 
 - **[CronベースのPRレビュー](./github-pr-review-agent.md)** — スケジュールに従ってPRをポーリングする。公開エンドポイント不要
-- **[Webhookリファレンス](/docs/user-guide/messaging/webhooks)** — webhookプラットフォームの完全な設定リファレンス
-- **[プラグインを構築する](/docs/guides/build-a-hermes-plugin)** — レビューロジックを共有可能なプラグインにパッケージ化する
-- **[プロファイル](/docs/user-guide/profiles)** — 独自のメモリと設定を持つ専用のレビュアープロファイルを実行する
+- **[Webhookリファレンス](../user-guide/messaging/webhooks.md)** — webhookプラットフォームの完全な設定リファレンス
+- **[プラグインを構築する](../developer-guide/plugins/index.md)** — レビューロジックを共有可能なプラグインにパッケージ化する
+- **[プロファイル](../user-guide/profiles.md)** — 独自のメモリと設定を持つ専用のレビュアープロファイルを実行する

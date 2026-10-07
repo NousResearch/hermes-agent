@@ -225,6 +225,33 @@ MattermostでチャンネルIDを調べるには：チャンネルを開き、�
 
 ボットが `@mention` されると、処理前にメッセージからメンションが自動的に取り除かれます。
 
+## チャンネル許可リスト（`allowed_channels`）
+
+ボットを固定のMattermostチャンネルのセットに制限します。設定すると、ボットはIDがリストに含まれるチャンネルで**のみ**応答します — それ以外のチャンネルからのメッセージは、ボットが `@mention` されていても黙って無視されます。
+
+**DMはこのフィルタの対象外**なので、認可されたユーザーはダイレクトメッセージでいつでもボットにアクセスできます。
+
+```yaml
+mattermost:
+  allowed_channels:
+    - "abc123def456ghi789jkl012mno"   # #ops
+    - "xyz987uvw654rst321opq098nml"   # #incident-response
+```
+
+または環境変数で（カンマ区切り）：
+
+```bash
+MATTERMOST_ALLOWED_CHANNELS="abc123def456ghi789jkl012mno,xyz987uvw654rst321opq098nml"
+```
+
+動作：
+
+- 空 / 未設定 → 制限なし（完全な後方互換性）。
+- 空でない → チャンネルIDがリストに含まれている必要があり、含まれていない場合、メッセージは他のゲート処理（メンション必須、`MATTERMOST_FREE_RESPONSE_CHANNELS` など）が実行される前に破棄されます。
+- チャンネルIDは、MattermostのUI → チャンネルヘッダー → 「View Info」で確認するか、チャンネルのURLから読み取れます。
+
+あわせて参照：[管理者/ユーザーのスラッシュコマンドの分割](../../reference/slash-commands.md#permissions-and-adminuser-split)。
+
 ## トラブルシューティング
 
 ### ボットがメッセージに応答しない

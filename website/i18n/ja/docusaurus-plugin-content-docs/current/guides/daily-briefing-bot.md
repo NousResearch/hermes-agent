@@ -10,6 +10,10 @@ description: "トピックを調べ、調査結果を要約し、毎朝Telegram�
 
 最後には、**ウェブ検索**、**cronスケジューリング**、**委譲**、**メッセージング配信**を組み合わせた完全に自動化されたワークフローが手に入ります — コードは不要です。
 
+:::tip
+このレシピはウェブ検索、要約、そして任意でTTSを使います — いずれもPortalサブスクリプションにまとめて含まれています。最速のセットアップは `hermes setup --portal` です。[Nous Portal](../integrations/nous-portal.md)を参照してください。
+:::
+
 ## 構築するもの
 
 流れは次のとおりです。
@@ -26,7 +30,7 @@ description: "トピックを調べ、調査結果を要約し、毎朝Telegram�
 
 始める前に、以下が揃っていることを確認してください。
 
-- **Hermes Agentがインストールされていること** — [インストールガイド](/docs/getting-started/installation)を参照
+- **Hermes Agentがインストールされていること** — [インストールガイド](../getting-started/installation.md)を参照
 - **ゲートウェイが実行中であること** — ゲートウェイデーモンがcronの実行を処理します:
   ```bash
   hermes gateway install   # ユーザーサービスとしてインストール
@@ -35,7 +39,7 @@ description: "トピックを調べ、調査結果を要約し、毎朝Telegram�
   hermes gateway           # フォアグラウンドで実行
   ```
 - **Firecrawl APIキー** — ウェブ検索のために環境変数 `FIRECRAWL_API_KEY` を設定
-- **メッセージングが設定されていること**（任意だが推奨） — [Telegram](/docs/user-guide/messaging/telegram) またはDiscordをホームチャンネルで設定
+- **メッセージングが設定されていること**（任意だが推奨） — [Telegram](../user-guide/messaging/telegram.md) またはDiscordをホームチャンネルで設定
 
 :::tip メッセージングなし？ 問題ありません
 `deliver: "local"` を使えば、このチュートリアルを引き続き進められます。ブリーフィングは `~/.hermes/cron/output/` に保存され、いつでも読めます。
@@ -102,7 +106,7 @@ and open source LLMs. Summarize the top 3 stories in a concise briefing
 with links. Use a friendly, professional tone. Deliver to telegram.
 ```
 
-Hermesは統合された `cronjob` ツールを使って、あなたのためにcronジョブを作成します。
+Hermesは統合された `cronjob_manage` ツールを使って、あなたのためにcronジョブを作成します。
 
 ### オプションB: CLIスラッシュコマンド
 
@@ -167,7 +171,7 @@ Format as a clean briefing with section headers and emoji. End with today's date
 Collect all results and combine them into a single clean briefing with section headers, emoji formatting, and source links. Add today's date as a header."
 ```
 
-各サブエージェントは独立して並列に検索し、その後メインエージェントがすべてを1つの洗練されたブリーフィングにまとめます。これがどう機能するかについては、[委譲のドキュメント](/docs/user-guide/features/delegation)を参照してください。
+各サブエージェントは独立して並列に検索し、その後メインエージェントがすべてを1つの洗練されたブリーフィングにまとめます。これがどう機能するかについては、[委譲のドキュメント](../user-guide/features/delegation.md)を参照してください。
 
 ### 平日のみのスケジュール
 
@@ -188,7 +192,7 @@ Collect all results and combine them into a single clean briefing with section h
 
 ### メモリで個人的なコンテキストを追加する
 
-[メモリ](/docs/user-guide/features/memory)を有効にしている場合、セッションをまたいで永続する設定を保存できます。ただし、cronジョブは会話のメモリを持たない新しいセッションで実行されることを忘れないでください。個人的なコンテキストを追加するには、プロンプトに直接焼き込みます。
+[メモリ](../user-guide/features/memory.md)を有効にしている場合、セッションをまたいで永続する設定を保存できます。ただし、cronジョブは会話のメモリを持たない新しいセッションで実行されることを忘れないでください。個人的なコンテキストを追加するには、プロンプトに直接焼き込みます。
 
 ```
 /cron add "0 8 * * *" "You are creating a briefing for a senior ML engineer who cares about: PyTorch ecosystem, transformer architectures, open-weight models, and AI regulation in the EU. Skip stories about product launches or funding rounds unless they involve open source.
@@ -257,11 +261,11 @@ sudo hermes gateway install --system
 
 動作するデイリーブリーフィングボットを構築しました。次に探求すべき方向をいくつか挙げます。
 
-- **[スケジュールタスク（Cron）](/docs/user-guide/features/cron)** — スケジュール形式、繰り返し回数の上限、配信オプションの完全なリファレンス
-- **[委譲](/docs/user-guide/features/delegation)** — 並列サブエージェントワークフローの詳しい解説
-- **[メッセージングプラットフォーム](/docs/user-guide/messaging)** — Telegram、Discord、その他の配信先のセットアップ
-- **[メモリ](/docs/user-guide/features/memory)** — セッションをまたいだ永続的なコンテキスト
-- **[ヒントとベストプラクティス](/docs/guides/tips)** — さらなるプロンプトエンジニアリングのアドバイス
+- **[スケジュールタスク（Cron）](../user-guide/features/cron.md)** — スケジュール形式、繰り返し回数の上限、配信オプションの完全なリファレンス
+- **[委譲](../user-guide/features/delegation.md)** — 並列サブエージェントワークフローの詳しい解説
+- **[メッセージングプラットフォーム](../user-guide/messaging/index.md)** — Telegram、Discord、その他の配信先のセットアップ
+- **[メモリ](../user-guide/features/memory.md)** — セッションをまたいだ永続的なコンテキスト
+- **[ヒントとベストプラクティス](./tips.md)** — さらなるプロンプトエンジニアリングのアドバイス
 
 :::tip 他に何をスケジュールできる？
 ブリーフィングボットのパターンはあらゆるものに使えます。競合監視、GitHubリポジトリの要約、天気予報、ポートフォリオの追跡、サーバーの健全性チェック、さらには日替わりジョークまで。プロンプトで説明できるものなら、スケジュールできます。

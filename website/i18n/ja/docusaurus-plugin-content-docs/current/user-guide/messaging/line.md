@@ -10,6 +10,8 @@ description: "Hermes Agent を LINE Messaging API ボットとしてセットア
 
 LINE は日本、台湾、タイで圧倒的に普及しているメッセージングアプリです。ユーザーがそれらの地域にいるなら、これが彼らにリーチする方法です。
 
+> `hermes gateway setup` を実行して **LINE** を選ぶと、ガイド付きのセットアップを利用できます。
+
 ## ボットの応答方法
 
 | コンテキスト | 動作 |
@@ -104,7 +106,7 @@ hermes gateway
 エージェントのログには次が表示されます:
 
 ```
-LINE: webhook listening on 0.0.0.0:8646/line/webhook (public: https://my-tunnel.example.com)
+LINE: webhook listening on * (all interfaces, IPv4+IPv6):8646/line/webhook (public: https://my-tunnel.example.com)
 ```
 
 LINE アプリからボットを友だち追加し（チャネルの **Messaging API** タブの QR をスキャン）、メッセージを送信します。
@@ -160,7 +162,7 @@ LINE_HOME_CHANNEL=Uxxxxxxxxxxxxxxxxxxxx     # デフォルトの配信先
 |---|---|---|---|
 | `LINE_CHANNEL_ACCESS_TOKEN` | はい | — | 長期チャネルアクセストークン |
 | `LINE_CHANNEL_SECRET` | はい | — | チャネルシークレット（HMAC-SHA256 Webhook 検証） |
-| `LINE_HOST` | いいえ | `0.0.0.0` | Webhook のバインドホスト |
+| `LINE_HOST` | いいえ | 未設定（デュアルスタック: すべてのインターフェース、IPv4+IPv6） | Webhook のバインドホスト |
 | `LINE_PORT` | いいえ | `8646` | Webhook のバインドポート |
 | `LINE_PUBLIC_URL` | メディア用 | — | 公開 HTTPS ベース URL；画像/音声/動画の送信に必須 |
 | `LINE_ALLOWED_USERS` | いずれか | — | カンマ区切りのユーザー ID（U で始まる） |
@@ -173,6 +175,7 @@ LINE_HOME_CHANNEL=Uxxxxxxxxxxxxxxxxxxxx     # デフォルトの配信先
 | `LINE_BUTTON_LABEL` | いいえ | "Get answer" | ボタンのラベル |
 | `LINE_DELIVERED_TEXT` | いいえ | "Already replied ✅" | 配信済みのボタンが再度タップされたときの返信 |
 | `LINE_INTERRUPTED_TEXT` | いいえ | "Run was interrupted before completion." | `/stop` で孤立したボタンがタップされたときの返信 |
+| `LINE_EXPIRED_TEXT` | いいえ | "That request has expired — send your message again." | キャッシュされた回答が失われたボタンがタップされたときの返信 |
 
 ---
 
@@ -192,7 +195,7 @@ LINE_HOME_CHANNEL=Uxxxxxxxxxxxxxxxxxxxx     # デフォルトの配信先
 
 ## 制限事項
 
-* **チャンクごとに 1 バブル。** 各 LINE テキストバブルは 5000 文字に制限され、1 回の Reply/Push 呼び出しで最大 5 バブルまで送信されます。それより長い応答は省略記号で切り詰められます。
+* **バブル数と長さの上限。** 各 LINE テキストバブルは 5000 文字に制限されます。それより長い応答は約 4500 文字ごとにスマートに分割され、1 回の Reply/Push 呼び出しで最大 5 バブルにわたって送信されます。分割は可能な限り自然な区切りで行われます。
 * **ネイティブのメッセージ編集なし。** LINE には編集 API がないため、ストリーミング応答は常に新しいバブルを送信し、以前のものを編集することはありません。
 * **Markdown レンダリングなし。** 太字（`**`）、斜体（`*`）、コードフェンス、見出しはそのままの文字としてレンダリングされます。アダプターは送信前にそれらを除去します。URL は保持されます（`[label](url)` は `label (url)` になります）。
 * **読み込みインジケーターは DM のみ。** LINE はグループとルームに対して chat/loading API を拒否するため、入力中インジケーターは 1:1 チャットでのみ表示されます。

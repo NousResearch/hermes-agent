@@ -24,7 +24,7 @@ Hermes Agent は多くのことができます。CLI アシスタント、Telegr
 |---|---|---|---|
 | **初級** | 環境を整えて動かし、基本的な会話を行い、組み込みのツールを使う | [インストール](/docs/getting-started/installation) → [クイックスタート](/docs/getting-started/quickstart) → [CLI の使い方](/docs/user-guide/cli) → [設定](/docs/user-guide/configuration) | 約1時間 |
 | **中級** | メッセージングボットをセットアップし、メモリ、cron ジョブ、スキルなどの高度な機能を使う | [セッション](/docs/user-guide/sessions) → [メッセージング](/docs/user-guide/messaging) → [ツール](/docs/user-guide/features/tools) → [スキル](/docs/user-guide/features/skills) → [メモリ](/docs/user-guide/features/memory) → [Cron](/docs/user-guide/features/cron) | 約2〜3時間 |
-| **上級** | カスタムツールを構築し、スキルを作成し、RL でモデルをトレーニングし、プロジェクトに貢献する | [アーキテクチャ](/docs/developer-guide/architecture) → [ツールの追加](/docs/developer-guide/adding-tools) → [スキルの作成](/docs/developer-guide/creating-skills) → [RL トレーニング](/docs/user-guide/features/rl-training) → [コントリビュート](/docs/developer-guide/contributing) | 約4〜6時間 |
+| **上級** | カスタムツールを構築し、スキルを作成し、RL でモデルをトレーニングし、プロジェクトに貢献する | [アーキテクチャ](/docs/developer-guide/architecture) → [ツールの追加](/docs/developer-guide/adding-tools) → [スキルの作成](/docs/developer-guide/creating-skills) → [コントリビュート](/docs/developer-guide/contributing) | 約4〜6時間 |
 
 ## ユースケース別 {#by-use-case}
 
@@ -81,7 +81,7 @@ Cron ジョブを使うと、あなたがその場にいなくても、Hermes Ag
 あなた自身のツールや再利用可能なスキルパッケージで Hermes Agent を拡張します。
 
 1. [プラグイン](/docs/user-guide/features/plugins)
-2. [Hermes プラグインを構築する](/docs/guides/build-a-hermes-plugin)
+2. [Hermes プラグインを構築する](/docs/developer-guide/plugins)
 3. [ツールの概要](/docs/user-guide/features/tools)
 4. [スキルの概要](/docs/user-guide/features/skills)
 5. [MCP（Model Context Protocol）](/docs/user-guide/features/mcp)
@@ -96,11 +96,11 @@ Cron ジョブを使うと、あなたがその場にいなくても、Hermes Ag
 
 ### 「モデルをトレーニングしたい」
 
-Hermes Agent の組み込み RL トレーニングパイプラインを使い、強化学習でモデルの振る舞いをファインチューニングします。
+Hermes Agent の RL トレーニングパイプライン（[Atropos](https://github.com/NousResearch/atropos) を利用）を使い、強化学習でモデルの振る舞いをファインチューニングします。
 
 1. [クイックスタート](/docs/getting-started/quickstart)
 2. [設定](/docs/user-guide/configuration)
-3. [RL トレーニング](/docs/user-guide/features/rl-training)
+3. [Atropos RL 環境](https://github.com/NousResearch/atropos)（外部）
 4. [プロバイダールーティング](/docs/user-guide/features/provider-routing)
 5. [アーキテクチャ](/docs/developer-guide/architecture)
 
@@ -136,7 +136,6 @@ Hermes Agent をプログラムから、あなた自身の Python アプリケ�
 | **ブラウザ** | Web ブラウジングとスクレイピング | [ブラウザ](/docs/user-guide/features/browser) |
 | **フック** | イベント駆動のコールバックとミドルウェア | [フック](/docs/user-guide/features/hooks) |
 | **バッチ処理** | 複数の入力をまとめて処理する | [バッチ処理](/docs/user-guide/features/batch-processing) |
-| **RL トレーニング** | 強化学習でモデルをファインチューニングする | [RL トレーニング](/docs/user-guide/features/rl-training) |
 | **プロバイダールーティング** | 複数の LLM プロバイダーにリクエストを振り分ける | [プロバイダールーティング](/docs/user-guide/features/provider-routing) |
 
 ## 次に読むべきもの

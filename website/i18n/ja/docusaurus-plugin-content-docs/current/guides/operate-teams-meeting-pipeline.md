@@ -5,7 +5,7 @@ description: "Microsoft Teamsミーティングパイプラインのランブッ
 
 # Teamsミーティングパイプラインを運用する
 
-このガイドは、すでに[Teamsミーティング](/docs/user-guide/messaging/teams-meetings)から機能を有効化した後で使用してください。
+このガイドは、すでに[Teamsミーティング](../user-guide/messaging/teams-meetings.md)から機能を有効化した後で使用してください。
 
 このページでは次の内容を扱います。
 - オペレーターのCLIフロー
@@ -159,7 +159,14 @@ hermes teams-pipeline run <job-id>
 ```bash
 hermes teams-pipeline fetch --meeting-id <meeting-id>
 hermes teams-pipeline fetch --join-web-url "<join-url>"
+hermes teams-pipeline fetch --join-web-url "<join-url>" --organizer-user-id <entra-user-id>
 ```
+
+`--organizer-user-id`（開催者の Microsoft Entra ユーザー ID）を渡すと、
+開催者スコープの `/users/{id}/onlineMeetings` Graph パス経由で解決します。これは
+Teams の `/meet/` 短縮 URL に必要です。Graph はこれを
+`/communications/onlineMeetings` エンドポイントでは拒否するためです。Webhook 駆動のジョブは、
+通知の `@odata.id` から開催者を自動的に導出します。
 
 ## 定期ランブック
 
@@ -284,5 +291,5 @@ hermes teams-pipeline show <job-id>
 
 ## 関連ドキュメント
 
-- [Teamsミーティングのセットアップ](/docs/user-guide/messaging/teams-meetings)
-- [Microsoft Teamsボットのセットアップ](/docs/user-guide/messaging/teams)
+- [Teamsミーティングのセットアップ](../user-guide/messaging/teams-meetings.md)
+- [Microsoft Teamsボットのセットアップ](../user-guide/messaging/teams.md)

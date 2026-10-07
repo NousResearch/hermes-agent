@@ -6,6 +6,10 @@ description: "Hermes AgentをDingTalkチャットボットとしてセットア�
 
 # DingTalkのセットアップ
 
+このページの Python 依存関係コマンドは、
+[PM で準備済みのソースチェックアウト](../../reference/package-management.md#developer-workflow)を前提としています。
+依存関係を変更した後は、チェックアウトを再アクティベートして Hermes を再起動してください。
+
 Hermes AgentはDingTalk（钉钉）とチャットボットとして連携し、ダイレクトメッセージやグループチャットを通じてAIアシスタントとチャットできるようにします。ボットはDingTalkのStream Mode（公開URLやWebhookサーバーを必要としない長寿命のWebSocket接続）経由で接続し、DingTalkのセッションWebhook APIを通じてmarkdown形式のメッセージで返信します。
 
 セットアップの前に、多くの人が知りたい部分から説明します。Hermesがあなたのworkspace（ワークスペース）に入った後、DingTalk上でどう振る舞うかです。
@@ -44,14 +48,10 @@ group_sessions_per_user: false
 必要なPythonパッケージをインストールします。
 
 ```bash
-pip install "hermes-agent[dingtalk]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['dingtalk'], explicit=True)"
 ```
 
-または個別に:
-
-```bash
-pip install dingtalk-stream httpx alibabacloud-dingtalk
-```
+この extra は、Hermes のコア依存関係に加えて以下の SDK を提供します:
 
 - `dingtalk-stream` — Stream Mode（WebSocketベースのリアルタイムメッセージング）用のDingTalk公式SDK
 - `httpx` — セッションWebhook経由で返信を送信するために使用される非同期HTTPクライアント
@@ -154,7 +154,7 @@ gateway:
 
 - `group_sessions_per_user: true` は、共有グループチャット内で各参加者のコンテキストを分離して保ちます
 - `require_mention: true` は、ボットがすべてのグループメッセージに応答するのを防ぎます。誰かが @-mention したときだけ応答します
-- `dingtalk.extra` の下の `allowed_users` は `DINGTALK_ALLOWED_USERS` の代替です。両方が設定されている場合はマージされます
+- `dingtalk.extra` の下の `allowed_users` は `DINGTALK_ALLOWED_USERS` の代替です。どちらか一方を設定してください（両方が設定されている場合、両方のリストに含まれるユーザーのみが認可されます）
 
 ### ゲートウェイを起動する
 
@@ -236,7 +236,7 @@ display:
 **対処法**: インストールします。
 
 ```bash
-pip install dingtalk-stream httpx
+python -c "import pm; pm.sync_venv(['dingtalk'], explicit=True)"
 ```
 
 ### 「DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET required」

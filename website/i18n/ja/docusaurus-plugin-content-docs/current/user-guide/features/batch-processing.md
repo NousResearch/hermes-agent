@@ -34,6 +34,10 @@ python batch_runner.py \
 python batch_runner.py --list_distributions
 ```
 
+:::tip 大規模でも予測可能なコスト
+バッチ実行では多数のエージェントセッションが並行して立ち上がり、それぞれがモデル呼び出しとツール呼び出しを行います。[Nous Portal](./tool-gateway.md) のサブスクリプションには、モデルアクセスに加えて Web 検索、画像生成、TTS、クラウドブラウザが 1 つの請求にまとめられています。5 つのベンダーアカウントにまたがるレート制限をやりくりせずに、トラジェクトリあたりのコストを安定させたい場合に便利です。`hermes setup --portal` でセットアップし、`--model` に Nous のモデルを指定してください。
+:::
+
 ## データセット形式
 
 入力データセットは JSONL ファイル（1 行に 1 つの JSON オブジェクト）です。各エントリには `prompt` フィールドが必要です:
@@ -64,7 +68,7 @@ python batch_runner.py --list_distributions
 | `--resume` | `false` | チェックポイントから再開 |
 | `--verbose` | `false` | 詳細ログを有効化 |
 | `--max_samples` | all | データセットの先頭 N サンプルのみ処理 |
-| `--max_tokens` | モデルのデフォルト | モデル応答あたりの最大トークン数 |
+
 
 ### プロバイダールーティング（OpenRouter）
 
@@ -79,7 +83,7 @@ python batch_runner.py --list_distributions
 
 | パラメーター | 説明 |
 |-----------|------|
-| `--reasoning_effort` | エフォートレベル: `none`、`minimal`、`low`、`medium`、`high`、`xhigh` |
+| `--reasoning_effort` | 推論エフォート: `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra` |
 | `--reasoning_disabled` | 推論/思考トークンを完全に無効化 |
 
 ### 高度なオプション

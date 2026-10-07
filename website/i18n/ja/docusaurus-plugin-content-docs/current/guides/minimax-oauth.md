@@ -16,7 +16,7 @@ Hermes Agent は、[MiniMax ポータル](https://www.minimax.io) と同じク�
 |------|-----|
 | プロバイダー ID | `minimax-oauth` |
 | 表示名 | MiniMax (OAuth) |
-| 認証タイプ | ブラウザ OAuth（PKCE デバイスコードフロー） |
+| 認証タイプ | ブラウザ OAuth（PKCE リダイレクトフロー） |
 | トランスポート | Anthropic Messages 互換（`anthropic_messages`） |
 | モデル | `MiniMax-M2.7`、`MiniMax-M2.7-highspeed` |
 | グローバルエンドポイント | `https://api.minimax.io/anthropic` |
@@ -56,11 +56,9 @@ hermes auth add minimax-oauth
 
 ### 中国リージョン
 
-アカウントが中国プラットフォーム（`minimaxi.com`）にある場合は、代わりに中国リージョンの OAuth プロバイダー id `minimax-cn` を使うか、OAuth をスキップして `MINIMAX_CN_API_KEY` / `MINIMAX_CN_BASE_URL` を直接設定してください。古いドキュメントで説明されている `--region cn` フラグは CLI の引数パーサーに**配線されていません**。代わりに `minimax-cn` プロバイダーを使用してください:
+アカウントが中国プラットフォーム（`minimaxi.com`）にある場合は、代わりに API キーベースの `minimax-cn` プロバイダーを使用してください — `minimax-cn` は `auth_type="api_key"` のみで登録されています（OAuth フローはありません）。`MINIMAX_CN_API_KEY`（および必要に応じて `MINIMAX_CN_BASE_URL`）を直接設定してください:
 
 ```bash
-hermes auth add minimax-cn --type oauth   # CN アカウントで OAuth がサポートされている場合
-# またはよりシンプルに:
 echo 'MINIMAX_CN_API_KEY=your-key' >> ~/.hermes/.env
 ```
 
@@ -76,7 +74,7 @@ Hermes は検証用 URL とユーザーコードを出力します。任意の�
 
 ## OAuth フロー
 
-Hermes は MiniMax の OAuth エンドポイントに対して PKCE デバイスコードフローを実装しています:
+Hermes は MiniMax の OAuth エンドポイントに対して PKCE ブラウザ OAuth フローを実装しています:
 
 1. Hermes が PKCE verifier / challenge のペアとランダムな state 値を生成します。
 2. challenge を付けて `{base_url}/oauth/code` に POST し、`user_code` と `verification_uri` を受け取ります。
@@ -115,8 +113,8 @@ hermes model
 または、モデルを直接設定します:
 
 ```bash
-hermes config set model MiniMax-M2.7
-hermes config set provider minimax-oauth
+hermes config set model.default MiniMax-M2.7
+hermes config set model.provider minimax-oauth
 ```
 
 ## 設定リファレンス
@@ -157,10 +155,10 @@ hermes --provider minimax_oauth    # エイリアス（アンダースコア形�
 | `MINIMAX_API_KEY` | `minimax` プロバイダーのみで使用 — `minimax-oauth` では無視される |
 | `MINIMAX_CN_API_KEY` | `minimax-cn` プロバイダーのみで使用 — `minimax-oauth` では無視される |
 
-実行時に `minimax-oauth` プロバイダーを強制するには:
+`minimax-oauth` をアクティブなプロバイダーとして使うには、`config.yaml` で `model.provider: minimax-oauth` を設定する（ガイド付きの手順には `hermes setup` を使用）か、1 回の実行に限って `--provider minimax-oauth` を渡してください:
 
 ```bash
-HERMES_INFERENCE_PROVIDER=minimax-oauth hermes
+hermes --provider minimax-oauth
 ```
 
 ## モデル
@@ -172,7 +170,7 @@ HERMES_INFERENCE_PROVIDER=minimax-oauth hermes
 
 両モデルとも最大 200,000 トークンのコンテキストをサポートします。
 
-`MiniMax-M2.7-highspeed` は、`minimax-oauth` がプライマリプロバイダーである場合、ビジョンおよび委譲タスクの補助モデルとしても自動的に使用されます。
+`MiniMax-M2.7` は、`minimax-oauth` がプライマリプロバイダーである場合、ビジョンおよび委譲タスクの補助モデルとしても自動的に使用されます。
 
 ## トラブルシューティング
 
@@ -180,7 +178,9 @@ HERMES_INFERENCE_PROVIDER=minimax-oauth hermes
 
 Hermes は、アクセストークンの有効期限が 60 秒以内であれば、各セッション開始時にトークンを更新します。アクセストークンがすでに有効期限切れの場合（例えば長時間オフラインだった後など）、更新は次のリクエスト時に自動的に行われます。更新が `refresh_token_reused` または `invalid_grant` で失敗した場合、Hermes はそのセッションを再ログインが必要としてマークします。
 
-**対処:** `hermes auth add minimax-oauth` を再実行して、新しいログインを開始してください。
+更新の失敗が終端的なもの（HTTP 4xx、`invalid_grant`、取り消された grant など）である場合、Hermes はリフレッシュトークンを無効としてマークし、失敗が確定した交換を繰り返さないようにローカルで隔離します。エージェントは「re-authentication required」というメッセージを 1 回だけ表示し、再ログインするまでは邪魔をしません。
+
+**対処:** `hermes auth add minimax-oauth` を再実行して、新しいログインを開始してください。隔離は次の交換が成功した時点で解除されます。
 
 ### 認可がタイムアウトした
 
@@ -210,12 +210,18 @@ Hermes が URL とコードを出力します。任意のデバイスで URL を
 
 **対処:** `hermes model` を実行して MiniMax (OAuth) を選択するか、`hermes auth add minimax-oauth` を実行してください。
 
+### 「Provider 'minimax-oauth' is set in config.yaml but no credentials were found」
+
+メインエージェントまたは補助タスク（圧縮、ビジョンなど）が `minimax-oauth` に固定されているのに、認証ストアにログイン情報がありません。OAuth プロバイダーには `MINIMAX_API_KEY` のような環境変数はありません — `MINIMAX_API_KEY` は通常の API キー方式の `minimax` プロバイダー用です。
+
+**対処:** `hermes auth add minimax-oauth` を実行してサインインするか、そのプロバイダーを API キー付きの `minimax` に切り替えてください。
+
 ## ログアウト
 
 保存された MiniMax OAuth のクレデンシャルを削除するには:
 
 ```bash
-hermes auth remove minimax-oauth
+hermes auth logout minimax-oauth
 ```
 
 ## 関連項目

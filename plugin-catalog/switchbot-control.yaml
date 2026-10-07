@@ -1,0 +1,21 @@
+name: switchbot-control
+repo: https://github.com/TakeshiTGAL/hermes-plugin-switchbot-control
+sha: fb66aff86d9911a4ff827b8a590b98d5e13e5c21
+description: "SwitchBot OpenAPI v1.1. Personal use only. No Plug Mini on/off. Locks off unless enabled. setPosition only Curtain/Curtain3; 0=open,100=closed. Disclosure — no BLE; empty watch notifies once; one status does not stop tick; fault once; asks each call; host process refuses motion; no plugin allowlist (empty denies except platform allow-all, pairing, own policy, or GATEWAY_ALLOW_ALL_USERS); slash /switchbot-control; CLI hermes switchbot-control; no command on cron/yolo/approvals off/single-query/unattended/missing helper; 10000/UTC day; records id/type/readings, not secret; */5 is 288 slots; watch fail notifies once per streak; not a sandbox; private modules fail closed; tests/ shipped not loaded; uninstall leaves cron (hermes cron remove), usage.json, watch.json, watch_fail.json; untried."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-switchbot-control#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+  - switchbot_devices
+  - switchbot_command
+  - switchbot_watch
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - SWITCHBOT_TOKEN
+  - SWITCHBOT_SECRET

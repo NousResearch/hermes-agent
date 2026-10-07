@@ -57,7 +57,7 @@ def test_expired_reservation_is_reclaimable(tmp_path):
         short = db.reserve_caller_history_deliveries("sid", "crashy", ttl_seconds=-1)  # already expired
         retry = db.reserve_caller_history_deliveries("sid", "webui", ttl_seconds=60)
         assert [r["id"] for r in retry] == [short[0]["id"]]
-        assert db.commit_caller_history_deliveries(short[0]["reservation_token"], "crashy") == 0
+        assert db.commit_caller_history_deliveries(short[0]["reservation_token"], "crashy") == 0  # taken over
     finally:
         db.close()
 
@@ -92,5 +92,16 @@ def test_fold_consumed_row_cannot_be_reserved(tmp_path):
     try:
         assert len(db.claim_caller_history_deliveries("sid")) == 1
         assert db.reserve_caller_history_deliveries("sid", "webui", ttl_seconds=60) == []
+    finally:
+        db.close()
+
+
+def test_token_holder_commits_after_its_lease_expired(tmp_path):
+    db = _db_with_row(tmp_path)
+    try:
+        rows = db.reserve_caller_history_deliveries("sid", "webui", ttl_seconds=-1)  # lease already over
+        assert db.commit_caller_history_deliveries(rows[0]["reservation_token"], "intruder") == 0
+        assert db.commit_caller_history_deliveries(rows[0]["reservation_token"], "webui") == 1
+        assert db.claim_caller_history_deliveries("sid") == []
     finally:
         db.close()

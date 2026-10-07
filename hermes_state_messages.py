@@ -519,11 +519,13 @@ class SessionMessagesMixin:
 
     def _held_reservation_where(self, token_or_ids, owner):
         clause = (" AND json_extract(display_metadata, '$.caller_history_consumed') IS NULL"
-                  " AND json_extract(display_metadata, '$.caller_history_reservation.owner') = ?"
-                  " AND json_extract(display_metadata, '$.caller_history_reservation.until') > ?")
+                  " AND json_extract(display_metadata, '$.caller_history_reservation.owner') = ?")
         if isinstance(token_or_ids, str):
+            # A re-reserve replaces the token, so a matching token proves nobody took the rows over:
+            # its holder may settle them even after the lease ran out (e.g. after a consumer restart).
             return ("json_extract(display_metadata, '$.caller_history_reservation.token') = ?" + clause,
-                    [token_or_ids, str(owner), time.time()])
+                    [token_or_ids, str(owner)])
+        clause += " AND json_extract(display_metadata, '$.caller_history_reservation.until') > ?"
         ids = [int(i) for i in token_or_ids or ()]
         if not ids:
             return None, None

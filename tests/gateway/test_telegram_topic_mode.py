@@ -6,6 +6,7 @@ Telegram topics act as independent Hermes session lanes.
 
 from datetime import datetime
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -111,7 +112,10 @@ def _make_runner(session_db=None):
     # Default switch_session impl: returns a SessionEntry carrying the target
     # session_id. Mirrors SessionStore.switch_session semantics for tests that
     # exercise Telegram topic binding rebinds without a real store.
-    def _switch_session(session_key, target_session_id, *, expected_session_id=None, preserve_prompt_pin=True):
+    def _switch_session(
+        session_key, target_session_id, *, expected_session_id=None,
+        preserve_prompt_pin=True, end_reason="session_switch",
+    ):
         return SessionEntry(
             session_key=session_key,
             session_id=target_session_id,
@@ -322,6 +326,10 @@ async def test_managed_topic_binding_reuses_restored_session_over_static_lane_se
 
     assert result == "restored response"
     assert captured["session_id"] == "restored-session"
+    cast(MagicMock, runner.session_store.switch_session).assert_called_once_with(
+        build_session_key(_make_source(thread_id="17585")), "restored-session",
+        expected_session_id="sess-topic", end_reason="session_switch",
+    )
 
 
 @pytest.mark.asyncio
@@ -491,8 +499,9 @@ async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypat
     # requested; capture the requested id for assertion.
     switched_to: dict = {}
 
-    def fake_switch(_key, new_session_id, *, expected_session_id=None):
+    def fake_switch(_key, new_session_id, *, expected_session_id=None, end_reason="session_switch"):
         switched_to["id"] = new_session_id
+        switched_to["end_reason"] = end_reason
         return SessionEntry(
             session_key=topic_key,
             session_id=new_session_id,
@@ -521,6 +530,7 @@ async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypat
 
     # The route was advanced to the compression tip, not the stale parent.
     assert switched_to.get("id") == "child-session"
+    assert switched_to.get("end_reason") == "compression"
     # The binding row was rewritten to point at the descendant so future
     # inbound messages skip the tip walk and resolve directly.
     refreshed = session_db.get_telegram_topic_binding(
@@ -553,8 +563,9 @@ async def test_topic_binding_heal_switches_with_cas_on_snapshot_session(tmp_path
 
     await runner._hmwa_heal_telegram_topic_binding(topic_source, snapshot, topic_key)
 
-    runner.session_store.switch_session.assert_called_once_with(
+    cast(MagicMock, runner.session_store.switch_session).assert_called_once_with(
         topic_key, "bound-session", expected_session_id=snapshot.session_id,
+        end_reason="session_switch",
     )
 
 

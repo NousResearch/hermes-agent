@@ -499,7 +499,7 @@ class GatewayTurnMixin:
             # snapshot id lets that win instead of being clobbered by a stale binding.
             switched = await self.async_session_store.switch_session(
                 session_key, bound_session_id, expected_session_id=session_entry.session_id,
-                end_reason="compression")
+                end_reason="compression" if bound_session_id != stored_session_id else "session_switch")
             if switched is not None:
                 session_entry = switched
         if bound_session_id and bound_session_id != stored_session_id:

@@ -487,3 +487,17 @@ class TestRequestMeta:
         assert meta["io.modelcontextprotocol/protocolVersion"] == protocol.PROTOCOL_VERSION
         assert "io.modelcontextprotocol/clientCapabilities" in meta
         assert "io.modelcontextprotocol/clientInfo" in meta
+
+
+class TestSubscribeShape:
+    def test_subscribe_sends_name_and_delivery_and_reads_refresh_before(self, monkeypatch):
+        sent = _capture_requests(monkeypatch, {"id": "sub_abc", "refreshBefore": "2026-11-06T16:40:45.993Z", "cursor": None})
+        record = protocol.subscribe("https://emitter.example.com/mcp", "email.received",
+                                    "https://hooks.example.com/mcp/events/webhook/loc1", "whsec_x", {"from": "a@b.c"})
+        params = sent[0]["body"]["params"]
+        assert params["name"] == "email.received"
+        assert params["arguments"] == {"from": "a@b.c"}
+        assert params["delivery"] == {"mode": "webhook", "url": "https://hooks.example.com/mcp/events/webhook/loc1", "secret": "whsec_x"}
+        assert "event" not in params and "callbackUrl" not in params
+        assert record["id"] == "sub_abc"
+        assert record["expires_at"] == pytest.approx(1793983245.993)

@@ -113,6 +113,16 @@ def list_events(mcp_url: str, timeout: float = 15.0) -> list[dict]:
     return [e for e in events if isinstance(e, dict) and e.get("name")]
 
 
+def _iso_to_epoch(value) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 def subscribe(mcp_url: str, event: str, callback_url: str, secret: str,
               filter_args: dict | None = None, timeout: float = 20.0) -> dict:
     """``events/subscribe``: registers our webhook callback for ``event``.
@@ -123,14 +133,12 @@ def subscribe(mcp_url: str, event: str, callback_url: str, secret: str,
     Returns the subscription record (id, expires_at, ...).
     """
     params: dict = {
-        "event": event,
-        "callbackUrl": callback_url,
-        "secret": secret,
+        "name": event,
+        "arguments": filter_args or {},
+        "delivery": {"mode": "webhook", "url": callback_url, "secret": secret},
     }
-    if filter_args:
-        params["arguments"] = filter_args
     result = _post_json(mcp_url, _rpc_request("events/subscribe", params), timeout=timeout)
-    sub_id = str(result.get("subscriptionId") or result.get("id") or "")
+    sub_id = str(result.get("id") or "")
     if not sub_id:
         raise RuntimeError("emitter accepted the subscription but returned no id")
     return {
@@ -140,7 +148,8 @@ def subscribe(mcp_url: str, event: str, callback_url: str, secret: str,
         "callback_url": callback_url,
         "filter": filter_args or {},
         "created_at": time.time(),
-        "expires_at": result.get("expiresAt"),
+        # refreshBefore is an ISO 8601 grant (null = no expiry); stored as epoch seconds for the refresh check.
+        "expires_at": _iso_to_epoch(result.get("refreshBefore")),
         "challenge": result.get("challenge"),  # answered by the adapter when present
     }
 

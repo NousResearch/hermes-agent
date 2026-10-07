@@ -50,6 +50,12 @@ That's the whole flow. The server starts and stops with Hermes, restarts
 survive app restarts, and switching back to a cloud provider is one click
 in the model picker.
 
+From a terminal, `hermes model` → **Local models** runs the same setup: it
+lists the catalog priced for your machine (★ marks the recommendation),
+installs the pinned engine, downloads the model with live progress, starts
+the server, and makes the model your default. Models already on disk are
+offered too. Ctrl+C pauses a download; choosing the model again resumes it.
+
 ## How Hermes picks what to download
 
 Every model in the catalog is priced against **your machine** before you
@@ -176,7 +182,7 @@ Selecting a local model as your main model uses the standard
 ## Requirements and limits
 
 - **Windows:** CUDA on supported NVIDIA targets, Vulkan on x64, or CPU.
-  **Linux:** Vulkan or CPU; the pinned release has no prebuilt CUDA archive.
+  **Linux:** CUDA on x64 and arm64 NVIDIA (needs a CUDA 13 driver), Vulkan, or CPU.
   **macOS:** Metal or CPU. HIP/ROCm is an explicit choice on supported x64
   targets. Unsupported backend/target pairs fail before any download.
 - `backend: auto` prefers CUDA for NVIDIA and Vulkan for AMD and Intel GPUs,

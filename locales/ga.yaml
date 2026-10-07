@@ -847,6 +847,9 @@ gateway:
     db_fts_corrupt: "⚠️ Thuairiscigh bunachar sonraí na seisiún earráid truaillithe atá teoranta don innéacs cuardaigh (FTS5); níl damáiste ar na táblaí teachtaireachtaí. Seans nach sábhálfar teachtaireachtaí go dtí go ndeiseofar é: rith `hermes {profile_arg}doctor --fix`, ansin atosaigh an gateway. Ná rith uirlisí athshlánaithe agus ná hathchóirigh cúltaca mura ndearbhaíonn `hermes {profile_arg}doctor` damáiste."
     db_then_restart: "{action} Ansin `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Níl bunachar sonraí na seisiún ar fáil — seans nach sábhálfar teachtaireachtaí agus beidh /resume folamh. Cúis: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ Níl stór cron {store} inscríofa ({error}) ó {since}. Táthar ag scipeáil jabanna sceidealaithe go dtí go nglacann sé le scríobh arís. Réiteach: {fix}."
+    recovered: "✅ Tá stór cron {store} inscríofa arís; {skipped} rith scipeáilte, gach jab ag teacht suas uair amháin."
   whoami:
     scope_dm: "DM"
     scope_group: "grúpa/cainéal"
@@ -1448,8 +1451,6 @@ platform:
   irc:
     quit_message: "Hermes Agent ag múchadh"
     standalone_quit: "seachadta"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Ceadaigh uair amháin"
     confirm_always_approve: "Ceadaigh i gcónaí"
@@ -2394,6 +2395,7 @@ cli:
     session_not_found: "Seisiún gan a aimsiú: {session_id}"
     compressed_into: "Dlúthaíodh an seisiún {session_id} isteach i {descendant}; ag atosú an tsleachta le do thraschríbhinn."
     cannot_resume: "Ní féidir an seisiún a atosú: {error}"
+    kanban_owned: "⛔ Is tras-scríbhinn oibrithe Kanban é an seisiún {session_id}. Athfhachtóirí a chur ar bun anseo a dhéanfadh scríbhneoir nach féidir le clár Kanban a fheiceáil ná a mhaorú — ina áit sin, bain triail arís ar an gcárta ar an gclár nó díbhlocáil é, ionas go mbeidh an cláróir ina thine ar an rith chugainn."
     cannot_resume_prefix: "Ní féidir an seisiún a atosú:"
     resumed_session: "↻ Seisiún atosaithe"
     counts_one: "({count} teachtaireacht úsáideora, {total} teachtaireacht san iomlán)"
@@ -2428,7 +2430,6 @@ cli:
     run_model_to_retry: "Rith 'hermes model' le triail eile a bhaint as."
     provider_configured: "✓ Soláthraí cumraithe — tá tú réidh le comhrá."
     provider_setup_incomplete: "Níor críochnaíodh socrú an tsoláthraí. Rith 'hermes model' le triail eile a bhaint as."
-    tirith_unavailable: "⚠ scanóir slándála tirith cumasaithe ach níl sé ar fáil — ní úsáidfidh scanadh orduithe ach meaitseáil patrún"
     unknown_toolsets: "Rabhadh: Tacair uirlisí anaithnide: {names}"
     stdin_unusable: "\nEarráid: níl stdin inúsáidte ({error}).\nIs féidir leis seo tarlú le suiteálacha Python áirithe (m.sh. cPython arna bhainistiú ag uv ar macOS)\nnach féidir le kqueue fd 0 a chlárú.\nBain triail as Python a athshuiteáil trí pyenv nó Homebrew, ansin rith arís: hermes setup"
     warning: "Rabhadh: {warning}"
@@ -3646,7 +3647,7 @@ tips:
   t167: "Tá 4 shraith ag ceadú orduithe contúirteacha: uair amháin, seisiún, i gcónaí (liosta ceadaithe buan), diúltaigh."
   t168: "Úsáideann mód ceadaithe cliste LLM chun orduithe sábháilte a cheadú go huathoibríoch agus orduithe contúirteacha a bhratachú."
   t169: "Blocálann cosaint SSRF líonraí príobháideacha, seoltaí aischúrsa, seoltaí nasc-logánta, agus seoltaí meiteashonraí néil."
-  t170: "Braitheann scanadh réamhrite Tirith bréagnú URL homagraf agus patrúin píopa-go-léirmhínitheoir."
+  t170: "Tá réimír stampa ama ar IDanna seisiún (20250305_091523_abcd) ionas go n-oibríonn sórtáil go nádúrtha in ls agus jq."
   t171: "Faigheann fophróisis MCP timpeallacht scagtha — ní ligtear tríd ach athróga córais sábháilte."
   t172: "Déantar scanadh slándála ar chomhaid chomhthéacs (.hermes.md, AGENTS.md) le haghaidh instealladh leide roimh iad a lódáil."
   t173: "Ceadaíonn command_allowlist in config.yaml patrúin orduithe blaoisce sonracha go buan."
@@ -3676,7 +3677,7 @@ tips:
   t197: "Gabhann sábháil trajectóirí (--save-trajectories) rianta iomlána úsáide uirlisí le haghaidh oiliúna samhlacha."
   t198: "Trí chineál breiseáin: ginearálta (uirlisí/crúcaí), soláthraithe cuimhne, agus innill chomhthéacs."
   t199: "Suiteálann hermes plugins install owner/repo breiseáin go díreach ó GitHub."
-  t200: "Soláthraithe cuimhne seachtracha: OpenViking, Mem0 cuachta; Honcho, Hindsight agus tuilleadh trí hermes plugins install."
+  t200: "Soláthraithe cuimhne seachtracha: Honcho, Hindsight, Mem0, OpenViking agus tuilleadh trí hermes plugins install."
   t201: "I measc crúcaí breiseán tá pre/post_tool_call, pre/post_llm_call, agus transform_terminal_output le haghaidh canónú aschuir."
   t202: "Laghdaíonn taisceadh leideanna (Anthropic) costais trí réimíreanna taiscthe leid an chórais a athúsáid."
   t203: "Gineann an gníomhaire teidil seisiún go huathoibríoch i snáithe cúlra — gan aon tionchar ar aga freagartha."
@@ -3851,12 +3852,9 @@ tips:
   t372: "Roghnaíonn image_gen.model in config.yaml an tsamhail FAL: flux-2/klein, gpt-image-2, nano-banana-pro, agus tuilleadh."
   t373: "Seolann image_gen.provider giniúint íomhánna trí bhreiseán (OpenAI Images, Codex, FAL) in ionad an réamhshocraithe."
   t374: "Díríonn AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY anailís físe ar chríochphointe ar bith atá comhoiriúnach le OpenAI."
-  t375: "Cuireann security.tirith_fail_open: false ar Hermes orduithe a bhlocáil nuair a theipeann ar an scanóir tirith féin."
-  t376: "Sáraíonn athróg timpeallachta TIRITH_FAIL_OPEN cumraíocht tirith_fail_open — scoránú gasta gan config.yaml a chur in eagar."
+  t375: "Saincheapann API_SERVER_MODEL_NAME ainm na samhla ar /v1/models — riachtanach do shocruithe Open WebUI il-phróifíle."
+  t376: "Freastalaítear breiseáin deaise ó /dashboard-plugins/<name>/ — cuir comhaid isteach in ~/.hermes/dashboard-plugins/."
   t377: "Eisiatar comhráite --source tool ó hermes sessions list de réir réamhshocraithe — socraigh --source go follasach chun iad a fheiceáil."
-  t378: "Tá réimír stampa ama ar IDanna seisiún (20250305_091523_abcd) ionas go n-oibríonn sórtáil go nádúrtha in ls agus jq."
-  t379: "Saincheapann API_SERVER_MODEL_NAME ainm na samhla ar /v1/models — riachtanach do shocruithe Open WebUI il-phróifíle."
-  t380: "Freastalaítear breiseáin deaise ó /dashboard-plugins/<name>/ — cuir comhaid isteach in ~/.hermes/dashboard-plugins/."
   placeholder:
     p01: "Fiafraigh rud ar bith, nó clóscríobh / le haghaidh orduithe…"
     p02: "Déan achoimre ar a bhfuil sa bhfillteán seo"

@@ -1,7 +1,7 @@
 """``model_catalog.excluded_providers`` must also hide providers from the provider list served by
 ``config.get provider`` (``list_available_providers``) and from the unconfigured setup rows of
 ``model.options include_unconfigured`` (``_append_unconfigured_rows``), matching the ``/model``
-and ``hermes model`` pickers. The configured-current provider keeps its row either way.
+and ``hermes model`` pickers — even for the configured-current provider (#68816).
 """
 
 import pytest
@@ -73,6 +73,6 @@ def test_setup_rows_skip_excluded_providers():
     assert "openrouter" in hidden
 
 
-def test_setup_rows_keep_configured_current_provider_even_if_excluded():
+def test_setup_rows_hide_excluded_current_provider():
     rows = _setup_slugs(["opencode-go"], current="opencode-go")
-    assert "opencode-go" in rows
+    assert "opencode-go" not in rows

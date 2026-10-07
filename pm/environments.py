@@ -38,6 +38,59 @@ def install_state_dir(project_root: Path) -> Path:
     return installs_root() / install_key(project_root)
 
 
+def owning_home_root(project_root: Path) -> Path | None:
+    """The data root that owns this checkout when the active root only borrows it, else ``None``.
+
+    Dependency state is scoped per data root (``<root>/installs/<install_key>``), but a source
+    checkout -- its launchers, product builds and install stamp -- exists once. A launch under
+    another root (a test's temporary ``HERMES_HOME``, a per-task home, a CI service home) borrows
+    it: the root that installed it already holds committed state for it, under the root the
+    checkout sits in (``<root>/hermes-agent``) or else the platform default root. ``None`` when
+    the active root's state is that state (the owner itself, or one of its profiles), and when no
+    such root has state for this checkout -- a fresh install, or a custom root that owns its own
+    tree -- so those keep today's behaviour (#123238).
+
+    A borrowing launch's own sync leaves ``facts.json`` under the borrower too, so state alone
+    cannot name the owner. The checkout's ``hermes`` launcher can: only the owner publishes it,
+    and it execs the owner's store Python. With no live launcher to ask, the root the checkout
+    sits in outranks the platform default.
+    """
+    from hermes_constants import _get_platform_default_hermes_home
+
+    root = Path(project_root).resolve()
+    key = install_key(root)
+    candidates = [candidate for candidate in dict.fromkeys((root.parent, _get_platform_default_hermes_home()))
+                  if (candidate / "installs" / key / "facts.json").is_file()]
+    if not candidates:
+        return None
+    owner = _launcher_bound_root(root, candidates) or candidates[0]
+    try:
+        if (owner / "installs" / key).resolve() == install_state_dir(root).resolve():
+            return None
+    except OSError:
+        pass
+    return owner
+
+
+def _launcher_bound_root(project_root: Path, candidates: list[Path]) -> Path | None:
+    """The candidate whose ``tools/`` holds the live interpreter the checkout's launcher execs."""
+    from hermes_cli._launchers import _launcher_python
+
+    local = project_root / ".hermes" / "bin"
+    for name in (("hermes.exe", "hermes.cmd") if os.name == "nt" else ("hermes",)):
+        python = _launcher_python(local / name)
+        if python is None or not python.is_file():
+            continue
+        for candidate in candidates:
+            try:
+                store = (candidate / "tools").resolve()
+                if any(parent.resolve() == store for parent in python.parents):
+                    return candidate
+            except (OSError, RuntimeError, ValueError):
+                continue
+    return None
+
+
 def install_state_permission_message(project_root: Path, exc: PermissionError) -> str | None:
     """Describe an access failure inside this install's dependency state."""
     if not exc.filename:
@@ -94,38 +147,84 @@ def record_activation_inputs(stamps: Path, mtimes: dict[str, int], project_root:
         os.utime(stamp, ns=(mtime, mtime))
 
 
+def _payload_manifest(root: Path) -> dict | None:
+    """The manifest of the sealed payload whose tree is the resolved *root*, or ``None``.
+
+    Every install asks, so a ``manifest.json`` that some other tool left beside a
+    checkout, or one with a mistyped field, must read as "not a payload", never as an
+    error. Readers then take each field with ``.get`` and treat an absent one as unset.
+    """
+    try:
+        manifest = json.loads((root.parent / "manifest.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("repo"), str):
+        return None
+    runtime = manifest.get("runtime", {})
+    commands = runtime.get("commands", {}) if isinstance(runtime, dict) else None
+    well_formed = (isinstance(commands, dict)
+                   and isinstance(commands.get("hermes", ""), str)
+                   and all(isinstance(manifest.get(key, ""), str) for key in ("venv", "store")))
+    return manifest if well_formed and (root.parent / manifest["repo"]).resolve() == root else None
+
+
+def _payload_path(root: Path, relative: str, what: str) -> Path:
+    """*relative* resolved inside the payload that holds *root*; a manifest may not point outside it."""
+    path = (root.parent / relative).resolve()
+    if not path.is_relative_to(root.parent):
+        raise RuntimeError(f"payload {what} escapes its root")
+    return path
+
+
 def payload_venv(project_root: Path) -> Path | None:
     """The environment a sealed payload ships beside its tree, or ``None``."""
     root = Path(project_root).resolve()
-    manifest_path = root.parent / "manifest.json"
-    if manifest_path.is_file():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-        if (root.parent / manifest.get("repo", "")).resolve() == root:
-            venv = (root.parent / manifest["venv"]).resolve()
-            if not venv.is_relative_to(root.parent):
-                raise RuntimeError("payload environment escapes its root")
-            return venv
-    return None
+    venv = (_payload_manifest(root) or {}).get("venv")
+    return _payload_path(root, venv, "environment") if venv else None
+
+
+def _payload_hermes_command(root: Path) -> Path | None:
+    command = (_payload_manifest(root) or {}).get("runtime", {}).get("commands", {}).get("hermes")
+    return _payload_path(root, command, "launcher") if command else None
+
+
+def payload_command_dir(project_root: Path) -> Path | None:
+    """The directory holding a sealed payload's own launchers (``<payload>/bin``), or ``None``."""
+    command = _payload_hermes_command(Path(project_root).resolve())
+    return command.parent if command else None
+
+
+def cli_command_name(project_root: Path) -> str:
+    """The name a person types to run this install's CLI.
+
+    A desktop channel build publishes its launcher under a qualified name
+    (``hermes-canary``) so it never shadows another install's ``hermes``.
+    """
+    command = _payload_hermes_command(Path(project_root).resolve())
+    return command.name.removesuffix(".exe") if command else "hermes"
 
 
 def base_venv(project_root: Path) -> Path:
     return payload_venv(project_root) or project_venv_dir(Path(project_root).resolve()) or Path(project_root).resolve() / "venv"
 
 
-def store_root(project_root: Path) -> Path:
-    """Resolve a payload-relative or stamped store before PM imports."""
-    override = os.environ.get("HERMES_RUNTIME_DIR")
-    if override:
-        return Path(override).resolve()
+def store_root(project_root: Path, *, honor_runtime_override: bool = True) -> Path:
+    """Resolve a payload-relative or stamped store before PM imports.
+
+    ``HERMES_RUNTIME_DIR`` exists so a running process can point PM at a
+    non-default runtime location. Publication paths must pass
+    ``honor_runtime_override=False``: a persisted artifact (an installed
+    launcher) has to bind the store of the tree it serves, never a runtime
+    directory inherited through the environment.
+    """
+    if honor_runtime_override:
+        override = os.environ.get("HERMES_RUNTIME_DIR")
+        if override:
+            return Path(override).resolve()
     root = Path(project_root).resolve()
-    manifest_path = root.parent / "manifest.json"
-    if manifest_path.is_file():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-        if (root.parent / manifest.get("repo", "")).resolve() == root:
-            store = (root.parent / manifest["store"]).resolve()
-            if not store.is_relative_to(root.parent):
-                raise RuntimeError("payload store escapes its root")
-            return store
+    store = (_payload_manifest(root) or {}).get("store")
+    if store:
+        return _payload_path(root, store, "store")
     from pm.paths import install_stamp_path
 
     for directory in (root, *root.parents):
@@ -134,10 +233,21 @@ def store_root(project_root: Path) -> Path:
             try:
                 data = json.loads(stamp.read_text(encoding="utf-8-sig"))
             except (OSError, ValueError):
-                return get_default_hermes_root() / "tools"
+                return _unstamped_store(root)
             value = data.get("runtimeDir") if isinstance(data, dict) else None
-            return Path(value).resolve() if value else get_default_hermes_root() / "tools"
+            return Path(value).resolve() if value else _unstamped_store(root)
     return get_default_hermes_root() / "tools"
+
+
+def _unstamped_store(project_root: Path) -> Path:
+    """The store of a stamp that names none (source stamps never do): the owning root's.
+
+    The data root's ``tools/`` is the default, but a borrowing root's would be a new store per
+    temporary home -- a full tool download on its first launch, and an interpreter that dies
+    with the home. The checkout's own launchers exec the owner's interpreter, so a borrowing
+    launch resolves the same one (#123238).
+    """
+    return (owning_home_root(project_root) or get_default_hermes_root()) / "tools"
 
 
 def flush_before_selecting() -> None:
@@ -356,12 +466,16 @@ def activate_dependencies(project_root: Path) -> None:
                    *[entry for entry in sys.path if Path(entry).resolve() != selected.resolve()]]
     os.environ["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()), str(selected)])
     os.environ.pop("VIRTUAL_ENV", None)
-    executable_dir = venv_bin_dir(environment)
     # The venv's own `hermes`/`hermes-acp` console scripts are editable installs bound to
     # the build-time source snapshot, not this checkout (#124627): a child that resolves
     # `hermes` off PATH must hit the checkout's own launcher first, never the venv's copy.
-    prefix = [str(path) for path in (project_root.resolve() / ".hermes" / "bin", executable_dir)
-              if path.is_dir()]
+    # A sealed payload's launchers live in <payload>/bin instead.
+    directories = [payload_command_dir(project_root) or project_root.resolve() / ".hermes" / "bin"]
+    # A shipped venv's Windows redirectors read pyvenv.cfg `home`, which still names the
+    # build machine, so every executable in its Scripts fails on the user's machine.
+    if not (os.name == "nt" and environment == payload_venv(project_root)):
+        directories.append(venv_bin_dir(environment))
+    prefix = [str(path) for path in directories if path.is_dir()]
     if prefix:
         os.environ["PATH"] = os.pathsep.join([*prefix, os.environ.get("PATH", "")])
 

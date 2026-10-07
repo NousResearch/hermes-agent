@@ -115,9 +115,15 @@ async def get_ssh_ownership(request: Request):
 
 @router.get("/api/health")
 async def get_health():
-    """Lightweight process liveness for desktop/backend readiness probes."""
+    """Lightweight process liveness for desktop/backend readiness probes.
+
+    ``commit`` is the code this process BOOTED from (``get_version_info`` is cached at
+    ``web_server`` import): Desktop refuses to attach to a backend whose commit differs from
+    its checkout, so a serve that outlived ``hermes update`` is never re-adopted.
+    """
     info = get_version_info()
     return {"ok": True, "version": info.base_version, "displayVersion": info.display_version,
+            "commit": info.commit,
             "auth_required": bool(getattr(app.state, "auth_required", False))}
 
 
@@ -796,6 +802,7 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
     unlike the other diagnostics actions: the point is the shareable URLs, returned as a
     structured payload the dashboard renders as copyable links."""
     from hermes_cli.debug import build_debug_share
+    from hermes_cli.debug_redaction import redact_debug_support_text
     req = body or DebugShareRequest()
     try:
         result = await config_scoped_to_thread(profile, lambda: build_debug_share(
@@ -804,10 +811,12 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
         raise  # an unknown ?profile= is the scope's 404, not a failed share
     except RuntimeError as exc:
         # Required summary-report upload failed (offline / paste service down).
-        raise HTTPException(status_code=502, detail=f"Upload failed: {exc}")
+        error = redact_debug_support_text(exc)
+        raise HTTPException(status_code=502, detail=f"Upload failed: {error}")
     except Exception as exc:
         _log.exception("debug share failed")
-        raise HTTPException(status_code=500, detail=f"Failed: {exc}")
+        error = redact_debug_support_text(exc)
+        raise HTTPException(status_code=500, detail=f"Failed: {error}")
 
     return {"ok": True, "urls": result.urls, "failures": result.failures,
             "redacted": result.redacted, "auto_delete_seconds": result.auto_delete_seconds}

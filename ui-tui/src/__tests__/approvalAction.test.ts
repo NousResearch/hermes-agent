@@ -49,8 +49,7 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
   })
 
   it('respects a reduced option set when permanent allow is disabled', () => {
-    // tirith content-security warning present → no "always"; the 3-item set is
-    // once/session/deny, so 3 maps to deny and 4 is out of range.
+    // No "always": the 3-item set is once/session/deny, so 3 maps to deny and 4 is out of range.
     const opts = ['once', 'session', 'deny'] as const
 
     expect(approvalAction('3', {}, 0, opts)).toEqual({ kind: 'choose', choice: 'deny' })

@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
+from hermes_cli import kanban_workflow
 from hermes_cli.web_read_coalescing import coalesced_read
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -164,9 +165,9 @@ def _errors_to_500(prefix: str) -> Iterator[None]:
 
 # --- Serialization helpers --------------------------------------------------
 
-# Dashboard columns, left-to-right ("archived" is a filter toggle, not a column). Keep in
-# sync with kanban_db.VALID_STATUSES — a status missing here gets mis-bucketed into ``todo``.
-BOARD_COLUMNS: list[str] = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done"]
+# Dashboard columns, left-to-right ("archived" is a filter toggle, not a column), from the
+# one workflow definition. A status missing here gets mis-bucketed into ``todo``.
+BOARD_COLUMNS: list[str] = list(kanban_workflow.DEFAULT_WORKFLOW.keys())
 
 _CARD_SUMMARY_PREVIEW_CHARS = 200
 
@@ -334,8 +335,13 @@ def get_board(
 
         # Queue columns keep list_tasks' dispatch order (priority DESC, created_at ASC).
         tenants = [r["tenant"] for r in conn.execute("SELECT DISTINCT tenant FROM tasks WHERE tenant IS NOT NULL ORDER BY tenant")]
-        assignees = [r["assignee"] for r in conn.execute(
-            "SELECT DISTINCT assignee FROM tasks WHERE assignee IS NOT NULL AND status != 'archived' ORDER BY assignee")]
+        # List of known assignees for the lane-by-profile sub-grouping.
+        # Uses kanban_db.known_assignees so the lane set unions profiles
+        # currently holding non-archived tasks with profiles configured on
+        # disk — a freshly-added profile shows up as a (possibly empty)
+        # lane immediately, matching the assignee picker at /assignees
+        # which already uses this helper.
+        assignees = [entry["name"] for entry in kanban_db.known_assignees(conn)]
         return {
             "columns": [{"name": name, "tasks": columns[name]} for name in columns], "tenants": tenants,
             "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time())}
@@ -1608,6 +1614,14 @@ class OrchestrationSettingsBody(BaseModel):
 
 
 _PROFILE_SETTINGS = ("orchestrator_profile", "default_assignee")
+
+
+@router.get("/workflow")
+def get_workflow():
+    """Board columns (order, label, icon, drag target) and the manual move
+    allow-list. Every board uses the default workflow today; per-board
+    workflows (``board.json``) arrive in a later phase behind this same shape."""
+    return kanban_workflow.DEFAULT_WORKFLOW.to_dict()
 
 
 @router.get("/orchestration")

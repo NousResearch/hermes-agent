@@ -363,14 +363,45 @@ def _make_delegation_context_unimportable(monkeypatch) -> None:
     monkeypatch.delattr(agent, "delegation_context", raising=False)
 
 
+def test_unavailable_delegation_context_direct_fence_refuses_an_owned_worker(monkeypatch, tmp_path):
+    """The write fence ITSELF refuses an owned worker when the context is un-evaluable.
+
+    This is the direct-fence assertion from the review: it calls
+    ``_reject_delegated_child_mutation`` itself, so a pass cannot come from a downstream
+    ``connect()`` import failure — that would be the "incidental later import failure"
+    the review flagged as not a real guard. Before the ruling a process holding
+    ``HERMES_KANBAN_TASK`` was allowed through the un-evaluable branch (the "escape is
+    provenance" path); that escape is gone and both non-False verdicts refuse.
+
+    Negative control: restore the ``owned = os.environ.get("HERMES_KANBAN_TASK")``
+    allow-branch and this test goes red (nothing is raised).
+    """
+    kb, tid, _workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
+    from tools import kanban_tools
+
+    # Dispatcher-owned worker environment: HERMES_KANBAN_TASK is set by the helper.
+    assert os.environ["HERMES_KANBAN_TASK"] == tid
+    monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+    _make_delegation_context_unimportable(monkeypatch)
+
+    with pytest.raises(kanban_tools._Reject) as excinfo:
+        kanban_tools._reject_delegated_child_mutation("kanban_comment")
+
+    message = str(excinfo.value)
+    assert "refused" in message, message
+    assert "delegation context" in message, message
+
+
 def test_unavailable_delegation_context_cannot_mutate_the_board(monkeypatch, tmp_path):
     """An un-evaluable delegation context can never move board state.
 
-    Invariant for both call shapes — the dispatcher-owned worker (which may still
-    mutate its own task) and a process with no task at all. Already true on main:
-    ``kanban_db_connect.connect()`` imports the same module unwrapped and raises
-    before any write, so the write fence is not the only guard today. Pinned here so
-    that stays true if that access ever goes lazy or guarded.
+    Invariant for both call shapes — the dispatcher-owned worker (which holds a real
+    ``HERMES_KANBAN_TASK`` and, before the ruling, was allowed through the un-evaluable
+    branch) and a process with no task at all. The write fence refuses FIRST now: with
+    the env-bit escape removed, ``_reject_delegated_child_mutation`` raises for both, so
+    this no longer relies on ``kanban_db_connect.connect()``'s downstream ImportError.
+    Pinned here so the board-side invariant ("nothing landed") holds regardless of which
+    layer refuses.
     """
     import sqlite3
 

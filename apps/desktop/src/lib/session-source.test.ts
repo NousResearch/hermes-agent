@@ -8,6 +8,7 @@ import {
 } from './session-source'
 
 const PLUGIN_BACKED_MESSAGING_SOURCES = [
+  { id: 'buzz', label: 'Buzz' },
   { id: 'google_chat', label: 'Google Chat' },
   { id: 'irc', label: 'IRC' },
   { id: 'line', label: 'LINE' },

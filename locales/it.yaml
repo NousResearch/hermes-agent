@@ -847,6 +847,9 @@ gateway:
     db_fts_corrupt: "⚠️ Il database delle sessioni ha segnalato un errore di corruzione limitato all'indice di ricerca (FTS5); le tabelle dei messaggi non sono danneggiate. I messaggi potrebbero non essere salvati finché non viene riparato: esegui `hermes {profile_arg}doctor --fix`, poi riavvia il gateway. Non eseguire strumenti di ripristino né ripristinare un backup a meno che `hermes {profile_arg}doctor` non confermi il danno."
     db_then_restart: "{action} Poi `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Database delle sessioni non disponibile — i messaggi potrebbero non essere salvati e /resume sarà vuoto. Causa: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ L'archivio cron {store} non è scrivibile ({error}) dal {since}. I job pianificati vengono saltati finché non accetta di nuovo scritture. Soluzione: {fix}."
+    recovered: "✅ L'archivio cron {store} è di nuovo scrivibile; {skipped} esecuzione/i saltata/e, ogni job viene recuperato una volta."
   whoami:
     scope_dm: "DM"
     scope_group: "gruppo/canale"
@@ -3674,7 +3677,7 @@ tips:
   t197: "Il salvataggio delle traiettorie (--save-trajectories) cattura tracce complete dell'uso degli strumenti per l'addestramento dei modelli."
   t198: "Tre tipi di plugin: generali (strumenti/hook), provider di memoria e motori di contesto."
   t199: "hermes plugins install owner/repo installa i plugin direttamente da GitHub."
-  t200: "Provider di memoria esterni: OpenViking è incluso; Honcho, Hindsight, Mem0 e altri tramite hermes plugins install."
+  t200: "Provider di memoria esterni: Honcho, Hindsight, Mem0, OpenViking e altri tramite hermes plugins install."
   t201: "Gli hook dei plugin includono pre/post_tool_call, pre/post_llm_call e transform_terminal_output per la canonicalizzazione dell'output."
   t202: "Il prompt caching (Anthropic) riduce i costi riutilizzando i prefissi del prompt di sistema in cache."
   t203: "L'agente genera automaticamente i titoli delle sessioni in un thread in background — nessun impatto sulla latenza."

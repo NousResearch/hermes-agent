@@ -75,8 +75,9 @@ def test_failed_update_reports_the_stage_it_never_reached(marks, monkeypatch):
         "apply_mode": "git", "duration_bucket": "lt_30s", "failed_stage": "deps",
         "from_version_age_bucket": "7d_to_30d", "kind": "cli", "outcome": "failed", "failure_class": "deps_failed",
     }]
+    # The stage the run died in carries a failed row, so run and stage counts agree.
     assert [(s["stage"], s["outcome"]) for s in stages] == [
-        ("plan", "success"), ("snapshot", "skipped"), ("apply", "success")]
+        ("plan", "success"), ("snapshot", "skipped"), ("apply", "success"), ("deps", "failed")]
     _assert_valid(marks.rows)
 
 

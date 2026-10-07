@@ -478,6 +478,26 @@ class TestSchemaValidation:
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["plugins"]["my_plugin"]["judge_threshold"] == 0.8
 
+    @pytest.mark.parametrize("key,val,expected_path", [
+        ("plugins.custom.deep.threshold", "0.95", ["custom", "deep", "threshold"]),
+        ("plugins.a.b.c.d", "hello", ["a", "b", "c", "d"]),
+    ])
+    def test_plugin_arbitrary_depth_settings_are_recognized(
+        self, _isolated_hermes_home, capsys, key, val, expected_path
+    ):
+        """#83899: Arbitrary depth plugin settings (3+ segments) must not trigger
+        the unknown key warning and should be preserved in config.yaml."""
+        set_config_value(key, val)
+        captured = capsys.readouterr()
+        assert "not a recognized config key" not in captured.out
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        node = saved["plugins"]
+        for seg in expected_path[:-1]:
+            node = node[seg]
+        last_seg = expected_path[-1]
+        assert node[last_seg] == (float(val) if val == "0.95" else val)
+
 
 
     def test_force_suppresses_notice(self, _isolated_hermes_home, capsys):
@@ -504,6 +524,8 @@ class TestValidateConfigKey:
         "providers.openrouter.api_key",
         "plugins.my_plugin.judge_threshold",  # arbitrary per-plugin settings (#83899)
         "plugins.enabled",
+        "plugins.a.b.c",
+        "plugins.custom.deep.nested.flag",
         "gateway.strict",
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
@@ -513,6 +535,7 @@ class TestValidateConfigKey:
         from hermes_cli.config import _validate_config_key
         is_known, _ = _validate_config_key(key)
         assert is_known, f"Expected {key!r} to validate as known"
+
 
     @pytest.mark.parametrize("key,expected_in_suggestion", [
         ("gateway.discord.gateway_restart_notification", None),  # no close suggestion

@@ -140,6 +140,7 @@ class GatewayTurnPrepareMixin:
         model = _resolve_gateway_model(user_config)
         if skey:
             self._rehydrate_session_model_override(skey)
+            self._rehydrate_served_identity(skey)
         _override_state = self._peek_session_state(skey) if skey else None
         override = _override_state.conversation.model_override if _override_state else None
         if override:

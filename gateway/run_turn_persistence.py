@@ -106,6 +106,18 @@ class GatewayTurnPersistenceMixin:
             except Exception as _e:
                 logger.debug("clear_resume_pending failed for %s: %s", session_key, _e, exc_info=True)
 
+            # Record the identity that actually served this successful turn (incl. ambient, not
+            # only an explicit /model), so a later gateway restart resumes on it instead of warmup.
+            _served = {
+                "model": agent_result.get("model"),
+                "provider": agent_result.get("provider"),
+                "base_url": agent_result.get("base_url"),
+            }
+            try:
+                await self.async_session_store.set_last_served(session_key, _served)
+            except Exception as _e:
+                logger.debug("set_last_served failed for %s: %s", session_key, _e, exc_info=True)
+
         # Normalize empty responses: surface errors, partial failures, and work-without-text.
         # Fix for #18765.
         if not _intentional_silence:

@@ -2,11 +2,13 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import { enAppTour, enHandoffTour } from './en_app_tour'
 import { enAuxTasks } from './en_aux_tasks'
+import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalogInstall } from './en_catalog_install'
 import { enLocalModels } from './en_local_models'
 import { enModelMenu } from './en_model_menu'
 import { enNotices } from './en_notices'
+import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enUninstallSection } from './en_uninstall_section'
 import type { Translations } from './types'
@@ -508,14 +510,7 @@ export const en: Translations = {
 
   ...enNotices,
 
-  billingBlock: {
-    titleNous: 'Out of Nous credits',
-    titleProvider: provider => `Out of credits — ${provider}`,
-    fallbackMessage: 'Your account is out of credits. Add credits to keep going.',
-    openBilling: 'Open billing',
-    addCredits: 'Add credits',
-    dismiss: 'Dismiss'
-  },
+  ...enBilling,
 
   sendDiagnostics: {
     title: 'Send diagnostics to Nous',
@@ -3114,6 +3109,9 @@ export const en: Translations = {
     // Replaces `next` when the stored next_run_at is already past the scheduler grace (#114309).
     overdueSince: 'Overdue since:',
     noRuns: 'No runs yet',
+    // Queued trigger feedback in Run History: the backend accepted the trigger
+    // but has not materialized the run session yet (#70826).
+    queuedRun: 'Queued run',
     manage: 'Manage',
     showRuns: 'Show runs',
     hideRuns: 'Hide runs',
@@ -3323,86 +3321,7 @@ export const en: Translations = {
       guide: 'Recovery guide'
     },
     noFilterMatches: 'No sessions match these filters',
-    projects: {
-      showAllSessions: 'Show all sessions',
-      sectionLabel: 'Projects',
-      home: 'Home',
-      autoDiscovered: 'Auto-discovered',
-      newButton: 'New project',
-      createTitle: 'New project',
-      createDesc: 'Name a workspace and add one or more folders.',
-      renameTitle: 'Rename project',
-      addFolderTitle: 'Add folder',
-      namePlaceholder: 'e.g. Skunkworks',
-      foldersLabel: 'Folders',
-      ideaLabel: 'Idea',
-      ideaPlaceholder: "What's this project about? (saved to IDEA.md)",
-      ideaGenerate: 'Generate idea',
-      ideaGenerating: 'Generating…',
-      ideaShuffle: 'Shuffle templates',
-      noFolders: 'No folders added yet.',
-      addFolder: 'Add folder',
-      primaryBadge: 'primary',
-      removeFolder: 'Remove',
-      create: 'Create',
-      menu: 'Actions',
-      menuRename: 'Rename…',
-      menuAppearance: 'Appearance',
-      noColor: 'No color',
-      menuAddFolder: 'Add folder',
-      menuSetActive: 'Set active',
-      menuDelete: 'Delete',
-      moveToProject: 'Move to project',
-      movedTo: name => `Moved to ${name}`,
-      moveFailed: 'Could not move session',
-      moveNoFolder: 'That project has no folder to move into',
-      moveNoProjects: 'No other projects',
-      reveal: 'Reveal in folder',
-      copyPath: 'Copy path',
-      removeFromSidebar: 'Hide from sidebar',
-      createdInPreviousContext:
-        "Project created on the previous connection or profile. Switch back to find it; IDEA.md wasn't written.",
-      createFailed: 'Could not create project',
-      staleBackend:
-        'Update the Hermes backend to create projects — your backend is older than this desktop app (Settings → Updates → Backend).',
-      deleteConfirm: 'This removes the saved project from Hermes. Files, git repos, and worktrees stay untouched.',
-      startWork: 'New worktree',
-      newWorktreeTitle: 'New worktree',
-      newWorktreeDesc: 'Name the branch for this worktree.',
-      branchPlaceholder: 'e.g. my-feature',
-      branchOff: () => ({ after: '', before: 'branch off ' }),
-      baseBranchPlaceholder: 'Search branches…',
-      baseBranchNone: 'No branches found',
-      startWorkFailed: 'Could not create worktree',
-      worktreeStaleBackend:
-        'Update the Hermes backend to create worktrees over this remote connection — it predates the git worktree API.',
-      worktreeProjectLabel: 'Project',
-      worktreeProjectPlaceholder: 'Search projects…',
-      worktreeProjectNone: 'No projects with a folder',
-      convertBranch: 'Convert a branch…',
-      convertBranchTitle: 'Convert a branch',
-      convertBranchDesc: 'Open checked-out branches, or create a worktree for a free branch.',
-      convertBranchPlaceholder: 'Search branches…',
-      convertBranchInstead: 'Convert an existing branch',
-      branchOpenExisting: 'open',
-      branchSwitchHome: 'switch home',
-      branchCreateWorktree: 'new worktree',
-      branchTrackRemote: 'track remote',
-      branchesLoading: 'Loading branches…',
-      noBranches: 'No branches found',
-      removeWorktree: 'Remove worktree',
-      removeWorktreeFailed: 'Could not remove worktree (uncommitted changes?)',
-      removeWorktreeConfirm:
-        'Remove it from git (deletes the worktree directory; the branch stays), or just hide the lane from the sidebar and leave the worktree on disk.',
-      removeWorktreeDirty:
-        'This worktree has uncommitted changes. Force-remove it (discards those changes), or just hide the lane and keep it on disk.',
-      forceRemove: 'Force remove',
-      enter: label => `Open ${label}`,
-      reorder: label => `Reorder ${label}`,
-      toggle: (label, open) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
-      showAllCount: count => `Show all ${count} sessions`,
-      back: 'All projects'
-    },
+    projects: enProjects,
     newSessionIn: label => `New session in ${label}`,
     showMoreIn: (count, label) => `Show ${count} more in ${label}`,
     loading: 'Loading…',

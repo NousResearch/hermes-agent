@@ -7,6 +7,7 @@ import { jaLocalModels } from './ja_local_models'
 import { jaModelMenu } from './ja_model_menu'
 import { jaNotices } from './ja_notices'
 import { jaPluginSettings } from './ja_plugins'
+import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
 
 export const ja = defineLocale({
@@ -2347,79 +2348,7 @@ export const ja = defineLocale({
     projectLoadFailed: 'セッションの読み込みに失敗しました',
     noSessions: 'セッションはまだありません',
     noFilterMatches: 'このフィルターに一致するセッションはありません',
-    projects: {
-      showAllSessions: 'すべてのセッションを表示',
-      sectionLabel: 'プロジェクト',
-      home: 'ホーム',
-      autoDiscovered: '自動検出',
-      showAllCount: count => `${count} 件のセッションをすべて表示`,
-      newButton: '新規プロジェクト',
-      createTitle: '新規プロジェクト',
-      createDesc: 'ワークスペースに名前を付け、1つ以上のフォルダを追加します。',
-      renameTitle: 'プロジェクト名を変更',
-      addFolderTitle: 'フォルダを追加',
-      namePlaceholder: '例: Skunkworks',
-      foldersLabel: 'フォルダ',
-      ideaLabel: 'アイデア',
-      ideaPlaceholder: 'このプロジェクトは何ですか？（IDEA.md に保存）',
-      ideaGenerate: 'アイデアを生成',
-      ideaGenerating: '生成中…',
-      ideaShuffle: 'テンプレートをシャッフル',
-      noFolders: 'まだフォルダがありません。',
-      addFolder: 'フォルダを追加',
-      primaryBadge: 'メイン',
-      removeFolder: '削除',
-      create: '作成',
-      menu: 'アクション',
-      menuRename: '名前を変更…',
-      menuAppearance: '外観',
-      noColor: '色なし',
-      menuAddFolder: 'フォルダを追加',
-      menuSetActive: 'アクティブに設定',
-      menuDelete: '削除',
-      reveal: 'フォルダで表示',
-      copyPath: 'パスをコピー',
-      removeFromSidebar: 'サイドバーから削除',
-      createdInPreviousContext:
-        'プロジェクトは以前の接続またはプロファイルで作成されました。そこに戻ってください。IDEA.md は書き込まれていません。',
-      createFailed: 'プロジェクトを作成できませんでした',
-      staleBackend:
-        'プロジェクトを作成するには Hermes バックエンドを更新してください。バックエンドがこのデスクトップアプリより古いです（設定 → 更新 → バックエンド）。',
-      deleteConfirm:
-        'Hermes から保存済みプロジェクトを削除します。ファイル・git リポジトリ・ワークツリーはそのまま残ります。',
-      startWork: '新しいワークツリー',
-      newWorktreeTitle: '新しいワークツリー',
-      newWorktreeDesc: 'このワークツリーのブランチ名を入力してください。',
-      branchPlaceholder: '例: my-feature',
-      branchOff: () => ({ after: ' から分岐', before: '' }),
-      baseBranchPlaceholder: 'ブランチを検索…',
-      baseBranchNone: 'ブランチが見つかりません',
-      startWorkFailed: 'ワークツリーを作成できませんでした',
-      worktreeStaleBackend:
-        'このリモート接続でワークツリーを作成するには Hermes バックエンドを更新してください — git ワークツリー API 以前のバージョンです。',
-      worktreeProjectLabel: 'プロジェクト',
-      worktreeProjectPlaceholder: 'プロジェクトを検索…',
-      worktreeProjectNone: 'フォルダのあるプロジェクトがありません',
-      convertBranch: 'ブランチを変換…',
-      convertBranchTitle: 'ブランチを変換',
-      convertBranchDesc: 'チェックアウト済みのブランチを開くか、空いているブランチのワークツリーを作成します。',
-      convertBranchPlaceholder: 'ブランチを検索…',
-      convertBranchInstead: '既存のブランチを変換',
-      branchOpenExisting: '開く',
-      branchSwitchHome: 'ホームを切替',
-      branchCreateWorktree: '新しいワークツリー',
-      branchTrackRemote: 'リモートを追跡',
-      branchesLoading: 'ブランチを読み込み中…',
-      noBranches: 'ブランチが見つかりません',
-      removeWorktree: 'ワークツリーを削除',
-      removeWorktreeFailed: 'ワークツリーを削除できませんでした（コミットされていない変更？）',
-      removeWorktreeConfirm:
-        'git から削除（ワークツリーのディレクトリを削除しますが、ブランチは残ります）するか、サイドバーからレーンを隠してワークツリーをディスク上に残します。',
-      removeWorktreeDirty:
-        'このワークツリーにはコミットされていない変更があります。強制削除（変更を破棄）するか、レーンを隠してディスク上に残します。',
-      forceRemove: '強制削除',
-      enter: label => `${label} を開く`
-    },
+    projects: jaProjects,
     newSessionIn: label => `${label} で新しいセッション`,
     showMoreIn: (count, label) => `${label} でさらに ${count} 件を表示`,
     loading: '読み込み中…',

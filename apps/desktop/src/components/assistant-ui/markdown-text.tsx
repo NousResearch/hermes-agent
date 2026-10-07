@@ -402,10 +402,10 @@ export function MarkdownImage(props: ComponentProps<'img'>) {
 }
 
 // A cold frame is ~4:3 because that is the envelope an image can occupy here
-// (--image-preview-max-width x --image-preview-height, 34rem x 26.25rem): every
-// shape, portrait included, fits at the size it would have without a reserved
-// frame. A 16:9 box shrank every narrower image (a 1080x1920 portrait to
-// 172x306). Warm mounts use the measured size instead.
+// (--image-preview-max-width x --image-preview-height): every shape, portrait
+// included, fits at the size it would have without a reserved frame. A 16:9
+// box shrank every narrower image (a 1080x1920 portrait to 172x306). Warm
+// mounts use the measured size instead.
 const COLD_IMAGE_RATIO = 4 / 3
 
 function MarkdownImageContent({

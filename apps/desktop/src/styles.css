@@ -558,8 +558,17 @@
       calc(100% - var(--composer-measured-height) + var(--composer-surface-measured-height))
     );
     --vsq: min(0.5vh, 0.5vw);
-    --image-preview-max-width: 34rem;
-    --image-preview-height: clamp(16.25rem, calc(var(--vsq) * 100), 26.25rem);
+    /* The inline image preview envelope (#74564): agent-generated image SETS
+       arrive stacked in one message, and the old 34rem x ~16-26rem clamp left
+       each landscape image readable only through a small letterbox (the
+       lightbox existed, but inline inspection was impractical). Width now
+       fills most of the ~44rem message column, and the height floor is the
+       old CAP — every viewport gets at least what only tall windows got
+       before, so a 16:9 landscape frame always spans the full preview width
+       (floor 26.25rem × 16/9 ≥ 40rem). Images are never upscaled: the frame
+       width min() still caps at the natural px size. */
+    --image-preview-max-width: 40rem;
+    --image-preview-height: clamp(26.25rem, calc(var(--vsq) * 140), 40rem);
 
     --sidebar-width: 14.8125rem;
     --chat-min-width: 28rem;

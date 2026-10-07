@@ -79,14 +79,16 @@ test('a Desktop build failure during Update now tells the user the app was not r
       // The code committed: "FAILED / still on the previous version" would be false.
       expect(outcome).not.toMatch(/detached update FAILED|previous version/)
       // The relaunched app reports the result while posix.sh is still inside launch_app's 1.5 s
-      // acceptance window, so the updater gets a bounded moment to exit instead of none.
+      // acceptance window, and a manual outcome then keeps the shim window up for its 15 s
+      // leave-window grace (stop_ui) before tearing the UI down: 30 s left ~13 s for that
+      // teardown and timed out on a slow runner. The updater gets 90 s to exit, not forever.
       await expect
         .poll(
           () =>
             installProcesses(facts)
               .filter(proc => /desktop-update\/posix\.sh| update --yes/.test(proc.cmdline))
               .map(p => p.cmdline),
-          { timeout: 30_000, message: 'no updater is left running after the failure' }
+          { timeout: 90_000, message: 'no updater is left running after the failure' }
         )
         .toEqual([])
       // The checkout moved (that is why it is not "previous version"); the app bundle did not.

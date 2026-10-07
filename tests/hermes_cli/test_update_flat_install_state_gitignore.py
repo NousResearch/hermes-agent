@@ -62,6 +62,7 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "gateway.pid",
     "gateway_state.json",
     "processes.json",
+    "processes.json.lock",
     "gateway-starts.log",
     ".update_check",
     ".clean_shutdown",

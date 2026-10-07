@@ -536,8 +536,8 @@ from cron.jobs import (
     save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
 from cron.execution_identity import enter_cron_execution, exit_cron_execution
 from cron.executions import (
-    _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
-    get_execution, mark_execution_handoff_pending, mark_execution_running,
+    _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, cron_task_id,
+    finish_execution, get_execution, mark_execution_handoff_pending, mark_execution_running,
     recover_interrupted_executions, terminalize_dead_owner)
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
@@ -2396,7 +2396,7 @@ class _CronRunScope:
             _VAR_MAP[name].set("")
         # Workdir binds to the per-run task id (tool-layer cwd authority) instead of mutating
         # global TERMINAL_CWD; _SESSION_CWD above remains the prompt/context-file authority.
-        self.task_id = f"cron:{job_id}:{execution_id or job.get('execution_id') or uuid.uuid4().hex}"
+        self.task_id = cron_task_id(job_id, execution_id or job.get('execution_id') or uuid.uuid4().hex)
         if self.workdir:
             record_session_cwd(self.task_id, self.workdir)
         self._cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]

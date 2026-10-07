@@ -276,12 +276,20 @@ class SessionUsageMixin:
         actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
         billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False,
-        source: Optional[str]=None,
+        source: Optional[str]=None, route_authoritative: bool=True,
     ) -> None:
         """Update token counters and backfill model if unset. *absolute*=False increments
         (per-API-call deltas, CLI path); *absolute*=True sets directly (gateway path,
         where the cached agent holds cumulative totals). ``source`` is the session's real surface
-        for the row-existence guard; callers that don't know it leave the placeholder."""
+        for the row-existence guard; callers that don't know it leave the placeholder.
+
+        ``route_authoritative`` decides whether this write may claim ``sessions.model`` /
+        ``billing_provider`` as the authoritative route (see ``first_accounted_route``). A
+        deliberate route switch — ``/model`` mid-session, or a fallback that actually served
+        the turn — passes True and applies even with no token data. A call the provider
+        answered but could not report usage for passes False: it evidences nothing about
+        which route served the session, so letting it win would strand the row on the
+        provider that failed while every token sits on the fallback's (#71578)."""
         usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
         # Ensure the row exists: under concurrent load create_session() may have failed on
         # locking, and the UPDATE would silently affect 0 rows. When this guard is the first
@@ -313,14 +321,28 @@ class SessionUsageMixin:
 
         def _do(conn):
             row = conn.execute(
-                "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?", (session_id,),
+                "SELECT model, billing_provider, api_call_count, "
+                + ", ".join(_TOKEN_COUNTERS)
+                + " FROM sessions WHERE id = ?", (session_id,),
             ).fetchone()
             existing = dict(row) if row is not None else {}
             # create_session records the requested route before any API call. If that fails
             # and fallback succeeds, the first accounted usage is the authoritative route;
             # after that keep the row as is (one row cannot represent mixed usage).
+            #
+            # The test for "has anything been accounted yet" reads the stored token columns,
+            # not api_call_count: a response without a usage chunk still counts as a call
+            # (it happened, we just cannot price it) but measures nothing. Keying off
+            # api_call_count would let such a call win the route and — having consumed the
+            # sentinel — stop the first real call from ever winning it, stranding the row on
+            # the provider that failed while every token sits on the fallback's (#71578).
+            # ``route_authoritative`` is the caller's explicit statement that this write
+            # *is* the route serving the session, which is what a deliberate /model switch
+            # or a fallback that answered means; a usage-less call passes False.
+            already_measured = any(int(existing.get(c) or 0) for c in _TOKEN_COUNTERS)
             first_accounted_route = (
-                int(existing.get("api_call_count") or 0) == 0 and has_accounted_usage and bool(model)
+                not already_measured and has_accounted_usage and route_authoritative
+                and bool(model)
                 and bool(billing_provider)
                 and (existing.get("model") != model or existing.get("billing_provider") != billing_provider)
             )

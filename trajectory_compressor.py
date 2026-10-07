@@ -70,19 +70,18 @@ def _effective_temperature_for_model(model: str, requested_temperature: Optional
     return requested_temperature if fixed_temperature is None else fixed_temperature
 
 
-def _load_jsonl(path: Path, on_error: Optional[Callable[[int, json.JSONDecodeError], None]] = None, start: int = 0) -> List[Tuple[int, Any]]:
+def _load_jsonl(path: Path, on_error: Optional[Callable[[int, json.JSONDecodeError], None]] = None, start: int = 0):
     """Return ``(line_num, entry)`` for each non-blank line; bad lines go to ``on_error``."""
-    entries = []
     with open(path, 'r', encoding='utf-8') as f:
         for line_num, line in enumerate(f, start):
             if not line.strip():
                 continue
             try:
-                entries.append((line_num, json.loads(line)))
+                yield line_num, json.loads(line)
             except json.JSONDecodeError as e:
                 if on_error is not None:
                     on_error(line_num, e)
-    return entries
+
 
 
 def _write_jsonl(path: Path, entries) -> None:
@@ -623,46 +622,39 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             self.logger.warning("No JSONL files found in %s", input_dir)
             return
 
-        console.print("\n[dim]Loading all entries...[/dim]")
-        all_entries = []  # List of (file_path, entry_idx, entry)
-        for file_path in jsonl_files:
-            def _warn(line_num, e, file_path=file_path):
-                self.logger.warning("Skipping invalid JSON at %s:%s: %s", file_path, line_num, e)
-            all_entries.extend((file_path, idx, entry) for idx, entry in _load_jsonl(file_path, _warn))
-        total_entries = len(all_entries)
-
+        console.print("\n[dim]Streaming entries in bounded batches...[/dim]")
         console.print(f"\n{'='*60}")
         console.print(f"📂 Input: {input_dir}")
         console.print(f"📂 Output: {output_dir}")
         console.print(f"📄 Files to process: {len(jsonl_files)}")
-        console.print(f"📊 Total trajectories: {total_entries:,}")
+        console.print("📊 Total trajectories: streamed")
         console.print(f"🎯 Target max tokens: {self.config.target_max_tokens:,}")
         console.print(f"📝 Summary target tokens: {self.config.summary_target_tokens}")
         console.print(f"⚡ Max concurrent API calls: {self.config.max_concurrent_requests}")
         console.print(f"{'='*60}\n")
-
-        with Progress(
-            SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(), TaskProgressColumn(),
-            TextColumn("•"), TimeElapsedColumn(), TextColumn("•"), TimeRemainingColumn(),
-            console=console, refresh_per_second=10,  # Higher refresh for async
-        ) as progress:
-            run = _RunProgress(
-                progress, progress.add_task(f"[cyan]Compressing {total_entries:,} trajectories", total=total_entries),
-                progress.add_task("[dim]Starting...[/dim]", total=None),
-                asyncio.Lock(), asyncio.Semaphore(self.config.max_concurrent_requests),
-            )
-            outcomes = await asyncio.gather(*(self._process_one(run, *item) for item in all_entries))
+        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(), TaskProgressColumn(), TextColumn("•"), TimeElapsedColumn(), TextColumn("•"), TimeRemainingColumn(), console=console, refresh_per_second=10) as progress:
+            run = _RunProgress(progress, progress.add_task("[cyan]Compressing trajectories", total=None), progress.add_task("[dim]Starting...[/dim]", total=None), asyncio.Lock(), asyncio.Semaphore(self.config.max_concurrent_requests))
+            output_dir.mkdir(parents=True, exist_ok=True)
+            batch_size = max(1, self.config.max_concurrent_requests * 4)
+            for file_path in jsonl_files:
+                (output_dir / file_path.name).write_text("", encoding="utf-8")
+                def _warn(line_num, e, file_path=file_path):
+                    self.logger.warning("Skipping invalid JSON at %s:%s: %s", file_path, line_num, e)
+                batch = []
+                for entry_idx, entry in _load_jsonl(file_path, _warn):
+                    batch.append((file_path, entry_idx, entry))
+                    if len(batch) < batch_size: continue
+                    outcomes = await asyncio.gather(*(self._process_one(run, *item) for item in batch))
+                    with open(output_dir / file_path.name, "a", encoding="utf-8") as output:
+                        for outcome in outcomes:
+                            if outcome is not None: output.write(json.dumps(outcome[0], ensure_ascii=False) + "\n")
+                    batch.clear()
+                if batch:
+                    outcomes = await asyncio.gather(*(self._process_one(run, *item) for item in batch))
+                    with open(output_dir / file_path.name, "a", encoding="utf-8") as output:
+                        for outcome in outcomes:
+                            if outcome is not None: output.write(json.dumps(outcome[0], ensure_ascii=False) + "\n")
             progress.remove_task(run.status_task)
-
-        # Write results preserving original order; timed-out entries are dropped.
-        console.print("\n[dim]Writing output files...[/dim]")
-        output_dir.mkdir(parents=True, exist_ok=True)
-        results = {f: [] for f in jsonl_files}
-        for (file_path, _, _), outcome in zip(all_entries, outcomes):
-            if outcome is not None:
-                results[file_path].append(outcome[0])
-        for file_path in jsonl_files:
-            _write_jsonl(output_dir / file_path.name, results[file_path])
 
         self.aggregate_metrics.processing_end_time = datetime.now().isoformat()
         self.aggregate_metrics.processing_duration_seconds = time.time() - start_time

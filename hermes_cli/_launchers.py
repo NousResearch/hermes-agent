@@ -294,13 +294,18 @@ def mint_launcher(
     except (OSError, BadZipFile, KeyError):
         pass
 
-    # The script is data to Python, not interpolated shell source.
-    import base64
-    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
-    code = f"import base64; exec(base64.b64decode('{encoded}'))"
+    # The script is data to Python, not interpolated shell source: it lives in
+    # its own file the .cmd only names. cmd.exe caps a line at 8191 characters
+    # (KB830473), and the bootstrap long outgrew that inline, tearing apart
+    # under a nested `call` (#134560). The payload is staged first so a failed
+    # .cmd write leaves the previous self-contained launcher in place.
+    payload = _write_atomic(out_dir / f"{name}-launcher.py",
+                            lambda p: p.write_text(script, encoding="utf-8"))
+    if payload is None:
+        return None
     body = (
         "@echo off\r\n"
-        f'"{python_exe}" -I -c "{code}" %*\r\n'
+        f'"{python_exe}" -I "{payload}" %*\r\n'
     )
     return _write_atomic(out_dir / f"{name}.cmd", lambda p: p.write_text(body, encoding="utf-8"))
 
@@ -620,7 +625,7 @@ def _launcher_python(target: Path) -> Path | None:
             return None
         lines = text.splitlines()
         if suffix == ".cmd":
-            # "@echo off", then '"<python>" -I -c "<code>" %*'. The file's
+            # "@echo off", then '"<python>" -I "<payload>" %*'. The file's
             # own \r\n pair gains a translated extra \r on Windows writes,
             # so the command may sit past a blank line — never assume its index.
             line = next((entry for entry in lines[1:] if entry.strip()), None)

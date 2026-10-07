@@ -152,6 +152,29 @@ def markup_to_tg_button_rows(reply_markup: Any) -> List[List[Dict[str, Any]]]:
     return rows
 
 
+def rich_control_markup_supported(reply_markup: Any) -> bool:
+    """True only when every supplied button can be represented as callback_data."""
+    if reply_markup is None:
+        return True
+    if hasattr(reply_markup, "to_dict"):
+        try:
+            reply_markup = reply_markup.to_dict()
+        except Exception:
+            return False
+    raw_rows = reply_markup.get("inline_keyboard") if isinstance(reply_markup, dict) else None
+    if not isinstance(raw_rows, (list, tuple)):
+        return False
+    for raw_row in raw_rows:
+        if not isinstance(raw_row, (list, tuple)):
+            return False
+        for button in raw_row:
+            if not isinstance(button, dict):
+                return False
+            data = button.get("callback_data")
+            if not isinstance(data, str) or not (_CALLBACK_DATA_MIN_BYTES <= len(data.encode("utf-8")) <= _CALLBACK_DATA_MAX_BYTES):
+                return False
+    return True
+
 def buttons_html(rows: List[List[Dict[str, Any]]]) -> str:
     """Callback-button rows → ``<tg-button-row>`` HTML (parent contract: type=\"callback_data\")."""
     parts: List[str] = []
@@ -218,6 +241,8 @@ class TelegramRichControlsMixin:
         """Facade hook (PrivateControls contract): InputRichMessage dict for a control payload."""
         return rich_control_payload(text, parse_mode, reply_markup)
 
+    def _rich_control_markup_supported(self, reply_markup: Any) -> bool:
+        return rich_control_markup_supported(reply_markup)
     # --- bounded registry of sent rich control messages -----------------------------------
     def _rich_control_registry(self) -> Dict[Tuple[str, str], bool]:
         registry = getattr(self, "_rich_control_messages", None)
@@ -255,6 +280,8 @@ class TelegramRichControlsMixin:
         result (the request may have landed — the caller must NOT re-send). Success registers the
         message and returns the raw message-like object in ``raw_response``."""
         if not (self._rich_controls_enabled() and not getattr(self, "_rich_send_disabled", False) and self._bot):
+            return None
+        if not self._rich_control_markup_supported(kwargs.get("reply_markup")):
             return None
         payload: Dict[str, Any] = {
             "chat_id": normalize_telegram_chat_id(kwargs.get("chat_id")),

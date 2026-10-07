@@ -4170,14 +4170,8 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
 
     async def _send_control_message_routed(
         self, chat_id: str, text: str, *, parse_mode: Any, thread_id: Optional[str], metadata: Optional[Dict[str, Any]],
-        reply_markup: Any = None, reply_to_mode: Optional[str] = None):
-        """Control send with private-first routing and an opt-in rich fast-path.
-
-        Private routing: every failure is the structured egress decline the gateway's
-        fallback suppression recognizes — the requester-only content is never re-sent
-        publicly. Rich routing: permanent rejection returns None (legacy prompt owns
-        the send); a transient/ambiguous failure returns the ambiguous SendResult so
-        the caller stays armed instead of duplicating the prompt."""
+        reply_markup: Any = None, reply_to_mode: Optional[str] = None, on_sent: Any = None):
+        """Control send with private-first routing and an opt-in rich fast-path."""
         reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=reply_to_mode)
         kwargs: Dict[str, Any] = {
             "chat_id": normalize_telegram_chat_id(chat_id), "text": text, "parse_mode": parse_mode, **self._link_preview_kwargs()}
@@ -4188,7 +4182,7 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
             chat_id, thread_id, metadata, reply_to_message_id=reply_to_id, reply_to_mode=reply_to_mode))
         if self.private_control_requested(chat_id, metadata):
             return await self.send_private_control_prompt(
-                dict(kwargs), {**(metadata or {}), "telegram_private_control": True})
+                dict(kwargs), {**(metadata or {}), "telegram_private_control": True}, on_sent=on_sent)
         rich_result = await self._try_send_rich_control(kwargs)
         if rich_result is not None:
             if rich_result.success:
@@ -4211,7 +4205,10 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
             text, keyboard, on_sent = built
             msg = await self._send_control_message_routed(
                 chat_id, text, parse_mode=parse_mode if parse_mode is not None else ParseMode.MARKDOWN_V2,
-                reply_markup=keyboard, thread_id=thread_id, metadata=metadata, reply_to_mode=reply_to_mode)
+                reply_markup=keyboard, thread_id=thread_id, metadata=metadata, reply_to_mode=reply_to_mode,
+                on_sent=on_sent)
+            if isinstance(msg, SendResult):
+                return msg
             if on_sent is not None:
                 on_sent(msg)
             return SendResult(success=True, message_id=str(msg.message_id))

@@ -1119,9 +1119,9 @@ gateway:
         rich_controls: true
 ```
 
-Existing callback payloads pass through **verbatim** — the same `ea:`/`mp:`/`cp:` prefixes and authorizations as legacy inline keyboards, so allowlists and receiver gates behave identically. Label text and attributes are HTML-escaped; callback data keeps Telegram's 1–64 byte bounds; URL/web-app buttons fall back to the legacy path (rich buttons carry exactly one action). Pagination edits stay rich; a terminal edit (no keyboard) drops the control from the rich registry.
+Existing callback payloads pass through **verbatim** — the same `ea:`/`mp:`/`cp:` prefixes and authorizations as legacy inline keyboards, so allowlists and receiver gates behave identically. Label text and attributes are HTML-escaped; callback data keeps Telegram's 1–64 byte bounds. Rich controls require callback-data buttons; prompts containing URL/web-app or invalid callback buttons use the legacy inline-keyboard path instead of silently dropping an action. Pagination edits stay rich; a terminal edit (no keyboard) drops the control from the rich registry.
 
-Failure semantics match the rich-message finals path: a permanent rejection (older Bot API, capability error) transparently falls back to the legacy inline-keyboard prompt; a transient failure returns an ambiguous, non-retryable result so the prompt is never duplicated. `private_controls` wins over `rich_controls` when both are set — a group requester's control stays ephemeral.
+Failure semantics match the rich-message finals path: a permanent rejection (older Bot API, capability error) transparently falls back to the legacy inline-keyboard prompt; a transient failure returns an ambiguous, non-retryable result so the prompt is never duplicated. When both flags are enabled in a group, `private_controls` controls the delivery scope and `rich_controls` embeds the callback buttons inside that ephemeral message using `sendRichMessage` plus `ephemeral_message_parameters`; the rich payload never becomes public. If rich embedding is unavailable, the same requester-only control falls back to plain ephemeral text — still never to a public group send.
 
 ## Rendering: Rich Messages, Tables and Link Previews
 

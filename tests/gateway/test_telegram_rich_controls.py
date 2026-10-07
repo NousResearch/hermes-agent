@@ -212,6 +212,25 @@ async def test_oversized_payload_falls_back_without_api_call():
     assert host._bot.do_api_request.call_count == 0
 
 
+@pytest.mark.asyncio
+async def test_ambiguous_rich_control_result_is_not_legacy_resent():
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token", extra={"rich_controls": True}))
+    adapter._private_controls = False
+    adapter._bot = SimpleNamespace(
+        do_api_request=AsyncMock(side_effect=TimeoutError("timed out")),
+        send_message=AsyncMock(),
+    )
+    result = await adapter._send_prompt(
+        "control", "123", None,
+        lambda: ("Proceed?", {"inline_keyboard": [[{"text": "Yes", "callback_data": "cp:1"}]]}, None),
+    )
+    assert result.success is False and result.raw_response["ambiguous"] is True
+    adapter._bot.send_message.assert_not_called()
+
+
 # --- registry lifecycle -----------------------------------------------------------------------
 def test_registry_bounded_and_fifo():
     host = Host()

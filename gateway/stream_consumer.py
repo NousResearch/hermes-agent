@@ -164,6 +164,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._in_think_block = False  # think-tag filter state (mirrors CLI _stream_delta)
         self._think_buffer = ""
         self._before_finalize_notified = False
+        self._finalizing = False
         self._reset_message_state()
 
         # Transports, resolved in run().  Draft: animated frames via adapter.send_draft;
@@ -470,6 +471,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if self._use_draft_streaming and not self._stream_is_message():
             self._bump_draft_id()
 
+    def _generation_control_current(self) -> bool:
+        return not self._finalizing and self._run_still_current()
+
     def _bump_draft_id(self) -> None:
         type(self)._draft_id_counter += 1
         self._draft_id = type(self)._draft_id_counter
@@ -477,7 +481,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if bind is not None and self._on_generation_stop is not None:
             self.adapter.bind_generation_control(
                 self.chat_id, self._draft_id, self.metadata,
-                self._on_generation_stop, self._run_still_current)
+                self._on_generation_stop, self._generation_control_current)
 
     async def _handle_approval_boundary(self, boundary_future, cancelled_flag=None) -> None:
         """Serially process an interaction boundary dequeued by run().  The stream is never
@@ -556,6 +560,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Async task that drains the queue and edits the platform message."""
         self._len_fn, self._safe_limit = self._resolve_length_budget()
         try:
+            if self._on_generation_stop is not None and not self._run_still_current():
+                return
             await self._start_transports()
             while True:
                 # Session reset (/new, /stop): abandon rather than deliver stale deltas.
@@ -851,7 +857,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Send/edit this tick's visible text (cursor-suffixed unless finalizing)."""
         display_text = self._accumulated
         if tick.is_interim and self._thinking_drafts_active() and self._tool_progress_active:
-            tick.update_visible = await self._send_draft_frame(display_text)
+            tick.update_visible = await self._send_draft_frame(self._clean_for_display(display_text))
             self._last_edit_time = time.monotonic()
             self._tool_progress_active = False
             return
@@ -863,8 +869,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             else:
                 display_text += self.cfg.cursor
 
-        # A got_done FRESH send via the draft transport already carries finalize=True,
-        # unlike an EDIT, which REQUIRES_EDIT_FINALIZE adapters still need a pass for.
+        # The final send starts in this method, before _finalize_turn runs.
+        # Fence native Stop before the await so a late tap cannot invalidate a
+        # naturally completed turn while Telegram is accepting its final frame.
+        if tick.got_done:
+            self._finalizing = True
         tick.draft_final_fresh_send = (tick.got_done and self._use_draft_streaming
                                        and self._message_id is None)
         # Segment break finalizes so platforms needing explicit closure (DingTalk AI
@@ -874,28 +883,22 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             display_text, finalize=tick.got_done or tick.got_segment_break,
             is_turn_final=tick.got_done)
         self._last_edit_time = time.monotonic()
-        # Lines stay in _tool_progress_lines for the next compose.
         self._tool_progress_active = False
 
     async def _finalize_turn(self, tick: "_Tick") -> None:
         """got_done: final edit without cursor, or one continuation send if edits failed."""
+        self._finalizing = True
         if self._accumulated or self._message_id is not None or self._already_sent:
             await self._notify_before_finalize()
         if self._reopen_seed_pending() and not self._accumulated:
-            # Lazy reopen, no post-prompt content: nothing is open on screen, so
-            # don't re-seed just to emit a lone "✅".
             logger.debug("Clarify reopen boundary with no post-prompt content "
                          "— skipping lone-placeholder finalize (turn=%s)", self._turn_id)
         elif (self._reopen_seeded_eagerly and self._native_stream_opened
               and not self._accumulated and not tick.update_visible):
-            # Eager seed, no content: the typing bubble IS on screen and would hang
-            # forever — close it with an empty finalize.  Delivery flags untouched.
             await self._close_empty_native_bubble("Eager-seed empty finalize failed: %s")
             logger.debug("Eager reopen seed but no post-answer content — "
                          "closed empty typing bubble (turn=%s)", self._turn_id)
         elif self._use_native_streaming:
-            # Native streams MUST close with finish=true even when empty (tool-only
-            # turns) — placeholder if needed.
             if not tick.update_visible:
                 await self._finalize_edit(self._accumulated or "✅", record=False)
             else:

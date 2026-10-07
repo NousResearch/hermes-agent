@@ -90,3 +90,19 @@ async def test_runner_native_stop_callback_does_not_interrupt_replacement():
     runner._interrupt_and_clear_session = AsyncMock()
     await stop()
     runner._interrupt_and_clear_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_finalizing_consumer_fences_stop_binding():
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+    tg = adapter()
+    consumer = GatewayStreamConsumer(
+        tg, "123", StreamConsumerConfig(transport="draft", chat_type="private"),
+        run_still_current=lambda: True, on_generation_stop=AsyncMock())
+    consumer._use_draft_streaming = True
+    consumer._bump_draft_id()
+    control = tg._generation_controls[("123", None)]
+    assert control.current() is True
+    consumer._finalizing = True
+    assert control.current() is False

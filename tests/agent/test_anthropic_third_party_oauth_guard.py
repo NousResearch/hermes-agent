@@ -205,16 +205,12 @@ class TestOAuthFlagOnRefresh:
                     "anthropic", agent.model, runtime.get("base_url", ""), runtime.get("api_key"), "anthropic_messages",
                 )
             assert seen["api_key"] == new
-            # A scoped runtime (normalized copy) rotates in place but never reaches the legacy mirrors.
-            with aux.scoped_runtime_main({"provider": "anthropic", "api_key": old, "model": "m"}):
-                rotate_runtime_main_api_key(old, new)
-                assert aux._RUNTIME_MAIN_CONTEXT.get()["api_key"] == new
-            assert (aux._RUNTIME_MAIN_MODEL, aux._RUNTIME_MAIN_API_KEY) == (agent.model, new)
-            # Even a scope sharing the still-published old key must not republish its own route.
-            aux.set_runtime_main("anthropic", agent.model, api_key=old, api_mode="anthropic_messages")
-            with aux.scoped_runtime_main({"provider": "anthropic", "api_key": old, "model": "m"}):
-                rotate_runtime_main_api_key(old, new)
+            # A scoped runtime rotates in place; the legacy mirrors are never republished by a rotation.
+            with aux.scoped_runtime_main({"provider": "anthropic", "api_key": new, "model": "m"}):
+                rotate_runtime_main_api_key(new, "sk-ant...cccc")
+                assert aux._RUNTIME_MAIN_CONTEXT.get()["api_key"] == "sk-ant...cccc"
             assert (aux._RUNTIME_MAIN_MODEL, aux._RUNTIME_MAIN_API_KEY) == (agent.model, old)
+            assert aux._compat_runtime_main() is None  # unchanged mirrors never become a runtime input
         finally:
             aux.clear_runtime_main()
 

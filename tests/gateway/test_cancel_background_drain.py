@@ -113,3 +113,79 @@ async def test_cancel_background_tasks_drains_late_arrivals():
         "the re-drain loop is missing and the task leaked"
     )
     assert adapter._background_tasks == set()
+
+
+
+
+
+
+@pytest.mark.asyncio
+async def test_deferred_command_runs_before_queued_prompt_with_one_session_owner():
+    """A deferred control command runs before queued text, and the turn hands off exactly one owner.
+
+    The in-band handoff popped the ordinary follow-up first; the cleanup path then spawned the
+    deferred command too, so both ran concurrently on one session in the wrong order.
+    """
+    adapter = _make_adapter()
+    sk = build_session_key(SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm"))
+    release = asyncio.Event()
+    started = asyncio.Event()
+    order: list[str] = []
+    active = 0
+    overlap = False
+
+    async def handler(event):
+        nonlocal active, overlap
+        order.append(event.text)
+        active += 1
+        overlap = overlap or active > 1
+        try:
+            if event.text == "turn":
+                started.set()
+                await release.wait()
+            else:
+                await asyncio.sleep(0.05)
+        finally:
+            active -= 1
+
+    adapter._message_handler = handler
+    await adapter.handle_message(_event("turn"))
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+    adapter._pending_messages[sk] = _event("follow-up")
+    adapter.defer_command_until_idle(sk, _event("/compress"))
+    adapter.defer_command_until_idle(sk, _event("/undo"))
+    release.set()
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while len(order) < 4 and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+    while any(not t.done() for t in list(adapter._background_tasks)):
+        await asyncio.sleep(0.01)
+    assert order == ["turn", "/compress", "/undo", "follow-up"]
+    assert not overlap
+
+
+@pytest.mark.asyncio
+async def test_cancel_background_tasks_discards_deferred_command_behind_live_owner():
+    """Adapter teardown fences deferred commands before cancelling the owner that would drain them.
+
+    Cancelling the owner does not set its interrupt event, so its cleanup drained the queued
+    command and ran a transcript mutation during teardown.
+    """
+    adapter = _make_adapter()
+    sk = build_session_key(SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm"))
+    started = asyncio.Event()
+    ran: list[str] = []
+
+    async def handler(event):
+        ran.append(event.text)
+        if event.text == "turn":
+            started.set()
+            await asyncio.Event().wait()
+
+    adapter._message_handler = handler
+    await adapter.handle_message(_event("turn"))
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+    adapter.defer_command_until_idle(sk, _event("/undo"))
+    await adapter.cancel_background_tasks()
+    await asyncio.sleep(0.05)
+    assert ran == ["turn"]

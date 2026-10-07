@@ -1401,6 +1401,12 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             # Turn lease is keyed by (routing key, run generation) so this unwind can only free
             # the lease its own turn acquired, never a newer turn's.
             self._release_turn_lease(_quick_key, _run_generation)
+            # Deferred commands wait for the runner's turn, not the adapter task that received them:
+            # the two can diverge (an internal wake running after /stop), so resume them here.
+            _deferred_adapter = self._delivery_adapter_for(source)
+            _resume_deferred = getattr(_deferred_adapter, "resume_deferred_commands", None)
+            if callable(_resume_deferred):
+                _resume_deferred(_quick_key)
 
     def _restore_pending_one_turn_model_override(self, session_key: str, run_generation: int | None = None) -> None:
         """Restore the per-session model override captured by ``/model --once`` or ``/moa``.

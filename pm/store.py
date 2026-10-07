@@ -303,6 +303,8 @@ def tree_digest(root: Path) -> str:
 
 
 def _icacls_argv(path: Path) -> list[str]:
+    """Resolve icacls through %SystemRoot%\\System32: the reset runs in a
+    post-install context where PATH may not carry it."""
     windir = os.environ.get("SystemRoot", r"C:\Windows")
     icacls = Path(windir) / "System32" / "icacls.exe"
     return [
@@ -315,13 +317,25 @@ def _icacls_argv(path: Path) -> list[str]:
 
 
 def _reset_scratch_dacl(path: Path) -> None:
+    """Reset a fresh scratch dir to the store root's inheritable Windows ACL.
+
+    Python >= 3.12.4 hardens ``tempfile.mkdtemp()`` directories with a
+    protected DACL — SYSTEM, Administrators and OWNER RIGHTS only, with
+    inheritance disabled (the CVE-2024-4030 ``0700`` approximation).
+    ``publish()`` moves the staged tree into the store by same-volume
+    rename, which keeps that descriptor, so a machine-scoped store filled
+    from an elevated update ends up with entries the interactive user
+    cannot execute at all (#122935). Re-enabling inheritance from the
+    store root before any bytes are staged covers the whole subtree —
+    fetch caches and the published entry alike.
+    """
     if os.name != "nt":
         return
     try:
         subprocess.run(_icacls_argv(path), check=True, capture_output=True, timeout=60)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        # CalledProcessError.__str__ drops the icacls text ("Access is
-        # denied"); keep that cause so the install failure is actionable.
+        # CalledProcessError.__str__ omits stderr, where icacls reports
+        # the refusal reason (for example, "Access is denied").
         stderr = getattr(exc, "stderr", None)
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", "replace").strip() or None

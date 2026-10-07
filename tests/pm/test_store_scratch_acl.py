@@ -1,3 +1,10 @@
+"""Windows mkdtemp applies a protected DACL on Python 3.12.4+.
+
+A same-volume publish preserves that descriptor. The current user's ACE
+must therefore be inherited before staging, rather than merely checking
+that some inherited ACE exists on the published file.
+"""
+
 from __future__ import annotations
 
 import os

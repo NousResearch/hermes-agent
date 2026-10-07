@@ -8,7 +8,7 @@ import { checkDistBuilt } from '../../apps/desktop/scripts/assert-dist-built.mjs
 import { classifyNativeBinary } from '../../apps/desktop/scripts/stage-native-deps.mjs'
 import { copyNativeTree } from '../../apps/desktop/scripts/prepared-native-deps.mjs'
 import { frontendArgs, isMain, productOutput, withProduct, workspaceTool } from './frontend-common.mjs'
-import { recordProduct, buildInputs } from './freshness.mjs'
+import { recordProduct, buildInputs, rendererCurrent } from './freshness.mjs'
 
 function validateNativeTree(nativeDeps, platform) {
   const pty = join(nativeDeps, 'node-pty')
@@ -24,6 +24,12 @@ function validateNativeTree(nativeDeps, platform) {
     throw new Error('Prepared get-windows is missing its macOS helper')
   }
 }
+
+// Only main/preload bake the install stamp (bundleElectronMain); the renderer is a function of
+// the source tree, icons and native inputs alone. A new commit with no desktop change therefore
+// leaves the published renderer valid: reuse it when the receipt proves those inputs and the
+// output bytes are unchanged, and rebuild only what carries the stamp.
+const stampedOutputs = new Set(['electron-main.mjs', 'electron-preload.js', 'preview-guest-preload.js'])
 
 /** Pure desktop compilation. out is the dist directory, not the source app. */
 export async function buildDesktop({ source, out, icons, stamp, nativeDeps, typecheck = false, platform = process.platform }) {
@@ -41,7 +47,24 @@ export async function buildDesktop({ source, out, icons, stamp, nativeDeps, type
   if (!existsSync(join(publicIcons, 'apple-touch-icon.png'))) throw new Error(`Missing desktop icon: ${join(publicIcons, 'apple-touch-icon.png')}`)
   validateNativeTree(resolve(nativeDeps), platform)
   const inputs = buildInputs(source, 'desktop', { icons: publicIcons, stamp, nativeDeps })
+  const reuse = rendererCurrent(out, inputs)
   await withProduct(out, async (product, scratch) => {
+    if (reuse) {
+      cpSync(out, product, { recursive: true, filter: file => !stampedOutputs.has(relative(out, file)) })
+    } else await compileRenderer(product, scratch)
+    // The receipt must carry the clock this output BAKED, not whatever the live
+    // stamp says by now: electron-builder copies that live file into the bundle
+    // after the receipt is written, and productCurrent must be able to tell that
+    // the two disagree (#123308).
+    const { stampClock } = await bundleElectronMain({ source, out: product, stamp })
+    copyNativeTree({ nativeDeps, out: join(product, 'node_modules') })
+    const result = checkDistBuilt(product)
+    if (!result.ok) throw new Error(result.error)
+    recordProduct({ source, product: 'desktop', out: product, inputs, stampClock })
+  }, { source })
+  return { out, reusedRenderer: reuse }
+
+  async function compileRenderer(product, scratch) {
     const publicDir = join(scratch, 'public')
     const sourcePublic = join(source, app, 'public')
     if (existsSync(sourcePublic)) cpSync(sourcePublic, publicDir, { recursive: true })
@@ -59,17 +82,7 @@ export async function buildDesktop({ source, out, icons, stamp, nativeDeps, type
       cacheDir: join(scratch, 'vite-cache'),
       build: { outDir: product, emptyOutDir: true },
     })
-    // The receipt must carry the clock this output BAKED, not whatever the live
-    // stamp says by now: electron-builder copies that live file into the bundle
-    // after the receipt is written, and productCurrent must be able to tell that
-    // the two disagree (#123308).
-    const { stampClock } = await bundleElectronMain({ source, out: product, stamp })
-    copyNativeTree({ nativeDeps, out: join(product, 'node_modules') })
-    const result = checkDistBuilt(product)
-    if (!result.ok) throw new Error(result.error)
-    recordProduct({ source, product: 'desktop', out: product, inputs, stampClock })
-  }, { source })
-  return { out }
+  }
 }
 
 if (isMain(import.meta.url)) {

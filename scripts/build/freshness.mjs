@@ -178,6 +178,21 @@ export function productCurrent({ source, product, out, prepared }) {
   } catch { return false }
 }
 
+/** True when ``out`` holds a desktop product whose receipt matches ``inputs`` in everything but
+ *  the install stamp and whose bytes are intact. Only the main/preload bundles bake the stamp, so
+ *  the renderer such a product carries is still the one these inputs compile to. */
+export function rendererCurrent(out, inputs) {
+  try {
+    const saved = JSON.parse(readFileSync(join(out, receiptName), 'utf8'))
+    const unstamped = list => JSON.stringify(list.filter(({ name }) => name !== 'stamp'))
+    return saved.schema === 1 && saved.product === 'desktop'
+      && saved.platform === process.platform && saved.arch === process.arch && saved.node === process.versions.node
+      && saved.inputs.sourceHash === inputs.sourceHash
+      && unstamped(saved.inputs.prepared) === unstamped(inputs.prepared)
+      && saved.outputHash === outputHash(out)
+  } catch { return false }
+}
+
 if (isMain(import.meta.url)) {
   const { values } = parseArgs({ options: {
     source: { type: 'string' }, product: { type: 'string' }, out: { type: 'string' },

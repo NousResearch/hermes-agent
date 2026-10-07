@@ -111,17 +111,41 @@ test('attach tolerates a child with missing stdio streams', () => {
 
 // --- formatBackendExitLine ---------------------------------------------------
 
+const exitLabels = [
+  'Ignoring stale Hermes backend exit',
+  'Hermes backend exited',
+  'Hermes backend for profile "work" exited'
+]
+
+for (const label of exitLabels) {
+  test(`${label}: exit diagnostics identify buffered events as a replay`, () => {
+    const child = { stdout: new EventEmitter(), stderr: new EventEmitter() }
+    const tail = createBackendOutputTail(128)
+    tail.attach(child)
+    child.stdout.emit('data', Buffer.from('Profile deleted at original event time\n'))
+    child.stderr.emit('data', Buffer.from('Traceback: original failure\n'))
+
+    for (const [code, signal] of [[null, 'SIGTERM'], [1, null]] as const) {
+      const line = formatBackendExitLine(label, code, signal, tail)
+      assert.ok(line.startsWith(`${label} (${signal || code})\nReplayed backend output (not new events):\n`))
+      assert.ok(line.endsWith('Profile deleted at original event time\nTraceback: original failure'))
+    }
+    // Formatting must not drain diagnostics needed by a later boot failure.
+    assert.equal(tail.text(), 'Profile deleted at original event time\nTraceback: original failure\n')
+  })
+}
+
 test('exit line carries the buffered tail next to the exit code, preferring the signal', () => {
   const tail = createBackendOutputTail(64)
   tail.append('Traceback (most recent call last):\n')
 
   assert.equal(
     formatBackendExitLine('Ignoring stale Hermes backend exit', 1, null, tail),
-    'Ignoring stale Hermes backend exit (1)\nRecent backend output:\nTraceback (most recent call last):'
+    'Ignoring stale Hermes backend exit (1)\nReplayed backend output (not new events):\nTraceback (most recent call last):'
   )
   assert.equal(
     formatBackendExitLine('Hermes backend exited', null, 'SIGTERM', tail),
-    'Hermes backend exited (SIGTERM)\nRecent backend output:\nTraceback (most recent call last):'
+    'Hermes backend exited (SIGTERM)\nReplayed backend output (not new events):\nTraceback (most recent call last):'
   )
 })
 

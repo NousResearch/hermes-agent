@@ -8,7 +8,6 @@ imported LAZILY inside each method — the mixin never imports ``cli`` at module
 from __future__ import annotations
 
 import concurrent.futures
-import logging
 import os
 import shutil
 import threading
@@ -765,13 +764,6 @@ class CLIInfoMixin:
 
         if self._print_nous_credits_block():
             self._print_usage_cta()
-
-        if self.verbose:
-            logging.getLogger().setLevel(logging.DEBUG)
-            for noisy in ('openai', 'openai._base_client', 'httpx', 'httpcore', 'asyncio', 'hpack', 'grpc', 'modal'):
-                logging.getLogger(noisy).setLevel(logging.WARNING)
-        else:
-            logging.getLogger().setLevel(logging.INFO)
 
     def _print_account_limits(self) -> bool:
         """Provider account limits block for `/usage`; True if anything printed.

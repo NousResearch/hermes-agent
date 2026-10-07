@@ -126,9 +126,6 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
         assert interrupt_issuer(agent) == "terminal_batch_timeout"
         # No message: gateway/CLI re-queue ``_interrupt_message`` as the user's next turn.
         assert agent._interrupt_message is None
-        # Rendered verbatim: consumers substitute ``{name}`` with str.replace, never str.format.
-        agent._tool_interrupt_reason = "guard {x}"
-        assert interrupt_skip_wording(agent) == "Turn aborted — guard {x}"
 
         # A USER stop that abandons the same wedged batch (grace elapsed) keeps its own attribution:
         # the guard must not rebook it as a batch timeout nor drop the queued message / redirect.
@@ -230,5 +227,8 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
                 agent, te._ToolCallRef("t3", {}, "t", "u1", []), timed_out=False, timeout_s=None)
         assert "Turn aborted — terminal batch timeout" in result
         assert emitted.call_args.kwargs["error_message"] == "Tool execution cancelled. Turn aborted — terminal batch timeout"
+        # Rendered verbatim: consumers substitute ``{name}`` with str.replace, never str.format.
+        agent._tool_interrupt_reason = "guard {x}"
+        assert interrupt_skip_wording(agent) == "Turn aborted — guard {x}"
     finally:
         set_interrupt(False)

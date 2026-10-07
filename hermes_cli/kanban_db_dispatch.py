@@ -2034,7 +2034,10 @@ def _bump(bucket: dict[str, int], key: str) -> None:
     bucket[key] = bucket.get(key, 0) + 1
 
 
-def board_health(conn: sqlite3.Connection, *, board: Optional[str] = None) -> BoardHealth:
+def board_health(
+    conn: sqlite3.Connection, *, board: Optional[str] = None,
+    tenant: Optional[str] = None,
+) -> BoardHealth:
     """Live board-health read of the ready lane — see :class:`BoardHealth`.
 
     Cheap enough for a CLI read and a dashboard poll: one scan of the ready
@@ -2046,10 +2049,25 @@ def board_health(conn: sqlite3.Connection, *, board: Optional[str] = None) -> Bo
     ``board`` is accepted for the caller's convenience and for an honest
     ``board`` field in the escalation body; the connection is already the
     board's.
+
+    ``tenant`` restricts the READY-lane read to one tenant (exact match, the
+    same semantics as :func:`kanban_db.list_tasks`'s ``tenant=`` — a
+    NULL-tenant row matches no tenant name), so a ``?tenant=`` view cannot
+    render a tenant-blind verdict. ``None`` measures the whole board, the
+    historic behaviour, unchanged. The per-profile-cap running count stays
+    BOARD-WIDE on purpose: the cap is a physical per-profile limit, not a tenant
+    one, so a running row in another tenant still consumes the slot this
+    tenant's ready rows would claim.
     """
     health = BoardHealth()
+    tenant_clause = ""
+    tenant_params: tuple = ()
+    if tenant is not None:
+        tenant_clause = " AND tenant = ?"
+        tenant_params = (tenant,)
     rows = conn.execute(
-        "SELECT id, assignee, claim_lock FROM tasks WHERE status = 'ready'"
+        "SELECT id, assignee, claim_lock FROM tasks WHERE status = 'ready'" + tenant_clause,
+        tenant_params,
     ).fetchall()
     health.ready_total = len(rows)
     if not rows:
@@ -2086,6 +2104,11 @@ def board_health(conn: sqlite3.Connection, *, board: Optional[str] = None) -> Bo
         if reason is not None:
             _bump(health.suppressed_by_reason, reason)
 
+    # Invariant the reviewer flagged: the per-profile-cap branch above
+    # ``continue``s BEFORE ``check_respawn_guard`` runs, so a row can never be
+    # counted BOTH capped and guard-held ⇒ suppressed <= startable holds by
+    # construction. Reordering those two branches is the risk that would break
+    # it — keep the cap check ahead of the guard.
     # Every row that COULD start is held back: the board is starved, whatever
     # the row count. One suppressed row and a hundred read identically.
     health.starved = health.startable > 0 and health.suppressed == health.startable

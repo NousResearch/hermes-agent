@@ -1161,12 +1161,18 @@ def _cmd_health(args: argparse.Namespace) -> int:
     that want to act on starvation parse ``--json``.
     """
     board = kb.get_current_board()
+    tenant = getattr(args, "tenant", None)
     with kbc.connect_closing() as conn:
-        health = kbd.board_health(conn, board=board)
-    if _json_out(args, {"board": board, **health.as_dict()}):
+        health = kbd.board_health(conn, board=board, tenant=tenant)
+    payload = {"board": board, **health.as_dict()}
+    if tenant is not None:
+        payload["tenant"] = tenant
+    if _json_out(args, payload):
         return 0
     print(health.describe())
     print(f"  board: {board}")
+    if tenant is not None:
+        print(f"  tenant: {tenant}")
     if health.state == "starved":
         print(f"  {health.suppressed} ready task(s) held back with nothing else to run — "
               "the dispatcher cannot start this board's queue.")

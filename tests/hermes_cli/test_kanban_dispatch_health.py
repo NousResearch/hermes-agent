@@ -563,3 +563,151 @@ def test_cli_health_renders_a_line_for_an_idle_board(
     line = capsys.readouterr().out
     assert "state=idle" in line
     assert "ready_total=0" in line
+
+
+# ---------------------------------------------------------------------------
+# R5 — the ready lane is TENANT-SCOPED (PR #123964 review, Enough1122)
+#
+# board_health scanned every ready row on the board regardless of the
+# ``?tenant=`` view the dashboard already renders, so its starved-vs-idle
+# verdict LIED for a tenant-scoped board in BOTH directions: a tenant with one
+# held ready row read "idle" against the whole board, and a tenant with zero
+# ready rows read "starved" because another tenant was stalled.
+# ---------------------------------------------------------------------------
+
+
+def _pr_ready_task_tenant(
+    conn, tenant: str, title: str = "pr held", assignee: str = "dev"
+) -> str:
+    """A ready card IN ``tenant`` whose own PR URL is in a fresh comment.
+
+    Same construction as ``_pr_ready_task`` plus the ``tenant=`` the scoped
+    read must honour (``NULL``-tenant rows match no tenant name, mirroring
+    ``kanban_db.list_tasks``).
+    """
+    tid = kb.create_task(conn, title=title, assignee=assignee, tenant=tenant)
+    kb.add_comment(conn, tid, author=assignee, body=PR_COMMENT)
+    _backdate_comments(conn, tid)
+    assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+    return tid
+
+
+def test_board_health_tenant_scope_sees_the_starved_tenant(
+    kanban_home: Path, spawnable_profiles
+) -> None:
+    """Direction 1: a held ready row IS the tenant's starvation."""
+    with kbc.connect() as conn:
+        _pr_ready_task_tenant(conn, "BETA")
+        health = kbd.board_health(conn, tenant="BETA")
+        assert health.ready_total == 1
+        assert health.spawnable == 1
+        assert health.suppressed_by_reason == {"active_pr": 1}
+        assert health.starved is True
+        assert health.state == "starved"
+
+
+def test_board_health_tenant_scope_does_not_borrow_another_tenants_stall(
+    kanban_home: Path, spawnable_profiles
+) -> None:
+    """Direction 2: a clean tenant is idle while BETA is starved, not starved."""
+    with kbc.connect() as conn:
+        _pr_ready_task_tenant(conn, "BETA")
+        clean = kbd.board_health(conn, tenant="ALPHA")
+        assert (clean.ready_total, clean.spawnable) == (0, 0)
+        assert clean.suppressed_by_reason == {}
+        assert clean.starved is False
+        assert clean.state == "idle"
+        # The unscoped read still sees the whole board's stall.
+        assert kbd.board_health(conn).state == "starved"
+
+
+def test_board_health_tenant_scope_on_a_mixed_board(
+    kanban_home: Path, spawnable_profiles
+) -> None:
+    """Each tenant reads its OWN queue; the unscoped read is the union."""
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="free", assignee="dev", tenant="ALPHA")
+        _pr_ready_task_tenant(conn, "BETA")
+
+        assert kbd.board_health(conn).state == "dispatchable"
+
+        alpha = kbd.board_health(conn, tenant="ALPHA")
+        assert alpha.state == "dispatchable"
+        assert alpha.suppressed_by_reason == {}
+
+        assert kbd.board_health(conn, tenant="BETA").state == "starved"
+
+
+def test_board_health_unscoped_dict_is_byte_identical(
+    kanban_home: Path, spawnable_profiles
+) -> None:
+    """The parent view's payload is unchanged: no scope leaks into it.
+
+    D4 — the unscoped ``as_dict()`` carries exactly the same eight keys with
+    the same values; ``tenant`` is echoed only by the scoped callers, never
+    here.
+    """
+    with kbc.connect() as conn:
+        _pr_ready_task(conn, assignee="dev")
+        assert kbd.board_health(conn).as_dict() == {
+            "state": "starved",
+            "starved": True,
+            "ready_total": 1,
+            "spawnable": 1,
+            "startable": 1,
+            "suppressed": 1,
+            "suppressed_by_reason": {"active_pr": 1},
+            "unavailable_by_reason": {},
+        }
+
+
+def test_board_health_capped_row_is_never_also_guard_held(
+    kanban_home: Path, spawnable_profiles, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pins the bucket invariant the reviewer flagged.
+
+    The per-profile-cap branch ``continue``s BEFORE ``check_respawn_guard`` runs,
+    so a row can never be counted BOTH capped and guard-held ⇒
+    ``suppressed <= startable`` holds by construction. Reordering the two
+    branches is the change that would break it.
+    """
+    import hermes_cli.config as cfgmod
+
+    monkeypatch.setattr(
+        cfgmod, "load_config_readonly", lambda *a, **k: {"kanban": {"max_in_progress": 1}}
+    )
+    with kbc.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="dev")
+        assert kb.claim_task(conn, running) is not None
+        # This ready row ALSO carries a fresh PR comment: it would be guard-held
+        # were the cap branch not to consume it first.
+        _pr_ready_task(conn, assignee="dev")
+
+        health = kbd.board_health(conn)
+        assert health.unavailable_by_reason == {"per_profile_capped": 1}
+        assert health.suppressed_by_reason == {}
+        assert health.suppressed <= health.startable
+        assert health.suppressed == 0
+        assert health.state == "idle"
+
+
+def test_cli_health_tenant_scope(
+    kanban_home: Path, spawnable_profiles, capsys: pytest.CaptureFixture
+) -> None:
+    """The CLI surface carries the scope too, on the SAME DB."""
+    with kbc.connect() as conn:
+        _pr_ready_task_tenant(conn, "BETA")
+
+    assert _run_cli(["health", "--tenant", "ALPHA", "--json"]) == 0
+    scoped = json.loads(capsys.readouterr().out)
+    assert scoped["state"] == "idle"
+    assert scoped["tenant"] == "ALPHA"
+
+    assert _run_cli(["health", "--json"]) == 0
+    unscoped = json.loads(capsys.readouterr().out)
+    assert unscoped["state"] == "starved"
+    assert "tenant" not in unscoped
+
+    # The text surface echoes the scope only when it is set.
+    assert _run_cli(["health", "--tenant", "ALPHA"]) == 0
+    assert "tenant: ALPHA" in capsys.readouterr().out

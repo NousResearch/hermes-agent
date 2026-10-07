@@ -5,11 +5,15 @@ limit, tracks usage, and may expose tools. ContextCompressor is the default;
 ``context.engine`` selects a plugin (``plugins/context_engine/<name>/``); one is active.
 Lifecycle: on_session_start() -> per API response update_from_response() -> per turn
 should_compress() / compress() -> on_session_end() at real session boundaries only
-(CLI exit, /reset, gateway expiry), never per-turn.
+(CLI exit, /reset, gateway expiry), never per-turn -> shutdown() when an agent holding
+the instance is torn down (possibly repeatedly per object; only instance-opened resources,
+never a backend shared with the registered instance or other agents' clones).
 """
 
 import copy
 import json
+import logging
+import threading
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
@@ -17,9 +21,27 @@ from agent.compression_marker import elide_middle
 from agent.redact import redact_sensitive_text
 
 
+logger = logging.getLogger(__name__)
+
 MEMORY_CONTEXT_MAX_CHARS = 6_000
 _MEMORY_CONTEXT_HEAD_CHARS = 4_000
 _MEMORY_CONTEXT_TAIL_CHARS = 1_500
+_CONTEXT_ENGINE_SHUTDOWN_FALLBACK_LOCK = threading.Lock()
+
+
+def shutdown_context_engine(agent: Any) -> None:
+    """Select teardown once under the lock; invoke outside it for re-entrant plugins."""
+    engine = None
+    lock = getattr(agent, "_context_engine_shutdown_lock", _CONTEXT_ENGINE_SHUTDOWN_FALLBACK_LOCK)
+    with lock:
+        if not getattr(agent, "_context_engine_shutdown", False):
+            agent._context_engine_shutdown = True
+            engine = getattr(agent, "context_compressor", None)
+    if engine is not None:
+        try:
+            engine.shutdown()
+        except Exception:
+            logger.debug("Context engine shutdown failed", exc_info=True)
 
 
 def sanitize_memory_context(memory_context: str) -> str:
@@ -183,6 +205,17 @@ class ContextEngine(ABC):
 
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Real session boundary (CLI exit, /reset, gateway expiry) — never per-turn."""
+
+    def shutdown(self) -> None:
+        """Called when an agent holding this instance is torn down.
+
+        This can happen many times per process, and the same object may receive it more than
+        once if your plugin hands one instance to every agent. Release only resources this
+        instance opened itself (for example a connection your clone_for_agent() reopened);
+        never close a backend shared with the registered instance or other agents' clones.
+        Default: no-op.
+        """
+        return None
 
     def on_session_reset(self) -> None:
         """/new or /reset: reset per-session state (default: counters and token tracking)."""

@@ -557,6 +557,8 @@ _CONTROL_STATE: Dict[str, Any] = {
     "_delegate_depth": 0,
     "_active_children": list,
     "_active_children_lock": threading.Lock,
+    "_context_engine_shutdown_lock": threading.Lock,
+    "_context_engine_shutdown": False,
     # Background review (agent/background_review.py): the run is installed before the worker
     # starts and fences its first provider phase; the agent pointer enables interrupt fan-out.
     "_background_review_agent": None,
@@ -1963,8 +1965,6 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
-        # External engines own compaction policy — the host threshold (and its Codex
-        # autoraise) never reaches the plugin, so drop the notice.
         agent._compression_threshold_autoraised = None
         # External engines own compaction policy: the host compression threshold (including the Codex
         # gpt-5.5 autoraise above) only configures the built-in ContextCompressor and never reaches the

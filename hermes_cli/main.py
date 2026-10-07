@@ -2330,7 +2330,8 @@ def _update_preflight_handled(args) -> bool:
         sys.exit(0)
     if is_managed():
         managed_error("update Hermes Agent")
-        _record_stop("managed_install", without_receipt="refused")  # before the lock: a metrics row only
+        if not any(getattr(args, flag, False) for flag in ("plan", "check", "list_venv_holders")):
+            _record_stop("managed_install", without_receipt="refused")  # an update attempt: a metrics row only
         return True
 
     # --plan is read-only and deployment-kind aware, so it runs BEFORE the

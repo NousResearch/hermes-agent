@@ -683,9 +683,12 @@ def _collection_enabled_now() -> Optional[bool]:
     return isinstance(config, dict) and config.get("enabled") is True
 
 
-#: The leading label of a stop reason the parked copy may keep: an exception type name or a fixed
-#: phrase Hermes writes, plus an errno token; never the message after it.
-_PARKED_REASON_LABEL = re.compile(r"[A-Za-z_][A-Za-z0-9_ ]{0,60}:(?: \[(?:Errno|WinError) \d+\])?")
+#: The leading label of a stop reason the parked copy may keep, exactly what the classifier reads:
+#: an exception type name (plus its errno token) or one of the fixed phrases Hermes writes
+#: (shared_metrics_update._STOP_REASON_PREFIX_CLASSES); never the message after it.
+_PARKED_REASON_LABEL = re.compile(
+    r"(?:[A-Z][A-Za-z0-9_]{0,63}:(?: \[(?:Errno|WinError) \d+\])?"
+    r"|historical takeover preparation failed|Windows gateway recovery failed)")
 _STOP_CLASS_TOKEN = re.compile(r"[a-z][a-z0-9_]{0,39}")
 
 

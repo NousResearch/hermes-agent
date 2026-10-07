@@ -1298,9 +1298,17 @@ def _exit_after_failed_branch_switch(
         print(f"✗ Branch '{branch}' does not exist locally or on origin.")
         if detail:
             print(f"  {detail.splitlines()[0]}")
-        _record_stop("checkout_move_failed" if any(_resolved_commit(git_cmd, ref) for ref in (
-            f"refs/heads/{branch}", f"origin/{branch}")) else "branch_missing")
+        _record_stop(_missing_branch_stop(git_cmd, branch))
     sys.exit(1)
+
+
+def _missing_branch_stop(git_cmd, branch) -> str:
+    """``branch_missing`` unless the branch resolves (then git refused the switch). Never raises."""
+    try:
+        return "checkout_move_failed" if any(
+            _resolved_commit(git_cmd, ref) for ref in (f"refs/heads/{branch}", f"origin/{branch}")) else "branch_missing"
+    except Exception:  # health: allow BLE001 -- metrics only: the exit it names must not change
+        return "checkout_move_failed"
 
 
 @dataclass

@@ -464,7 +464,7 @@ EXTENSION_REGISTRY_IDS = frozenset({
 })
 EXTENSION_REGISTRIES = EXTENSION_REGISTRY_IDS | frozenset({"none", "other", "unresolved"})
 # Why a `hermes update` run failed or was refused, derived from the FINAL receipt only
-# (shared_metrics_update.update_failure_class); ``none`` unless outcome is failed/refused.
+# (shared_metrics_update.update_failure_class); ``none`` unless outcome is failed/refused/partial.
 UPDATE_FAILURE_CLASSES = frozenset({
     "aborted_before_apply",  # fallback: exited before the checkout moved with no reason recorded
     "build_failed",          # the build stage reported failure
@@ -485,7 +485,7 @@ UPDATE_FAILURE_CLASSES = frozenset({
     "local_changes_parked",  # committed, but the user's stashed changes could not be re-applied (partial)
     "permission_denied",     # the run ended on a PermissionError
 })
-# The exit that stopped a run before it applied anything, recorded at the exit itself as one of
+# The exit that stopped a run before its apply stage mark, recorded at the exit itself as one of
 # these tokens (update_receipt.record_stop_reason -> the receipt's ``stop_class``).
 UPDATE_STOP_CLASSES = frozenset({
     "branch_missing",         # the target branch exists neither locally nor on origin

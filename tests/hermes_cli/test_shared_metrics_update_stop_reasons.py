@@ -60,6 +60,27 @@ def test_a_pre_apply_exit_reads_its_own_class_in_process_and_parked(rows, stop, 
     parked = update_receipt._metric_receipt(receipt)
     assert "/home/alice" not in json.dumps(parked)
     assert update_metrics.update_receipt_fields(json.loads(json.dumps(parked)))[0] == run
+    for text in ("alice secret repo: x", "Windows gateway recovery failed: C:\\Users\\alice"):
+        kept = update_receipt._metric_receipt({**receipt, "stop_reason": text})["stop_reason"]
+        assert "alice" not in kept and kept in {"-", "Windows gateway recovery failed"}
+
+
+@pytest.mark.parametrize(("stderr", "argv", "code", "expected"), [
+    ("fatal: Unable to create '/x/.git/index.lock': File exists.", ["git", "merge"], 128, "git_index_locked"),
+    ("git fetch timed out after 300s (a stalled remote)", ["git", "fetch"], 124, "git_timeout"),
+    ("error: No space left on device", ["git", "checkout"], 1, "disk_full"),
+    ("error: could not write index", ["git", "stash", "push"], 1, "local_changes_blocked"),
+    ("fatal: bad object", ["git", "reset", "--hard"], 128, "checkout_move_failed"),
+    ("whatever", ["uv", "pip", "install"], 1, None),
+])
+def test_a_failed_git_call_names_its_class_from_the_argv_and_fixed_phrases(stderr, argv, code, expected):
+    import subprocess
+
+    from hermes_cli.update_cmd_zip import _zip_stop_class
+
+    assert update_receipt.git_error_stop_class(subprocess.CalledProcessError(code, argv, stderr=stderr)) == expected
+    assert _zip_stop_class(OSError(28, "No space left on device"), downloaded=True) == "disk_full"
+    assert _zip_stop_class(ValueError("x"), downloaded=False) == "download_failed"
 
 
 def test_exits_before_the_receipt_opens_count_once_and_leave_the_holders_receipt_alone(rows, monkeypatch):

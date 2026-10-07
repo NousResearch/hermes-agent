@@ -6691,7 +6691,14 @@ def _define_discord_view_classes() -> None:
             """Build the provider dropdown menu."""
             self.clear_items()
             options = []
+            seen_values: set = set()
             for p in self.providers:
+                # Discord rejects the whole component payload when two options share a value
+                # (50035 "The specified option value is already used"), leaving the interaction
+                # unanswered until it times out (#134258).
+                if p["slug"] in seen_values:
+                    continue
+                seen_values.add(p["slug"])
                 count = p.get("total_models", len(p.get("models", [])))
                 options.append(discord.SelectOption(
                     label=_t_discord("platform.discord.picker.provider_option", _DISCORD_SELECT_FIELD_LIMIT, provider=p["name"], count=str(count)),
@@ -6723,13 +6730,19 @@ def _define_discord_view_classes() -> None:
             ][: _DISCORD_SELECT_MAX_ROWS - 2]
             placeholder_base = t("platform.discord.picker.model_placeholder", provider=provider.get("name", provider_slug))
             for idx, chunk in enumerate(chunks):
-                options = [
-                    discord.SelectOption(
+                options = []
+                seen_values: set = set()
+                for model_id in chunk:
+                    value = _truncate_discord_component_text(model_id, _DISCORD_SELECT_FIELD_LIMIT)
+                    # Model ids colliding after the 100-char value truncation trip the same
+                    # duplicate-value rejection; the first spelling wins (#134258).
+                    if value in seen_values:
+                        continue
+                    seen_values.add(value)
+                    options.append(discord.SelectOption(
                         label=_truncate_discord_component_text(model_id.split("/")[-1], _DISCORD_SELECT_FIELD_LIMIT),
-                        value=_truncate_discord_component_text(model_id, _DISCORD_SELECT_FIELD_LIMIT),
-                    )
-                    for model_id in chunk
-                ]
+                        value=value,
+                    ))
                 suffix = f" ({idx + 1}/{len(chunks)})" if len(chunks) > 1 else ""
                 self._add_select(
                     _truncate_discord_component_text(f"{placeholder_base}{suffix}...", _DISCORD_SELECT_PLACEHOLDER_LIMIT),

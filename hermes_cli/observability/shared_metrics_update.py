@@ -61,7 +61,8 @@ _OS_ERROR_TYPES = frozenset(
 _SUBPROCESS_ERROR_TYPES = frozenset({"CalledProcessError", "SubprocessError", "TimeoutExpired"})
 # Exception type name -> class, first match wins; any other type reads ``exception``.
 _EXCEPTION_TYPE_CLASSES = (
-    (_PM_ERROR_TYPES, "deps_failed"), (_OS_ERROR_TYPES, "os_error"), (_SUBPROCESS_ERROR_TYPES, "subprocess_failed"),
+    (frozenset({"PermissionError"}), "permission_denied"), (_PM_ERROR_TYPES, "deps_failed"),
+    (_OS_ERROR_TYPES, "os_error"), (_SUBPROCESS_ERROR_TYPES, "subprocess_failed"),
 )
 # Fixed stop-reason prefixes Hermes itself writes (only the prefix is read, never what follows):
 # _update_takeover's preparation failure and update_completion's Windows gateway resume failure.
@@ -91,6 +92,21 @@ def _restart_incomplete(receipt: dict[str, Any]) -> bool:
         isinstance(row, dict) and row.get("outcome") == "failed" for row in outcomes)
 
 
+def _named_stop(receipt: dict[str, Any], stages: list[dict[str, Any]]) -> str | None:
+    """The class the run named itself: the user's parked changes on a committed run, or the closed
+    ``stop_class`` a pre-apply exit recorded (read only while nothing was applied)."""
+    from .shared_metrics_contract import UPDATE_STOP_CLASSES
+
+    if receipt.get("outcome") == "partial" and receipt.get("user_action"):
+        # Committed; only the user's stashed changes are owed (record_user_action, exit 1). Since C3
+        # this is the only ``partial`` a receipt gets; older releases' verification wrote it too.
+        return "local_changes_parked"
+    stop_class = receipt.get("stop_class")
+    if stop_class in UPDATE_STOP_CLASSES and not any(s["name"] == "apply" for s in stages):
+        return stop_class
+    return None
+
+
 def update_failure_class(receipt: dict[str, Any], stages: list[dict[str, Any]], outcome: str) -> str:
     """Why a failed/refused/partial run stopped, from fields the FINAL receipt already carries.
 
@@ -99,8 +115,6 @@ def update_failure_class(receipt: dict[str, Any], stages: list[dict[str, Any]], 
     never outlive the exit that recorded it. Parked copies (update_receipt._metric_receipt) carry
     every field read here except the free text; copies parked by older releases have no ``schema``.
     """
-    from .shared_metrics_contract import UPDATE_STOP_CLASSES
-
     if outcome not in {"failed", "refused"}:
         return "none"
     raw_steps = receipt.get("steps")
@@ -114,13 +128,8 @@ def update_failure_class(receipt: dict[str, Any], stages: list[dict[str, Any]], 
     exc_type = match.group(1) if match else ""
     if exc_type == "KeyboardInterrupt" or exit_code == 130:
         return "interrupted"
-    if receipt.get("outcome") == "partial" and receipt.get("user_action"):
-        # Committed; only the user's stashed changes are owed (record_user_action, exit 1). Since C3
-        # this is the only ``partial`` a receipt gets; older releases' verification wrote it too.
-        return "local_changes_parked"
-    stop_class = receipt.get("stop_class")
-    if stop_class in UPDATE_STOP_CLASSES and not any(s["name"] == "apply" for s in stages):
-        return stop_class
+    if named := _named_stop(receipt, stages):
+        return named
     if outcome == "refused":
         # Exit 2 at the command boundary is the updater's refusal convention; on main the only
         # open-receipt exit 2 is another updater holding the lock (update_finish).
@@ -140,8 +149,6 @@ def update_failure_class(receipt: dict[str, Any], stages: list[dict[str, Any]], 
         return by_reason
     if _DISK_FULL_ERRNO.match(reason):
         return "disk_full"
-    if exc_type == "PermissionError":
-        return "permission_denied"
     if exc_type:
         return next((cls for types, cls in _EXCEPTION_TYPE_CLASSES if exc_type in types), "exception")
     marked = {s["name"] for s in stages}

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import pytest
 
+from hermes_cli.models_catalog_static import _MINIMAX_MODELS
+
 
 @pytest.fixture(params=["minimax", "minimax-cn", "minimax-oauth"])
 def minimax_profile(request):
@@ -151,20 +153,33 @@ class TestMinimaxOauthAliases:
             assert resolved is not None and resolved.name == "minimax-oauth", alias
 
 
-class TestMinimaxM31CuratedFloor:
-    """#134659: MiniMax served ``MiniMax-M3.1`` before listing it on GET /v1/models.
+class TestMinimaxCuratedFloorContract:
+    """Relationships the minimax curated floor must keep holding (#134659 follow-up).
 
-    With the vendor catalog lagging, the curated-first merge (neither direct-API
-    row is in ``_LIVE_FIRST_PICKER_PROVIDERS``) is the only surface that can
-    offer the model, so the curated floor must lead with it for both rows.
+    These assert contracts between pieces of data instead of pinning the
+    catalog's current head, so a routine catalog bump (the next M3.x) stays
+    green; only a real break — rows drifting apart, or a curated model with no
+    non-fallback context length — turns them red.
     """
 
-    @pytest.mark.parametrize("provider_id", ["minimax", "minimax-cn"])
-    def test_m31_leads_the_curated_floor_for_both_direct_api_rows(self, provider_id):
+    def test_direct_api_rows_share_one_floor(self):
+        """Both direct-API rows (``minimax``, ``minimax-cn``) are the same vendor
+        endpoint contract, so they must list the same models in the same order."""
         from hermes_cli.models_catalog_static import _PROVIDER_MODELS
 
-        curated = _PROVIDER_MODELS[provider_id]
-        assert curated[0] == "MiniMax-M3.1", (
-            f"{provider_id} curated floor lost its MiniMax-M3.1 lead — the picker "
-            "cannot offer a model the vendor's /v1/models omits"
+        assert _PROVIDER_MODELS["minimax"] == _PROVIDER_MODELS["minimax-cn"], (
+            "minimax and minimax-cn drifted apart — one row would offer models "
+            "the other cannot serve"
+        )
+
+    @pytest.mark.parametrize("model", _MINIMAX_MODELS)
+    def test_every_curated_model_resolves_non_fallback_context_length(self, model):
+        """Each curated entry must hit a specific ``DEFAULT_CONTEXT_LENGTHS`` key,
+        not fall through to the silent 256K fallback — a new model id that misses
+        every key (e.g. a renamed generation) would report a wrong window."""
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+
+        assert _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower()) is not None, (
+            f"{model} has no DEFAULT_CONTEXT_LENGTHS entry — the picker would "
+            "serve the 256K fallback for it"
         )

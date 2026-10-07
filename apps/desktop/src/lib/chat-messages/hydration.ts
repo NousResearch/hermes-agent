@@ -300,6 +300,70 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
   return content
 }
 
+/**
+ * One reasoning part per Codex reasoning summary, keyed `<item id>:summary:<n>`
+ * like the live `reasoning_id`. Used only when the summaries rebuild the
+ * displayed reasoning exactly; any mismatch or malformed item falls back to a
+ * single flattened reasoning part.
+ */
+function nativeCodexReasoningParts(value: unknown, reasoningText: string, timestamp?: number): ChatMessagePart[] {
+  // REST carries SQLite JSON text; RPC history carries the decoded list.
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value)
+    } catch {
+      return []
+    }
+  }
+
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const parts: ChatMessagePart[] = []
+  const textGroups: string[] = []
+
+  for (const rawItem of value) {
+    if (!rawItem || typeof rawItem !== 'object') {
+      return []
+    }
+
+    const item = rawItem as { id?: unknown; type?: unknown; summary?: unknown }
+
+    if (item.type !== 'reasoning') {
+      continue
+    }
+
+    if (typeof item.id !== 'string' || !item.id || !Array.isArray(item.summary) || !item.summary.length) {
+      return []
+    }
+
+    const itemId = item.id
+    const itemTexts: string[] = []
+
+    for (const [summaryIndex, rawSummary] of item.summary.entries()) {
+      if (!rawSummary || typeof rawSummary !== 'object') {
+        return []
+      }
+
+      const summary = rawSummary as { type?: unknown; text?: unknown }
+
+      if (summary.type !== 'summary_text' || typeof summary.text !== 'string' || !summary.text) {
+        return []
+      }
+
+      itemTexts.push(summary.text)
+      parts.push(reasoningPart(summary.text, timestamp, `${itemId}:summary:${summaryIndex}`))
+    }
+
+    if (itemTexts.length) {
+      textGroups.push(itemTexts.join('\n'))
+    }
+  }
+
+  return textGroups.join('\n\n') === reasoningText ? parts : []
+}
+
 export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   const result: ChatMessage[] = []
   let pendingToolParts: ChatMessagePart[] = []
@@ -481,7 +545,19 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const reasoning = message.display_reasoning !== undefined ? message.display_reasoning : rawReasoning
 
     if (reasoning && message.role === 'assistant') {
-      parts.push(reasoningPart(reasoning, message.timestamp))
+      // Per-summary parts keyed like the live stream's reasoning_id, so a
+      // hydrated turn keeps the same reasoning identity it streamed with.
+      const structuredReasoningParts = nativeCodexReasoningParts(
+        message.codex_reasoning_items,
+        reasoning,
+        message.timestamp
+      )
+
+      if (structuredReasoningParts.length) {
+        parts.push(...structuredReasoningParts)
+      } else {
+        parts.push(reasoningPart(reasoning, message.timestamp))
+      }
     }
 
     const reply = message.display_content !== undefined ? displayContent : displayContent || codexText?.reply

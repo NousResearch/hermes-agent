@@ -56,6 +56,18 @@ describe('withUniqueToolCallIdsWithinMessage', () => {
   })
 })
 
+describe('appendReasoningPart', () => {
+  it('does not append across an intervening tool boundary even for the same open source', () => {
+    const parts: ChatMessagePart[] = [reasoningPart('Before tool', 1, 'reasoning-a'), toolCallPart('tc-boundary')]
+
+    const result = appendReasoningPart(parts, 'After tool', 2, 'reasoning-a')
+
+    expect(result.map(part => part.type)).toEqual(['reasoning', 'tool-call', 'reasoning'])
+    expect(result[0]).toMatchObject({ sourceId: 'reasoning-a', text: 'Before tool' })
+    expect(result[2]).toMatchObject({ sourceId: 'reasoning-a', text: 'After tool', timestamp: 2 })
+  })
+})
+
 describe('toChatMessages', () => {
   it('does not render an opaque native_assistant reasoning_details carrier as Thought (#126588)', () => {
     const carrier = JSON.stringify([
@@ -112,6 +124,100 @@ describe('toChatMessages', () => {
 
     expect(reasoning && 'text' in reasoning ? reasoning.text : '').toBe('Checked the lock.\n\nNested thought.')
     expect(JSON.stringify(message.parts)).not.toContain('sigxyz')
+  })
+
+  it('keys native summary identities on the projected display reasoning, beside projected commentary', () => {
+    // Shape of a REST row after agent/history_commentary.py: raw sidecars kept
+    // (SQLite JSON text), public commentary moved out of display_reasoning.
+    const [message] = toChatMessages([
+      {
+        role: 'assistant',
+        content: 'Canonical final.',
+        reasoning: 'Inspect\nCheck\n\nVerify\n\nVisible',
+        display_reasoning: 'Inspect\nCheck\n\nVerify',
+        display_commentary: ['Visible'],
+        timestamp: 1,
+        codex_reasoning_items: JSON.stringify([
+          {
+            type: 'reasoning',
+            id: 'rs_inspect',
+            encrypted_content: 'opaque',
+            summary: [
+              { type: 'summary_text', text: 'Inspect' },
+              { type: 'summary_text', text: 'Check' }
+            ]
+          },
+          { type: 'reasoning', id: 'rs_verify', summary: [{ type: 'summary_text', text: 'Verify' }] }
+        ]),
+        codex_message_items: JSON.stringify([
+          {
+            type: 'message',
+            id: 'commentary',
+            role: 'assistant',
+            phase: 'commentary',
+            content: [{ type: 'output_text', text: 'Visible' }]
+          }
+        ])
+      }
+    ])
+
+    expect(message.parts.map(part => part.type)).toEqual(['reasoning', 'reasoning', 'reasoning', 'text', 'text'])
+    expect(message.parts.slice(0, 3).map(part => [part.sourceId, part.type === 'reasoning' ? part.text : ''])).toEqual([
+      ['rs_inspect:summary:0', 'Inspect'],
+      ['rs_inspect:summary:1', 'Check'],
+      ['rs_verify:summary:0', 'Verify']
+    ])
+    expect(message.parts.slice(3).map(part => (part.type === 'text' ? part.text : ''))).toEqual([
+      'Visible',
+      'Canonical final.'
+    ])
+  })
+
+  it('fails closed to one unstructured reasoning part when a native reasoning id is missing', () => {
+    const reasoning = 'Valid summary\n\nMissing-id summary'
+    const [message] = toChatMessages([
+      {
+        role: 'assistant',
+        content: '',
+        reasoning,
+        timestamp: 1,
+        codex_reasoning_items: [
+          { type: 'reasoning', id: 'rs_valid', summary: [{ type: 'summary_text', text: 'Valid summary' }] },
+          { type: 'reasoning', summary: [{ type: 'summary_text', text: 'Missing-id summary' }] }
+        ]
+      }
+    ])
+
+    expect(message.parts).toEqual([{ type: 'reasoning', text: reasoning, timestamp: 1 }])
+    expect(message.parts[0].sourceId).toBeUndefined()
+  })
+
+  it('preserves native reasoning summary identities during hydration', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'assistant',
+        content: 'Done.',
+        timestamp: 1,
+        reasoning: 'Inspect source\nCheck tests\n\nVerify result',
+        codex_reasoning_items: [
+          {
+            type: 'reasoning',
+            id: 'rs_inspect',
+            summary: [
+              { type: 'summary_text', text: 'Inspect source' },
+              { type: 'summary_text', text: 'Check tests' }
+            ]
+          },
+          { type: 'reasoning', id: 'rs_verify', summary: [{ type: 'summary_text', text: 'Verify result' }] }
+        ]
+      }
+    ])
+    expect(message.parts).toEqual([
+      { type: 'reasoning', sourceId: 'rs_inspect:summary:0', text: 'Inspect source', timestamp: 1 },
+      { type: 'reasoning', sourceId: 'rs_inspect:summary:1', text: 'Check tests', timestamp: 1 },
+      { type: 'reasoning', sourceId: 'rs_verify:summary:0', text: 'Verify result', timestamp: 1 },
+      { type: 'text', text: 'Done.', timestamp: 1 }
+    ])
   })
 
   it('rebuilds the full command from a gateway tool row carrying args', () => {

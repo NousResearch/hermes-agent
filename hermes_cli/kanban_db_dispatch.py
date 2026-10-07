@@ -280,9 +280,23 @@ def normalize_upstream_key(base_url: Any) -> str:
 
 def _normalize_wave_cap_setting(raw: Any, default: int = _WAVE_CAP_DEFAULT) -> int:
     """Config-layer ``kanban.wave_cap_per_upstream``: None -> default (3),
-    0 -> 0 (disabled kill-switch), 1..4 -> as-is, anything else -> default."""
+    0 -> 0 (disabled kill-switch), 1..4 -> as-is, True -> default,
+    False -> 0 (off), anything else -> default."""
     if raw is None:
         return default
+    if isinstance(raw, bool):
+        # YAML bools are not caps: True is meaningless (take the default),
+        # False reads as off (take the 0 kill-switch). Never silently
+        # enable a cap the operator did not ask for — and never let int()
+        # turn True into cap 1 (near-total throttle). The tick-path inline
+        # check independently excludes bool, so this layer cannot smuggle
+        # one through to dispatch.
+        outcome = default if raw else 0
+        _kb._log.warning(
+            "kanban dispatcher: invalid kanban.wave_cap_per_upstream=%r; using %d%s",
+            raw, outcome, " (default)" if raw else " (off)",
+        )
+        return outcome
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -2259,8 +2273,24 @@ def _clear_failure_counter(
         scoped_circuit_enabled = _resolve_scoped_circuit_enabled()
     if not scoped_circuit_enabled:
         return
+    # ``board=None`` (every production complete_task path omits it, and so
+    # does the reclaim path below): resolve the ambient slug so the clear
+    # hits the same slot the tick parks under (gateway ticks pass
+    # board=slug). get_current_board() always returns a slug (DEFAULT_BOARD
+    # at worst); board resolution must never break completion, hence the
+    # DEFAULT_BOARD fallback.
+    legacy_boardless = board is None
+    if legacy_boardless:
+        try:
+            board = _kb.get_current_board()
+        except Exception:
+            board = _kb.DEFAULT_BOARD
     try:
         _clear_upstream_parks_for_task(conn, task_id, board)
+        if legacy_boardless:
+            # Boardless ticks (CLI dispatch, run_daemon, eval harnesses)
+            # park under the legacy ('', key) slot in-process; pop it too.
+            _clear_upstream_parks_for_task(conn, task_id, "")
     except Exception:
         _kb._log.debug("kanban dispatch: success-clear failed", exc_info=True)
 

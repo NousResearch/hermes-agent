@@ -104,6 +104,11 @@ def test_normalize_wave_cap_setting(isolated_kanban_home):
     assert kbd._normalize_wave_cap_setting(5) == 3
     assert kbd._normalize_wave_cap_setting(-1) == 3
     assert kbd._normalize_wave_cap_setting("nope") == 3
+    # YAML bools are not caps: True is meaningless (default), False reads
+    # as off (kill-switch 0) — never silently enable a cap, and never let
+    # int(True) == 1 become a near-total throttle.
+    assert kbd._normalize_wave_cap_setting(True) == 3
+    assert kbd._normalize_wave_cap_setting(False) == 0
 
 
 def test_gateway_settings_defaults_and_kill_switches(isolated_kanban_home):
@@ -522,12 +527,14 @@ def test_success_clear_drops_stale_park_once(isolated_kanban_home, monkeypatch):
     with kbc.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
         tid = kb.create_task(conn, title="a0", assignee="alpha")
-    _park(kbd, None, "k")
-    kbd._UPSTREAM_CIRCUIT[("", "k")]["parked_until"] = time.monotonic() - 1
+    _park(kbd, kb.get_current_board(), "k")
+    kbd._UPSTREAM_CIRCUIT[(kb.get_current_board(), "k")][
+        "parked_until"
+    ] = time.monotonic() - 1
     with kbc.connect_closing() as conn:
         assert kb.complete_task(conn, tid, result="verified ok") is True
-    assert ("", "k") not in kbd._UPSTREAM_CIRCUIT
-    assert kbd.get_parked_upstream_keys(None) == frozenset()
+    assert (kb.get_current_board(), "k") not in kbd._UPSTREAM_CIRCUIT
+    assert kbd.get_parked_upstream_keys(kb.get_current_board()) == frozenset()
     with kbc.connect_closing() as conn:
         assert len(_upstream_unparked_events(kb, conn, tid)) == 1
     # Probe reset: a fresh episode starts at signal 1, unparked, no probe.
@@ -535,3 +542,84 @@ def test_success_clear_drops_stale_park_once(isolated_kanban_home, monkeypatch):
     fresh = kbd._UPSTREAM_CIRCUIT[("", "k")]
     assert fresh["signals"] == 1 and fresh["parked_until"] is None
     assert fresh["probe_inflight"] is False
+
+
+def test_boardless_completion_clears_tick_slot(isolated_kanban_home, monkeypatch):
+    # Gateway flow: the tick parks under its slug while worker/CLI/dashboard
+    # completions omit board=. complete_task must resolve the ambient board
+    # so the success-clear pops the tick's slot instead of the legacy ('', key).
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    kb, kbc, kbd = _mods()
+    _stub_keys(monkeypatch, kbd, {"alpha": "k"})
+    monkeypatch.setattr(kbd, "_resolve_scoped_circuit_enabled", lambda: True)
+    with kbc.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid = kb.create_task(conn, title="a0", assignee="alpha")
+    assert kb.get_current_board() == "default"
+    _park(kbd, "default", "k")
+    with kbc.connect_closing() as conn:
+        assert kb.complete_task(conn, tid, result="verified ok") is True
+    assert ("default", "k") not in kbd._UPSTREAM_CIRCUIT
+    assert ("", "k") not in kbd._UPSTREAM_CIRCUIT
+    with kbc.connect_closing() as conn:
+        cleared = _upstream_unparked_events(kb, conn, tid)
+        assert len(cleared) == 1
+        assert (cleared[0].payload or {}).get("upstream_key") == "k"
+
+
+def test_boardless_completion_clears_legacy_slot(isolated_kanban_home, monkeypatch):
+    # Same-process boardless ticks (CLI dispatch, run_daemon, eval harnesses)
+    # park under the legacy ('', key) slot. A boardless success must still
+    # pop it — ambient resolution alone would miss it.
+    kb, kbc, kbd = _mods()
+    _stub_keys(monkeypatch, kbd, {"alpha": "k"})
+    monkeypatch.setattr(kbd, "_resolve_scoped_circuit_enabled", lambda: True)
+    with kbc.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid = kb.create_task(conn, title="a0", assignee="alpha")
+    _park(kbd, None, "k")
+    with kbc.connect_closing() as conn:
+        assert kb.complete_task(conn, tid, result="verified ok") is True
+    assert ("", "k") not in kbd._UPSTREAM_CIRCUIT
+    with kbc.connect_closing() as conn:
+        cleared = _upstream_unparked_events(kb, conn, tid)
+        assert len(cleared) == 1
+        assert (cleared[0].payload or {}).get("upstream_key") == "k"
+
+
+def test_boardless_completion_clears_both_slots(isolated_kanban_home, monkeypatch):
+    # Dual occupancy: a slug-slot park (tick under its board) and a legacy
+    # ('', key) park (boardless tick) coexist in-process. One boardless
+    # success pops both — one upstream_unparked event per cleared slot.
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    kb, kbc, kbd = _mods()
+    _stub_keys(monkeypatch, kbd, {"alpha": "k"})
+    monkeypatch.setattr(kbd, "_resolve_scoped_circuit_enabled", lambda: True)
+    with kbc.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid = kb.create_task(conn, title="a0", assignee="alpha")
+    _park(kbd, "default", "k")
+    _park(kbd, None, "k")
+    with kbc.connect_closing() as conn:
+        assert kb.complete_task(conn, tid, result="verified ok") is True
+    assert ("default", "k") not in kbd._UPSTREAM_CIRCUIT
+    assert ("", "k") not in kbd._UPSTREAM_CIRCUIT
+    with kbc.connect_closing() as conn:
+        assert len(_upstream_unparked_events(kb, conn, tid)) == 2
+
+
+def test_explicit_board_completion_leaves_legacy_slot(isolated_kanban_home, monkeypatch):
+    # Explicit board= pops only that board's slot: a legacy ('', key) park
+    # survives an explicit-board success for boardless flows to consume.
+    kb, kbc, kbd = _mods()
+    _stub_keys(monkeypatch, kbd, {"alpha": "k"})
+    monkeypatch.setattr(kbd, "_resolve_scoped_circuit_enabled", lambda: True)
+    with kbc.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid = kb.create_task(conn, title="a0", assignee="alpha")
+    _park(kbd, None, "k")
+    with kbc.connect_closing() as conn:
+        assert kb.complete_task(conn, tid, board="default", result="verified ok") is True
+    assert ("", "k") in kbd._UPSTREAM_CIRCUIT
+    with kbc.connect_closing() as conn:
+        assert len(_upstream_unparked_events(kb, conn, tid)) == 0

@@ -2704,8 +2704,9 @@ def complete_task(
     whitespace-only evidence raises :class:`EmptyCompletionError` after an
     auditable event. Approving a card out of ``review`` stays exempt.
      ``board`` scopes the Phase2 P3 success-clear to this board's circuit slot
-     (None = the default-board slot); it changes no SQL, only which in-memory
-     ``(board, key)`` park — if any — a success pops.
+    (None = ambient board via get_current_board() plus the legacy boardless
+    slot); it changes no SQL, only which in-memory ``(board, key)`` park —
+    if any — a success pops.
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.

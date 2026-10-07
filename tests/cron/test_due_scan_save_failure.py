@@ -325,12 +325,31 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
     os.chmod(cron_dir, 0o500)
     try:
         cron_cli.cron_status()
+        os.chmod(cron_dir, 0o700)
+        (cron_dir / "output").rmdir()
+        os.chmod(cron_dir, 0o500)
+        cron_cli.cron_list()  # the job read would create cron/output and fail: the banner comes first
     finally:
         os.chmod(cron_dir, 0o700)
     out = capsys.readouterr().out
     assert out.lstrip().startswith("⚠ Cron store is NOT writable — scheduled jobs are being skipped")
     assert f"{cron_dir}: EACCES" in out and "1 due run(s) not fired" in out
     assert f"fix permissions on {cron_dir}" in out
+    assert f"⚠ Cron store {cron_dir} is NOT writable (EACCES" in out
+    store_health._degraded.clear()
+
+    target = cron_store / "ro" / "jobs.json"  # the save follows a symlinked jobs.json to its target
+    target.parent.mkdir()
+    target.write_text((cron_dir / "jobs.json").read_text())
+    (cron_dir / "jobs.json").unlink()
+    (cron_dir / "jobs.json").symlink_to(target)
+    os.chmod(target, 0o400)
+    os.chmod(target.parent, 0o500)
+    try:
+        assert store_health.probe_store(cron_dir) is not None
+    finally:
+        os.chmod(target.parent, 0o700)
+        os.chmod(target, 0o600)
 
     sent = []
 

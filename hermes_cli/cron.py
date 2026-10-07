@@ -177,8 +177,14 @@ _STATE_BADGES = {"paused": ("[paused]", Colors.YELLOW), "completed": ("[complete
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
     from cron.jobs import effective_job_state, list_jobs
-    store_report = _store_unwritable_report()
-    jobs = list_jobs(include_disabled=True)
+    if (store_report := _store_unwritable_report()) is not None:
+        _print_store_unwritable(store_report, brief=True)  # before the read, which can fail too
+    try:
+        jobs = list_jobs(include_disabled=True)
+    except OSError:
+        if store_report is None:
+            raise
+        return
     if not show_all:
         jobs = [
             job for job in jobs
@@ -192,8 +198,6 @@ def cron_list(show_all: bool = False):
         return
 
     _print_banner(f"Scheduled Jobs (profile: {get_active_profile_name()})")
-    if store_report is not None:
-        _print_store_unwritable(store_report, brief=True)
 
     for job in jobs:
         # effective_job_state honours the scheduler flag — never [paused] when enabled=true.
@@ -427,8 +431,7 @@ def _print_store_unwritable(report: dict, *, brief: bool = False) -> None:
                     f"are being skipped; {report['fix']}. See `hermes cron status`.", Colors.RED))
         return
     print(color("⚠ Cron store is NOT writable — scheduled jobs are being skipped", Colors.RED))
-    print(color(f"  {report['store']}: {report['error']} (last successful write {report['since']}; "
-                f"{report['skipped']} due run(s) not fired)", Colors.RED))
+    print(color(f"  {report['store']}: {report['error']} (last successful write {report['since']})", Colors.RED))
     print(color(f"  Fix: {report['fix']}. Each due job then fires once on the next tick.", Colors.YELLOW))
 
 
@@ -502,12 +505,19 @@ def cron_status():
     from hermes_cli.profiles import get_active_profile_name
     print()
 
-    store_report = _store_unwritable_report()  # before list_jobs: loading re-secures the dir mode
-    active_jobs = list_jobs(include_disabled=False)
-    if store_report is not None:
-        store_report["skipped"] = sum(1 for j in active_jobs
-                                      if (_next_run_overdue_seconds(j.get("next_run_at")) or 0) > 0)
+    # Probe before list_jobs (loading re-secures the dir mode) and print before it too: on an
+    # unwritable store the read itself can fail (it creates cron/output).
+    if (store_report := _store_unwritable_report()) is not None:
         _print_store_unwritable(store_report)
+    try:
+        active_jobs = list_jobs(include_disabled=False)
+    except OSError:
+        if store_report is None:
+            raise
+        active_jobs = []
+    if store_report is not None:
+        overdue = sum(1 for j in active_jobs if (_next_run_overdue_seconds(j.get("next_run_at")) or 0) > 0)
+        print(color(f"  {overdue} due run(s) not fired", Colors.RED))
         print()
     provider = _active_cron_provider_name()
     if provider != "builtin":

@@ -10,11 +10,11 @@ another process, so they cannot read this record or trust markers in a directory
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import logging
 import os
 import shutil
-import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -27,8 +27,6 @@ logger = logging.getLogger("cron.jobs")
 PROBE_INTERVAL_SECONDS = 60.0
 # Store-write failures that degrade the store (the tick keeps running) instead of failing the tick.
 UNWRITABLE_ERRNOS = frozenset({errno.EROFS, errno.EACCES, errno.EPERM, errno.ENOSPC, errno.EDQUOT})
-# Below this the probe reports ENOSPC: an empty temp file can still be created on a full disk.
-_PROBE_MIN_FREE_BYTES = 1 << 20
 # `hermes doctor` warns below this, before the store actually starts failing.
 LOW_FREE_BYTES = 100 << 20
 FIX_HINT = "free disk space, remount it read-write, or fix permissions on {store}"
@@ -245,17 +243,32 @@ def free_bytes(path: Path) -> Optional[int]:
 
 
 def probe_store(cron_dir: Path) -> Optional[OSError]:
-    """Cheap write probe: ``None`` when ``cron_dir`` accepts a new file (or does not exist yet),
-    else the OSError a store write would hit."""
+    """Write probe mirroring a jobs.json save: ``None`` when it would land (or the store does not
+    exist yet), else the OSError it would hit. Stages a payload the size of the current jobs.json
+    (plus a page) where the save stages it (beside a symlinked file's real target), so a full,
+    over-quota or read-only target fails here the way the save would."""
     if not cron_dir.is_dir():
         return None
-    free = free_bytes(cron_dir)
-    if free is not None and free < _PROBE_MIN_FREE_BYTES:
-        return OSError(errno.ENOSPC, os.strerror(errno.ENOSPC), str(cron_dir))
+    from utils import mkstemp_beside
+    jobs_file = cron_dir / "jobs.json"
     try:
-        fd, tmp = tempfile.mkstemp(dir=cron_dir, prefix=".probe_")
-        os.close(fd)
-        os.unlink(tmp)
+        size = jobs_file.stat().st_size + 4096
+    except OSError:
+        size = 4096
+    target = os.path.realpath(jobs_file)
+    if os.path.exists(target) and not os.access(target, os.W_OK):  # e.g. a read-only symlink target
+        return OSError(errno.EACCES, os.strerror(errno.EACCES), target)
+    tmp = None
+    try:
+        fd, tmp = mkstemp_beside(jobs_file, prefix=".probe_")
+        with os.fdopen(fd, "wb") as f:
+            f.write(b"\0" * size)
+            f.flush()
+            os.fsync(f.fileno())
     except OSError as exc:
         return exc
+    finally:
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
     return None

@@ -27,7 +27,6 @@ import { LruCache } from '@/lib/lru-cache'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
-import { isWatchWindow } from '@/store/windows'
 
 /** True when the user has a live text highlight (drag-select / triple-click). */
 export function hasTextSelection(): boolean {
@@ -315,7 +314,9 @@ const UserBubbleActions: FC<UserBubbleActionsProps> = ({
 export const UserMessage: FC<{
   onCancel?: () => Promise<void> | void
   onRequestRestoreConfirm?: (messageId: string, target: RestoreMessageTarget) => void
-}> = ({ onCancel, onRequestRestoreConfirm }) => {
+  /** Web-safe seam for `@/store/windows.isWatchWindow()`. Shell passes it; web omits (= editable). */
+  readOnly?: boolean
+}> = ({ onCancel, onRequestRestoreConfirm, readOnly = false }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
   const messageId = useAuiState(s => s.message.id)
@@ -368,7 +369,7 @@ export const UserMessage: FC<{
   // Watch windows spectate a subagent run driven elsewhere — prompts can't be
   // edited, restored, or stopped from here. The bubble stays a button that
   // toggles the 2-line clamp so long prompts are still fully readable.
-  const readOnly = isWatchWindow()
+  // (Seam: `readOnly` prop arrives from the desktop shell.)
   const [expanded, setExpanded] = useState(false)
   const clampActive = !(readOnly && expanded)
 

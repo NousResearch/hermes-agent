@@ -338,11 +338,11 @@ def _parse_truncation_params(rid, sid, session, params, history):
 
 
 def _resolve_truncation_ordinal(rid, sid, session, params, history):
-    """Resolve the truncation target to ``(ordinal, cut_index, err)``; on success also
-    ``durable_prefix`` (set when the durable target was absorbed into a repaired live
-    carrier, else None) and the live user-turn count. Refusals: unresolvable target
-    (4018, fail closed — never degrade a missing row_id/message_id into an ordinal
-    cut) -> ordinal drift (4030) -> ordinal-only on a durable session (4004)."""
+    """Resolve the truncation target to ``(ordinal, cut_index, err)`` — with a fourth
+    ``durable_prefix`` element when the durable target was absorbed into a repaired
+    live carrier: unresolvable target (4018, fail closed — never degrade a missing
+    row_id/message_id into an ordinal cut) -> ordinal drift (4030) -> ordinal-only on
+    a durable session (4004)."""
     target_row_id, client_ordinal, err = _parse_truncation_params(
         rid, sid, session, params, history)
     if err is not None:
@@ -427,11 +427,39 @@ def _resolve_truncation_ordinal(rid, sid, session, params, history):
     # BOTH ends: a negative ordinal would index user_indices[-1] and persist the loss.
     if ordinal < 0 or ordinal >= len(user_indices):
         return _stale(resolved_ordinal=ordinal)
-    return ordinal, user_indices[ordinal], None, durable_prefix, len(user_indices)
+    if durable_prefix is not None:
+        return ordinal, user_indices[ordinal], None, durable_prefix
+    return ordinal, user_indices[ordinal], None
 
 
 def _row_ids_of(messages) -> set:
     return {row_id for message in messages if isinstance((row_id := _message_row_id(message)), int)}
+
+
+def _archived_user_turns(session, sid, history, cut_index, survivor_ids) -> int:
+    """User turns a cut at *cut_index* drops. A repaired live carrier stands for its whole merged
+    run (own id + ``_absorbed_row_ids``), which can mix real user rows with display markers
+    (#94486): its turns are counted from the physical durable rows, and every id that cannot be
+    classified there counts as a turn (fail closed). On a durable-carrier cut the run's rows
+    before the target survive (*survivor_ids*)."""
+    from agent.context_compressor import user_originated_turn_view
+    physical = None
+    archived = 0
+    for h_idx in _history_user_indices(history):
+        if h_idx < cut_index:
+            continue
+        message = history[h_idx]
+        absorbed = [rid for rid in (message.get("_absorbed_row_ids") or ()) if isinstance(rid, int)]
+        if not absorbed:
+            archived += 1
+            continue
+        if physical is None:
+            rows = _load_durable_truncation_history(session, sid, repair_alternation=False) or []
+            physical = {_message_row_id(row): row for row in rows if isinstance(row, dict)}
+        for rid in {_message_row_id(message), *absorbed} - survivor_ids - {None}:
+            row = physical.get(rid)
+            archived += row is None or user_originated_turn_view(row) is not None
+    return archived
 
 
 def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids):
@@ -439,10 +467,10 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     are the client rowId-rebind payload."""
     history = _history_without_ephemeral_scaffolding(session.get("history", []))
     resolved = _resolve_truncation_ordinal(rid, sid, session, params, history)
-    ordinal, cut_index, err = resolved[:3]
+    ordinal, cut_index, err = resolved[0], resolved[1], resolved[2]
     if err is not None:
         return err, {}
-    durable_prefix, user_turn_count = resolved[3:]
+    durable_prefix = resolved[3] if len(resolved) > 3 else None
     from agent.context_compressor import history_before_user_originated_turn
     if durable_prefix is not None:
         # Durable-boundary cut: the target row is physically present but merged into
@@ -464,7 +492,7 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
             "resubmit with confirm_empty_truncate=true if this is intended"), {}
     # Depth gate: a valid anchor can still name a stale row; tail regenerate / edit-last
     # drop exactly one user turn, deeper cuts need confirm_deep_truncate.
-    archived_user_turns = user_turn_count - ordinal
+    archived_user_turns = _archived_user_turns(session, sid, history, cut_index, _row_ids_of(truncated))
     if archived_user_turns > 1 and not is_truthy_value(params.get("confirm_deep_truncate")):
         # A durable-carrier cut's ``truncated`` is physical rows: count the live cut instead.
         archived_messages = len(history) - (

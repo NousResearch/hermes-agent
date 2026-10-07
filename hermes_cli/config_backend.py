@@ -148,6 +148,22 @@ class FileBackend:
 _FILE_BACKEND = FileBackend()
 
 
+def _dotenv_backend_override() -> Optional[str]:
+    """``HERMES_CONFIG_BACKEND`` as the launch home's ``.env`` then the managed ``.env`` set it
+    (both load with override), or None. Consulted only on the refusal path."""
+    try:
+        from agent.secret_scope import load_env_file
+        from hermes_cli import managed_scope
+        from hermes_constants import get_process_hermes_home
+    except ImportError:  # a bare tree without the dotenv stack (pm runtime fixtures) has no .env layer
+        return None
+    value = load_env_file(get_process_hermes_home() / ".env").get(BACKEND_ENV)
+    managed_dir = managed_scope.get_managed_dir()
+    if managed_dir is not None:
+        value = load_env_file(managed_dir / ".env").get(BACKEND_ENV, value)
+    return value
+
+
 def get_config_backend() -> ConfigBackend:
     """The backend selected by ``HERMES_CONFIG_BACKEND`` (default ``file``).
 
@@ -155,6 +171,10 @@ def get_config_backend() -> ConfigBackend:
     select it (D11). Raises :class:`ConfigBackendUnavailable` for a backend this build lacks.
     """
     kind = os.environ.get(BACKEND_ENV, "").strip().lower() or "file"
+    if kind != "file":
+        # A config read can run before load_hermes_dotenv() (hermes_cli.config reads at import time):
+        # refuse only a value the launch home's .env / managed .env do not override, as that load will.
+        kind = (_dotenv_backend_override() or kind).strip().lower() or "file"
     if kind == "file":
         return _FILE_BACKEND
     if kind == "remote":
@@ -164,65 +184,72 @@ def get_config_backend() -> ConfigBackend:
     raise ConfigBackendUnavailable(f"{BACKEND_ENV}={kind!r} is not a config backend (expected 'file').")
 
 
-def _route(config_path: PathLike) -> Tuple[Any, Path, bool]:
-    """``(backend, home_or_path, is_user_layer)`` for a config path.
+class _ExplicitFile(FileBackend):
+    """A config file that is not a home's user layer (a test fixture, an import source): the file
+    backend's behaviour on that exact path, whichever backend is selected."""
+
+    def __init__(self, path: Path):
+        self._path = path
+
+    def config_path(self, home: Path) -> Path:
+        return self._path
+
+
+def _route(config_path: PathLike) -> Tuple[ConfigBackend, Path]:
+    """``(backend, home)`` serving a config path through the one ``ConfigBackend`` surface.
 
     ``<home>/config.yaml`` is that home's user layer and goes to the selected backend. Any other
-    file name is an explicit file (a test fixture, an import source), not a user layer: it is read
-    and written with the file backend's primitives regardless of the selected backend.
+    file name is an explicit file, served by the file backend on that path.
     """
     path = Path(config_path)
     if path.name == CONFIG_FILENAME:
-        return get_config_backend(), path.parent, True
-    return _FILE_BACKEND, path, False
+        return get_config_backend(), path.parent
+    return _ExplicitFile(path), path.parent
 
 
 def read_config_doc(config_path: PathLike) -> Any:
     """Parsed root of a config file (None when empty); raises like ``open`` + ``fast_safe_load``."""
-    backend, target, is_layer = _route(config_path)
-    return backend.read_user_layer(target).doc if is_layer else backend.read_path(target)
+    backend, home = _route(config_path)
+    return backend.read_user_layer(home).doc
 
 
 def read_config_doc_readonly(config_path: PathLike) -> Any:
     """Signature-cached :func:`read_config_doc`; the result is shared — never mutate it."""
-    backend, target, is_layer = _route(config_path)
-    return backend.read_user_doc_readonly(target) if is_layer else backend.read_path_readonly(target)
+    backend, home = _route(config_path)
+    return backend.read_user_doc_readonly(home)
 
 
 def config_version(config_path: PathLike) -> Tuple[Any, ...]:
     """Cache signature of a config file; raises ``FileNotFoundError`` / ``OSError`` like ``stat``."""
-    backend, target, is_layer = _route(config_path)
-    return backend.version(target) if is_layer else backend.version_path(target)
+    backend, home = _route(config_path)
+    return backend.version(home)
 
 
 def probe_config_readable(config_path: PathLike) -> None:
     """Raise ``OSError`` while a local config file cannot be opened; no parse. A non-file user
-    layer has no local read to fail, so only explicit files and the file backend probe."""
-    backend, target, is_layer = _route(config_path)
-    if is_layer and not backend.supports_file_tooling():
-        return
-    path = backend.config_path(target) if is_layer else target
-    with open(path, "rb") as f:
-        f.read(1)
+    layer has no local read to fail."""
+    backend, home = _route(config_path)
+    if isinstance(backend, FileBackend):
+        path = backend.config_path(home)
+        with open(path, "rb") as f:
+            f.read(1)
 
 
 def config_exists(config_path: PathLike) -> bool:
-    backend, target, is_layer = _route(config_path)
-    return backend.exists(target) if is_layer else target.exists()
+    backend, home = _route(config_path)
+    return backend.exists(home)
 
 
 def write_config_document(config_path: PathLike, document: dict, *, extra_content_on_create: Optional[str] = None) -> None:
     """Replace a config file's document (comment-preserving merge for the file backend)."""
-    backend, target, is_layer = _route(config_path)
-    changes = Changes(document=document, extra_content_on_create=extra_content_on_create)
-    backend.write_changes(target, changes) if is_layer else backend.write_path(target, changes)
+    backend, home = _route(config_path)
+    backend.write_changes(home, Changes(document=document, extra_content_on_create=extra_content_on_create))
 
 
 def write_config_key(config_path: PathLike, key_path: str, value: Any) -> None:
     """Set one dotted key (``None`` removes it) — ``atomic_roundtrip_yaml_update`` semantics."""
-    backend, target, is_layer = _route(config_path)
-    changes = Changes(unset=(key_path,)) if value is None else Changes(set={key_path: value})
-    backend.write_changes(target, changes) if is_layer else backend.write_path(target, changes)
+    backend, home = _route(config_path)
+    backend.write_changes(home, Changes(unset=(key_path,)) if value is None else Changes(set={key_path: value}))
 
 
 def supports_file_tooling() -> bool:

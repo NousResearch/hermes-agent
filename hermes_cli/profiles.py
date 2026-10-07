@@ -25,6 +25,7 @@ from hermes_constants import (
     named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
 )
 from hermes_cli.config_backend import config_exists, config_version, require_file_tooling
+from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read, _config_version_or_none  # noqa: F401  _PROFILE_FILE_CACHE: tests clear it here
 
 logger = logging.getLogger(__name__)
 
@@ -706,43 +707,6 @@ def _load_yaml_dict(path: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-# (path, kind) -> (file signature, the small derived value). `list_profiles` re-reads three YAML
-# files PER PROFILE, and it is the shared body of `GET /api/profiles` and `profiles.list`, which the
-# Bots roster polls every 5s per connection — so an installer-seeded config.yaml (the annotated
-# template, ~119KB) was re-parsed for every bot every five seconds to yield the same two strings.
-# Only DERIVED values are cached, never a document a caller could write back: the raw readers
-# (`read_user_config_raw`, `_load_yaml_dict`) keep their uncached contract. See #117378.
-_PROFILE_FILE_CACHE: dict[tuple, tuple] = {}
-_PROFILE_FILE_CACHE_MAX = 512
-
-
-def _profile_file_signature(path: Path) -> Optional[tuple]:
-    """``(mtime_ns, size, inode)``, or None when the file is absent. The atomic writers rename a
-    temp file into place, so a rewrite always lands a new inode even within one mtime tick."""
-    try:
-        stat = path.stat()
-    except OSError:
-        return None
-    return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
-
-
-def _cached_profile_read(path: Path, kind: str, compute):
-    """``compute()``'s value, reused while *path* has not changed. A missing file is never cached:
-    reading it costs nothing, and one created later must be picked up."""
-    signature = _profile_file_signature(path)
-    if signature is None:
-        return compute()
-    key = (str(path), kind)
-    cached = _PROFILE_FILE_CACHE.get(key)
-    if cached is not None and cached[0] == signature:
-        return cached[1]
-    value = compute()
-    if len(_PROFILE_FILE_CACHE) >= _PROFILE_FILE_CACHE_MAX:
-        _PROFILE_FILE_CACHE.clear()
-    _PROFILE_FILE_CACHE[key] = (signature, value)
-    return value
-
-
 def _read_distribution_meta(profile_dir: Path) -> tuple:
     """``(name, version, source)`` from ``distribution.yaml``; ``(None, None, None)`` if absent."""
     def _read() -> tuple:
@@ -773,7 +737,7 @@ def _read_config_model(profile_dir: Path) -> tuple:
             pass
         return None, None
 
-    return _cached_profile_read(config_path, "config-model", _read)
+    return _cached_profile_read(config_path, "config-model", _read, _config_version_or_none)
 
 
 def _seed_model_config(profile_dir: Path) -> None:

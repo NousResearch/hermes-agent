@@ -34,6 +34,13 @@ class TestSelection:
         with pytest.raises(cb.ConfigBackendUnavailable):
             cb.read_config_doc(home / "config.yaml")
 
+    def test_launch_env_file_overrides_a_stale_shell_value_before_dotenv_loads(self, home, monkeypatch):
+        # A config read can precede load_hermes_dotenv(); the launch home's .env wins, as that load will.
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv(cb.BACKEND_ENV, "remote")
+        (home / ".env").write_text(f"{cb.BACKEND_ENV}=file\n", encoding="utf-8")
+        assert cb.get_config_backend().name == "file"
+
     def test_explicit_non_config_file_ignores_backend(self, home, monkeypatch):
         other = home / "import-source.yaml"
         other.write_text("a: 1\n", encoding="utf-8")
@@ -247,6 +254,9 @@ class TestReaderGate:
         "p = home / 'config.yaml'\n    return Path.read_text(p)",
         "p = home / 'config.yaml'\n    shutil.copy2(p, home / 'bak')",
         "return read_bytes_or_none(home / 'config.yaml')",
+        "p = home / 'config.yaml'\n    return io.open(p)",
+        "p = home / 'config.yaml'\n    return builtins.open(p)",
+        "p = home / 'config.yaml'\n    return open(file=p)",
     ])
     def test_every_binding_form_is_tracked(self, tmp_path, body):
         # Tuple unpacking, attributes, loop targets, unbound Path methods, copies, byte reads.

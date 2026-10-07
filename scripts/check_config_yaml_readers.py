@@ -67,6 +67,7 @@ FUNC_READS = {
     "load_all", "compose", "compose_all",
     # Byte reads and file copies of the user layer (pm snapshots/digests, shutil.copy*).
     "read_bytes_or_none", "file_digest", "copy", "copy2", "copyfile"}
+PATH_KEYWORDS = {"file", "path", "filename", "stream", "src", "fp"}
 BYPASS_WRITERS = {"atomic_roundtrip_yaml_update", "atomic_roundtrip_yaml_save", "atomic_write_text"}
 YAML_HELPER_RE = re.compile(r"(load|read)_yaml|yaml_(load|read)")
 
@@ -167,7 +168,9 @@ class _Scanner:
         if name is None:
             return
         receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
-        first = node.args[0] if node.args else None
+        # The path is the first positional argument, or a path-bearing keyword (`open(file=p)`).
+        first = node.args[0] if node.args else next(
+            (k.value for k in node.keywords if k.arg in PATH_KEYWORDS), None)
         if name in BYPASS_WRITERS and first is not None and self.is_config_path(first, names):
             self.flag(node, f"bypass write of a config path ({self.seg(first)})")
             return
@@ -182,7 +185,10 @@ class _Scanner:
         is_reader = name in FUNC_READS or YAML_HELPER_RE.search(name) is not None
         if name == "load" and receiver is not None and "yaml" in self.seg(receiver).lower():
             is_reader = True
-        if is_reader and first is not None and (receiver is None or name != "open") and self.is_config_path(first, names):
+        # `p.open()` is a Path method (handled above); `io.open(p)` / `builtins.open(p)` are the builtin.
+        qualified_builtin = isinstance(receiver, ast.Name) and receiver.id in {"io", "builtins", "os"}
+        if (is_reader and first is not None and (receiver is None or name != "open" or qualified_builtin)
+                and self.is_config_path(first, names)):
             self.flag(node, f"direct {name}() of a config path ({self.seg(first)[:60]})")
 
     def scan(self) -> list[str]:

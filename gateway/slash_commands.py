@@ -1155,7 +1155,8 @@ class GatewaySlashCommandsMixin(
     async def _hm_cmd_initiate_setup(self, event, source, _quick_key):
         from agent.initiate_setup_prompt import build_initiate_setup_prompt
         from gateway.run import _load_gateway_config, _platform_config_key
-        from hermes_constants import get_hermes_home, profile_name_for_home
+        from hermes_cli.setup_profile import primary_profile
+        from hermes_constants import get_hermes_home
         from model_tools import get_tool_definitions
 
         def build() -> str:
@@ -1166,7 +1167,7 @@ class GatewaySlashCommandsMixin(
                                              skip_tool_search_assembly=True)
                 return build_initiate_setup_prompt(
                     source.platform.value, [tool["function"]["name"] for tool in tools],
-                    profile_name_for_home(get_hermes_home()) or "default")
+                    primary_profile(get_hermes_home()))
 
         return await self._hm_rewrite_turn_to_prompt(
             event, source, "initiate-setup", t("gateway.initiate_setup.ack"), build)

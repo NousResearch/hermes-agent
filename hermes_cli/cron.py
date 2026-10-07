@@ -516,10 +516,12 @@ def cron_status():
     print()
 
     store_report, active_jobs = _probe_then_list_jobs(include_disabled=False)
-    active_jobs = active_jobs or []
-    if store_report is not None:
+    if active_jobs is None:
+        print(color("  Jobs could not be read from the unwritable store.", Colors.RED))
+    elif store_report is not None:
         overdue = sum(1 for j in active_jobs if (_next_run_overdue_seconds(j.get("next_run_at")) or 0) > 0)
         print(color(f"  {overdue} due run(s) not fired", Colors.RED))
+    if store_report is not None:
         print()
     provider = _active_cron_provider_name()
     if provider != "builtin":

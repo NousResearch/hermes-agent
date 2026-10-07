@@ -321,6 +321,14 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
         assert scheduler.tick(verbose=False, sync=True) == 0  # degrade, do not raise
     assert "lock" in store_health.degraded_record(cron_dir).sites
     store_health._degraded.clear()
+    link = cron_store / "home-link"  # the tick lock is built from the unresolved profile home
+    link.symlink_to(cron_store, target_is_directory=True)
+    with monkeypatch.context() as m:
+        m.setattr(scheduler, "_acquire_tick_lock", read_only_lock)
+        m.setattr(scheduler, "_get_lock_paths", lambda: (link / "cron", link / "cron" / ".tick.lock"))
+        scheduler.tick(verbose=False, sync=True)
+    save_jobs([_due_job()])  # a save of the (resolved) store ends that outage too
+    assert store_health.degraded_records() == []
     os.chmod(cron_dir, 0o500)
     try:
         cron_cli.cron_status()
@@ -363,16 +371,23 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
     runner = SimpleNamespace(_send_home_channel_message=send, _served_profile_homes={"p": cron_store},
                              _served_home_channel_transports=lambda: iter([("p", "telegram", None, home, object())]))
     monkeypatch.setattr("hermes_constants.get_routing_process_hermes_home", lambda: cron_store / "launch")
-    # Zero repeat window: the deferred "recovered" is due on the loop's next pass, after every
-    # transition already queued, so the flap cases below are decided by event order, not timing.
-    monkeypatch.setattr(cron_store_notices, "NOTICE_REPEAT_SECONDS", 0)
+    # A manual loop clock: the real one-hour "recovered" window only elapses when the test says
+    # so, so every case below is decided by event order, never by wall-clock timing.
     loop = asyncio.new_event_loop()
+    clock = [loop.time()]
+    loop.time = lambda: clock[0]
 
-    async def drain():  # until no timer or notice send is left
-        while loop._scheduled or len(asyncio.all_tasks()) > 1:
+    async def drain():  # until no due timer and no notice send is left
+        while len(asyncio.all_tasks()) > 1 or any(
+                not h.cancelled() and h.when() <= clock[0] for h in loop._scheduled):
             await asyncio.sleep(0)
 
-    settle = lambda: loop.run_until_complete(drain())
+    def settle():  # process queued transitions, let the window elapse, deliver what is due
+        loop.run_until_complete(drain())
+        clock[0] += cron_store_notices.NOTICE_REPEAT_SECONDS
+        loop.run_until_complete(drain())
+
+    spin = lambda: [loop.run_until_complete(asyncio.sleep(0)) for _ in range(5)]
     try:
         install_cron_store_notices(runner, loop)
         enospc = OSError(errno.ENOSPC, "No space left on device")
@@ -390,11 +405,20 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
         store_health.note_unwritable(enospc, "x", "scan", [_due_job()])  # already writable when the loop runs:
         save_jobs([_due_job()])  # nothing announced, so no lone "recovered" either
         settle()
-        spin = lambda: [loop.run_until_complete(asyncio.sleep(0)) for _ in range(5)]
-        gate.clear()  # the 3rd notice ("unwritable") is slow to deliver ...
+        store_health.note_unwritable(enospc, "x", "scan", [_due_job()])
+        save_jobs([_due_job()])  # recovers before that notice is delivered ...
+        spin()
+        store_health.note_unwritable(enospc, "x", "scan", [_due_job()])  # ... and fails again
+        settle()  # the dropped first notice must not swallow this outage: announced once
+        assert [m[0] for _, m in sent][-1] == "⚠"
+        save_jobs([_due_job()])
+        settle()
+        gate.clear()  # the next "unwritable" is slow to deliver ...
         store_health.note_unwritable(enospc, "x", "scan", [_due_job()])
         spin()
         save_jobs([_due_job()])  # ... "recovered" fires and queues behind it ...
+        spin()
+        clock[0] += cron_store_notices.NOTICE_REPEAT_SECONDS
         spin()
         store_health.note_unwritable(enospc, "x", "scan", [_due_job()])  # ... and the store fails again
         gate.set()
@@ -407,7 +431,7 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
         settle()
     finally:
         loop.close()
-    assert [m[0] for _, m in sent] == ["⚠", "✅", "⚠", "✅"] and {chat for chat, _ in sent} == {"c1"}
+    assert [m[0] for _, m in sent] == ["⚠", "✅", "⚠", "✅", "⚠", "✅"] and {chat for chat, _ in sent} == {"c1"}
     assert str(cron_dir) in sent[0][1] and "ENOSPC: No space left on device" in sent[0][1] and "since " in sent[0][1]
     assert f"fix permissions on {cron_dir}" in sent[0][1]
     assert "writable again; 1 skipped run(s), catching up once per job" in sent[1][1]

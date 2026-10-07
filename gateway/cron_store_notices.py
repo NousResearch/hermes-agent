@@ -37,11 +37,15 @@ def install_cron_store_notices(runner, loop: asyncio.AbstractEventLoop) -> None:
         async with sending.setdefault(record.store, asyncio.Lock()):
             # Re-check at delivery: a send can wait on profile loading or its transport, and the
             # store may have flipped meanwhile; a stale notice must never be the last word.
-            if (degraded_record(Path(record.store)) is None) != (event == "recovered"):
-                if event == "unwritable":
-                    announced.discard(record.store)  # never announced: no "recovered" owed either
-                return  # a dropped "recovered" leaves the outage announced: its notice still stands
+            degraded = degraded_record(Path(record.store)) is not None
+            if event == "unwritable" and not degraded:  # never announced: nothing owed, next entry announces
+                announced.discard(record.store)
+                if (handle := pending.pop(record.store, None)) is not None:
+                    handle.cancel()
+                return
             if event == "recovered":
+                if degraded or record.store not in announced:  # outage goes on / was never announced
+                    return
                 announced.discard(record.store)
             await send_cron_store_notice(runner, event, record)
 

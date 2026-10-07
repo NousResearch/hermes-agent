@@ -95,6 +95,12 @@ def _active_cron_dir() -> Path:
     return _current_cron_store().cron_dir
 
 
+def _key(cron_dir: Optional[Path]) -> str:
+    """Record key for a store: its resolved path (default: the active store). Callers pass both
+    resolved (cron store) and unresolved (tick-lock dir, profile homes) paths for one store."""
+    return os.path.realpath(cron_dir if cron_dir is not None else _active_cron_dir())
+
+
 def _run_keys(jobs: Iterable[dict]) -> set:
     return {(job.get("id"), job.get("next_run_at")) for job in jobs}
 
@@ -104,7 +110,7 @@ def note_unwritable(exc: OSError, consequence: str, site: str, skipped_jobs: Ite
     """Record a failed write to ``cron_dir`` (default: the active store); WARN once, when the store
     enters the degraded state. Callers skip the dispatch that needed the write: no job runs
     without a durable advance/fire claim."""
-    store = str(cron_dir if cron_dir is not None else _active_cron_dir())
+    store = _key(cron_dir)
     with _lock:
         record = _degraded.get(store)
         entered = record is None
@@ -135,7 +141,7 @@ def note_writable(cron_dir: Path) -> None:
     if not _degraded:
         return
     with _lock:
-        record = _degraded.pop(str(cron_dir), None)
+        record = _degraded.pop(_key(cron_dir), None)
         if record is not None:
             record.recovered_at = time.time()
             _recovered[record.store] = record
@@ -147,13 +153,13 @@ def note_writable(cron_dir: Path) -> None:
 
 
 def degraded_record(cron_dir: Optional[Path] = None) -> Optional[StoreDegraded]:
-    return _degraded.get(str(cron_dir if cron_dir is not None else _active_cron_dir()))
+    return _degraded.get(_key(cron_dir))
 
 
 def outage_covers(cron_dir: Path, due_at: float, grace: float) -> bool:
     """Whether a run due at ``due_at`` fell inside this store's current or just-ended outage."""
     return any(r is not None and r.since <= due_at + grace and (r.recovered_at is None or due_at <= r.recovered_at)
-               for r in (_degraded.get(str(cron_dir)), _recovered.get(str(cron_dir))))
+               for r in (_degraded.get(_key(cron_dir)), _recovered.get(_key(cron_dir))))
 
 
 def forget_homes(home_keys) -> None:
@@ -177,7 +183,7 @@ def dispatch_blocked(due_jobs: list) -> bool:
     unwritable and the minute-throttled re-probe has not seen it accept a write. Skipped runs are
     recorded; once the probe passes, the dispatch's own save confirms recovery (or re-degrades)."""
     cron_dir = _active_cron_dir()
-    record = _degraded.get(str(cron_dir))
+    record = _degraded.get(_key(cron_dir))
     # Entered in load/scan (last_probe None): dispatch has not been tried yet, so let it try.
     if record is None or record.last_probe is None:
         return False
@@ -199,7 +205,7 @@ def end_recovery_window(cron_dir: Path) -> None:
     """A due scan's save landed after the outage ended: normal grace applies again."""
     if _recovered:
         with _lock:
-            _recovered.pop(str(cron_dir), None)
+            _recovered.pop(_key(cron_dir), None)
 
 
 def recheck_idle() -> None:
@@ -210,7 +216,7 @@ def recheck_idle() -> None:
     if not _degraded:
         return
     cron_dir = _active_cron_dir()
-    record = _degraded.get(str(cron_dir))
+    record = _degraded.get(_key(cron_dir))
     now = time.monotonic()
     if record is None or (record.last_probe is not None and now - record.last_probe < PROBE_INTERVAL_SECONDS):
         return

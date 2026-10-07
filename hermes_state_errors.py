@@ -171,6 +171,14 @@ class PruneRowUnresolvedError(RuntimeError):
     any write, so the caller commits through ``archive_and_compact`` instead."""
 
 
+class PruneRowStaleError(PruneRowUnresolvedError):
+    """The named live row no longer holds the body the pruner is pruning: another writer already
+    rewrote this generation. Unlike plain ambiguity this must NOT fall back to the full writer —
+    that writer archives rows it never compared and would republish the stale held text over the
+    newer one. Subclassing keeps callers that only know the parent failing closed-enough (they stop
+    the in-place path); the prune caller tells the two apart and skips the pass entirely."""
+
+
 class SessionTurnLeaseLostError(RuntimeError):
     """A transcript write presented a turn-lease holder that no longer owns it.
     Fail-fast fencing (no ``_execute_write`` retry): a later writer may already

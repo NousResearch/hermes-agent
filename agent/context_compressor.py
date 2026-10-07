@@ -3367,12 +3367,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         durable rows it touched can be updated where they are. That needs a store with
         ``rewrite_pruned_rows`` and unwritten messages only at the end (the next flush appends those in
         order; one sitting before durable rows would land out of order). A row the store cannot name
-        exactly also falls back: ``archive_and_compact`` handles every shape.
+        exactly also falls back: ``archive_and_compact`` handles every shape. A row it *can* name whose
+        stored body changed is not ambiguity but a lost race, and raises ``StaleHeldHistory`` so the
+        caller skips the pass rather than republishing the held generation.
         """
         rewrite = getattr(session_db, "rewrite_pruned_rows", None)
         if not callable(rewrite) or len(messages) != len(pruned_msgs):
             return None
-        from hermes_state_errors import PruneRowUnresolvedError
+        from hermes_state_errors import PruneRowStaleError, PruneRowUnresolvedError
 
         ignored = {_DB_PERSISTED_MARKER, "_row_id"}
         changes: List[tuple] = []
@@ -3390,6 +3392,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 changes.append((original, replacement))
         try:
             return rewrite(session_id, changes, model_config_patch=model_config_patch)
+        except PruneRowStaleError as exc:
+            # A named row whose stored body changed is another writer's generation, which is exactly
+            # what StaleHeldHistory exists to catch — the in-place prune preserved the row ids, so
+            # _archive_watermark_for could not see it. Falling back would hand this stale transcript to
+            # archive_and_compact, which archives rows it never compared and republishes the held text
+            # over the newer one. Fail closed; the caller skips the pass.
+            raise StaleHeldHistory(str(exc)) from exc
         except PruneRowUnresolvedError as exc:
             logger.info("Proactive prune: in-place rewrite refused (%s); using the full rewrite", exc)
             return None

@@ -1179,11 +1179,13 @@ class SessionMessagesMixin:
         enters or leaves the live set.
 
         Raises :class:`PruneRowUnresolvedError` before writing anything when a row cannot be named exactly (a
-        merged dict, zero or several matches, an inactive row, a user row, or a row that no longer holds the
-        original), so the caller can commit through ``archive_and_compact``. Returns the rows rewritten.
+        merged dict, zero or several matches, an inactive row or a user row), so the caller can commit
+        through ``archive_and_compact``. A named row whose stored body differs raises the
+        :class:`PruneRowStaleError` subclass instead: that is another writer's generation, not ambiguity,
+        and the full writer must not be handed the stale transcript. Returns the rows rewritten.
         """
         from agent.conversation_compression_archive import ABSORBED_ROW_IDS
-        from hermes_state_errors import PruneRowUnresolvedError
+        from hermes_state_errors import PruneRowStaleError, PruneRowUnresolvedError
 
         def _call_ids(tool_calls: Any) -> List[Any]:
             return [call.get("id") if isinstance(call, dict) else None for call in (_parse_tool_calls(tool_calls) or [])]
@@ -1216,7 +1218,7 @@ class SessionMessagesMixin:
                     or (row["tool_call_id"] or None) != (original.get("tool_call_id") or None)
                     or (role == "assistant" and _call_ids(row["tool_calls"]) != _call_ids(original.get("tool_calls")))
                     or (role == "tool" and row["content"] != self._encode_content(original.get("content")))):
-                raise PruneRowUnresolvedError(f"row {ids[0]} no longer holds the pruned {role} message")
+                raise PruneRowStaleError(f"row {ids[0]} no longer holds the pruned {role} message")
             return row
 
         def _do(conn):

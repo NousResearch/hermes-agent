@@ -339,7 +339,39 @@ def test_in_place_prune_twice_keeps_one_search_hit_per_unchanged_turn(tmp_path: 
     assert len(hits) == 1
 
 
+def test_in_place_prune_skips_when_another_writer_changed_the_stored_body(tmp_path: Path) -> None:
+    """A stored body that moved on belongs to a newer generation: the prune must not commit at all.
+
+    The in-place rewrite keeps row ids, so the held-history watermark cannot see the race; only the
+    stored-body mismatch can. Falling back to the full writer here archives rows it never compared and
+    republishes the stale held text over the newer one (#124102).
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_IN_PLACE_STALE"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    messages = db.get_messages_as_conversation(session_id)
+    # Another surface rewrites the row this agent still holds the pre-edit body of.
+    db._conn.execute(
+        "UPDATE messages SET content = 'edited elsewhere' WHERE session_id = ? AND tool_call_id = 'call_0'",
+        (session_id,))
+    db._conn.commit()
+    rows_before = _rows(db, session_id)
+
+    with patch.object(db, "archive_and_compact", wraps=db.archive_and_compact) as full_rewrite:
+        result, count = agent.context_compressor.prune_tool_results_only(messages, current_tokens=120_000)
+
+    assert (result, count) == (messages, 0)
+    assert full_rewrite.call_count == 0
+    assert _rows(db, session_id) == rows_before
+    live = [message["content"] for message in db.get_messages_as_conversation(session_id)]
+    assert live.count("edited elsewhere") == 1
+
+
 def test_in_place_prune_falls_back_to_full_rewrite_when_a_row_cannot_be_named(tmp_path: Path) -> None:
+    """Genuine ambiguity over *current* content still commits through the full writer."""
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "PRUNE_IN_PLACE_UNRESOLVED"
     db.create_session(session_id, source="telegram")
@@ -347,17 +379,22 @@ def test_in_place_prune_falls_back_to_full_rewrite_when_a_row_cannot_be_named(tm
     agent = _build_agent(db, session_id)
     _configure_pruning(agent)
     messages = db.get_messages_as_conversation(session_id)
-    # The stored body no longer matches what the agent holds, so the row cannot be named exactly.
+    # Two live rows now carry call_0's current body, so no single row can be named.
+    columns = ", ".join(
+        name for name in (row[1] for row in db._conn.execute("PRAGMA table_info(messages)"))
+        if name not in ("id", "display_order"))
     db._conn.execute(
-        "UPDATE messages SET content = 'edited elsewhere' WHERE session_id = ? AND tool_call_id = 'call_0'",
-        (session_id,))
+        f"INSERT INTO messages ({columns}) SELECT {columns} FROM messages "
+        "WHERE session_id = ? AND tool_call_id = 'call_0' AND active = 1", (session_id,))
     db._conn.commit()
 
     with patch.object(db, "archive_and_compact", wraps=db.archive_and_compact) as full_rewrite:
-        _, count = agent.context_compressor.prune_tool_results_only(messages, current_tokens=120_000)
+        pruned, count = agent.context_compressor.prune_tool_results_only(messages, current_tokens=120_000)
 
     assert count >= 1
     assert full_rewrite.call_count == 1
+    assert [m["content"] for m in db.get_messages_as_conversation(session_id)] == [
+        m["content"] for m in pruned]
 
 
 def test_in_place_prune_leaves_unwritten_suffix_to_the_flush(tmp_path: Path) -> None:

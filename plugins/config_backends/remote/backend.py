@@ -687,6 +687,9 @@ class RemoteBackend:
                 logger.warning(msg)
                 print(msg, file=sys.stderr)
 
+    def destination(self, home: Path) -> str:
+        return f"Remote Config (profile {self._profile_for(home)!r} level)"
+
     def describe(self, home: Path) -> str:
         st = self._states.get(self._key(home))
         head = f"Remote Config {client.base_url()} (instance {client.instance_id() or '<unset>'})"

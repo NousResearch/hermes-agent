@@ -106,6 +106,10 @@ class ConfigBackend(Protocol):
         """One line naming where the user layer comes from and its state (status line, doctor)."""
         ...
 
+    def destination(self, home: Path) -> str:
+        """Where a write lands, for a user-facing "saved in ..." line (no state, no network)."""
+        ...
+
 
 class ConfigBackendUnavailable(SystemExit):
     """The selected backend cannot serve config. A ``SystemExit`` on purpose: many config readers
@@ -223,6 +227,9 @@ class FileBackend:
         raise NotImplementedError("the file backend persists migrations to config.yaml")
 
     def describe(self, home: Path) -> str:
+        return str(self.config_path(home))
+
+    def destination(self, home: Path) -> str:
         return str(self.config_path(home))
 
 
@@ -386,6 +393,13 @@ def write_config_document(config_path: PathLike, document: dict, *, extra_conten
     """Replace a config file's document (comment-preserving merge for the file backend)."""
     backend, home = _route(config_path)
     backend.write_changes(home, Changes(document=document, extra_content_on_create=extra_content_on_create))
+
+
+def config_destination(config_path: PathLike) -> str:
+    """Where a write to *config_path* lands, for "✓ Set ... in <here>" lines: the file path for
+    the file backend and explicit files, the backend's own name for the user layer otherwise."""
+    backend, target, is_layer = _route(config_path)
+    return backend.destination(target) if is_layer else str(target)
 
 
 def write_config_key(config_path: PathLike, key_path: str, value: Any) -> None:

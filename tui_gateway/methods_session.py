@@ -2223,9 +2223,11 @@ def _(rid, params: dict, session: dict) -> dict:
 
 # ── delegation / spawn trees ─────────────────────────────────────────
 @method("delegation.status")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
+    from hermes_constants import get_hermes_home
     from tools import delegate_tool as dt
-    return _ok(rid, {"active": dt.list_active_subagents(), "paused": dt.is_spawn_paused(),
+    return _ok(rid, {"active": dt.list_observable_subagents(get_hermes_home()), "paused": dt.is_spawn_paused(),
                      "max_spawn_depth": dt._get_max_spawn_depth(),
                      "max_concurrent_children": dt._get_max_concurrent_children()})
 

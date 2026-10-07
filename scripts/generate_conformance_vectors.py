@@ -82,6 +82,14 @@ GRID: List[tuple] = [
         "- item *one*\n- item **two**\n\n```sh\nmake deploy\n```\n\n"
         "See [dashboard](https://grafana.example.com/d/x).",
     ),
+    # WhatsApp: __bold__ → *bold* (double-underscore is alternative bold syntax).
+    ("underscore-bold", "This is __bold__ text."),
+    # Bold markers inside a word (not surrounded by spaces).
+    ("bold-inside-word", "un**be**lievable"),
+    # Markdown link whose display text contains markup that must convert.
+    ("link-with-bold-text", "[**bold link**](https://example.com)"),
+    # Inline code containing asterisks — must be preserved verbatim.
+    ("code-with-bold-markers", "use `**not bold**` correctly"),
 ]
 
 SCAR: List[tuple] = [
@@ -108,6 +116,17 @@ SCAR: List[tuple] = [
     ),
     # Link display text that itself needs escaping.
     ("link-display-escapes", "[v2.0 (beta)](https://example.com/v2)"),
+    # Header containing italic that WhatsApp wraps as *_italic_*
+    ("italic-header", "## *Italic Header*"),
+    # Multiple inline-code spans in one line — all must be preserved.
+    ("two-inline-codes", "use `pip install` and `npm install`"),
+    # Zero-width characters: WhatsApp _sanitize_outbound_text strips U+200B
+    # (ZWSP) and U+FEFF (ZWNBSP) but keeps U+200C (ZWNJ) and U+200D (ZWJ).
+    # Other platforms pass invisible chars through unchanged.
+    ("sanitize-zwj", "Hello\u200b\u200c\u200d World"),
+    # NBSP-variants: WhatsApp normalizes narrow/multi-width spaces to ASCII
+    # space (U+202F narrow NBSP, U+200A hair space, U+00A0 NBSP, etc.).
+    ("sanitize-nbsp-var", "Hello\u202fWorld\u200aTest"),
 ]
 
 ADVERSARIAL: List[tuple] = [
@@ -116,6 +135,9 @@ ADVERSARIAL: List[tuple] = [
     ("pathological-nesting", "**bold *italic ~~struck `code` struck~~ italic* bold**"),
     ("placeholder-injection", "sneaky \x00PH0\x00 token and \x00SL1\x00 too"),
     ("triple-markers", "***what is this*** and ____that____"),
+    # Closed-form triple-marker: ***bold italic*** (where the user intends
+    # both bold and italic). WhatsApp renders as literal **bold italic**.
+    ("triple-markers-alt", "***bold italic***"),
     ("empty-string", ""),
     ("whitespace-only", "   \n\t\n   "),
     ("long-line", "word " * 500),

@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -424,6 +425,18 @@ class TestGatewayRuntimeStatus:
                 == 139
             ), cmdline
 
+
+    def test_command_line_belongs_to_profile_accepts_explicit_default(self):
+        """``--profile default`` names THE DEFAULT PROFILE: a hand-written launchd plist that
+        mirrors the named-profile service shape must still count as the default home's gateway
+        (#100817), while a foreign ``-p coder`` keeps being rejected."""
+        default_home = Path("/opt/hermes-data")
+        for cmdline in (
+            "hermes --profile default gateway run --replace --external-supervisor",
+            "/opt/hermes/.venv/bin/hermes -p default gateway run",
+        ):
+            assert status._command_line_belongs_to_profile(cmdline, default_home) is True, cmdline
+        assert status._command_line_belongs_to_profile("hermes -p coder gateway run", default_home) is False
 
     def test_command_line_belongs_to_profile_normalizes_separators(self):
         """A Windows argv renders HERMES_HOME with backslashes while the
@@ -1357,6 +1370,12 @@ class TestReadProcessCmdlinePsFallback:
 
     def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
+        # psutil sits between /proc and ps; left real, it reads whatever process holds this pid on the
+        # host (CI saw `/usr/sbin/haveged` at 873) and ps is never reached.
+        def _no_such_process(pid):
+            raise ProcessLookupError(pid)
+
+        monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=_no_such_process))
         monkeypatch.setattr(
             status.subprocess, "run",
             lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="/usr/libexec/bluetoothuserd\n"),

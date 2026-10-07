@@ -278,7 +278,18 @@ export function ProjectOverviewRow({
     // project in the overview — the parallel to the entered-project wrapper's
     // `data-sessions-project` (index.tsx), which only fires once you've drilled
     // in. Here it's present on every row of the list.
-    <div className={cn(dragging && 'relative z-10')} data-sessions-project={project.id} ref={ref} style={style}>
+    <div
+      className={cn(
+        dragging && 'relative z-10',
+        // Painted imperatively by session-drag.ts while a dragged session
+        // hovers this row — a live "drop here to move" cue, not React state
+        // (it must not repaint the sidebar on every pixel of pointer travel).
+        'rounded-[6px] data-[session-drop-hover=true]:outline-2 data-[session-drop-hover=true]:-outline-offset-2 data-[session-drop-hover=true]:outline-sidebar-ring'
+      )}
+      data-sessions-project={project.id}
+      ref={ref}
+      style={style}
+    >
       {/* Home has no per-project actions, so it gets no right-click menu. */}
       {project.isNoProject ? (
         shell

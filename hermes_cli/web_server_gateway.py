@@ -20,6 +20,22 @@ from hermes_cli.config import get_hermes_home
 _log = logging.getLogger("hermes_cli.web_server")
 
 
+# Defense against a hostile/compromised upstream serving an unbounded body to
+# the dashboard's JSON readers: refuse to buffer past this size.
+_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES = 1024 * 1024
+
+
+def _read_dashboard_json_response(response) -> Any:
+    """Read a JSON HTTP response body with a hard size cap (issue #54808)."""
+    raw = response.read(_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES + 1)
+    if len(raw) > _DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES:
+        raise ValueError(
+            "dashboard HTTP JSON response exceeded "
+            f"{_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES} bytes"
+        )
+    return json.loads(raw.decode("utf-8"))
+
+
 def _probe_gateway_health() -> tuple[bool, dict | None]:
     """Probe the gateway's HTTP health endpoint (cross-container). Blocking — run in an executor.
 
@@ -31,12 +47,18 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     if not _GATEWAY_HEALTH_URL:
         return False, None
     base = re.sub(r"/health(/detailed)?$", "", _GATEWAY_HEALTH_URL.rstrip("/"))
+    # Bearer credential for an auth-protected gateway (issue #76051): sent to the
+    # authenticated /health/detailed probe ONLY — never to the public /health fallback,
+    # which is unauthenticated by design.
+    api_key = os.environ.get("API_SERVER_KEY", "").strip()
     for path in (f"{base}/health/detailed", f"{base}/health"):
         try:
             req = urllib.request.Request(path, method="GET")
+            if api_key and path.endswith("/health/detailed"):
+                req.add_header("Authorization", f"Bearer {api_key}")
             with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
                 if resp.status == 200:
-                    return True, json.loads(resp.read())
+                    return True, _read_dashboard_json_response(resp)
         except Exception:
             continue
     return False, None
@@ -457,7 +479,16 @@ def _spawn_hermes_action(
     from hermes_cli.web_server import PROJECT_ROOT
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = open(_ACTION_LOG_DIR / _ACTION_LOG_FILES[name], "ab", buffering=0)
-    log_file.write(f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode())
+    # The header carries the action id durably: the update's completion marker lands in the ROOT
+    # update.log every profile shares, and only this id ties one to the action THIS log started.
+    action_id = (env_overrides or {}).get("HERMES_ACTION_ID")
+    stamp = time.strftime('%Y-%m-%d %H:%M:%S') + (f" {action_id}" if action_id else "")
+    log_file.write(f"\n=== {name} started {stamp} ===\n".encode())
+    if action_id:
+        # ...and a sidecar keeps it once build output pushes the header past the status route's
+        # bounded tail, or the log rotates: a restarted dashboard still knows which action it ran.
+        from hermes_cli.runtime_state import _atomic_bytes
+        _atomic_bytes(_ACTION_LOG_DIR / f"{name}.action_id", action_id.encode("ascii"))
 
     from hermes_cli._launchers import runtime_command
     cmd = runtime_command(PROJECT_ROOT, subcommand)
@@ -494,7 +525,6 @@ def _spawn_hermes_action(
     _ACTION_RESULTS.pop(name, None)
     _ACTION_COMMANDS[name] = tuple(subcommand)
     _ACTION_PROCS[name] = proc
-    action_id = (env_overrides or {}).get("HERMES_ACTION_ID")
     if action_id:
         _ACTION_IDS[name] = action_id
     else:
@@ -503,15 +533,17 @@ def _spawn_hermes_action(
 
 
 def _own_profile_selector(profile: Optional[str]) -> Optional[str]:
-    """The profile a lifecycle verb addresses: the explicit selector, else the process's own named
+    """The profile a lifecycle verb addresses: the explicit selector, else the process's own
     profile (a pooled Desktop ``hermes --profile X serve`` answers ``/api/gateway/*`` without
-    ``?profile=``; an unscoped verb there is about X, not about the default home)."""
+    ``?profile=``; an unscoped verb there is about X). The default home resolves to the literal
+    ``"default"`` selector, never to a bare argv: a selector-less child re-reads the sticky
+    ``active_profile`` and would act on another profile's gateway (and skips the named-target
+    env scrub). ``None`` is reserved for a home that is not a profile home at all."""
     requested = (profile or "").strip()
     if requested:
         return requested
     from hermes_constants import get_process_hermes_home, profile_name_for_home
-    own = profile_name_for_home(get_process_hermes_home())
-    return own if own and own != "default" else None
+    return profile_name_for_home(get_process_hermes_home()) or None
 
 
 def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
@@ -520,12 +552,14 @@ def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
     that actually serves X — a ``-p X gateway restart`` child only exits 78 into the action log while the
     UI reports "restarted"); ``start``/``stop`` are refused by the caller (``multiplexed_profile_refusal``).
     The multiplexer is addressed as ``-p default`` explicitly: a bare ``gateway restart`` spawned from a
-    pooled ``--profile X serve`` would inherit X's ``HERMES_HOME`` and hit the same exit-78 refusal."""
+    pooled ``--profile X serve`` would inherit X's ``HERMES_HOME`` and hit the same exit-78 refusal. The
+    selector is explicit for the default home too: a bare child re-reads the sticky ``active_profile``
+    and would restart another profile's gateway."""
     from hermes_cli.web_server_profiles import _profile_cli_args
     profile = _own_profile_selector(profile)
     args = _profile_cli_args(profile)
     if profile and verb == "restart" and multiplexed_profile_refusal(profile, verb) is not None:
-        # Always explicit, even from the default home: a bare child re-reads the sticky active_profile.
+        # A served profile's restart targets the multiplexer, addressed as ``-p default``.
         args = ["-p", "default"]
     return args + ["gateway", verb]
 

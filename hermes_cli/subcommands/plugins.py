@@ -22,7 +22,8 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         help="Bare plugin catalog entry name (see `hermes plugins search`), Git URL, or owner/repo "
             "shorthand (e.g. anpicasso/hermes-plugin-chrome-profiles)")
     plugins_install.add_argument(
-        "--force", "-f", action="store_true", help="Remove existing plugin and reinstall")
+        "--force", "-f", action="store_true",
+        help="Reinstall over an existing plugin (from the same source, your untracked files are kept)")
     plugins_install.add_argument(
         "--ref", metavar="COMMIT_SHA",
         help="Install exactly one immutable 40-character Git commit SHA")
@@ -30,8 +31,17 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         "--allow-removed", action="store_true",
         help="DANGEROUS: bypass the catalog removed-plugin blocklist check")
     plugins_install.add_argument(
+        "--allow-live-gateway", action="store_true",
+        help="DANGEROUS: allow a forced reinstall while the messaging gateway is running "
+             "(loaded plugin callbacks may break until it restarts)")
+    _install_deps_group = plugins_install.add_mutually_exclusive_group()
+    _install_deps_group.add_argument(
         "--no-deps", action="store_true",
         help="Download without dependency consent and leave disabled; cannot replace an active plugin")
+    _install_deps_group.add_argument(
+        "--yes-deps", action="store_true",
+        help="Answer the Python dependency consent question yourself, so non-interactive installs "
+             "(SSH automation, CI, Docker entrypoints) finish in one run instead of being refused")
     _install_enable_group = plugins_install.add_mutually_exclusive_group()
     _install_enable_group.add_argument(
         "--enable", action="store_true",
@@ -62,6 +72,10 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_update = plugins_subparsers.add_parser(
         "update", help="Pull latest changes for an installed plugin")
     plugins_update.add_argument("name", help="Plugin name to update")
+    plugins_update.add_argument(
+        "--allow-live-gateway", action="store_true",
+        help="DANGEROUS: update while the messaging gateway is running "
+             "(loaded plugin callbacks may break until it restarts)")
 
     plugins_adopt = plugins_subparsers.add_parser(
         "adopt",
@@ -107,6 +121,10 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_remove = plugins_subparsers.add_parser(
         "remove", aliases=["rm", "uninstall"], help="Remove an installed plugin")
     plugins_remove.add_argument("name", help="Plugin directory name to remove")
+    plugins_remove.add_argument(
+        "--allow-live-gateway", action="store_true",
+        help="DANGEROUS: remove while the messaging gateway is running "
+             "(loaded plugin callbacks may break until it restarts)")
 
     plugins_list = plugins_subparsers.add_parser(
         "list", aliases=["ls"], help="List installed plugins")
@@ -151,17 +169,6 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         help="Plugin path or installed plugin id (default: current directory)")
     plugins_doctor.add_argument(
         "--ci", action="store_true", help="Exit non-zero when validation reports an error")
-
-    plugins_compat = plugins_subparsers.add_parser(
-        "compat",
-        help="Show installed plugins that import paths removed by the Sep 2026 decomposition",
-        description="Statically scans every enabled external plugin for imports of pre-decomposition "
-            "module paths (see COMPAT_MANIFEST.md) and prints file:line, old path -> new path. "
-            "Exits 1 when any plugin is affected. Plugins still affected on the removal date are "
-            "not loaded (override: plugins.allow_deprecated_imports: true).")
-    plugins_compat.add_argument("--json", action="store_true", help="Machine-readable output")
-    plugins_compat.add_argument(
-        "path", nargs="?", help="Scan one plugin directory instead of the installed set (for plugin authors)")
 
     plugins_pack = plugins_subparsers.add_parser(
         "pack", help="Declarative, shareable plugin sets (hermes-pack.yaml)",

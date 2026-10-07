@@ -91,7 +91,6 @@ test('clarify and approval prompts round-trip exactly once', async () => {
         { text: [`${A(1)} `, 'noted ', 'your ', 'choice'] }
       ])
       await send(page, `${U(1)} ask me`, 'Enter', ws)
-      // The open (unanswered) clarify form: single-question or batch shape.
       const openForms = page.locator('form[data-clarify-choices], form[data-clarify-batch]').filter({ visible: true })
       await expect(openForms).toHaveCount(1, { timeout: 120_000 })
       await expect(viewport(page).getByText(question)).toHaveCount(1)

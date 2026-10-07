@@ -23,7 +23,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.plugin_validate_core_override import check_core_override
 from hermes_cli.plugin_validate_desktop import check_desktop_surface
+from hermes_cli.plugin_validate_locales import check_language_packs
 from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
 
 _UPPER_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -40,6 +42,7 @@ class ValidationReport:
 
     checks: List[Tuple[str, bool, str]] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    isolation: Optional[Dict[str, Any]] = None  # plugin-host readiness; informational, never fails
 
     @property
     def failures(self) -> List[str]:
@@ -67,6 +70,7 @@ class ValidationReport:
                 for name, ok, detail in self.checks
             ],
             "warnings": list(self.warnings),
+            "isolation": self.isolation,
         }
 
 
@@ -202,7 +206,7 @@ options = json.loads(sys.argv[3])
 context_methods = set(options["context_methods"])
 provider_kind = options["kind"] == "model-provider"
 
-recorded = {"tools": [], "hooks": [], "middleware": [], "commands": [], "providers": []}
+recorded = {"tools": [], "hooks": [], "middleware": [], "commands": [], "providers": [], "trusted_inbound": []}
 
 
 class RecordingContext:
@@ -224,6 +228,10 @@ class RecordingContext:
 
     def register_cli_command(self, name, *args, **kwargs):
         recorded["commands"].append(str(name))
+
+    def register_platform(self, name, *args, **kwargs):
+        if kwargs.get("trusted_inbound"):
+            recorded["trusted_inbound"].append(str(name))
 
     def get_config(self, key, default=None):
         # Mirrors PluginContext.get_config with no config on disk: the DEFAULT, never None —
@@ -316,20 +324,25 @@ def _probe_options(manifest: dict) -> dict:
     }
 
 
-def _run_capability_probe(plugin_dir: Path, manifest: dict) -> Tuple[Optional[dict], str]:
+def _run_capability_probe(
+    plugin_dir: Path, manifest: dict, probe: Optional[Tuple[Path, Dict[str, str]]] = None,
+) -> Tuple[Optional[dict], str]:
     """Run the recording probe in a scratch subprocess.
+
+    *probe* is ``(interpreter, env)`` of the dependency environment to import the plugin from;
+    None probes this interpreter.
 
     Returns ``(recorded, error)`` — exactly one is meaningful: *recorded*
     is the ``{tools, hooks, middleware, commands, providers}`` dict on
     success, and *error* is a human-readable failure description otherwise.
     """
     with tempfile.TemporaryDirectory(prefix="hermes-validate-") as scratch:
-        env = dict(os.environ)
+        env = dict(probe[1] if probe else os.environ)
         env["HERMES_HOME"] = scratch
         try:
             result = subprocess.run(
                 [
-                    sys.executable,
+                    str(probe[0]) if probe else sys.executable,
                     "-c",
                     _PROBE_SCRIPT,
                     str(plugin_dir),
@@ -371,7 +384,8 @@ def _declared_list(manifest: dict, key: str) -> List[str]:
 
 
 def _check_capabilities(
-    report: ValidationReport, manifest: dict, plugin_dir: Path
+    report: ValidationReport, manifest: dict, plugin_dir: Path,
+    probe: Optional[Tuple[Path, Dict[str, str]]] = None,
 ) -> Optional[dict]:
     """Probe actual registrations and diff against declared capabilities.
 
@@ -385,7 +399,7 @@ def _check_capabilities(
         report.add("capability probe", True, "skipped (no __init__.py)")
         return None
 
-    recorded, error = _run_capability_probe(plugin_dir, manifest)
+    recorded, error = _run_capability_probe(plugin_dir, manifest, probe)
     if recorded is None:
         report.add("capability probe", False, error)
         return None
@@ -464,8 +478,11 @@ def _check_builtin_collisions(
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
 
-def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
-    """Run every admission check against *plugin_dir* and return the report."""
+def validate_plugin_dir(
+    plugin_dir: Path, probe: Optional[Tuple[Path, Dict[str, str]]] = None,
+) -> ValidationReport:
+    """Run every admission check against *plugin_dir* and return the report. *probe* is
+    ``(interpreter, env)`` for the capability probe (see ``_run_capability_probe``)."""
     report = ValidationReport()
     plugin_dir = Path(plugin_dir)
 
@@ -510,28 +527,46 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
     _check_requires_hermes(report, manifest)
     _check_config_spec(report, manifest)
     _check_requires_env(report, manifest)
-    _check_loadable(report, plugin_dir)
+    _check_loadable(report, plugin_dir, manifest)
     _check_python_dependencies(report, plugin_dir)
-    recorded = _check_capabilities(report, manifest, plugin_dir)
+    recorded = _check_capabilities(report, manifest, plugin_dir, probe)
     _check_builtin_collisions(report, manifest, recorded)
+    _check_trusted_inbound(report, recorded)
     _check_security_scan(report, plugin_dir)
+    check_core_override(report, plugin_dir)
     check_desktop_surface(report, plugin_dir)
+    check_language_packs(report, manifest, plugin_dir)
+    from hermes_cli.plugin_isolation_audit import audit_plugin_dir
+    report.isolation = audit_plugin_dir(plugin_dir, manifest).to_dict()
     return report
+
+
+def _check_trusted_inbound(report: ValidationReport, recorded: Optional[dict]) -> None:
+    """Surface ``trusted_inbound`` platforms (their events skip user allowlists and pairing); one
+    naming a core platform fails, as the loader refuses it."""
+    from gateway.platform_registry import core_ships_platform
+    for name in (recorded or {}).get("trusted_inbound") or []:
+        if core_ships_platform(name):
+            report.add("trusted inbound", False, f"platform '{name}' ships with core; trusted_inbound is refused for it")
+        else:
+            report.add("trusted inbound", True, f"platform '{name}' is trusted_inbound: its events skip user allowlists and pairing")
 
 
 _LOADABLE_ENTRYPOINTS = ("__init__.py", "desktop/plugin.js", "plugin.json")
 
 
-def _check_loadable(report: ValidationReport, plugin_dir: Path) -> None:
+def _check_loadable(report: ValidationReport, plugin_dir: Path, manifest: Optional[dict] = None) -> None:
     """A plugin.yaml with nothing beside it that Hermes can load (no ``register()`` module, no
-    desktop bundle, no portable manifest) installs "successfully" and does nothing — a pip-layout
-    repo whose code lives under ``src/`` behind an entry point is the usual shape."""
+    desktop bundle, no portable manifest, no declared language pack) installs "successfully" and does
+    nothing — a pip-layout repo whose code lives under ``src/`` behind an entry point is the usual shape."""
     present = [rel for rel in _LOADABLE_ENTRYPOINTS if (plugin_dir / rel).is_file()]
+    if (manifest or {}).get("provides_locales") and (plugin_dir / "locales").is_dir():
+        present.append("locales/ (language pack)")
     report.add(
         "loadable", bool(present),
         f"entry: {', '.join(present)}" if present else
-        "nothing to load: no __init__.py, desktop/plugin.js or plugin.json beside plugin.yaml "
-        "(pip-layout packages need a directory-plugin wrapper with a pyproject.toml declaring the deps)",
+        "nothing to load: no __init__.py, desktop/plugin.js, plugin.json or provides_locales + locales/ beside "
+        "plugin.yaml (pip-layout packages need a directory-plugin wrapper with a pyproject.toml declaring the deps)",
     )
 
 
@@ -618,4 +653,6 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         report.add(f"server availability: {server_name}", True, detail)
     _check_security_scan(report, plugin_dir)
     check_desktop_surface(report, plugin_dir)
+    from hermes_cli.plugin_isolation_audit import audit_plugin_dir
+    report.isolation = audit_plugin_dir(plugin_dir, manifest).to_dict()
     return report

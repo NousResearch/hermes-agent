@@ -30,8 +30,31 @@ function configuredElectronFlags(env: NodeJS.ProcessEnv): string[] {
   }
 }
 
-const electronFlags = process.platform === 'linux' ? configuredElectronFlags(process.env) : []
-const args = wslgLaunchArgs(process.argv.slice(1), process.env, process.platform, electronFlags)
+const linux = process.platform === 'linux'
+const electronFlags = linux ? configuredElectronFlags(process.env) : []
+
+// True only when the NVIDIA proprietary kernel module is loaded
+// (not nouveau, not the open kernel module, not WSL's dxg passthrough).
+function hasNvidiaProprietaryDriver() {
+  if (process.platform !== 'linux') {return false}
+
+  try {
+    const version = readFileSync('/proc/driver/nvidia/version', 'utf8') || ""
+
+    return !/Open Kernel Module/.test(version)
+  } catch {
+    return false // no nvidia driver on this box
+  }
+}
+
+
+const args = wslgLaunchArgs(
+  process.argv.slice(1),
+  process.env,
+  process.platform,
+  electronFlags,
+  hasNvidiaProprietaryDriver()
+)
 
 if (args) {
   // Keep the launcher alive until the child exits: npm's concurrently must not

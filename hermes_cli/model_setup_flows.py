@@ -18,7 +18,7 @@ from hermes_cli.model_setup_flows_common import (
     _ensure_dict_section, _ensure_flow_api_key, _finish_model,
     _load_config_model_section, _models_dev_merged, _oauth_gate, _persist_model, _pick_model_or_prompt,
     _print_numbered, _prompt_auth_credentials_choice,
-    _run_login, _say, _show_curated)
+    _note_setup_failure, _run_login, _say, _show_curated)
 from hermes_cli.model_setup_flows_custom import _model_flow_custom, _model_flow_named_custom
 from hermes_cli.model_setup_flows_azure import _model_flow_azure_foundry
 from hermes_cli.model_setup_flows_bedrock import _model_flow_bedrock
@@ -179,14 +179,15 @@ def _nous_model_catalog(free_tier: bool, portal_url: str, model_ids: list, prici
     from hermes_cli.models_pricing import nous_policy_allowed_ids, restrict_to_nous_policy
     from hermes_cli.models import (
         partition_nous_models_by_tier,
+        union_with_nous_on_sale_models,
         union_with_portal_free_recommendations,
         union_with_portal_paid_recommendations,
     )
 
     # Free users: union with the Portal's freeRecommendedModels (newly launched free models appear
     # before the curated list catches up), then partition selectable/unavailable by Portal pricing.
-    # Paid users: paidRecommendedModels, no partition. Org policy narrows BEFORE the tier split so a
-    # rescued id still has to pass the free/paid predicate.
+    # Paid users: paidRecommendedModels plus every model on sale right now, no partition. Org policy
+    # narrows BEFORE the tier split so a rescued id still has to pass the free/paid predicate.
     unavailable_models: list[str] = []
     unavailable_message = ""
     _policy_allowed = nous_policy_allowed_ids()
@@ -200,6 +201,7 @@ def _nous_model_catalog(free_tier: bool, portal_url: str, model_ids: list, prici
         model_ids, pricing = union_with_portal_free_recommendations(model_ids, pricing, portal_url)
     else:
         model_ids, pricing = union_with_portal_paid_recommendations(model_ids, pricing, portal_url)
+        model_ids = union_with_nous_on_sale_models(model_ids, pricing)
     _before_policy = model_ids
     model_ids = restrict_to_nous_policy(model_ids, _policy_allowed, rescue_empty=True)
     _policy_narrowed = model_ids != _before_policy
@@ -208,6 +210,7 @@ def _nous_model_catalog(free_tier: bool, portal_url: str, model_ids: list, prici
 
     if not model_ids and not unavailable_models:
         print("No models available for Nous Portal after filtering.")
+        _note_setup_failure("no_models")
         return None
     if free_tier and not model_ids:
         print("No free models currently available.")
@@ -236,8 +239,10 @@ def _nous_verified_credentials(creds_or_none=None):
                 _login_nous(_nous_login_args(None), PROVIDER_REGISTRY["nous"])
             except Exception as login_exc:
                 print(f"Re-login failed: {login_exc}")
+            _note_setup_failure("auth")
             return None
         print(f"Could not verify credentials: {msg}")
+        _note_setup_failure("auth")
         return None
 
 
@@ -466,6 +471,7 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
         creds = resolve_minimax_oauth_runtime_credentials()
     except AuthError as exc:
         print(format_auth_error(exc))
+        _note_setup_failure("auth")
         return
 
     from hermes_cli.models import _PROVIDER_MODELS
@@ -524,6 +530,7 @@ def _copilot_obtain_token() -> bool:
             _say("  Copilot token saved.", "")
         except Exception as exc:
             print(f"  Login failed: {exc}")
+            _note_setup_failure("auth")
             return False
         return True
     if choice == "2":
@@ -664,7 +671,7 @@ def _model_flow_stepfun(config, current_model=""):
     from hermes_cli.main_provider_setup import _infer_stepfun_region, _prompt_provider_choice, _stepfun_base_url_for_region
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.config import save_env_value
-    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
+    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models, provider_model_ids
     provider_id = "stepfun"
     pconfig = PROVIDER_REGISTRY[provider_id]
     base_url_env = pconfig.base_url_env_var or ""
@@ -694,7 +701,9 @@ def _model_flow_stepfun(config, current_model=""):
     if base_url_env:
         save_env_value(base_url_env, effective_base)
 
-    model_list = fetch_api_models(existing_key, effective_base)
+    # Same live+curated merge as the picker (``_stepfun_catalog``): Step Plan /models omits
+    # Standard-API-only models, so the wizard must offer the same list /model shows (#41147).
+    model_list = provider_model_ids(provider_id) or fetch_api_models(existing_key, effective_base)
     if model_list:
         print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
     else:
@@ -1093,6 +1102,7 @@ def _external_process_login_gate(profile, status) -> bool:
         return False
     if not profile.setup_status()["logged_in"]:
         print("Login failed.")
+        _note_setup_failure("auth")
         return False
     _say("", f"  {profile.display_name} credentials: ✓", "")
     return True
@@ -1181,31 +1191,3 @@ def _model_flow_plugin_provider(config, provider_id, current_model=""):
         confirm_base_url=base_url, confirm_api_key=api_key, notes=notes)
     _finish_model(selected, provider_id, f"Default model set to: {selected} (via {profile.display_name or provider_id})",
                   base_url=base_url or None, api_mode=profile.api_mode or None)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import subprocess  # noqa: F401,E402
-import urllib.parse  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'BEDROCK_GEO_PREFIXES': ('hermes_cli.model_setup_flows_bedrock', 'BEDROCK_GEO_PREFIXES'),
-    'bedrock_model_routable_from_region': ('hermes_cli.model_setup_flows_bedrock', 'bedrock_model_routable_from_region'),
-    'bedrock_region_geo_prefix': ('hermes_cli.model_setup_flows_bedrock', 'bedrock_region_geo_prefix'),
-    'custom_provider_slug': ('hermes_cli.providers', 'custom_provider_slug'),
-    'line_input': ('hermes_cli.cli_output', 'line_input'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -31,6 +31,7 @@ from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.urllib_security import open_credentialed_url
 from hermes_cli.version_info import get_version_info
 from hermes_cli.models_catalog_static import (
+    CuratedFallbackModels,
     CANONICAL_PROVIDERS,
     OPENROUTER_MODELS,
     PREFERRED_SILENT_DEFAULT_MODEL,
@@ -42,6 +43,7 @@ from hermes_cli.models_catalog_static import (
     _LIVE_FIRST_PICKER_PROVIDERS,
     _MODELS_DEV_PREFERRED,
     _OPENAI_FAST_MODE_PREFIXES,
+    _OPENAI_ULTRAFAST_MODELS,
     _PROVIDER_ALIASES,
     _PROVIDER_LABELS,
     _PROVIDER_MODELS,
@@ -278,6 +280,33 @@ def union_with_portal_paid_recommendations(
         force_refresh=force_refresh, synthesize_free_pricing=False)
 
 
+def union_with_nous_on_sale_models(curated_ids: list[str], pricing: dict[str, dict[str, Any]]) -> list[str]:
+    """Curated list plus every paid Nous model the gateway is discounting right now, deepest
+    discount first. A sale lives only in ``/v1/models`` ``pricing.original``, so without this the
+    picker badges discounts on curated rows but never shows a discounted model the curated list and
+    Portal recommendations omit. Free rows stay with ``freeRecommendedModels``; rows the gateway
+    marks tool-less (``"tools": False``) are skipped because Hermes is tool-calling-first, and
+    image/video generation rows are skipped because they are not chat models."""
+    from math import isfinite
+
+    from hermes_cli.models_pricing import _price_float, compute_sale_discount
+
+    seen = set(curated_ids)
+    on_sale: list[tuple[int, str]] = []
+    for mid, entry in (pricing or {}).items():
+        if mid in seen or not isinstance(entry, dict) or entry.get("tools") is False or entry.get("generation"):
+            continue
+        sale = compute_sale_discount(entry.get("prompt", ""), entry.get("completion", ""), entry.get("original"))
+        # Badge percentages are rounded: a nearly-free paid row can display 100% off.
+        paid = any(
+            (rate := _price_float(entry.get(key), positive=True)) is not None and isfinite(rate)
+            for key in ("prompt", "completion")
+        )
+        if sale is not None and isinstance(entry.get("original"), dict) and paid:
+            on_sale.append((-sale[0], mid))
+    return list(curated_ids) + [mid for _, mid in sorted(on_sale)]
+
+
 # Free-tier detection cache, per profile — short so an account upgrade shows within minutes.
 _FREE_TIER_CACHE_TTL: int = 180  # seconds
 _free_tier_cache: dict[str, tuple[bool, float]] = {}  # profile key -> (result, timestamp)
@@ -452,11 +481,63 @@ def get_preferred_silent_default_model(provider: str = "openrouter") -> str:
     return PREFERRED_SILENT_DEFAULT_MODEL
 
 
+def _is_anthropic_frontier_tier(model_id: Optional[str]) -> bool:
+    """Return True for Anthropic frontier-tier models (Opus + Fable).
+
+    Both tiers are the priciest Anthropic offerings and are unsafe defaults
+    for a freshly-authenticated provider picker or any other silent fallback:
+    paid users landing on a frontier tier have no opportunity to opt out
+    before the choice pins their main model and inherits into every cron job
+    that doesn't override ``model.provider``.
+
+    Anchored on the ``claude-`` family prefix, then the ``opus-`` / ``fable-``
+    tier token (after vendor-strip and lowercase normalization), so the
+    predicate survives future Anthropic releases (``claude-opus-5-0``,
+    ``claude-fable-6``, etc.) and rejects community / distill models whose
+    slug merely *contains* the substring ``opus`` (e.g. ``qwopus3.6-27b-coder``).
+    Sonnet and Haiku are deliberately NOT classified as frontier here — they
+    remain reasonable auto-default candidates.
+    """
+    raw = _strip_vendor_prefix(str(model_id or ""))
+    base = raw.split(":")[0].lower()
+    if not base.startswith("claude-"):
+        return False
+    return ("opus-" in base) or ("fable-" in base)
+
+
 def pick_silent_default_model(model_ids: list[str], provider: str = "openrouter") -> str:
-    """Catalog-labeled default when ``model_ids`` carries it, else the first entry, else "". Used by
-    every surface that must choose a model without an interactive picker."""
+    """Pick a cost-safe silent default from an available-models list.
+
+    Shared policy for every surface that must choose a model on the user's
+    behalf without an interactive confirmation (GUI onboarding
+    recommended-default, empty-model runtime fallback, provider-set-but-
+    model-missing resolution):
+
+    1. If the catalog-labeled preferred default (see
+       :func:`get_preferred_silent_default_model`) is present in
+       ``model_ids``, return it.
+    2. Else, return the first entry that is NOT an Anthropic frontier tier
+       (Opus / Fable — see :func:`_is_anthropic_frontier_tier`). Catalog
+       ordering is preserved, so a freshly-released cheaper model still
+       wins over a leftover Sonnet.
+    3. Else (every entry is a frontier tier), return ``model_ids[0]`` so the
+       picker is never empty — defensive last resort only.
+    4. Else (empty list), return ``\"\"``.
+
+    This hardened fallback closes the hole where a Portal-augmented list
+    that didn't carry the catalog label fell through to ``model_ids[0]``
+    (currently ``anthropic/claude-fable-5``) and billed the most expensive
+    Anthropic flagship for traffic the user never opted into.
+    """
+    if not model_ids:
+        return ""
     preferred = get_preferred_silent_default_model(provider)
-    return preferred if preferred in model_ids else (model_ids[0] if model_ids else "")
+    if preferred in model_ids:
+        return preferred
+    non_frontier = [mid for mid in model_ids if not _is_anthropic_frontier_tier(mid)]
+    if non_frontier:
+        return non_frontier[0]
+    return model_ids[0]
 
 
 def recommended_nous_default_model() -> dict[str, Any]:
@@ -751,8 +832,8 @@ def _provider_has_credentials(pid: str) -> bool:
 
 
 def list_available_providers() -> list[dict[str, str]]:
-    """``{id, label, aliases, authenticated}`` for every provider usable with ``provider:model``,
-    derived from :data:`CANONICAL_PROVIDERS` (shared with ``hermes model`` and ``/model``)."""
+    """``{id, label, aliases, authenticated}`` per listed provider (shared with ``hermes model`` / ``/model``)."""
+    from hermes_cli.models_catalog_static import listed_canonical_providers
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():
         aliases_for.setdefault(canonical, []).append(alias)
@@ -762,7 +843,7 @@ def list_available_providers() -> list[dict[str, str]]:
             "label": _PROVIDER_LABELS.get(pid, pid),
             "aliases": aliases_for.get(pid, []),
             "authenticated": _provider_has_credentials(pid)}
-        for pid in [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]]
+        for pid in [p.slug for p in listed_canonical_providers()] + ["custom"]]
 
 
 def parse_model_input(
@@ -882,6 +963,8 @@ def curated_models_for_provider(
     # Try live API first (Codex, Nous, etc. all support /models)
     live = provider_model_ids(normalized)
     if live:
+        # StepFun's Step Plan /models merge now lives in its provider fetcher
+        # (``_stepfun_catalog``) so every picker surface sees the same list.
         return [(m, "") for m in live]
 
     # Fallback to static catalog
@@ -1178,24 +1261,41 @@ def _fast_mode_route_supported(
     elif is_grok_46_family(str(model_id or "")):
         allowed = {"xai": "api.x.ai"}
     else:
-        allowed = {"openai": "api.openai.com", "openai-codex": "chatgpt.com"}
+        allowed = {
+            "openai": "api.openai.com",
+            "openai-api": "api.openai.com",
+            "openai-codex": "chatgpt.com",
+        }
     if provider and normalize_provider(provider) not in allowed:
         return False
     host = (urlparse(str(base_url or "")).hostname or "").lower()
     return not host or host in allowed.values()
 
 
+def model_supports_ultrafast(model_id: Optional[str]) -> bool:
+    """OpenAI Ultrafast (``service_tier: "ultrafast"``) is published per model, not per family."""
+    from agent.model_metadata import strip_codex_context_variant_suffix
+
+    base = _strip_vendor_prefix(strip_codex_context_variant_suffix(str(model_id or ""))).split(":")[0]
+    return base in _OPENAI_ULTRAFAST_MODELS
+
+
 def resolve_fast_mode_overrides(
-    model_id: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None
+    model_id: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None,
+    tier: Optional[str] = None,
 ) -> dict[str, Any] | None:
     """Fast/priority request_overrides — ``{"speed": "fast"}`` (Anthropic Fast Mode) or
     ``{"service_tier": "priority"}`` (OpenAI / xAI Priority Processing) — or None if unsupported.
+    ``tier="ultrafast"`` asks for OpenAI Ultrafast instead: ``{"service_tier": "ultrafast"}`` on an
+    Ultrafast model, None elsewhere (never a silent downgrade to a different paid tier).
     With ``provider``/``base_url`` the route is gated too (``_fast_mode_route_supported``) so proxies
     never see the params. Single fast-mode gate for ``/fast`` and ``agent.fast_mode`` windows."""
     if not model_supports_fast_mode(model_id):
         return None
     if (provider or base_url) and not _fast_mode_route_supported(model_id, provider, base_url):
         return None
+    if tier == "ultrafast":
+        return {"service_tier": "ultrafast"} if model_supports_ultrafast(model_id) else None
     return {"speed": "fast"} if _is_anthropic_fast_model(model_id) else {"service_tier": "priority"}
 
 
@@ -1351,11 +1451,6 @@ def _copilot_acp_session_models(force_refresh: bool) -> Optional[list[str]]:
     return live
 
 
-class CuratedFallbackModels(list[str]):
-    """A curated list served because the provider's live catalog was unavailable. The disk cache
-    treats it as a placeholder, never as the account's real catalog (#107391)."""
-
-
 def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     if normalized == "copilot-acp" and (live := _copilot_acp_session_models(force_refresh)):
         return live
@@ -1406,6 +1501,23 @@ def _api_key_provider_live(normalized: str, force_refresh: bool) -> Optional[lis
         return None
 
 
+def _stepfun_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
+    """Step Plan live list merged with the curated catalog (the ``_anthropic_catalog`` pattern).
+
+    The StepFun inference endpoint is the Step Plan API, whose ``/models`` returns a subset of
+    the full catalog: it omits models served by the Standard API (e.g. ``step-3.7-flash``),
+    so a healthy live response would shadow curated-only models from every picker surface
+    (#41147). Live rows first, then curated-only additions — and when the probe declines
+    (no credentials / failure) ``None`` falls through to the generic profile path, whose
+    ``merge_profile_catalog`` already serves the curated floor as a placeholder.
+    """
+    live = _api_key_provider_live(normalized, force_refresh)
+    if not live:
+        return live
+    curated = list(_PROVIDER_MODELS.get(normalized, []))
+    return _merge_unique(live, curated, key=_model_dedup_key) if curated else live
+
+
 def _anthropic_catalog(normalized: str, force_refresh: bool) -> list[str]:
     model_cfg = _get_model_config_dict()
     cfg_base_url = cfg_api_key = ""
@@ -1415,7 +1527,9 @@ def _anthropic_catalog(normalized: str, force_refresh: bool) -> list[str]:
     live = _fetch_anthropic_models(base_url=cfg_base_url or None, api_key=cfg_api_key or None)
     curated = list(_PROVIDER_MODELS.get("anthropic", []))
     if not live:
-        return curated
+        # A placeholder for the outage, not this account/proxy's catalog: the disk cache must
+        # never pin it over a same-credentials live row (#107391).
+        return CuratedFallbackModels(curated)
     # The live /v1/models dump lags newly-routed curated aliases (reachable before enumerated):
     # curated first, then live-only extras, so a fresh curated model never disappears.
     return live if cfg_base_url else _merge_unique(curated, live)
@@ -1514,7 +1628,7 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     "copilot": _copilot_catalog,
     "copilot-acp": _copilot_catalog,
     "nous": _nous_catalog,
-    "stepfun": _api_key_provider_live,
+    "stepfun": _stepfun_catalog,
     "gmi": _api_key_provider_live,
     "anthropic": _anthropic_catalog,
     "ai-gateway": lambda normalized, force_refresh: _fetch_ai_gateway_models() or None,
@@ -2892,86 +3006,3 @@ def cached_fetch_api_models(
     if _cache_entry_valid(entry, fp):
         return _catalog(entry)
     return _chat_catalog_rows(live)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import NamedTuple  # noqa: F401,E402
-from difflib import get_close_matches  # noqa: F401,E402
-import http.client  # noqa: F401,E402
-
-def is_nous_free_tier(account_info: dict[str, Any]) -> bool:
-    """Return True if the account info indicates a free (unpaid) tier.
-
-    Prefer the Portal's explicit ``paid_service_access.allowed`` entitlement
-    decision.  Legacy payloads fall back to ``subscription.monthly_charge == 0``.
-    Returns False when both signals are missing or unparseable.
-    """
-    paid_access = account_info.get("paid_service_access")
-    if isinstance(paid_access, dict):
-        allowed = paid_access.get("allowed")
-        if isinstance(allowed, bool):
-            return not allowed
-        paid = paid_access.get("paid_access")
-        if isinstance(paid, bool):
-            return not paid
-
-    sub = account_info.get("subscription")
-    if not isinstance(sub, dict):
-        return False
-    charge = sub.get("monthly_charge")
-    if charge is None:
-        return False
-    try:
-        return float(charge) == 0
-    except (TypeError, ValueError):
-        return False
-
-_PLUGIN_COMPAT_LAZY = {
-    'LMStudioLoadResult': ('hermes_cli.models_local', 'LMStudioLoadResult'),
-    'PROVIDER_GROUPS': ('hermes_cli.models_catalog_static', 'PROVIDER_GROUPS'),
-    'ProviderEntry': ('hermes_cli.models_catalog_static', 'ProviderEntry'),
-    'atomic_json_write': ('utils', 'atomic_json_write'),
-    'base_url_host_matches': ('utils', 'base_url_host_matches'),
-    'compute_sale_discount': ('hermes_cli.models_pricing', 'compute_sale_discount'),
-    'ensure_lmstudio_model_loaded': ('hermes_cli.models_local', 'ensure_lmstudio_model_loaded'),
-    'fetch_ai_gateway_pricing': ('hermes_cli.models_pricing', 'fetch_ai_gateway_pricing'),
-    'fetch_lmstudio_models': ('hermes_cli.models_local', 'fetch_lmstudio_models'),
-    'fetch_models_with_pricing': ('hermes_cli.models_pricing', 'fetch_models_with_pricing'),
-    'fetch_ollama_local_models': ('hermes_cli.models_local', 'fetch_ollama_local_models'),
-    'get_cached_nous_inference_base_url': ('hermes_cli.models_pricing', 'get_cached_nous_inference_base_url'),
-    'get_pricing_for_provider': ('hermes_cli.models_pricing', 'get_pricing_for_provider'),
-    'group_providers': ('hermes_cli.models_catalog_static', 'group_providers'),
-    'lmstudio_model_reasoning_options': ('hermes_cli.models_local', 'lmstudio_model_reasoning_options'),
-    'nous_catalog_url': ('hermes_cli.models_reasoning_caps', 'nous_catalog_url'),
-    'nous_model_reasoning_capabilities': ('hermes_cli.models_reasoning_caps', 'nous_model_reasoning_capabilities'),
-    'nous_policy_allowed_ids': ('hermes_cli.models_pricing', 'nous_policy_allowed_ids'),
-    'ollama_model_supports_thinking': ('hermes_cli.models_local', 'ollama_model_supports_thinking'),
-    'openrouter_model_reasoning_capabilities': ('hermes_cli.models_reasoning_caps', 'openrouter_model_reasoning_capabilities'),
-    'parse_openrouter_reasoning_capabilities': ('hermes_cli.models_reasoning_caps', 'parse_openrouter_reasoning_capabilities'),
-    'peek_cached_pricing': ('hermes_cli.models_pricing', 'peek_cached_pricing'),
-    'pricing_cache_scope': ('hermes_cli.models_pricing', 'pricing_cache_scope'),
-    'probe_lmstudio_models': ('hermes_cli.models_local', 'probe_lmstudio_models'),
-    'probe_ollama_local_models': ('hermes_cli.models_local', 'probe_ollama_local_models'),
-    'provider_group_for_slug': ('hermes_cli.models_catalog_static', 'provider_group_for_slug'),
-    'refresh_reasoning_caps_async': ('hermes_cli.models_reasoning_caps', 'refresh_reasoning_caps_async'),
-    'restrict_to_nous_policy': ('hermes_cli.models_pricing', 'restrict_to_nous_policy'),
-    'should_use_ollama_native_catalog': ('hermes_cli.models_local', 'should_use_ollama_native_catalog'),
-    'url_origin': ('hermes_cli.urllib_security', 'url_origin'),
-    'validate_requested_model': ('hermes_cli.models_validate', 'validate_requested_model'),
-    'warm_nous_reasoning_caps_async': ('hermes_cli.models_reasoning_caps', 'warm_nous_reasoning_caps_async'),
-    'warm_openrouter_reasoning_caps_async': ('hermes_cli.models_reasoning_caps', 'warm_openrouter_reasoning_caps_async'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

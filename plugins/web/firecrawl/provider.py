@@ -91,15 +91,16 @@ def _is_explicit_firecrawl_selection() -> bool:
     return _web_config_selects("firecrawl")
 
 
-def _use_keyless_ring() -> bool:
+def _use_keyless_ring(capability: Optional[str] = None) -> bool:
     """Route via the keyless ring only with no direct credentials, when the managed Nous
-    gateway isn't the selected path, and the keyless tier isn't disabled or pinned paid."""
+    gateway isn't the selected path for *capability*, and the keyless tier isn't disabled or pinned paid."""
     if _env("FIRECRAWL_API_KEY") or _env("FIRECRAWL_API_URL"):
         return False
-    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
+    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_web_capability_selection
     from plugins.web.keyless_mcp import use_keyless
     # Both probes are optional layers: a failing probe never blocks the ring.
-    for probe in (lambda: read_selection("web") == NOUS_MANAGED_PROVIDER, lambda: _is_tool_gateway_ready() and not _is_explicit_firecrawl_selection()):
+    for probe in (lambda: read_web_capability_selection(capability) == NOUS_MANAGED_PROVIDER,
+                  lambda: _is_tool_gateway_ready() and not _is_explicit_firecrawl_selection()):
         try:
             if probe():
                 return False
@@ -117,11 +118,20 @@ class _KeylessFirecrawlClient:
 
     def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         response = httpx.post(f"{self.api_url}{path}", json=payload, headers={"Content-Type": "application/json"}, timeout=60.0)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # Keep the vendor's reason (e.g. "your IP address looks suspicious") and the ring's ``HTTP <code>`` shape.
+            raise httpx.HTTPStatusError(f"HTTP {response.status_code}: {response.text.strip()[:300]}", request=exc.request, response=response) from exc
         return response.json()
 
     search = lambda self, *, query, limit=5: self._post("/v2/search", {"query": query, "limit": limit})  # noqa: E731
-    scrape = lambda self, *, url, formats: self._post("/v2/scrape", {"url": url, "formats": formats})  # noqa: E731
+    def scrape(self, *, url, formats, timeout=None):
+        # _scrape_one passes the SDK's server-side ``timeout`` (ms); the v2 REST payload takes the same field.
+        payload = {"url": url, "formats": formats}
+        if timeout is not None:
+            payload["timeout"] = timeout
+        return self._post("/v2/scrape", payload)
 
 
 def _get_firecrawl_gateway_url() -> str:
@@ -136,25 +146,40 @@ def _is_tool_gateway_ready() -> bool:
 def check_firecrawl_api_key() -> bool:
     """True when the route selected via ``hermes tools`` (or, on a never-configured
     install, either route) is usable."""
-    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
-    selected = read_selection("web")
-    if selected == NOUS_MANAGED_PROVIDER:
-        return _is_tool_gateway_ready()
-    return _get_direct_firecrawl_config() is not None or (selected is None and _is_tool_gateway_ready())
+    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_web_capability_selection
+
+    def _usable(selected) -> bool:
+        if selected == NOUS_MANAGED_PROVIDER:
+            return _is_tool_gateway_ready()
+        return _get_direct_firecrawl_config() is not None or (selected is None and _is_tool_gateway_ready())
+
+    # Search and extract can each pick their route (own key vs gateway); usable if either one is.
+    return any(_usable(read_web_capability_selection(cap)) for cap in ("search", "extract"))
+
+
+def is_managed_route(capability: Optional[str] = None) -> bool:
+    """True when Firecrawl calls for *capability* go through the Nous Tool Gateway rather than the user's
+    own key / instance — the same decision :func:`_get_firecrawl_client` makes, without building a client."""
+    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_web_capability_selection
+    selected = read_web_capability_selection(capability)
+    if selected is not None or _is_explicit_firecrawl_selection():
+        return selected == NOUS_MANAGED_PROVIDER
+    return _get_direct_firecrawl_config() is None and _is_tool_gateway_ready()
 
 
 def _firecrawl_backend_help_suffix() -> str:
     return ", or use the Nous Tool Gateway via your subscription (FIRECRAWL_GATEWAY_URL or TOOL_GATEWAY_DOMAIN)" if _backend_helpers.managed_nous_tools_enabled() else ""
 
 
-def _get_firecrawl_client() -> Any:
-    """Get or create the cached Firecrawl client. Strict selection semantics on the stored ``web`` selection:
-    ``"nous"`` → managed Tool Gateway ONLY; any other stored backend → direct Firecrawl ONLY (never a silent
-    managed fallback billed to Nous); never-configured → direct when present, else managed. Raises ValueError
-    when the resolved path is unusable."""
+def _get_firecrawl_client(capability: Optional[str] = None) -> Any:
+    """Get or create the cached Firecrawl client. Strict selection semantics on the stored selection for
+    *capability* (``web.<capability>_backend``, else the shared ``web`` selection): ``"nous"`` → managed Tool
+    Gateway ONLY; any other stored backend → direct Firecrawl ONLY (never a silent managed fallback billed to
+    Nous); never-configured → direct when present, else managed. Raises ValueError when the resolved path is
+    unusable."""
     wt = _wt()
-    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_error
-    selected = read_selection("web")
+    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_web_capability_selection, selection_error
+    selected = read_web_capability_selection(capability)
     direct_config = _get_direct_firecrawl_config()
 
     def _managed():
@@ -258,7 +283,19 @@ async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Di
     try:
         logger.info("Firecrawl scraping: %s", url)
         try:
-            scrape_result = await asyncio.wait_for(asyncio.to_thread(_get_firecrawl_client().scrape, url=url, formats=formats), timeout=60)
+            # Pass timeout (ms) to Firecrawl so the server-side deadline
+            # matches our asyncio deadline. Without this the API uses its
+            # 30 s default, causing SCRAPE_TIMEOUT before our 60 s
+            # client-side wait expires. See #43272.
+            scrape_result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _get_firecrawl_client("extract").scrape,
+                    url=url,
+                    formats=formats,
+                    timeout=60_000,
+                ),
+                timeout=60,
+            )
         except asyncio.TimeoutError:
             logger.warning("Firecrawl scrape timed out for %s", url)
             return _error_entry(url, _SCRAPE_TIMEOUT_MSG)
@@ -299,10 +336,10 @@ class FirecrawlWebSearchProvider(BaseWebSearchProvider):
         from tools.interrupt import is_interrupted
         if is_interrupted():
             return search_fail("Interrupted")
-        if _use_keyless_ring():
+        if _use_keyless_ring("search"):
             return keyless_search("Firecrawl", "firecrawl", query, limit, logger)
         logger.info("Firecrawl search: '%s' (limit=%d)", query, limit)
-        client = _get_firecrawl_client()
+        client = _get_firecrawl_client("search")
         try:
             web_results = _extract_web_search_results(client.search(query=query, limit=limit))
             logger.info("Firecrawl: found %d search results", len(web_results))
@@ -317,7 +354,7 @@ class FirecrawlWebSearchProvider(BaseWebSearchProvider):
         from tools.interrupt import is_interrupted as _is_interrupted
         if _is_interrupted():
             return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
-        if _use_keyless_ring():
+        if _use_keyless_ring("extract"):
             return await asyncio.to_thread(keyless_extract, "Firecrawl", "firecrawl", urls, logger)
         format = kwargs.get("format")
         formats = [format] if format in ("markdown", "html") else ["markdown", "html"]
@@ -326,34 +363,10 @@ class FirecrawlWebSearchProvider(BaseWebSearchProvider):
             for url in urls
         ]
 
+
     def get_setup_schema(self) -> Dict[str, Any]:
         return setup_schema(
             "Firecrawl", "keyless/paid · optional gateway",
             "Full search + extract; supports keyless cloud, direct API, and Nous tool-gateway routing.",
             "FIRECRAWL_API_KEY", "Firecrawl API key (optional; blank = keyless cloud or self-hosted)", "https://docs.firecrawl.dev/introduction",
         )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import NoReturn  # noqa: F401,E402
-from typing import TYPE_CHECKING  # noqa: F401,E402
-import os  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'WebSearchProvider': ('agent.web_search_provider', 'WebSearchProvider'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

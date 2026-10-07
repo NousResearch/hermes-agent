@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
+from hermes_cli.auth_constants import _codex_err
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_oauth import (
     _external_process_cli_command, _oauth_profile_name, _oauth_sessions, _oauth_sessions_lock, _truncate_token,
@@ -107,7 +108,31 @@ def _drop_oauth_session(sid: str) -> None:
 
 
 def _start_poller(target, sid: str, prefix: str = "oauth-poll") -> None:
-    threading.Thread(target=target, args=(sid,), daemon=True, name=f"{prefix}-{sid[:6]}").start()
+    with _oauth_sessions_lock:
+        sess = _oauth_sessions.get(sid)
+
+    def run() -> None:
+        try:
+            target(sid)
+        finally:  # the session's status is final once its poller returns
+            from hermes_cli.observability.shared_metrics_setup import settle_oauth_setup
+            settle_oauth_setup(sess)
+
+    threading.Thread(target=run, daemon=True, name=f"{prefix}-{sid[:6]}").start()
+
+
+def _track_oauth_setup(flow, session_id: str) -> None:
+    """Hand the setup flow to its session; settle it now if the poller already ended."""
+    from hermes_cli.observability.shared_metrics_setup import (
+        attach_oauth_setup, finish_provider_setup, settle_oauth_setup,
+    )
+    with _oauth_sessions_lock:
+        sess = _oauth_sessions.get(session_id)
+    if sess is None:  # cancelled before the start response even returned
+        finish_provider_setup(flow, "abandoned")
+        return
+    attach_oauth_setup(sess, flow)
+    settle_oauth_setup(sess)
 
 
 def _device_session_started(
@@ -183,6 +208,14 @@ def _codex_post(httpx, url: str, **kwargs: Any) -> Any:
             attempt += 1
 
 
+def _codex_http_error(status: int) -> Callable[[str], Exception]:
+    """Exception type for a non-200 Codex reply: 401/403 is OpenAI refusing this account/client;
+    408/429/5xx is the service down or shedding load (a network-class failure)."""
+    if status in {401, 403}:
+        return _codex_err
+    return ConnectionError if status in {408, 429} or status >= 500 else RuntimeError
+
+
 def _codex_request_user_code(httpx) -> Dict[str, Any]:
     """Step 1: request device code; returns device_data with ``interval`` clamped (>= 3s)."""
     from hermes_cli.auth import CODEX_OAUTH_CLIENT_ID
@@ -192,7 +225,7 @@ def _codex_request_user_code(httpx) -> Dict[str, Any]:
         headers=_JSON_HEADERS,
     )
     if resp.status_code != 200:
-        raise RuntimeError(_codex_device_code_start_error(resp))
+        raise _codex_http_error(resp.status_code)(_codex_device_code_start_error(resp))
     device_data = resp.json()
     device_data["interval"] = max(3, int(device_data.get("interval", "5")))
     if not device_data.get("user_code") or not device_data.get("device_auth_id"):
@@ -255,7 +288,7 @@ def _codex_exchange_tokens(httpx, code_resp: Dict[str, Any]) -> Dict[str, str]:
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     if token_resp.status_code != 200:
-        raise RuntimeError(f"token exchange returned {token_resp.status_code}")
+        raise _codex_http_error(token_resp.status_code)(f"token exchange returned {token_resp.status_code}")
     tokens = token_resp.json()
     if not tokens.get("access_token"):
         raise RuntimeError("token exchange did not return access_token")
@@ -297,18 +330,21 @@ def _codex_full_login_worker(session_id: str) -> None:
         # The cancellation check and the save are one atomic critical section
         # under the lock cancel_oauth_session() uses; otherwise DELETE could
         # flip "cancelled" between the check and the save and tokens would be
-        # persisted after the user believed the login was aborted.
-        with _oauth_sessions_lock:
+        # persisted after the user believed the login was aborted. The profile scope
+        # (which holds _SKILLS_PROFILE_LOCK) is entered first, as in every other saver:
+        # the reverse order deadlocks against a Nous/xAI/MiniMax save finishing at once.
+        with _profile_scope(session_profile), _oauth_sessions_lock:
             if _codex_cancelled(sess, session_id, " before token save"):
                 return
-            with _profile_scope(session_profile):
-                _save_codex_tokens(tokens)
+            _save_codex_tokens(tokens)
             sess["status"] = "approved"
         _log.info("oauth/device: openai-codex login completed (session=%s)", session_id)
     except Exception as e:
+        from hermes_cli.observability.shared_metrics_setup import note_oauth_failure
         _log.warning("codex device-code worker failed (session=%s): %s", session_id, e)
         with _oauth_sessions_lock:
             s = _oauth_sessions.get(session_id)
+            note_oauth_failure(s, e)
             if s:
                 s["status"] = "error"
                 s["error_message"] = str(e)
@@ -490,7 +526,10 @@ async def _start_codex_device_code(profile: Optional[str]) -> Dict[str, Any]:
     with _oauth_sessions_lock:
         s = _oauth_sessions.get(sid, {})
     if s.get("status") == "error":
-        raise HTTPException(status_code=500, detail=s.get("error_message") or "device-auth failed")
+        from hermes_cli.observability.shared_metrics_setup import _OAUTH_FAILURE_KEY
+        err = HTTPException(status_code=500, detail=s.get("error_message") or "device-auth failed")
+        err.setup_failure_class = s.get(_OAUTH_FAILURE_KEY) or "other"  # the worker's class, not "500"
+        raise err
     if not s.get("user_code"):
         raise HTTPException(status_code=504, detail="device-auth timed out before returning a user code")
     return {
@@ -775,15 +814,46 @@ async def start_oauth_login(provider_id: str, request: Request, profile: Optiona
         raise HTTPException(status_code=400, detail=f"Unknown provider {provider_id}")
     if catalog_entry["flow"] == "external":
         raise HTTPException(400, f"{provider_id} uses an external CLI; run `{catalog_entry['cli_command']}` manually")
+    if catalog_entry["flow"] != "device_code":
+        raise HTTPException(status_code=400, detail="Unsupported flow")
+    flow = await _begin_oauth_setup_metric(provider_id, profile)
     try:
-        if catalog_entry["flow"] == "device_code":
-            return await _start_device_code_flow(provider_id, profile=profile)
-    except HTTPException:
-        raise
+        body = await _start_device_code_flow(provider_id, profile=profile)
     except Exception as e:
+        await _end_oauth_setup_metric(flow, e)
+        if isinstance(e, HTTPException):
+            raise
         _log.exception("oauth/start %s failed", provider_id)
         raise HTTPException(status_code=500, detail=str(e))
-    raise HTTPException(status_code=400, detail="Unsupported flow")
+    if flow is not None:
+        await asyncio.get_running_loop().run_in_executor(None, _track_oauth_setup, flow, body["session_id"])
+    return body
+
+
+async def _begin_oauth_setup_metric(provider_id: str, profile: Optional[str]):
+    """Start the provider-setup metric off the event loop (a cold metrics runtime blocks); None when the
+    owning profile does not collect. Never raises: the start route's own validation owns errors."""
+    from hermes_cli.observability.shared_metrics_setup import begin_oauth_setup, collection_enabled
+    try:
+        profile_name = _oauth_profile_name(profile)
+        home = _resolve_profile_dir(profile_name) if profile_name else None
+        if not collection_enabled(home):
+            return None
+        return await asyncio.get_running_loop().run_in_executor(None, begin_oauth_setup, provider_id, home)
+    except Exception:
+        return None
+
+
+async def _end_oauth_setup_metric(flow, exc: Exception) -> None:
+    if flow is None:
+        return
+    from hermes_cli.observability.shared_metrics_setup import finish_provider_setup, setup_failure_class
+    with contextlib.suppress(Exception):
+        # A 401/403 from the start route is the provider refusing this account/client; a 504 is the
+        # provider not answering in time.
+        status = exc.status_code if isinstance(exc, HTTPException) else None
+        failure = {401: "auth", 403: "auth", 504: "network"}.get(status) or setup_failure_class(exc)
+        await asyncio.get_running_loop().run_in_executor(None, finish_provider_setup, flow, "failed", failure)
 
 
 @router.post("/api/providers/oauth/{provider_id}/submit")
@@ -839,4 +909,7 @@ async def cancel_oauth_session(session_id: str, request: Request, profile: Optio
             _oauth_sessions.pop(session_id, None)
     if sess is None:
         return {"ok": False, "message": "session not found"}
+    # Recorded now, not when the poller next wakes: a Nous/xAI poll can block for the code's lifetime.
+    from hermes_cli.observability.shared_metrics_setup import settle_oauth_setup
+    await asyncio.get_running_loop().run_in_executor(None, settle_oauth_setup, sess)
     return {"ok": True, "session_id": session_id}

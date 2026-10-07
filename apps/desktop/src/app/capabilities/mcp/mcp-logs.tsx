@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
-import { LogTail } from '@/components/chat/log-tail'
 import { getLogs } from '@/hermes'
 import { startCompletionPoll } from '@/lib/completion-poll'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -32,15 +31,7 @@ export function filterStdioSections(lines: string[], server: string): string[] {
 
 export type McpLogSource = 'agent' | 'stdio'
 
-export function McpLogs({
-  emptyLabel,
-  server,
-  source
-}: {
-  emptyLabel: string
-  server: null | string
-  source: McpLogSource
-}) {
+export function useMcpLogLines(server: null | string, source: McpLogSource): null | string[] {
   const [lines, setLines] = useState<null | string[]>(null)
   const activeProfile = useStore($activeGatewayProfile)
 
@@ -61,5 +52,5 @@ export function McpLogs({
     })
   }, [server, source, activeProfile])
 
-  return <LogTail emptyLabel={emptyLabel} lines={lines} />
+  return lines
 }

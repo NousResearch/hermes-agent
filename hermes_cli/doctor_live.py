@@ -13,6 +13,7 @@ from typing import Callable, List, Optional
 from hermes_cli.browser_runtime import chromium_executable
 from hermes_cli.doctor import _section, check_info
 from hermes_cli.doctor_report import check_fail, check_ok, check_warn
+from utils import normalize_proxy_env_vars
 
 DEFAULT_PROBE_TIMEOUT = 10.0
 
@@ -44,6 +45,10 @@ class ProbeResult:
 def _http_get(url: str, headers: Optional[dict] = None, timeout: Optional[float] = None):
     """Single HTTP GET seam for all metadata probes."""
     import httpx
+    # Sanitize at the seam (idempotent, no-op on a clean env): a bracketed-IPv6 NO_PROXY entry
+    # ([::1], Clash Verge/mihomo) makes this bare trust_env client raise InvalidURL at
+    # construction (#118159), which _run_one's catch-all would dress up as backend downtime.
+    normalize_proxy_env_vars()
     return httpx.get(url, headers=headers or {}, timeout=timeout)
 
 
@@ -194,20 +199,3 @@ def maybe_run_live_checks(args, issues: List[str]):
     except Exception as exc:  # catch-all: doctor must survive
         check_warn("Live backend probes crashed", f"({exc})")
         return None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-ELEVENLABS_VOICES_URL = "https://api.elevenlabs.io/v1/voices"
-
-FAL_MODELS_URL = "https://fal.ai/api/models?page=1"
-
-FIRECRAWL_HEALTH_URL = "https://api.firecrawl.dev/v2/team/credit-usage"
-
-GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
-
-OPENAI_MODELS_URL = "https://api.openai.com/v1/models"
-# ---- END PLUGIN-COMPAT ----

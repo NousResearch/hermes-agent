@@ -153,8 +153,12 @@ def _legacy_installs(backend: str) -> list[tuple[str, Path, dict]]:
 
 
 def _legacy_artifacts(package, version: str, target: str, assets: dict) -> list[str] | None:
-    """The manifest's archive digests in PM's archive order, or None when one is missing."""
-    shas = [assets.get(url.rsplit("/", 1)[-1]) for url in package.fetch_urls(version, target)]
+    """The manifest's archive digests in PM's archive order, or None when one is missing.
+
+    The pre-PM installer fetched only llama.cpp's own release assets. On Linux PM also pins the
+    libgomp .deb, so an adopted engine there records fewer archives than the lock and counts as
+    outdated: usable now (its manifest proves it ran against the host's libgomp), update offered."""
+    shas = [assets.get(name) for name in package._asset_names(version, target)]
     if not shas or not all(isinstance(sha, str) and _SHA256.fullmatch(sha) for sha in shas):
         return None
     return shas
@@ -247,25 +251,3 @@ def ensure_engine(backend: str, *, progress: Callable[[str, int, int, str], None
     if engine is None:
         raise BinaryResolutionError(f"llama.cpp {resolved} install has no usable pinned binary")
     return engine
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'get_hermes_home': ('hermes_constants', 'get_hermes_home'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

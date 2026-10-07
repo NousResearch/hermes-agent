@@ -290,14 +290,3 @@ def _compute_file_hashes(file_path: str, file_size: int) -> Dict[str, str]:
             bytes_read += len(chunk)
     full_md5 = md5.hexdigest()
     return {"md5": full_md5, "sha1": sha1.hexdigest(), "md5_10m": md5_10m.hexdigest() if need_10m else full_md5}
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Optional  # noqa: F401,E402
-import functools  # noqa: F401,E402
-
-ApiRequestFn = Callable[..., Awaitable[Dict[str, Any]]]
-# ---- END PLUGIN-COMPAT ----

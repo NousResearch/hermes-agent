@@ -34,7 +34,9 @@ import {
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
+import { SharedMetricsConsentDialog } from '@/components/shared-metrics/consent-dialog'
 import { TipHost } from '@/components/tips'
+import { UpdateHoldOverlay } from '@/components/update-hold-overlay'
 import { emitGatewayEvent } from '@/contrib/events'
 import { translateNow } from '@/i18n'
 import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
@@ -87,6 +89,7 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
@@ -161,6 +164,7 @@ import {
   useBackgroundSync
 } from './hooks/use-background-sync'
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
+import { useDesktopMetrics } from './hooks/use-desktop-metrics'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
@@ -192,38 +196,12 @@ export { WiredPane } from './context'
 // Only the RPCs issued by session creation follow the handoff's profile pin.
 const HANDOFF_CREATE_LEG_METHODS = new Set(['config.set', 'session.close', 'session.create'])
 
-export function ContribWiring({ children }: { children: ReactNode }) {
-  const queryClient = useQueryClient()
-  const location = useLocation()
-  const navigate = useNavigate()
-
-  const busyRef = useRef(false)
-  const creatingSessionRef = useRef(false)
-  // Billing recovery routes to Settings → Billing from surfaces without router
-  // context (the sticky toast). The shell owns `navigate`, so it consumes the
-  // intent counter here; the ref skips the initial mount value.
-  const billingSettingsSeenRef = useRef(0)
-  const poolLimitsSettingsSeenRef = useRef(0)
-  const routeRequestSeenRef = useRef(0)
-  const backendRestartSeenRef = useRef(0)
-  const cronReviewSeenRef = useRef(0)
-  const activeTranscriptSignatureRef = useRef(new Map<string, string>())
-  const activeTranscriptRequestSequenceRef = useRef(0)
-  // Stable identity for the whole callback surface (see WiringActions). Mutated
-  // in place each render so memoized surfaces never re-render on churn.
-  const actionsRef = useRef<WiringActions | null>(null)
-
-  const gatewayState = useStore($gatewayState)
-  const activeSessionId = useStore($activeSessionId)
-  const billingSettingsRequest = useStore($billingSettingsRequest)
-  const poolLimitsSettingsRequest = useStore($poolLimitsSettingsRequest)
+// Generic in-app route intents raised by toast recovery buttons (Open Keys,
+// Open Gateways, Maintenance …) fired from stores with no router context.
+function useRouteRequestNavigation(navigate: ReturnType<typeof useNavigate>): void {
   const routeRequest = useStore($routeRequest)
-  const backendRestartRequest = useStore($backendRestartRequest)
-  const cronReviewRequest = useStore($cronReviewRequest)
-  const currentCwd = useStore($currentCwd)
+  const routeRequestSeenRef = useRef(0)
 
-  // Generic in-app route intents raised by toast recovery buttons (Open Keys,
-  // Open Gateways, Maintenance …) fired from stores with no router context.
   // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
   useEffect(() => {
     if (!routeRequest || routeRequest.seq === routeRequestSeenRef.current) {
@@ -233,11 +211,23 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     routeRequestSeenRef.current = routeRequest.seq
     navigate(routeRequest.path)
   }, [navigate, routeRequest])
+}
 
-  // "Restart Hermes" from a toast: recycle the local backend the user is
-  // looking at (same IPC the Models page uses), then let the boot hook re-dial.
-  // A remote/cloud connection has no local process to recycle — there the
-  // only meaningful "restart" is re-dialing the connection.
+// Recovery actions raised by toast buttons (Restart Hermes, Open Billing, pool
+// caps, cron review) fire from stores with no router context. Each counter is
+// consumed here: the ref skips the initial mount value, and only a fresh
+// request navigates or recycles the backend.
+function useRecoveryRequestToasts(): void {
+  const navigate = useNavigate()
+  const billingSettingsRequest = useStore($billingSettingsRequest)
+  const poolLimitsSettingsRequest = useStore($poolLimitsSettingsRequest)
+  const backendRestartRequest = useStore($backendRestartRequest)
+  const cronReviewRequest = useStore($cronReviewRequest)
+  const billingSettingsSeenRef = useRef(0)
+  const poolLimitsSettingsSeenRef = useRef(0)
+  const backendRestartSeenRef = useRef(0)
+  const cronReviewSeenRef = useRef(0)
+
   // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
   useEffect(() => {
     if (backendRestartRequest === backendRestartSeenRef.current) {
@@ -300,6 +290,28 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       navigate(CRON_ROUTE)
     }
   }, [cronReviewRequest, navigate])
+}
+
+export function ContribWiring({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient()
+  const location = useLocation()
+  const navigate = useNavigate()
+
+  const busyRef = useRef(false)
+  const creatingSessionRef = useRef(false)
+  const activeTranscriptSignatureRef = useRef(new Map<string, string>())
+  const activeTranscriptRequestSequenceRef = useRef(0)
+  // Stable identity for the whole callback surface (see WiringActions). Mutated
+  // in place each render so memoized surfaces never re-render on churn.
+  const actionsRef = useRef<WiringActions | null>(null)
+
+  const gatewayState = useStore($gatewayState)
+  const activeSessionId = useStore($activeSessionId)
+  const currentCwd = useStore($currentCwd)
+
+  useRouteRequestNavigation(navigate)
+  useRecoveryRequestToasts()
+
   const freshDraftReady = useStore($freshDraftReady)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
@@ -559,6 +571,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const {
     archiveSession,
     branchCurrentSession,
+    branchLoadedSession,
     branchStoredSession,
     createBackendSessionForSend,
     openNewSessionTile,
@@ -566,6 +579,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     resumeSession,
     selectSidebarItem,
     startFreshSessionDraft,
+    submitTextToNewSession,
     unarchiveSession
   } = useSessionActions({
     activeSessionId,
@@ -580,6 +594,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onFreshDraftRouteIntent: clearRoutedSessionIntent,
     requestGateway,
     resetViewSync,
+    routedSessionId,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
@@ -776,9 +791,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   })
 
   // Runs outside the selected ChatBar so queues belonging to background
-  // sessions continue once those sessions are idle.
+  // sessions continue once those sessions are idle. The session dispatcher
+  // routes each send to its owner; a disconnected foreground is not a global gate.
   useBackgroundQueueDrain({
-    enabled: gatewayState === 'open',
+    enabled: true,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     submitText
@@ -788,6 +804,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // the tile TAB menu needs, without touching the primary view).
   useSessionTileDelegate({
     archiveSession,
+    branchLoadedSession,
     branchStoredSession,
     executeSlashCommand,
     removeSession,
@@ -803,7 +820,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // The global-hotkey Quick Entry window's bridge: its captured text rides the
   // SAME submit machinery the normal composer uses (current chat / picked
   // session / new session), and it hears gateway truth from this window.
-  useQuickEntryBridge({ startFreshSessionDraft, submitText })
+  useQuickEntryBridge({ submitText, submitTextToNewSession })
 
   // Leaving HUD mode hands this window the session back (see hud/handoff).
   useHudHandoff({ navigate, resumeSession })
@@ -939,6 +956,24 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       void armWakeWord(requestGateway)
     }
   }, [gatewayState, requestGateway])
+
+  useEffect(() => {
+    if (gatewayState !== 'open' || isAuxiliaryWindow()) {
+      return
+    }
+
+    const report = () => void reportPendingUpdateRun(requestGateway)
+    report()
+
+    return window.hermesDesktop?.updates?.onPendingRun?.(report)
+  }, [gatewayState, requestGateway])
+
+  useDesktopMetrics({
+    enabled: !isAuxiliaryWindow(),
+    gatewayOpen: gatewayState === 'open',
+    pathname: location.pathname,
+    profile: activeGatewayProfile
+  })
 
   const activeIsMessaging =
     !!selectedStoredSessionId &&
@@ -1352,6 +1387,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           requestGateway={requestGateway}
         />
       )}
+      {!isAuxiliaryWindow() && (
+        <SharedMetricsConsentDialog
+          enabled={gatewayState === 'open'}
+          profile={activeGatewayProfile}
+          requestGateway={requestGateway}
+        />
+      )}
       {/* One host for every free-tier sign-in entry point (Settings › Billing,
           the statusbar chip, the first-launch intro). It owns the flow; the
           entry points only record the intent. */}
@@ -1373,6 +1415,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <UpdatesOverlay />
       <GatewayConnectingOverlay />
       <BootFailureOverlay />
+      <UpdateHoldOverlay />
       <CommandPalette />
       <PluginInstallModal />
       <PetGenerateOverlay />

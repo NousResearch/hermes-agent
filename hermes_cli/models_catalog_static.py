@@ -9,6 +9,11 @@ from __future__ import annotations
 from typing import NamedTuple
 
 
+class CuratedFallbackModels(list[str]):
+    """A curated list served because the provider's live catalog was unavailable. The disk cache
+    treats it as a placeholder, never as the account's real catalog (#107391)."""
+
+
 # Fallback OpenRouter snapshot used when the live catalog is unavailable, as
 # ``(model_id, description shown in menus)``. ``:free`` SKUs are described "free".
 _OPENROUTER_DESCRIPTIONS = {
@@ -25,15 +30,17 @@ _OPENROUTER_DESCRIPTIONS = {
     "openai/gpt-6-astra-pro-fast": "2x price, priority tier",
     "openai/gpt-6-astra-pro-flex": "0.5x price, flex tier",
     "stealth/union-alpha": "free, stealth model",
+    "stealth/space-bunny-alpha": "free, stealth model",
 }
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     (mid, _OPENROUTER_DESCRIPTIONS.get(mid, "free" if mid.endswith(":free") else ""))
     for mid in (
         "anthropic/claude-fable-5.1", "anthropic/claude-fable-5", "anthropic/claude-opus-5.5",
         "anthropic/claude-opus-5", "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8", "anthropic/claude-opus-4.8-fast",
-        "anthropic/claude-sonnet-5", "anthropic/claude-haiku-4.5", "openai/gpt-6-astra", "openai/gpt-6-astra-fast",
-        "openai/gpt-6-astra-flex", "openai/gpt-6-astra-pro", "openai/gpt-6-astra-pro-fast", "openai/gpt-6-astra-pro-flex",
-        "openai/gpt-6-sol", "openai/gpt-6-sol-pro",
+        "anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-5", "anthropic/claude-haiku-4.5", "openai/gpt-6-astra",
+        "openai/gpt-6-astra-fast", "openai/gpt-6-astra-flex", "openai/gpt-6-astra-pro", "openai/gpt-6-astra-pro-fast",
+        "openai/gpt-6-astra-pro-flex",
+        "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro", "openai/gpt-6-sol", "openai/gpt-6-sol-pro",
         "openai/gpt-6-luna", "openai/gpt-6-luna-pro",
         "openai/gpt-5.5", "openai/gpt-5.5-pro", "openai/gpt-5.4-mini", "google/gemini-3.1-pro-preview",
         "google/gemini-3.8-flash", "google/gemini-3.7-flash", "x-ai/grok-4.7", "x-ai/grok-4.6",
@@ -45,10 +52,12 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "tencent/hy3",
         "stepfun/step-3.7-flash", "nvidia/nemotron-3-super-120b-a12b", "meta/muse-spark-1.2",
         "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3", "meta/muse-spark-1.3-contributor", "sakana/fugu-ultra",
+        "upstage/solar-pro4", "upstage/solar-mini4",
         "openrouter/pareto-code", "thinkingmachines/inkling:free", "thinkingmachines/inkling-small:free",
         "minimax/minimax-m3:free", "z-ai/glm-5.2:free", "poolside/laguna-s-2.1:free", "poolside/laguna-xs-2.1:free",
         "nvidia/nemotron-3-super-120b-a12b:free", "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "nvidia/nemotron-3.5-lightning:free", "stealth/union-alpha",
+        "inclusionai/ling-3.0-flash:free", "nvidia/nemotron-3.5-lightning:free", "stealth/union-alpha",
+        "stealth/space-bunny-alpha",
     )
 ]
 
@@ -165,7 +174,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Used by /model counts and provider_model_ids fallback when /v1/models is unavailable.
     "openai": list(_OPENAI_CHAT_MODELS),
     "openai-api": [
-        "gpt-6-sol", "gpt-6-sol-pro", "gpt-6-luna", "gpt-6-luna-pro",
+        "gpt-6.1-sol", "gpt-6.1-sol-pro", "gpt-6-sol", "gpt-6-sol-pro", "gpt-6-luna", "gpt-6-luna-pro",
         "gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-5.6-terra", "gpt-5.6-terra-pro", "gpt-5.6-luna",
         "gpt-5.6-luna-pro", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
         "gpt-5-mini", "gpt-5.3-codex", "gpt-4.1", "gpt-4o", "gpt-4o-mini",
@@ -200,7 +209,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5",
         "kimi-k2-thinking", "kimi-k2-turbo-preview", "kimi-k2-0905-preview",
     ],
-    "stepfun": ["step-3.5-flash", "step-3.5-flash-2603"],
+    "stepfun": ["step-3.7-flash", "step-3.5-flash", "step-3.5-flash-2603"],
     "moonshot": [
         "kimi-k3", "kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview", "kimi-k2-0905-preview",
     ],
@@ -276,6 +285,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "us.anthropic.claude-sonnet-5", "us.anthropic.claude-opus-5-5", "us.anthropic.claude-sonnet-4-6",
         "us.anthropic.claude-opus-4-6-v1",
         "us.anthropic.claude-haiku-4-5-20251001-v1:0", "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "openai.gpt-6-astra", "openai.gpt-6.1-sol", "openai.gpt-6-sol", "openai.gpt-6-luna",
         "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",
         "us.amazon.nova-pro-v1:0", "us.amazon.nova-lite-v1:0", "us.amazon.nova-micro-v1:0", "deepseek.v3.2",
         "us.meta.llama4-maverick-17b-instruct-v1:0", "us.meta.llama4-scout-17b-instruct-v1:0",
@@ -367,7 +377,11 @@ _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
 
 
 def _plugin_provider_enters_picker(pp) -> bool:
-    """Picker admission for a plugin model-provider profile: any slug without a built-in row."""
+    """Picker admission for a plugin model-provider profile: any slug without a built-in row.
+
+    Every profile is admitted, hidden (pre-release) ones included: ``CANONICAL_PROVIDERS`` is also
+    the typed-path registry (``provider:model`` parsing, labels), so a signed-in user must still be
+    able to name one. The pickers that list rows filter with ``providers.provider_listed``."""
     return pp.name not in _canonical_slugs
 
 
@@ -401,6 +415,15 @@ def sync_plugin_provider_catalog() -> int:
 _PROVIDER_LABELS: dict[str, str] = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
 sync_plugin_provider_catalog()
+
+
+def listed_canonical_providers() -> list[ProviderEntry]:
+    """``CANONICAL_PROVIDERS`` minus pre-release profiles the user has not opted into: what a provider
+    LIST offers. Typed paths (``provider:model``, labels, ``--provider``) keep the full table."""
+    from hermes_cli import models  # the binding every list consumer read before this filter existed
+    from providers import unlisted_provider_names
+    hidden = unlisted_provider_names()
+    return [p for p in models.CANONICAL_PROVIDERS if p.slug not in hidden]
 
 
 # ---------------------------------------------------------------------------
@@ -559,6 +582,10 @@ _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "openc
 # positives are harmless. Codex-series models are excluded — the Codex Responses API doesn't
 # expose service_tier.
 _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = ("gpt-", "o1", "o3", "o4")
+# OpenAI Ultrafast (service_tier="ultrafast", 6x Standard): broadly available for GPT-6 Astra only
+# (developers.openai.com/api/docs/guides/ultrafast-mode, 2026-09-29); GPT-6.1 Sol "coming soon".
+# Exact wire slugs, matched after stripping the vendor prefix and the Hermes-side ``-900k`` alias.
+_OPENAI_ULTRAFAST_MODELS: frozenset[str] = frozenset({"gpt-6-astra"})
 
 
 # Providers where models.dev is authoritative: the curated list is an offline fallback plus custom

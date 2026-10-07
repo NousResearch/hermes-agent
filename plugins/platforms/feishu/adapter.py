@@ -84,7 +84,7 @@ FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT, EA_REASON_LABEL_TEXT
+from agent.i18n import t
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
@@ -167,8 +167,10 @@ _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup win
 _APPROVAL_CHOICE_MAP: Dict[str, str] = {
     "approve_once": "once", "approve_session": "session", "approve_always": "always", "deny": "deny",
 }
-_APPROVAL_LABEL_MAP: Dict[str, str] = {
-    "once": "Approved once", "session": "Approved for session", "always": "Approved permanently", "deny": "Denied",
+# choice → catalog key of the resolved-card title; looked up through ``t()`` at resolve time.
+_APPROVAL_LABEL_KEYS: Dict[str, str] = {
+    "once": "platform.feishu.approval.resolved_once", "session": "platform.feishu.approval.resolved_session",
+    "always": "platform.feishu.approval.resolved_always", "deny": "platform.feishu.approval.resolved_deny",
 }
 
 
@@ -1748,11 +1750,25 @@ class FeishuAdapter(BasePlatformAdapter):
     # Template attrs for the shared _format_exec_approval core. The card
     # header carries the title, so the text core starts at the code fence.
     _EA_HEADER = ""
-    _EA_REASON_LABEL = f"**{EA_REASON_LABEL_TEXT}:** "
-    _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
     _EA_CMD_BUDGET = 3000
 
-    _EA_ACTION_LABELS = {"once": "✅ Allow Once", "session": "✅ Session", "always": "✅ Always", "deny": "❌ Deny"}
+    # Resolved per call (not at class-body time) so the active language applies.
+    @property
+    def _EA_REASON_LABEL(self) -> str:  # noqa: N802 — base class attr name
+        return f"**{t('gateway.exec_approval.reason_label')}:** "
+
+    @property
+    def _EA_SMART_DENY_LINE(self) -> str:  # noqa: N802
+        line = t("gateway.exec_approval.smart_deny_line")
+        label, sep, rest = line.partition(":")
+        return "\n\n" + (f"**{label}{sep}**{rest}" if sep else line)
+
+    @property
+    def _EA_ACTION_LABELS(self) -> Dict[str, str]:  # noqa: N802
+        return {"once": "✅ " + t("gateway.exec_approval.action_once"),
+                "session": "✅ " + t("platform.feishu.approval.action_session"),
+                "always": "✅ " + t("platform.feishu.approval.action_always"),
+                "deny": "❌ " + t("gateway.exec_approval.action_deny")}
     _EA_CARD_ACTIONS = {"once": "approve_once", "session": "approve_session", "always": "approve_always", "deny": "deny"}
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
@@ -1766,7 +1782,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 _card_button(label, style or "default",
                              {"hermes_action": self._EA_CARD_ACTIONS[choice], "approval_id": approval_id})
                 for label, choice, style in prompt.actions]
-            card = _card(f"⚠️ {EA_HEADER_TEXT}", "orange", prompt.text, actions=actions)
+            card = _card(f"⚠️ {t('gateway.exec_approval.header')}", "orange", prompt.text, actions=actions)
             return await self._send_interactive_card(
                 prompt.chat_id, card, prompt.metadata, "send_exec_approval failed",
                 state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,
@@ -1795,13 +1811,14 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _build_update_prompt_card(*, prompt: str, default: str, prompt_id: int) -> Dict[str, Any]:
-        default_hint = f"\n\nDefault: `{default}`" if default else ""
+        default_hint = t("platform.feishu.update_prompt.default_hint", default=default) if default else ""
 
         def _btn(label: str, answer: str, btn_type: str) -> dict:
             return _card_button(label, btn_type, {"hermes_update_prompt_action": answer, "update_prompt_id": prompt_id})
 
-        actions = [_btn("✓ Yes", "y", "primary"), _btn("✗ No", "n", "danger")]
-        return _card("☤ Update Needs Your Input", "orange", f"{prompt}{default_hint}", actions=actions)
+        actions = [_btn(t("platform.feishu.update_prompt.answer_yes"), "y", "primary"),
+                   _btn(t("platform.feishu.update_prompt.answer_no"), "n", "danger")]
+        return _card(t("platform.feishu.update_prompt.title"), "orange", f"{prompt}{default_hint}", actions=actions)
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "",
@@ -1825,14 +1842,17 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
         """Raw card JSON shown in place of the buttons once an approval is resolved."""
         icon = "❌" if choice == "deny" else "✅"
-        label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
-        return _card(f"{icon} {label}", "red" if choice == "deny" else "green", f"{icon} **{label}** by {user_name}")
+        key = _APPROVAL_LABEL_KEYS.get(choice, "platform.feishu.approval.resolved_fallback")
+        label = t(key)
+        return _card(f"{icon} {label}", "red" if choice == "deny" else "green",
+                     t("platform.feishu.approval.resolved_by_user", icon=icon, label=label, user=user_name))
 
     @staticmethod
     def _build_resolved_update_prompt_card(*, answer: str, user_name: str) -> Dict[str, Any]:
         yes = answer == "y"
-        title = f"{'✅' if yes else '❌'} Update prompt answered: {'Yes' if yes else 'No'}"
-        return _card(title, "green" if yes else "red", f"Answered by **{user_name}**")
+        title = t("platform.feishu.update_prompt.answered_title", icon="✅" if yes else "❌",
+                  answer=t("platform.feishu.update_prompt.word_yes" if yes else "platform.feishu.update_prompt.word_no"))
+        return _card(title, "green" if yes else "red", t("platform.feishu.update_prompt.answered_by", user=user_name))
 
     @staticmethod
     def _write_update_prompt_response(answer: str) -> None:
@@ -1954,7 +1974,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 chat_id=chat_id, animation_url=animation_url, caption=caption, reply_to=reply_to, metadata=metadata,
             )
         degraded_caption = self.warning_text(
-            f"[GIF downgraded to file]\n{caption}" if caption else "[GIF downgraded to file]", caption)
+            t("platform.feishu.media.gif_downgraded_caption", caption=caption) if caption
+            else t("platform.feishu.media.gif_downgraded"), caption)
         return await self.send_document(
             chat_id=chat_id, file_path=file_path, file_name=file_name, caption=degraded_caption,
             reply_to=reply_to, metadata=metadata,
@@ -2344,8 +2365,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     try:
                         await self.send(
                             _chat,
-                            "⌛ That approval had already expired — the command "
-                            "was not run (it timed out or was resolved elsewhere).",
+                            t("platform.shared.approval_expired"),
                         )
                     except Exception:
                         logger.debug("[Feishu] expired-approval notice failed", exc_info=True)

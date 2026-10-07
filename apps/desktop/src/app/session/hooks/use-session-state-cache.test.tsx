@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { purgeInFlightTurnJournals, resetInFlightTurnJournalStateForTests } from '@/lib/inflight-turn-journal'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionStoredIdRotation,
@@ -231,6 +232,59 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     expect(tiles.find(t => t.storedSessionId === 'stored-A-next')).toBeDefined()
   })
 
+  it('carries the conversation preview tabs onto the new tip when compression rotates it (#73890)', async () => {
+    const { $previewTabs, $visiblePreviewTabs, closeRightRail, openPreview } = await import('@/store/preview')
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-A')
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
+    )
+
+    try {
+      openPreview({ kind: 'url', label: 'Docs', source: 'https://docs.example', url: 'https://docs.example' })
+
+      act(() => {
+        cache.updateSessionState('runtime-A', state => state, 'stored-A')
+        cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+      })
+
+      expect($previewTabs.get().map(tab => tab.sessionId)).toEqual(['stored-A-next'])
+      expect($visiblePreviewTabs.get()).toHaveLength(1)
+
+      act(() => setSelectedStoredSessionId('stored-A-next'))
+      expect($visiblePreviewTabs.get()).toHaveLength(1)
+    } finally {
+      closeRightRail()
+    }
+  })
+
+  it("hands a runtime's pre-stored-id preview tabs over when its stored id binds, even on a no-op update (#73890)", async () => {
+    const { $previewTabs, closeRightRail, openPreview } = await import('@/store/preview')
+    let cache!: Cache
+
+    setActiveSessionId('runtime-B')
+    setSelectedStoredSessionId(null)
+    render(<Harness activeSessionId="runtime-B" onReady={value => (cache = value)} selectedStoredSessionId={null} />)
+
+    try {
+      act(() => {
+        cache.updateSessionState('runtime-B', state => state, null)
+      })
+      openPreview({ kind: 'url', label: 'Docs', source: 'https://docs.example', url: 'https://docs.example' }, null)
+      expect($previewTabs.get().map(tab => tab.sessionId)).toEqual([undefined])
+
+      act(() => {
+        cache.updateSessionState('runtime-B', state => state, 'stored-B')
+      })
+
+      expect($previewTabs.get().map(tab => tab.sessionId)).toEqual(['stored-B'])
+    } finally {
+      closeRightRail()
+    }
+  })
+
   it('rekeys the persisted owner profile when its runtime rotates while another profile is visible', () => {
     let cache!: Cache
     const profileA = 'rotation-profile-a-98622'
@@ -337,6 +391,94 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
   })
 })
 
+// #77486 review follow-up (kvnloo): the journal under a pre-rotation stored id
+// is unreachable by every id a permanent delete holds, so it used to survive
+// until MAX_AGE_MS. Rotation now migrates it to the new tip.
+describe('useSessionStateCache — journal migration on stored-id rotation', () => {
+  beforeEach(() => {
+    // The 400ms persist throttle is real timer work; fake timers make the
+    // journaled write deterministic without racing the 15s test timeout.
+    vi.useFakeTimers()
+    resetInFlightTurnJournalStateForTests()
+    window.localStorage.clear()
+  })
+
+  afterEach(() => {
+    cleanup()
+    clearAllSessionStates()
+    setActiveSessionId(null)
+    setActiveSessionStoredIdRotation(null)
+    setSelectedStoredSessionId(null)
+    setSessions([])
+    $sessionTiles.set([])
+    window.localStorage.clear()
+    resetInFlightTurnJournalStateForTests()
+    vi.useRealTimers()
+  })
+
+  it('migrates the journaled in-flight tail to the new stored id so permanent delete reaches it', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-A')
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
+    )
+
+    // Busy turn journaled under the lineage tip A.
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+    })
+
+    const assistantStreaming = assistantText('assistant-stream-1', 'partial answer')
+
+    assistantStreaming.pending = true
+
+    act(() => {
+      cache.updateSessionState(
+        'runtime-A',
+        state => ({
+          ...state,
+          busy: true,
+          messages: [userMessage('u1', 'sensitive prompt'), assistantStreaming],
+          streamId: 'assistant-stream-1',
+          turnStartedAt: 1000
+        }),
+        'stored-A'
+      )
+    })
+
+    act(() => {
+      vi.advanceTimersByTime(400)
+    })
+
+    const journalKey = (storedSessionId: string) =>
+      `hermes.desktop.inflightTurnJournal.v2:${encodeURIComponent(storedSessionId)}`
+
+    expect(window.localStorage.getItem(journalKey('stored-A'))).not.toBeNull()
+
+    // Compression rotates the same runtime's stored id A -> B through the REAL
+    // ensureSessionState path (updateSessionState delegates to it).
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-B')
+    })
+
+    // The old key is gone and the new key holds the migrated snapshot.
+    expect(window.localStorage.getItem(journalKey('stored-A'))).toBeNull()
+    expect(window.localStorage.getItem(journalKey('stored-B'))).not.toBeNull()
+
+    // Permanent delete of the surviving lineage tip B reaches every copy: no
+    // journal key for A or B remains (the delete gesture holds B plus the
+    // lineage root; A is only reachable because the rotation migrated it).
+    act(() => {
+      purgeInFlightTurnJournals(['stored-B'])
+    })
+
+    expect(window.localStorage.getItem(journalKey('stored-A'))).toBeNull()
+    expect(window.localStorage.getItem(journalKey('stored-B'))).toBeNull()
+  })
+})
+
 function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessProps) {
   const busyRef: MutableRefObject<boolean> = { current: false }
 
@@ -379,6 +521,7 @@ function RotationHarness({ activeSessionId, onReady, selectedStoredSessionId }: 
     navigate: vi.fn() as never,
     requestGateway: async () => ({}) as never,
     resetViewSync: cache.resetViewSync,
+    routedSessionId: null,
     runtimeIdByStoredSessionIdRef: cache.runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,

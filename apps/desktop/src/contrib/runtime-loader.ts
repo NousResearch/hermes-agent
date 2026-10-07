@@ -34,6 +34,7 @@
 
 import { atom } from 'nanostores'
 
+import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
 
@@ -357,8 +358,23 @@ function unsupportedImports(source: string): string[] {
 }
 
 export function unloadRuntimePlugin(id: string): void {
-  loaded.get(id)?.forEach(dispose => dispose())
+  const disposers = loaded.get(id)
+
+  // Released BEFORE the disposers run, and each disposer in its own
+  // try/catch: a disposer with its own bug must not wedge the registry
+  // (#126338). With a bare forEach the throw aborted the loop and stranded
+  // the delete, so every later reload re-ran the same broken disposers and
+  // died before the fresh register() — file edits looked inert until an
+  // app restart.
   loaded.delete(id)
+
+  disposers?.forEach(dispose => {
+    try {
+      dispose()
+    } catch (error) {
+      console.error(`[plugins] ${id}: disposer failed during unload`, error)
+    }
+  })
 }
 
 /** Evaluate + register one runtime plugin. Returns its id, or null on failure. */
@@ -450,13 +466,16 @@ export async function loadRuntimePlugin(
       packageOrigin: options.packageOrigin
     }
 
-    const failRegistration = (disposers: (() => void)[], error: unknown) => {
+    const failRegistration = (error: unknown) => {
       // Roll back everything register() managed before it failed — a
       // half-registered plugin must not leave live contributions/listeners
       // nobody can ever dispose — and land the failure on the plugin's OWN
       // row so Capabilities → Plugins shows it (the toggle stays usable).
-      disposers.forEach(dispose => dispose())
-      loaded.delete(plugin.id)
+      // unloadRuntimePlugin() tolerates a throwing disposer, so a cleanup
+      // bug in the rollback can neither strand the remaining disposers nor
+      // hold the registration — the #126338 wedge where every later reload
+      // re-ran the same broken disposers instead of the fixed file.
+      unloadRuntimePlugin(plugin.id)
       console.error(`[plugins] ${plugin.id} failed to register (${origin})`, error)
       notifyError(error, `Plugin "${record.name}" failed to register`)
       publishPlugin({ ...record, status: 'error', error: error instanceof Error ? error.message : String(error) })
@@ -477,7 +496,7 @@ export async function loadRuntimePlugin(
           () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
         )
       } catch (error) {
-        failRegistration(disposers, error)
+        failRegistration(error)
 
         return
       }
@@ -489,7 +508,7 @@ export async function loadRuntimePlugin(
       if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
         void Promise.resolve(result).catch((error: unknown) => {
           if (loaded.get(plugin.id) === disposers) {
-            failRegistration(disposers, error)
+            failRegistration(error)
           }
         })
       }
@@ -581,7 +600,13 @@ async function readPackageMarker(desktop: Window['hermesDesktop'], folder: strin
       return null
     }
 
-    const parsed = JSON.parse((await desktop.readFileText(marker.path)).text) as {
+    const read = await desktop.readFileText(marker.path)
+
+    if (isReadFileErrorResult(read)) {
+      return null
+    }
+
+    const parsed = JSON.parse(read.text) as {
       catalogName?: string
       package?: string
       repo?: string
@@ -650,6 +675,10 @@ async function readPluginSourceText(file: string): Promise<string> {
   }
 
   const result = await desktop.readFileText(file)
+
+  if (isReadFileErrorResult(result)) {
+    throw new Error(result.message || `Plugin read failed: ${result.error}`)
+  }
 
   if (result.truncated) {
     throw new PluginSourceOversizeError(
@@ -762,7 +791,11 @@ async function watchDiskPluginFile(desktop: NonNullable<Window['hermesDesktop']>
   }
 
   try {
-    record.watchId = (await desktop.watchPreviewFile(record.file)).id
+    const watch = await desktop.watchPreviewFile(record.file)
+
+    // Structured "folder gone" answer — nothing to watch; the poll still
+    // reconciles new folders and edits need a manual reload.
+    record.watchId = isReadFileErrorResult(watch) ? null : watch.id
   } catch {
     // Unwatchable — the poll still reconciles new folders; edits need a
     // manual "Reload desktop plugins".

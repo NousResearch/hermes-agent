@@ -144,6 +144,8 @@ def _resolve_budget_fallback(
             final_response = _pending_verification_response
             if _pending_verification_response_previewed:
                 agent._response_was_previewed = True
+                # Reuses the candidate the user already saw sealed as an interim (#130396).
+                agent._reused_response_text = final_response
             preserved_verification_fallback = True
         else:
             # _handle_max_iterations makes one extra toolless request for a summary.
@@ -326,6 +328,17 @@ def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) 
 def _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_reason, interrupted, logger) -> None:
     """Always INFO so agent.log captures WHY every turn ended; WARNING when the last
     message is a tool result (the "just stops" scenario)."""
+    _touch = getattr(agent, "_touch_activity", None)
+    if callable(_touch):
+        # Stamp the activity clock at the loop's end (#131740): the watchdog's stall
+        # surface then names the finalizer ("turn end logged") instead of the last
+        # API call, and a turn that wedges in the post-loop tail is measured — and
+        # aborted — from when the loop actually finished, not from the last provider
+        # response. Never raises into the finalizer.
+        try:
+            _touch("turn end logged")
+        except Exception:
+            logger.debug("turn-end activity stamp failed", exc_info=True)
     _last_msg_role = messages[-1].get("role") if messages else None
     _last_tool_name = None
     if _last_msg_role == "tool":
@@ -578,6 +591,9 @@ def finalize_turn(
 
     _rollback_interrupted_preflight_display(agent, interrupted)
 
+    from hermes_cli.observability.shared_metrics_harness import finish_turn
+    finish_turn(agent, _turn_exit_reason, final_response, interrupted=interrupted, failed=failed)
+
     _cleanup_errors: List[str] = []
     # The model has answered (or the loop gave up): a title upgrade held back because it shares a
     # self-hosted endpoint with the main request (#117296) may go out now.
@@ -678,6 +694,9 @@ def finalize_turn(
         "response_transformed": _response_transformed,
         "pre_transform_response": _pre_transform_response,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
+        # The final is byte-for-byte a response this turn already delivered (no footer or
+        # explanation appended since): it carries no new text for the client to paint.
+        "response_reused": bool(final_response) and final_response == getattr(agent, "_reused_response_text", None),
         "model": agent.model,
         # requested_model / served_model: proxy-reported deployment or Hermes' own fallback route.
         **result_model_fields(agent),
@@ -726,6 +745,7 @@ def finalize_turn(
     if _leftover_steer:
         result["pending_steer"] = _leftover_steer
     agent._response_was_previewed = False
+    agent._reused_response_text = None
     if interrupted and agent._interrupt_message:
         result["interrupt_message"] = agent._interrupt_message
     agent.clear_interrupt()

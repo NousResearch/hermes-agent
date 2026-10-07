@@ -366,7 +366,7 @@ def test_lsp_node_server_inherits_pm_runtime_and_preserves_overrides(node_store,
     script.chmod(0o755)
     monkeypatch.setenv("PATH", "")
     ctx = ServerContext(
-        workspace_root=str(tmp_path), install_strategy="off",
+        workspace_root=str(tmp_path), install_strategy="off", trusted=True,
         binary_overrides={"typescript": [str(script)]},
         env_overrides={"typescript": {"LSP_FLAG": "project-value"}},
     )

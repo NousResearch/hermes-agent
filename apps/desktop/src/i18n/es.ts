@@ -1,9 +1,16 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { esAuxTasks } from './es_aux_tasks'
+import { esBoot } from './es_boot'
+import { esLocalModels } from './es_local_models'
+import { esModelMenu } from './es_model_menu'
+import { esNotices } from './es_notices'
+import { esSharedMetrics } from './es_shared_metrics'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
+  sharedMetrics: esSharedMetrics,
   intro: introEs,
   connectors: {
     title: 'Conecta tus apps',
@@ -404,81 +411,7 @@ export const esOverrides = {
     revealUnavailable:
       'Esa ruta no está en este equipo: está en la máquina del backend. Usa “Mostrar en el árbol de archivos”.'
   },
-  boot: {
-    ready: 'Hermes Desktop está listo',
-    desktopBootFailedWithMessage: message => `Falló el arranque del escritorio: ${message}`,
-    steps: {
-      connectingGateway: 'Conectando el gateway de escritorio en vivo',
-      loadingSettings: 'Cargando la configuración de Hermes',
-      loadingSessions: 'Cargando sesiones recientes',
-      retryingRemoteBackend: 'Reconectando al backend remoto de Hermes…',
-      startingDesktopConnection: 'Iniciando la conexión de escritorio',
-      startingHermesDesktop: 'Iniciando Hermes Desktop…'
-    },
-    errors: {
-      backgroundExited:
-        'El servicio que ejecuta tus chats se cerró de forma inesperada. Reinícialo para continuar; tus chats y ajustes están a salvo.',
-      backgroundExitedDuringStartup: 'Hermes se detuvo justo después de iniciarse.',
-      backendStopped: 'Hermes dejó de funcionar en segundo plano',
-      restartHermes: 'Reiniciar Hermes',
-      openLogs: 'Abrir registros',
-      desktopBootFailed: 'Hermes no pudo iniciarse',
-      gatewayConnectionLost: 'Hermes perdió la conexión',
-      gatewayConnectionLostDetail:
-        'Seguimos intentando reconectar. Puedes seguir leyendo y escribiendo borradores. Si continúa, reconecta ahora o revisa los ajustes de conexión.',
-      reconnectNow: 'Reconectar ahora',
-      connectionSettings: 'Configuración de conexión',
-      gatewaySignInRequired: 'Tu Hermes remoto cerró tu sesión',
-      gatewaySignInRequiredDetail: 'Vuelve a iniciar sesión para reconectar. Tus chats y ajustes están a salvo.',
-      signInAgain: 'Volver a iniciar sesión',
-      ipcBridgeUnavailable: 'Hermes Desktop no pudo comunicarse con su propia capa en segundo plano. Reinicia la app.'
-    },
-    causes: {
-      exitedEarly: 'El servicio en segundo plano de Hermes se detuvo justo después de iniciarse.',
-      timedOut: 'El servicio en segundo plano de Hermes no respondió a tiempo.',
-      permission: 'Hermes no pudo escribir en su carpeta de datos (problema de permisos).',
-      diskFull: 'El disco está lleno, así que Hermes no pudo iniciarse.',
-      portInUse: 'Otro programa está usando el puerto de red que necesita Hermes.',
-      installMissing: 'Falta parte de la instalación de Hermes. Elige Reparar instalación para restaurarla.'
-    },
-    failure: {
-      title: 'Hermes no pudo iniciarse',
-      description:
-        'El servicio en segundo plano de Hermes no arrancó. Prueba uno de los pasos de recuperación de abajo. Nada de esto elimina tus chats ni tus ajustes.',
-      details: 'Detalles',
-      remoteTitle: 'Se requiere iniciar sesión en el gateway remoto',
-      remoteDescription:
-        'Tu sesión del gateway remoto caducó. Inicia sesión de nuevo para reconectar. Esto no elimina tus chats ni tu configuración.',
-      retry: 'Reintentar',
-      repairInstall: 'Reparar instalación',
-      useLocalGateway: 'Usar gateway local',
-      gatewaySettings: 'Configuración del gateway',
-      back: 'Atrás',
-      openLogs: 'Abrir registros',
-      repairHint: 'La reparación vuelve a ejecutar el instalador y puede tardar unos minutos en una máquina nueva.',
-      remoteSignInHint: signInLabel =>
-        `Cierra la sesión guardada del navegador remoto y abre ${signInLabel}. Usa el gateway local para cambiar al backend incluido.`,
-      signOutAndSignIn: 'Cerrar sesión e iniciar sesión',
-      remoteFailureHint: 'Revisa la URL e inicia sesión en Configuración del gateway, o cambia al gateway local.',
-      cloudDownTitle: 'El agente de Nous Cloud no está disponible',
-      cloudDownDescription:
-        'El agente en la nube administrado por Nous al que se conecta este gateway devuelve un error de servidor. No se puede reiniciar desde aquí: revisa su estado, cambia al gateway local o pide ayuda.',
-      cloudDownHint:
-        'Los botones de abajo abren el Nous Portal (estado y controles de la instancia) y nuestro Discord para obtener ayuda.',
-      cloudDownCheckPortal: 'Ver el estado en el Portal',
-      cloudDownDiscord: 'Pedir ayuda en Discord',
-      hideRecentLogs: 'Ocultar registros recientes',
-      showRecentLogs: 'Mostrar registros recientes',
-      signedInTitle: 'Sesión iniciada',
-      signedInMessage: 'Reconectando con el gateway remoto…',
-      signInIncompleteTitle: 'Inicio de sesión incompleto',
-      signInIncompleteMessage: 'La ventana de inicio de sesión se cerró antes de que terminara la autenticación.',
-      signInFailed: 'No se pudo iniciar sesión',
-      signInToRemoteGateway: 'Iniciar sesión en el gateway remoto',
-      signInWithProvider: provider => `Iniciar sesión con ${provider}`,
-      identityProvider: 'tu proveedor de identidad'
-    }
-  },
+  boot: esBoot.boot,
   notifications: {
     region: 'Notificaciones',
     hide: 'Ocultar',
@@ -581,10 +514,7 @@ export const esOverrides = {
       creditsTitle: 'Créditos'
     }
   },
-  remoteDisplayBanner: {
-    message: reason =>
-      `Renderizado por software activo — se detectó una pantalla remota (${reason}). Se desactivó la aceleración por GPU para evitar parpadeos.`
-  },
+  ...esNotices,
   billingBlock: {
     titleNous: 'Sin créditos de Nous',
     titleProvider: provider => `Sin créditos — ${provider}`,
@@ -696,7 +626,7 @@ export const esOverrides = {
       'view.toggleProfileRail': 'Mostrar u ocultar la barra de perfiles',
       'view.toggleSimpleMode': 'Activar o desactivar el modo simple',
       'view.showFiles': 'Mostrar explorador de archivos',
-      'view.showBrowser': 'Abrir el navegador',
+      'view.showBrowser': 'Alternar navegador',
       'view.toggleHud': 'Alternar modo HUD',
       'hud.snapToPointer': 'Mover HUD al puntero (global, mientras el HUD esté abierto)',
       'view.showTerminal': 'Mostrar terminal',
@@ -832,6 +762,15 @@ export const esOverrides = {
     resetConfirm: '¿Restablecer toda la configuración a los valores predeterminados de Hermes?',
     exportFailed: 'Falló la exportación',
     resetFailed: 'Falló el restablecimiento',
+    pluginPages: {
+      blurb:
+        'Opciones que añaden los plugins instalados. Cada plugin tiene su propia página y algunos añaden subpáginas.',
+      empty: 'Ningún plugin tiene ajustes todavía.',
+      manage: 'Gestionar plugins',
+      agentSettings: 'Ajustes del agente',
+      pageCount: (n: number) => (n === 1 ? '1 página' : `${n} páginas`),
+      missing: 'Este plugin no tiene página de ajustes. Puede que esté desactivado o desinstalado.'
+    },
     nav: {
       providers: 'Proveedores',
       providerAccounts: 'Cuentas',
@@ -853,24 +792,15 @@ export const esOverrides = {
     },
     plugins: {
       title: 'Plugins de escritorio',
-      blurb:
-        'Amplía esta app, no un agente: se instala una sola vez para toda la app, sea cual sea el perfil, gateway o equipo al que te conectes. Incluidos o copiados en la carpeta desktop-plugins; los interruptores se aplican al instante.',
-      count: n => `${n} instalados`,
       openFolder: 'Abrir la carpeta de plugins de escritorio',
       rescan: 'Volver a buscar',
       reveal: 'Mostrar en el gestor de archivos',
-      enable: 'Activar',
-      disable: 'Desactivar',
       failed: 'falló',
-      empty: 'Aún no hay plugins de escritorio instalados.',
       kinds: {
         bundled: 'incluido',
         disk: 'en disco',
         runtime: 'en ejecución'
       },
-      agentHalfMissing: 'falta la parte del agente aquí',
-      agentHalfMissingTip:
-        'Esta es la parte de escritorio de un plugin incluido, pero su parte del agente no está instalada en el backend o perfil conectado. Instálala desde Capacidades → Plugins.',
       installModal: {
         installFromGit: 'Instalar desde Git',
         reviewRepository: 'Revisar repositorio',
@@ -1097,6 +1027,9 @@ export const esOverrides = {
       }
     },
     appearance: {
+      chatTextScaleTitle: 'Tamaño del texto del chat',
+      chatTextScaleDesc:
+        'Ajusta el texto de la conversación y del editor respecto a la escala de la interfaz. Las barras laterales y los controles mantienen su tamaño.',
       title: 'Apariencia',
       intro: 'Solo escritorio. El modo es el brillo; el tema es la paleta y el marco del chat.',
       colorMode: 'Modo de color',
@@ -1172,6 +1105,9 @@ export const esOverrides = {
       textDirection: { auto: 'Auto', rtl: 'De derecha a izquierda', ltr: 'De izquierda a derecha' },
       introSplashTitle: 'Pantalla de bienvenida',
       introSplashDesc: 'El logotipo y la indicación que se muestran en un chat vacío.',
+      modelPricingTitle: 'Precios de modelos',
+      modelPricingDesc:
+        'Muestra los precios de entrada, salida y lectura de caché por millón de tokens en el selector de modelos.',
       reactionsTitle: 'Reacciones a mensajes',
       reactionsDesc:
         'Reacciones emoji estilo iMessage — reacciona a los mensajes, y Hermes puede reaccionar a los tuyos.',
@@ -1651,7 +1587,10 @@ export const esOverrides = {
         '¿Quitar todos los conjuntos de herramientas activados? Esto desactiva la memoria, el terminal, la búsqueda web, la delegación y la mayoría de las demás herramientas hasta que los vuelvas a activar.',
       keepAwakeTitle: 'Mantener el equipo activo',
       keepAwakeDesc:
-        'Impide que este equipo entre en reposo para que las ejecuciones largas o nocturnas continúen. La pantalla puede seguir atenuándose.',
+        'Impide que este equipo entre en reposo. «Mientras trabaja» solo se aplica mientras hay un turno en curso: las ejecuciones nocturnas continúan sin mantener el portátil despierto toda la semana. La pantalla puede seguir atenuándose.',
+      keepAwakeOff: 'Desactivado',
+      keepAwakeWhileWorking: 'Mientras trabaja',
+      keepAwakeAlways: 'Siempre',
       disableF12Title: 'Desactivar DevTools con F12',
       disableF12Desc:
         'Impide que F12 abra las herramientas para desarrolladores. Ctrl+Shift+I (o Cmd+Opt+I en Mac) sigue funcionando.',
@@ -1962,6 +1901,8 @@ export const esOverrides = {
         'Plataforma remota no compatible. El modo SSH de Hermes Desktop admite hosts remotos Linux, macOS y Windows.',
       sshErrTimeout: 'La conexión SSH agotó el tiempo de espera. Es posible que el host no responda o esté en reposo.',
       sshErrUpdateRequired: 'Actualiza Hermes en el host remoto antes de conectarte con Desktop SSH.',
+      sshErrInteractiveAuth:
+        'Tailscale SSH requiere una comprobación interactiva del navegador. Ejecuta `ssh <host> true` en la terminal, completa la comprobación y vuelve a intentarlo; Hermes ejecuta SSH de forma no interactiva.',
       sshErrUnknown: 'Falló la conexión SSH.'
     },
     keys: {
@@ -2052,6 +1993,8 @@ export const esOverrides = {
       defaultsLabel: 'Valores predeterminados',
       reasoning: 'Razonamiento',
       reasoningOff: 'Desactivado',
+      speed: 'Velocidad',
+      speedStandard: 'Estándar',
       defaultsFailed: 'No se pudieron guardar los valores predeterminados del modelo',
       loadFailed: 'No se pudieron cargar los modelos',
       restartRequired:
@@ -2061,12 +2004,15 @@ export const esOverrides = {
       restartFailed: 'No se pudo reiniciar el backend',
       auxiliaryTitle: 'Modelos auxiliares',
       resetAllToMain: 'Restablecer todos al principal',
+      staleAuxDismiss: 'No volver a mostrar',
       auxiliaryDesc:
         'Las tareas auxiliares usan el modelo principal de forma predeterminada. Asigna un modelo dedicado a cualquier tarea para anularlo.',
       setToMain: 'Usar principal',
       change: 'Cambiar',
       autoUseMain: 'auto · usar modelo principal',
       inheritMainEffort: 'heredar · esfuerzo del modelo principal',
+      inheritsFrom: task => `hereda de ${task}`,
+      followTask: task => `Seguir ${task}`,
       providerDefault: '(predeterminado del proveedor)',
       fallbackAdd: 'Añadir respaldo',
       fallbackEmpty: 'No hay modelos de respaldo; se usa el modelo predeterminado salvo que falle.',
@@ -2078,172 +2024,9 @@ export const esOverrides = {
       moaAggregator: 'Agregador',
       moaAggregatorBilled: 'modelo que actúa · se factura por la ejecución',
       moaReferenceHint: 'asesora una vez por turno por defecto',
-      tasks: {
-        vision: {
-          label: 'Visión',
-          hint: 'Análisis de imágenes'
-        },
-        compression: {
-          label: 'Compresión',
-          hint: 'Compactación de contexto'
-        },
-        skills_hub: {
-          label: 'Hub de skills',
-          hint: 'Búsqueda de skills'
-        },
-        approval: {
-          label: 'Aprobación',
-          hint: 'Aprobación automática inteligente'
-        },
-        mcp: {
-          label: 'MCP',
-          hint: 'Enrutamiento de herramientas MCP'
-        },
-        title_generation: {
-          label: 'Generación de títulos',
-          hint: 'Títulos de sesión'
-        },
-        review: {
-          label: 'Revisión',
-          hint: 'subagente revisor de /review'
-        },
-        triage_specifier: {
-          label: 'Especificador de triaje',
-          hint: 'Detalle de especificaciones de Kanban'
-        },
-        kanban_decomposer: {
-          label: 'Descomponedor de Kanban',
-          hint: 'Descomposición de tareas'
-        },
-        profile_describer: {
-          label: 'Descriptor de perfiles',
-          hint: 'Descripciones automáticas de perfiles'
-        },
-        curator: {
-          label: 'Curador',
-          hint: 'Revisión de uso de skills'
-        }
-      }
+      tasks: esAuxTasks
     },
-    localModels: {
-      connectionChanged: 'Cambió la conexión de los modelos locales',
-      title: 'Modelos locales',
-      runtimeTitle: 'Entorno local',
-      runtimeReady: backend => `Listo · ${backend}`,
-      serverRunning: 'En ejecución',
-      runtimeInstalled: 'Entorno llama.cpp instalado',
-      runtimeInstalledDetail: (tag, backend) =>
-        `Compilación ${tag}, backend ${backend}. Hermes inicia y gestiona el servidor por ti.`,
-      installTitle: 'Instalar el entorno local',
-      installDetail:
-        'Descarga el motor de inferencia llama.cpp (unos cientos de MB). Los modelos que descargues se ejecutan por completo en este equipo: sin cuenta y sin que nada salga de tu computadora.',
-      installAction: 'Instalar entorno',
-      installing: 'Instalando el entorno…',
-      installFailed: 'Falló la instalación del entorno',
-      hardwareTitle: 'Este equipo',
-      hardwareLoading: 'Comprobando tu hardware…',
-      vram: label => `${label} de memoria de GPU`,
-      ram: label => `${label} de RAM`,
-      unifiedMemory: 'Memoria unificada',
-      modelsTitle: 'Modelos',
-      recommended: 'Recomendado',
-      recommendedReason: {
-        'best-quality-resident':
-          'El modelo de mayor calidad que se ejecuta por completo en tu GPU a máxima velocidad. La selección equilibra la calidad con la velocidad prevista en este hardware.',
-        'speed-gated-quality':
-          'Cabe un modelo de mayor calidad en este equipo, pero respondería demasiado lento por el ancho de banda de su memoria; este es el mejor modelo que se mantiene rápido.',
-        'fastest-resident':
-          'Ningún modelo alcanza la velocidad máxima en este hardware; este es el que más se acerca ejecutándose por completo en la memoria de la GPU.'
-      },
-      noRecommendationTitle: 'No hay recomendación automática para este equipo',
-      noRecommendationDetail:
-        'La configuración automática requiere un modelo seleccionado que quepa por completo en la memoria de la GPU o unificada. Aun así, puedes elegir un modelo abajo o explorar más modelos.',
-      noRecommendationAction: 'Explorar modelos',
-      downloaded: 'Descargado',
-      downloadAction: size => `Descargar · ${size}`,
-      downloadProgress: (done, total) => `Descargando ${done} de ${total}`,
-      downloadDoneToast: model => `${model} está listo.`,
-      installDoneToast: 'Entorno local instalado y listo.',
-      quickstartTitle: 'Ejecutar un modelo en este equipo',
-      quickstartDetail: (model, size) =>
-        `Un clic lo configura todo: el motor local, ${model} (${size} de descarga) y tu modelo predeterminado para chats nuevos. Nada sale de este equipo.`,
-      quickstartDetailReady: model =>
-        `Un clic convierte ${model} en tu modelo predeterminado para chats nuevos. Todo se ejecuta en este equipo.`,
-      quickstartAction: 'Configurarlo por mí',
-      quickstartConfigure: 'Prefiero elegir',
-      quickstartDoneToast: model => `${model} está configurado: los chats nuevos se ejecutan en este equipo.`,
-      quickstartFailed: 'Falló la configuración del modelo local',
-      quickstartStageEngine: 'Motor',
-      quickstartStageModel: 'Modelo',
-      quickstartStageFinish: 'Finalizar',
-      useAction: 'Usar',
-      activePill: 'Predeterminado',
-      updateTitle: 'Hay una actualización del motor',
-      updateDetail: (next, current) =>
-        `Hay una compilación más reciente de llama.cpp (${next}) lista para instalar; tienes ${current}. Los modelos siguen funcionando durante la descarga.`,
-      updateAction: 'Actualizar motor',
-      updating: 'Actualizando el motor…',
-      upToDateTitle: 'Motor actualizado',
-      upToDateDetail: (tag, backend) => `Ejecutando llama.cpp ${tag} (${backend}), la compilación configurada.`,
-      activeDetail: 'Los chats nuevos usan este modelo; se carga cuando envías tu primer mensaje',
-      activeNotLoaded: 'Se carga con tu primer mensaje',
-      loadedPill: 'En memoria',
-      placementResident: 'todo en GPU',
-      placementSpilled: 'parte en RAM',
-      placementResidentTip:
-        'Se ejecuta por completo en la memoria de la GPU con esta ventana de contexto: máxima velocidad.',
-      placementSpilledTip:
-        'Parte de este modelo se ejecuta desde la RAM del sistema: funciona, pero más lento. Una compilación más compacta o un contexto menor cabría por completo.',
-      loadingPill: 'Cargando…',
-      ejectTip: 'Liberar memoria de GPU (se vuelve a cargar con el siguiente mensaje)',
-      ejected: 'Modelo descargado de memoria: memoria de GPU liberada.',
-      ejectFailed: 'No se pudo descargar el modelo de memoria',
-      stopServer: 'Apagar',
-      startServer: 'Encender',
-      runtimeRunningDetail:
-        'El servidor local está en ejecución. Apagarlo libera toda la memoria de GPU e impide que los chats nuevos usen modelos locales hasta que lo vuelvas a encender.',
-      serverStopped: 'Servidor local detenido: memoria de GPU liberada.',
-      serverStarted: 'Servidor local en ejecución.',
-      serverStopFailed: 'No se pudo detener el servidor local',
-      serverStartFailed: 'No se pudo iniciar el servidor local',
-      activating: 'Iniciando…',
-      activateFailed: model => `No se pudo cambiar a ${model}`,
-      activateDoneToast: model => `Los chats nuevos usan ${model}.`,
-      downloadFailed: model => `Falló la descarga de ${model}`,
-      pillFitsGpu: 'Cabe en tu GPU',
-      pillUsesRam: 'Usa RAM del sistema',
-      pillTooBig: 'Demasiado grande para este equipo',
-      browseTitle: 'Buscar más modelos',
-      browseHint:
-        'Busca en todo Hugging Face. Los modelos que descargues aquí se ajustan automáticamente a tu equipo, pero no los hemos probado.',
-      browsePlaceholder: 'Busca modelos por nombre o autor…',
-      browseSearching: 'Buscando en Hugging Face',
-      browseListing: 'Leyendo los archivos del modelo',
-      browseShowFiles: 'Mostrar archivos',
-      browseRefresh: 'Actualizar',
-      browseDownloads: 'descargas',
-      browseLikes: 'me gusta',
-      browseGated: 'requiere iniciar sesión en Hugging Face',
-      browseNoGguf: 'No se encontraron archivos de modelo compatibles.',
-      browseFitUnknown: 'Ajuste desconocido',
-      browseAlreadyDownloaded: 'Ya descargado.',
-      addedByYou: 'Añadido por ti',
-      browseDownloadStarted: 'Descargando {name}',
-      browseDownloadAria: 'Descargar {name}',
-      sideloadButton: 'Añadir archivo de modelo',
-      sideloadTitle: 'Elige un archivo de modelo GGUF',
-      sideloadDone: 'Se añadió {name}.',
-      sideloadAlreadyPresent: 'Ya está en tu biblioteca.',
-      pillFullContext: (max: string) => `Contexto completo de ${max}`,
-      pillFullContextTip: 'Se ejecuta con la ventana de contexto completa del modelo desde el principio',
-      pillUpTo: (max: string) => `Hasta ${max} de contexto`,
-      pillGrowsTip: 'Crece automáticamente cuando tu conversación necesita más espacio',
-      pillVision: 'Ve imágenes',
-      deleteAction: 'Eliminar modelo',
-      deleteConfirm: (model: string) => `¿Eliminar ${model} del disco?`,
-      deleted: (model: string) => `${model} eliminado.`,
-      deleteFailed: 'Error al eliminar'
-    },
+    localModels: esLocalModels,
     billing: {
       perMonth: (amount: string) => `${amount}/mes`,
       creditsPerMonth: (amount: string) => `${amount} créditos/mes`,
@@ -2810,6 +2593,7 @@ export const esOverrides = {
         no_interactive_session: 'sin sesión interactiva',
         version_too_old: 'versión demasiado antigua',
         missing_app: 'falta la app',
+        unsupported_gpu: 'GPU no compatible',
         unknown: 'estado desconocido'
       },
       catalogTitle: 'Catálogo de plugins',
@@ -2855,7 +2639,7 @@ export const esOverrides = {
         save: 'Guardar configuración',
         saved: (name: string) => `Configuración de ${name} guardada.`,
         saveFailed: (name: string) => `No se pudo guardar la configuración de ${name}`,
-        optional: '(opcional)',
+        required: 'Obligatorio',
         secretSet: '•••••••• (configurado)',
         secretStoredAs: (env: string) =>
           `Se guarda en el .env del perfil como ${env}, nunca en config.yaml; déjalo en blanco para conservar el valor actual.`
@@ -3077,12 +2861,6 @@ export const esOverrides = {
       system: 'Sistema',
       usage: 'Uso'
     },
-    sectionDescriptions: {
-      maintenance: 'Diagnóstico, copias de seguridad, curador y datos de memoria',
-      sessions: 'Buscar y gestionar sesiones',
-      system: 'Estado, registros y acciones del sistema',
-      usage: 'Actividad de tokens, coste y skills a lo largo del tiempo'
-    },
     nav: {
       newChat: {
         title: 'Nueva sesión',
@@ -3133,7 +2911,8 @@ export const esOverrides = {
     gatewayStopped: 'Gateway de mensajería detenido',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Sesiones activas ${count}`,
     restartGateway: 'Reiniciar gateway',
-    openBrowser: 'Abrir navegador',
+    openBrowser: 'Alternar navegador',
+    toggleBrowser: 'Alternar navegador',
     gatewayRestartFailed: 'No se pudo reiniciar el gateway.',
     sharedGatewayRestartTitle: '¿Reiniciar el gateway compartido?',
     sharedGatewayRestartDescription: (bots: string) => `Todos los bots de este dispositivo se reconectan: ${bots}`,
@@ -3169,7 +2948,7 @@ export const esOverrides = {
     actions: count => `${count} acciones`,
     logFile: 'Archivo de registro',
     logLevel: 'Nivel',
-    logSearchPlaceholder: 'Filtrar líneas de registro…',
+    logSearchPlaceholder: 'Buscar en los registros…',
     maintenance: {
       runOps: 'Diagnóstico',
       doctor: 'Ejecutar diagnóstico',
@@ -3218,6 +2997,13 @@ export const esOverrides = {
   },
   messaging: {
     search: 'Buscar mensajería...',
+    statusFilter: {
+      all: 'Todos',
+      bad: 'Errores',
+      good: 'Conectados',
+      muted: 'Inactivos',
+      warn: 'Requiere atención'
+    },
     loading: 'Cargando plataformas de mensajería...',
     loadFailed: 'No se pudieron cargar las plataformas de mensajería',
     states: {
@@ -3254,6 +3040,9 @@ export const esOverrides = {
     replaceValue: 'Reemplazar valor actual',
     openDocs: 'Abrir docs',
     clearField: key => `Limpiar ${key}`,
+    addListEntry: 'Añadir otro',
+    removeListEntry: 'Quitar',
+    listEntryPlaceholder: 'Introduce un ID',
     enableAria: name => `Activar ${name}`,
     disableAria: name => `Desactivar ${name}`,
     platformEnabled: name => `${name} activado`,
@@ -3334,7 +3123,7 @@ export const esOverrides = {
       },
       TELEGRAM_ALLOWED_USERS: {
         label: 'IDs de usuarios de Telegram permitidos',
-        help: 'Recomendado. IDs numéricos separados por comas desde @userinfobot. Sin esto, cualquiera puede enviar DM a tu bot.'
+        help: 'Recomendado. IDs numéricos (uno por casilla) desde @userinfobot. Sin esto, cualquiera puede enviar DM a tu bot.'
       },
       TELEGRAM_PROXY: {
         label: 'URL de proxy',
@@ -3346,7 +3135,7 @@ export const esOverrides = {
       },
       DISCORD_ALLOWED_USERS: {
         label: 'IDs de usuarios de Discord permitidos',
-        help: 'Recomendado. IDs de usuarios de Discord separados por comas.'
+        help: 'Recomendado. IDs de usuarios de Discord (uno por casilla).'
       },
       DISCORD_REPLY_TO_MODE: {
         label: 'Estilo de respuesta',
@@ -3396,7 +3185,7 @@ export const esOverrides = {
       },
       SLACK_ALLOWED_USERS: {
         label: 'IDs de usuarios de Slack permitidos',
-        help: 'Recomendado. IDs de Slack separados por comas.'
+        help: 'Recomendado. IDs de Slack (uno por casilla).'
       },
       MATTERMOST_URL: {
         label: 'URL del servidor',
@@ -3407,7 +3196,7 @@ export const esOverrides = {
       },
       MATTERMOST_ALLOWED_USERS: {
         label: 'IDs de usuarios permitidos',
-        help: 'Recomendado. IDs de Mattermost separados por comas.'
+        help: 'Recomendado. IDs de Mattermost (uno por casilla).'
       },
       MATRIX_HOMESERVER: {
         label: 'URL del homeserver',
@@ -3422,7 +3211,7 @@ export const esOverrides = {
       },
       MATRIX_ALLOWED_USERS: {
         label: 'IDs de usuarios de Matrix permitidos',
-        help: 'Recomendado. IDs separados por comas en formato @usuario:servidor.'
+        help: 'Recomendado. IDs (uno por casilla) en formato @usuario:servidor.'
       },
       SIGNAL_HTTP_URL: {
         label: 'URL del puente Signal',
@@ -3435,7 +3224,7 @@ export const esOverrides = {
       },
       SIGNAL_ALLOWED_USERS: {
         label: 'Usuarios de Signal permitidos',
-        help: 'Recomendado. Identificadores de Signal separados por comas.'
+        help: 'Recomendado. Identificadores de Signal (uno por casilla).'
       },
       WHATSAPP_ENABLED: {
         label: 'Activar puente de WhatsApp',
@@ -3446,7 +3235,7 @@ export const esOverrides = {
       },
       WHATSAPP_ALLOWED_USERS: {
         label: 'Usuarios de WhatsApp permitidos',
-        help: 'Recomendado. Números de teléfono o IDs de WhatsApp separados por comas.'
+        help: 'Recomendado. Números de teléfono o IDs de WhatsApp (uno por casilla).'
       }
     },
     platformIntro: {}
@@ -3999,6 +3788,8 @@ export const esOverrides = {
       reveal: 'Revelar en carpeta',
       copyPath: 'Copiar ruta',
       removeFromSidebar: 'Ocultar de la barra lateral',
+      createdInPreviousContext:
+        'El proyecto se creó en la conexión o el perfil anterior. Vuelve allí; no se escribió IDEA.md.',
       createFailed: 'No se pudo crear el proyecto',
       staleBackend:
         'Actualiza el backend de Hermes para crear proyectos: tu backend es más antiguo que esta aplicación de escritorio (Configuración → Actualizaciones → Backend).',
@@ -4238,7 +4029,7 @@ export const esOverrides = {
       '/init': 'Generar o actualizar las instrucciones de proyecto AGENTS.md a partir de un análisis del repositorio',
       '/suggestions': 'Revisar las automatizaciones sugeridas (aceptar/descartar)',
       '/blueprint': 'Configurar una automatización a partir de una plantilla',
-      '/browser': 'Gestionar la conexión CDP del navegador [connect|disconnect|status] (solo gateway local)',
+      '/browser': 'Gestionar el navegador del agente [connect|disconnect|status|use]',
       '/palette': 'Abrir la paleta de comandos aproximada (también Ctrl+P)',
       '/usage':
         'Mostrar el uso de tokens y los límites de frecuencia; `reset` canjea un restablecimiento de límite de Codex acumulado',
@@ -4275,6 +4066,8 @@ export const esOverrides = {
     restoredDraftNotice: 'Se restauró tu mensaje sin enviar',
     restoredDraftUndo: 'Deshacer',
     queueEdit: 'Editar',
+    queueExpand: 'Expandir',
+    queueCollapse: 'Contraer',
     queueSendNext: 'Próximo',
     queueSteer: 'Redirigir — encauzar el turno en vivo ahora',
     queueSend: 'Enviar',
@@ -4624,6 +4417,7 @@ export const esOverrides = {
     updateNow: 'Actualizar ahora',
     maybeLater: 'Quizá más tarde',
     moreChanges: count => `+ ${count} ${count === 1 ? 'cambio incluido' : 'cambios incluidos'}.`,
+    copyFullLog: 'Copiar el registro de cambios completo',
     manualTitle: 'Actualizar desde la terminal',
     manualUnavailableTitle: 'No se puede actualizar desde aquí',
     manualBody:
@@ -4973,26 +4767,22 @@ export const esOverrides = {
     removeCustomModel: 'Quitar modelo personalizado',
     resetToDefaults: 'Restablecer valores predeterminados',
     resetConfirm: '¿Restablecer la visibilidad de los modelos?',
-    resetDescription: 'Se borran tus elecciones de modelos visibles y ocultos, y cada proveedor vuelve a su lista predeterminada. Los modelos personalizados que añadiste se conservan y se muestran.',
+    resetDescription:
+      'Se borran tus elecciones de modelos visibles y ocultos, y cada proveedor vuelve a su lista predeterminada. Los modelos personalizados que añadiste se conservan y se muestran.',
     resetAction: 'Restablecer'
   },
   shell: {
     windowControls: 'Controles de ventana',
     paneControls: 'Controles de panel',
     appControls: 'Controles de app',
-    modelMenu: {
-      search: 'Buscar modelos',
-      noModels: 'No se encontraron modelos',
-      editModels: 'Editar modelos…',
-      followDefault: 'Usar el predeterminado de Ajustes',
-      refreshModels: 'Actualizar modelos',
-      fast: 'Rápido'
-    },
+    modelMenu: esModelMenu,
     modelOptions: {
       noOptions: 'No hay opciones para este modelo',
       options: 'Opciones',
       thinking: 'Razonamiento',
       fast: 'Rápido',
+      ultrafast: 'Ultrafast',
+      useStandardSpeed: 'Usar velocidad estándar',
       effort: 'Esfuerzo',
       minimal: 'Mínimo',
       low: 'Bajo',
@@ -5178,6 +4968,8 @@ export const esOverrides = {
   },
   preview: {
     tab: 'Vista previa',
+    pin: 'Fijar al espacio de trabajo',
+    unpin: 'Desfijar del espacio de trabajo',
     closePane: 'Cerrar panel de vista previa',
     loading: 'Cargando vista previa',
     unavailable: 'Vista previa no disponible',
@@ -5206,6 +4998,7 @@ export const esOverrides = {
     editing: 'Edición',
     unsavedChanges: 'Cambios no guardados',
     saveFailed: message => `No se pudo guardar: ${message}`,
+    saveScopeChanged: 'Vuelve a la conexión y al perfil originales para guardar este borrador.',
     diskChangedTitle: 'Archivo cambiado en el disco',
     diskChangedBody:
       'Este archivo cambió desde que lo abriste. ¿Quieres sobrescribirlo con tu versión o descartar tus cambios y recargar?',
@@ -5309,6 +5102,7 @@ export const esOverrides = {
     hideTabStrip: 'Ocultar pestañas',
     showStripTab: title => `Mostrar ${title}`,
     hideStripTab: title => `Ocultar ${title}`,
+    zoneMenuLabel: title => `Opciones de zona para ${title}`,
     lastTabKeptTitle: 'La última pestaña permanece',
     lastTabKeptBody:
       'Esta zona necesita al menos una pestaña visible. Muestra otra pestaña primero, o colapsa toda la barra lateral.',
@@ -5401,6 +5195,7 @@ export const esOverrides = {
       branchNewChat: 'Ramificar en chat nuevo',
       react: 'Reaccionar',
       dismissError: 'Descartar error',
+      responseStopped: 'Respuesta detenida',
       errorLayers: {
         auth: 'Problema de inicio de sesión',
         billing: 'Créditos agotados',
@@ -5467,6 +5262,10 @@ export const esOverrides = {
           title: 'No se pudo conectar con el servicio de IA',
           body: (provider: string) =>
             `No se pudo conectar con ${provider} o no respondió a tiempo. Revisa tu conexión a internet y vuelve a intentarlo.`
+        },
+        no_reply: {
+          title: 'La respuesta no terminó',
+          body: 'Hermes terminó este turno sin respuesta. Reinténtalo para enviarla de nuevo.'
         },
         stream_drop: {
           title: 'La respuesta se cortó',
@@ -5650,14 +5449,11 @@ export const esOverrides = {
       placeholder: 'Escribe tu respuesta…',
       skip: 'Omitir',
       skipped: 'Omitido',
-      continueLabel: 'Continuar',
+      noAnswer: 'Sin respuesta',
       confirmAndContinueLabel: 'Confirmar y continuar',
-      answeredBadge: 'Respondido',
+      singleSelectHint: 'Elige una',
+      multiSelectHint: 'Elige todas las que correspondan',
       questionProgress: (answered, total) => `${answered} de ${total} respondidas`,
-      lateAnswer: (question, choice) => `Con respecto a “${question}”: mi respuesta es ${choice}`,
-      lateAnswerTip: 'Redactar esta respuesta como mensaje de seguimiento',
-      lateAnswerHint:
-        'Este prompt ya no espera una respuesta. Elige una opción para redactarla como mensaje de seguimiento.',
       notDelivered:
         'Esta pregunta no llegó a la app, así que no se puede responder aquí. Pulsa Detener para terminar el turno y luego responde en el chat.'
     },
@@ -5941,9 +5737,6 @@ export const esOverrides = {
     sessionUnavailable: 'Sesión no disponible',
     createSessionFailed: 'No se pudo crear una sesión nueva',
     promptFailed: 'Falló el prompt',
-    staleSessionTitle: 'Chat desactualizado',
-    staleSessionBody:
-      'Esta ventana estaba detrás de otra vista del mismo chat. Se cargaron los mensajes más recientes. Envía de nuevo si aún quieres.',
     providerCredentialRequired: 'Añade una credencial de proveedor antes de enviar tu primer mensaje.',
     emptySlashCommand: 'comando slash vacío',
     desktopCommands: 'Comandos de escritorio',
@@ -6095,6 +5888,11 @@ export const esOverrides = {
   ui: {
     search: {
       clear: 'Limpiar búsqueda'
+    },
+    logs: {
+      bottom: 'Ir al final',
+      search: 'Buscar en los registros…',
+      top: 'Ir al inicio'
     },
     pagination: {
       label: 'paginación',

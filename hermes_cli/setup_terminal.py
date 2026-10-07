@@ -13,7 +13,7 @@ from hermes_cli import nous_subscription
 
 logger = logging.getLogger("hermes_cli.setup")
 
-from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as _SANDBOX_IMAGE
+from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as _SANDBOX_IMAGE, DEFAULT_VERCEL_IMAGE
 _RUN_KW = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
@@ -22,15 +22,14 @@ def _prompt_vercel_sandbox_settings(config: dict):
     terminal = config.setdefault("terminal", {})
     _setup._info(None, "Vercel Sandbox settings:", "  Filesystem persistence uses Vercel snapshots.",
                  "  Snapshots restore files only; live processes do not continue after sandbox recreation.")
-    from tools.terminal_tool_backends import _SUPPORTED_VERCEL_RUNTIMES
-    current_runtime = terminal.get("vercel_runtime") or "node24"
-    supported_label = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
-    runtime = _setup.prompt(f"  Runtime ({supported_label})", current_runtime).strip() or current_runtime
-    if runtime not in _SUPPORTED_VERCEL_RUNTIMES:
-        _setup.print_warning(f"Unsupported Vercel runtime '{runtime}', keeping {current_runtime}.")
-        runtime = current_runtime if current_runtime in _SUPPORTED_VERCEL_RUNTIMES else "node24"
-    terminal["vercel_runtime"] = runtime
-    _setup.save_env_value("TERMINAL_VERCEL_RUNTIME", runtime)
+    current_image = terminal.get("vercel_image") or DEFAULT_VERCEL_IMAGE
+    image = _setup.prompt("  Image (Vercel managed image or VCR repository[:tag])", current_image).strip() or current_image
+    terminal["vercel_image"] = image
+    _setup.save_env_value("TERMINAL_VERCEL_IMAGE", image)
+    if terminal.get("vercel_runtime"):
+        # Vercel deprecated runtimes; a pinned one still wins over the image until the user clears it.
+        _setup.print_warning(f"terminal.vercel_runtime={terminal['vercel_runtime']!r} is deprecated by Vercel and "
+                             "overrides the image; unset it to use the image above.")
     persist_label = "yes" if terminal.get("container_persistent", True) else "no"
     persist = _setup.prompt("  Persist filesystem with snapshots? (yes/no)", persist_label).lower()
     terminal["container_persistent"] = persist in {"yes", "true", "y", "1"}
@@ -277,7 +276,7 @@ _TERMINAL_BACKEND_SETUP = {
 # Backend -> env var mirrored from config after setup (config.yaml is the source of truth, but
 # terminal_tool reads these from .env).
 _BACKEND_ENV_MIRROR = {"modal": ("TERMINAL_MODAL_MODE", "modal_mode", "auto"),
-                       "vercel_sandbox": ("TERMINAL_VERCEL_RUNTIME", "vercel_runtime", "node24")}
+                       "vercel_sandbox": ("TERMINAL_VERCEL_IMAGE", "vercel_image", DEFAULT_VERCEL_IMAGE)}
 
 
 def setup_terminal_backend(config: dict):

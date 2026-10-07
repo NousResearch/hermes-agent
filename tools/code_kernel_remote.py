@@ -366,6 +366,7 @@ def execute_in_remote_kernel(
 def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task_env_id: str,
                        sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
                        reused: bool, state_reset: bool, state_lost: bool) -> Dict[str, Any]:
+    from tools.code_execution_rpc import tool_errors_since
     from tools.code_execution_tool import _rpc_poll_loop
     from tools.thread_context import propagate_context_to_thread
     # Clean stale tool-RPC requests from a previous cell before arming this cell's poll loop, so
@@ -375,12 +376,12 @@ def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task
         kernel.sh(f"rm -f {q_rpc}/req_* {q_rpc}/res_*", timeout=10)
     except Exception:
         pass
-    tool_call_counter, stop_event = [0], threading.Event()
+    tool_call_counter, tool_call_log, stop_event = [0], [], threading.Event()
     # Per-cell RPC thread carrying THIS call's approval/session context — the remote analogue
     # of CellAuthority: authority lives exactly as long as the cell's poll loop.
     rpc_thread = threading.Thread(
         target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
-        args=(env, f"{kernel.kernel_dir}/rpc", task_env_id, [], tool_call_counter,
+        args=(env, f"{kernel.kernel_dir}/rpc", task_env_id, tool_call_log, tool_call_counter,
               max_tool_calls, sandbox_tools, stop_event, kernel.rpc_token))
     rpc_thread.start()
     cell_status, cell_payload = "no-result", {}
@@ -401,6 +402,7 @@ def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task
     result: Dict[str, Any] = {
         "status": "error", "stdout": cell_payload.get("stdout", ""), "stderr": cell_payload.get("stderr", ""),
         "traceback": cell_payload.get("traceback", ""), "tool_calls_made": tool_call_counter[0], "kernel": kernel_info,
+        "tool_errors": tool_errors_since(tool_call_log),
     }
     if cell_status in ("timeout", "protocol-error", "no-result"):
         # No safe way to interrupt one cell in place (same contract as local): kill, report, respawn.
@@ -429,11 +431,3 @@ def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task
     if cell_status == "error" and result["traceback"]:
         result["error"] = result["traceback"].strip().splitlines()[-1]
     return result
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import base64  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

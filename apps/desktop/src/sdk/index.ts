@@ -47,6 +47,7 @@ import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
+import { traceIdentityChange } from '@/lib/identity-trace'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import {
   $gateway,
@@ -93,10 +94,10 @@ import {
   setResumeExhaustedSessionId,
   setSessionOwnerHint
 } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import {
   $focusedRuntimeId,
   $focusedSessionState,
-  $focusedStoredSessionId,
   $sessionStates,
   $sessionTiles,
   dropTilesForProfile,
@@ -108,11 +109,13 @@ import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
+import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 
-export type { DesktopSettingKey, DesktopSettingValues } from './settings'
+/** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
+export { PANES_AREA, STATUSBAR_AREAS, TITLEBAR_AREAS } from './areas'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -209,6 +212,8 @@ const $focusedSessionProfile = computed(
 export interface PluginProfileRoute {
   connectionId: string
   mode: 'local' | 'remote'
+  /** Electron's authoritative registry primary. Absent on older shells. */
+  primary?: true
   /** Desktop profile used to select the connection route. */
   profile: string
   /** Backend Hermes profile served by that route. */
@@ -1632,10 +1637,23 @@ export const host = {
    *  active instance changes on a profile swap. */
   getGateway: (): HermesGateway | null => $gateway.get(),
 
-  composer: composerHost
+  /** Change-only desktop.log line for multi-connection identity diagnostics
+   *  (`[category win=…] tag detail`). Call as `host.traceIdentityChange?.(…)`. */
+  traceIdentityChange,
+
+  composer: composerHost,
+
+  /** Language packs: `host.i18n.registerAppLocale(id, { endonym, rtl?,
+   *  translations })` adds a whole UI language at runtime (see `sdk/i18n.ts`);
+   *  `host.i18n.languageOptions()` lists what the switcher shows. */
+  i18n: i18nHost
 }
 
 // -- react bridge -------------------------------------------------------------
+
+export type { DesktopSettingKey, DesktopSettingValues } from './settings'
+
+// -- ui: the design language --------------------------------------------------
 
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
  *  lists, full-skill detail pane, embedded hub picker with one-click
@@ -1647,9 +1665,6 @@ export const host = {
  *  builds without it would route the pin to the ACTIVE gateway. Bot Mode's
  *  Advanced section is the reference consumer. */
 export { CapabilitiesView } from '@/app/capabilities'
-
-// -- ui: the design language --------------------------------------------------
-
 /** THE Connectors tab core Capabilities renders — managed apps, the user's
  *  own MCP servers, plugin servers and the catalog, with per-server enable,
  *  sign-in and live probes. Renders anywhere under the app router (a plugin
@@ -1734,13 +1749,13 @@ export {
   type SidebarNavContribution,
   WORKSPACE_PAGE_HEADER_AREA
 } from '@/app/routes'
+
 /** Appearance settings' plugin seam: register a render contribution at
  *  `APPEARANCE_AREAS.extra` to add controls at the end of the Appearance page.
  *  `ColorSwatches` is the app's own swatch grid (profile rail / project dialog
  *  look) — use it for colour picking instead of driving app widgets through
  *  React internals; pair it with `host.sessions.setColor` for session colours. */
 export { APPEARANCE_AREAS } from '@/app/settings/appearance-contrib'
-
 /** THE settings rows: `ListRow` is label + description with the control beside
  *  it (wide) or under it (narrow); `ToggleRow` is the one on/off row — a Switch,
  *  never an Off/On pill pair. Use them for preference rows in plugin panes and
@@ -1763,6 +1778,17 @@ export {
   ModelMenuCloseContext,
   type ModelMenuController
 } from '@/app/shell/model-catalog-menu'
+/** Per-model marks inside that same menu: register a `MODEL_MENU_ROW_AREA`
+ *  data contribution whose `decorate({ provider, model, label })` returns
+ *  `{ icon?, badge? }` (or `null`). Core paints the leading icon slot and a
+ *  trailing badge chip; per slot the first usable answer wins, and a throwing
+ *  decorator is skipped. Never patch the menu's rows yourself. */
+export {
+  MODEL_MENU_ROW_AREA,
+  type ModelMenuRowContext,
+  type ModelMenuRowContribution,
+  type ModelMenuRowDecoration
+} from '@/app/shell/model-menu-row-decorations'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
 /** Canonical raw message renderer: applies Desktop message transforms (including
@@ -1862,6 +1888,8 @@ export type {
   PluginNotificationAction,
   PluginOs,
   PluginRestOptions,
+  PluginSettingsPage,
+  PluginSettingsSubpage,
   PluginStorage
 } from '@/contrib/plugin'
 /** Mount-scoped contribution: while the rendering component is mounted, its
@@ -1873,6 +1901,8 @@ export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
 
 // -- contracts ----------------------------------------------------------------
 
+/** Settings ▸ Plugins entries (`ctx.registerSettingsPage`); `pluginSettingsHref` deep-links one. */
+export { pluginSettingsHref, SETTINGS_PLUGINS_AREA } from '@/contrib/settings-pages'
 export type { Contribution } from '@/contrib/types'
 /** The live gateway instance type — for typing the `gateway` prop `ConnectorsTab`
  *  takes; obtain the instance from `host.getGateway()`. */
@@ -1890,6 +1920,9 @@ export { type GrabScroll, useGrabScroll } from '@/hooks/use-grab-scroll'
  *  pane whose label must track the locale pairs that `title` with
  *  `data.tabTitle: () => <LocalizedTabTitle select={t => ...} />`. */
 export {
+  type AppLocaleRegistration,
+  type BundledLocale,
+  type LanguageOption,
   type Locale,
   LocalizedTabTitle,
   type PluginI18n,
@@ -1950,17 +1983,10 @@ export { PROFILE_SWATCHES, profileColor, profileColorSoft } from '@/lib/profile-
  *  `ctx.socket` frame invalidating a query). Inside components keep using
  *  `useQueryClient`. */
 export { queryClient } from '@/lib/query-client'
+
 /** Compact labels for the reasoning levels exported from @hermes/shared, so a
  *  plugin surfacing a thinking depth uses the same spelling as the app. */
 export { reasoningEffortLabel } from '@/lib/reasoning-effort'
-
-export const PANES_AREA = 'panes'
-export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
-/** Titlebar slots are PERMANENT mount points: a component registered here
- *  stays mounted across chat ↔ page navigation, so `useEffect` setup/cleanup
- *  runs once per registration, not once per route. Page-owned controls that
- *  should exist only while a page is up go to `WORKSPACE_PAGE_HEADER_AREA`. */
-export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
 
 /** The app's own gateway-readiness evaluation (setup.status +
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
@@ -2043,6 +2069,8 @@ export type { StatusResponse } from '@/types/hermes'
 export type { GatewayEvent as RpcEvent } from '@hermes/shared'
 /** Bot Screen wire shapes, generated from `tui_gateway/contracts/display.py`. */
 export type { DisplayLease, DisplayObserveResult, DisplayStatus, DisplayThumbnailResult } from '@hermes/shared'
+/** `session.list` / `profiles.list` session rows, generated from `tui_gateway/contracts`. */
+export type { ProfileSessionPreview, SessionListRow } from '@hermes/shared'
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@hermes/shared'

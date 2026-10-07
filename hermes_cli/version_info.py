@@ -303,7 +303,7 @@ def get_code_identity(refresh: bool = False) -> dict:
     """Return the running install's code identity as a flat dict.
 
     Shape: ``{"sha": full sha | None, "short_sha": str | None, "version":
-    base package version | None, "source": str}`` — what the update
+    base package version | None, "source": str, "commit_date": epoch s | None}`` — what the update
     receipt, runtime inventory, and gateway status stamping consume.
     Backed by :func:`get_version_info` (install stamp first, live git
     second, unknown third), so every consumer shares one resolution
@@ -322,4 +322,5 @@ def get_code_identity(refresh: bool = False) -> dict:
         "short_sha": info.commit[:8] if info.commit else None,
         "version": info.base_version,
         "source": info.source,
+        "commit_date": info.commit_date,
     }

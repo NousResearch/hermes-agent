@@ -252,6 +252,40 @@ def test_s6_runtime_snapshot_reports_supervised_service(monkeypatch, tmp_path):
     assert snapshot.gateway_pids == (123,)
 
 
+def _run_status_with_snapshot(monkeypatch, snapshot) -> str:
+    """``_cmd_status`` for a host with no installed systemd/launchd/Windows service."""
+    import io
+    from contextlib import redirect_stdout
+
+    monkeypatch.setattr("hermes_cli.gateway_profile_lifecycle.print_parked_status", lambda: False)
+    monkeypatch.setattr(gateway, "get_gateway_runtime_snapshot", lambda system=False: snapshot)
+    monkeypatch.setattr(gateway, "_installed_service_kind_for", lambda probe: None)
+    monkeypatch.setattr(gateway, "named_profile_served_by_running_multiplexer", lambda: False)
+    for name in ("_print_runtime_health", "_print_multiplex_standalone_reason", "_print_served_ingress_urls",
+                 "_print_duplicate_credential_warnings", "_print_other_profiles_gateway_status",
+                 "_print_standalone_by_config"):
+        monkeypatch.setattr(gateway, name, lambda *a, **k: None)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        gateway._cmd_status(SimpleNamespace(deep=False, full=False, system=False))
+    return buf.getvalue()
+
+
+def test_s6_supervised_gateway_without_scannable_pid_reports_running(monkeypatch):
+    """#125390: s6 service up, process scan empty (`python -c` launcher argv is unmatched per
+    #123881 and containers have no gateway.pid) — the default profile must not report an outage."""
+    snapshot = gateway.GatewayRuntimeSnapshot(
+        manager="s6 (container supervisor)", service_installed=True, service_running=True, gateway_pids=())
+    out = _run_status_with_snapshot(monkeypatch, snapshot)
+    assert out.startswith("✓ Gateway is running (supervised by s6 (container supervisor))")
+    assert "not running" not in out
+
+
+def test_manual_gateway_without_pids_still_reports_stopped(monkeypatch):
+    out = _run_status_with_snapshot(monkeypatch, gateway.GatewayRuntimeSnapshot(manager="manual process"))
+    assert out.startswith("✗ Gateway is not running")
+
+
 
 
 

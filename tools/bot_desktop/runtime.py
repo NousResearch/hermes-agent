@@ -720,8 +720,13 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
         env_file = sd / "env"
         env_file.unlink(missing_ok=True)
 
-        child_env = {k: v for k, v in os.environ.items() if k not in {
-            "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER"}}
+        # The agent drives this desktop and its dock opens a terminal, so it starts from the
+        # scrubbed child env like any other agent child, keeping the user's HOME.
+        from tools.environments.local import served_profile_child_env
+        child_env = served_profile_child_env(inherit_credentials=False)
+        child_env["HOME"] = child_env["HERMES_REAL_HOME"]
+        for key in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER"):
+            child_env.pop(key, None)
         child_env.update({
             "HERMES_BD_PROFILE": _profile_name(),
             "HERMES_BD_DISPLAY_NUM": str(num),

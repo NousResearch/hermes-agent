@@ -96,7 +96,7 @@ class _StubDB:
     def delete_sessions(self, ids, **_kwargs):
         return len(ids)
 
-    def delete_empty_sessions(self):
+    def delete_empty_sessions(self, sessions_dir=None):
         return 1
 
     def count_open_prune_matches(self, **_filters):

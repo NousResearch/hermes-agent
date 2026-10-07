@@ -22,7 +22,9 @@ import hermes_yaml as yaml
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.archive_safe import normalize_archive_parts
-from hermes_cli.profiles import DEFAULT_EXPORT_EXCLUDE_ROOT
+from hermes_cli.profiles import (
+    DEFAULT_EXPORT_EXCLUDE_ROOT, profile_path_contains_private_store, profile_path_is_private,
+)
 from utils import rmtree_readonly
 
 
@@ -44,8 +46,11 @@ USER_OWNED_EXCLUDE: frozenset = DEFAULT_EXPORT_EXCLUDE_ROOT | frozenset({
 _CRON_STORE_REL = ("cron", "jobs.json")
 
 
-def _is_distribution_runtime_path(parts: Tuple[str, ...]) -> bool:
-    """Runtime-owned entries nested under otherwise distribution-owned roots."""
+def _is_installer_owned_path(parts: Tuple[str, ...]) -> bool:
+    """Entries a distribution never writes: credential stores (and Hermes' copies of them) at any
+    depth, and runtime-owned entries nested under otherwise distribution-owned roots."""
+    if profile_path_is_private(parts):
+        return True
     if len(parts) < 2:
         return False
     if parts[0] == "cron":
@@ -343,7 +348,7 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
         # Do NOT narrow to DEFAULT_DIST_OWNED — existing distributions ship arbitrary extra
         # top-level paths without declaring them.
         for entry in staged.iterdir():
-            if entry.name not in USER_OWNED_EXCLUDE:
+            if entry.name not in USER_OWNED_EXCLUDE and not _is_installer_owned_path((entry.name,)):
                 yield entry, (entry.name,)
         return
     # Path-aware allowlist: copy exactly the declared paths.
@@ -352,7 +357,7 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
             rel_parts = tuple(normalize_archive_parts(rel))
         except ValueError:
             continue
-        if rel_parts[0] in USER_OWNED_EXCLUDE or _is_distribution_runtime_path(rel_parts):
+        if rel_parts[0] in USER_OWNED_EXCLUDE or _is_installer_owned_path(rel_parts):
             continue
         src = staged.joinpath(*rel_parts)
         if src.exists():
@@ -459,11 +464,11 @@ def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
     """Merge authored roots while leaving runtime-owned nested state untouched."""
     for child in src.iterdir():
         parts = (*rel, child.name)
-        if _is_distribution_runtime_path(parts):
+        if _is_installer_owned_path(parts):
             continue
         if parts == _CRON_STORE_REL:
             continue  # merged up front by _copy_dist_payload
-        if _is_container(child, parts):
+        if _merges_per_root(child, parts):
             _merge_dir(child, _real_dir(dest, (child.name,)), parts)
         else:
             _replace_entry(child, dest / child.name)
@@ -472,11 +477,25 @@ def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
 def _refuse_symlinked_containers(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
     for child in src.iterdir():
         parts = (*rel, child.name)
-        if _is_distribution_runtime_path(parts):
+        if _is_installer_owned_path(parts):
             continue
-        if _is_container(child, parts):
+        if _merges_per_root(child, parts):
             _refuse_symlink(dest / child.name)
             _refuse_symlinked_containers(child, dest / child.name, parts)
+        else:
+            _refuse_store_ancestor_replacement(dest / child.name, parts)
+
+
+def _refuse_store_ancestor_replacement(dest: Path, rel_parts: Tuple[str, ...]) -> None:
+    """A payload file where the profile has a directory that holds credential stores
+    (``platforms`` shipped as a file over ``platforms/``) would be a whole-directory replace,
+    taking ``platforms/pairing`` with it. Refused before the first write. Only called for entries
+    ``_merges_per_root`` rejected, so a store ancestor reaching here is a file."""
+    if profile_path_contains_private_store(rel_parts) and dest.is_dir() and not dest.is_symlink():
+        raise DistributionError(
+            f"{dest} is a directory that holds credential stores, and the distribution ships a "
+            f"file named {'/'.join(rel_parts)}; refusing to replace it"
+        )
 
 
 def _merges_per_root(src: Path, rel_parts: Tuple[str, ...]) -> bool:
@@ -484,8 +503,11 @@ def _merges_per_root(src: Path, rel_parts: Tuple[str, ...]) -> bool:
     ``_is_container``), is merged per authored root instead of replaced whole, so skills the installer
     added to it (``hermes skills install`` and agent-created skills land in
     ``skills/<category>/``) survive. The pre-write symlink guard and the copy loop both
-    use this, so the guard covers exactly what the copy merges."""
-    return src.is_dir() and (len(rel_parts) == 1 or _is_container(src, rel_parts))
+    use this, so the guard covers exactly what the copy merges. An ancestor of a credential
+    store (``platforms`` of ``platforms/pairing``) is merged too, so replacing it whole can
+    neither delete the installer's store nor plant the author's."""
+    return src.is_dir() and (len(rel_parts) == 1 or _is_container(src, rel_parts)
+                             or profile_path_contains_private_store(rel_parts))
 
 
 def _refuse_symlinked_targets(target: Path, entries) -> None:
@@ -502,6 +524,8 @@ def _refuse_symlinked_targets(target: Path, entries) -> None:
             _refuse_symlink(path)
         if _merges_per_root(src, rel_parts):
             _refuse_symlinked_containers(src, path, rel_parts)
+        else:
+            _refuse_store_ancestor_replacement(path / rel_parts[-1], rel_parts)
 
 
 def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifest, preserve_config: bool) -> None:
@@ -619,25 +643,3 @@ def describe_distribution(profile_name: str) -> Dict[str, Any]:
     """Return a structured view of a profile's distribution metadata ({} if not a distribution)."""
     manifest = read_manifest(_existing_profile(profile_name)[1])
     return {} if manifest is None else manifest.to_dict()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'is_excluded_skill_path': ('agent.skill_utils', 'is_excluded_skill_path'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -176,8 +176,10 @@ _STATE_BADGES = {"paused": ("[paused]", Colors.YELLOW), "completed": ("[complete
 
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
-    from cron.jobs import effective_job_state, list_jobs
-    jobs = list_jobs(include_disabled=True)
+    from cron.jobs import effective_job_state
+    _store_report, jobs = _probe_then_list_jobs(include_disabled=True, brief=True)
+    if jobs is None:
+        return
     if not show_all:
         jobs = [
             job for job in jobs
@@ -294,12 +296,26 @@ def _job_warnings(job: Dict[str, Any]) -> List[str]:
     fire_err = job.get("last_fire_error")
     if isinstance(fire_err, dict) and fire_err.get("detail"):
         lines.append(color(f"⚠ {_missed_fire_issue(job, fire_err)}", Colors.RED))
+    # Sticky last-failure stamp (#118354): survives a later success, so a job that
+    # self-healed still shows that a run failed recently. While last_status itself
+    # reports the failure this is redundant-but-consistent; after recovery it is the
+    # only job-level trace left.
+    last_failure = job.get("last_failure")
+    if isinstance(last_failure, dict) and last_failure.get("detail"):
+        recovered = str(job.get("last_status") or "") in {"ok", "delivery_queued"}
+        lines.append(color(
+            f"⚠ Last failure at {last_failure.get('at', '?')}: "
+            f"{_short_reason(last_failure['detail'])}" + (" — recovered since" if recovered else ""),
+            Colors.YELLOW if recovered else Colors.RED))
     return lines
 
 
 def cron_tick():
     """Run due jobs once and exit."""
     from cron.scheduler import CronTickYielded, tick
+    from hermes_cli.observability.shared_metrics_process import begin_process
+
+    begin_process("cron")
     try:
         tick(verbose=True)
     except CronTickYielded as exc:
@@ -396,6 +412,40 @@ def _ticker_age_is_fresh(age: Optional[float]) -> bool:
     return age is not None and age <= TICKER_INTERVAL_SECONDS * 3 + 20
 
 
+def _store_unwritable_report() -> Optional[dict]:
+    """Probe the active cron store (never a marker inside it): ``None`` when it accepts writes.
+    Runs before any job read: loading jobs re-secures the dir, which can mask a mode problem."""
+    from cron.jobs import _current_cron_store
+    from cron.store_health import probe_report
+    return probe_report(_current_cron_store().cron_dir)
+
+
+def _probe_then_list_jobs(*, include_disabled: bool, brief: bool = False):
+    """``(store report or None, jobs or None)``. Probes and prints the unwritable-store warning
+    BEFORE reading jobs: loading re-secures the dir mode (masking a mode problem), and on an
+    unwritable store the read itself can fail (it creates cron/output). Jobs is ``None`` only
+    when that read failed on a store already reported unwritable."""
+    from cron.jobs import list_jobs
+    if (report := _store_unwritable_report()) is not None:
+        _print_store_unwritable(report, brief=brief)
+    try:
+        return report, list_jobs(include_disabled=include_disabled)
+    except OSError:
+        if report is None:
+            raise
+        return report, None
+
+
+def _print_store_unwritable(report: dict, *, brief: bool = False) -> None:
+    if brief:  # `cron list`: one line
+        print(color(f"⚠ Cron store {report['store']} is NOT writable ({report['error']}) — scheduled jobs "
+                    f"are being skipped; {report['fix']}. See `hermes cron status`.", Colors.RED))
+        return
+    print(color("⚠ Cron store is NOT writable — scheduled jobs are being skipped", Colors.RED))
+    print(color(f"  {report['store']}: {report['error']} (last successful write {report['since']})", Colors.RED))
+    print(color(f"  Fix: {report['fix']}. Each due job then fires once on the next tick.", Colors.YELLOW))
+
+
 def _print_ticker_health(pids: list, restart_command: str = "hermes gateway restart") -> None:
     """Report builtin-ticker liveness for a gateway process known to be alive.
 
@@ -461,11 +511,18 @@ def _print_ticker_health(pids: list, restart_command: str = "hermes gateway rest
 
 def cron_status():
     """Show cron execution status."""
-    from cron.jobs import list_jobs
     from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
     from hermes_cli.profiles import get_active_profile_name
     print()
 
+    store_report, active_jobs = _probe_then_list_jobs(include_disabled=False)
+    if active_jobs is None:
+        print(color("  Jobs could not be read from the unwritable store.", Colors.RED))
+    elif store_report is not None:
+        overdue = sum(1 for j in active_jobs if (_next_run_overdue_seconds(j.get("next_run_at")) or 0) > 0)
+        print(color(f"  {overdue} due run(s) not fired", Colors.RED))
+    if store_report is not None:
+        print()
     provider = _active_cron_provider_name()
     if provider != "builtin":
         # External providers fire via webhook: no ticker thread / heartbeat file by design, so
@@ -511,8 +568,14 @@ def cron_status():
         if host is not None:
             print(f"  Scheduler host: {host.describe()}")
             # `hermes gateway restart` exits 78 for a served NAMED profile
-            # (_guard_named_profile_under_multiplexer): the one host process is the default's.
-            _print_ticker_health([host.pid], restart_command="hermes --profile default gateway restart")
+            # (_guard_named_profile_under_multiplexer): name the profile that LAUNCHED the host
+            # process. On a standalone fleet that is this profile itself, not default (#120871).
+            owner = None
+            with contextlib.suppress(Exception):
+                from hermes_cli.gateway import host_multiplexer_serving
+                owner = host_multiplexer_serving(active)
+            host_profile = owner.profile_label if owner is not None else "default"
+            _print_ticker_health([host.pid], restart_command=f"hermes --profile {host_profile} gateway restart")
         elif pids or gateway_alive_via_lock or served_by_multiplexer or in_process_ticker:
             if served_by_multiplexer:
                 print("  Scheduler host: the host gateway (multiplexing this profile)")
@@ -547,7 +610,7 @@ def cron_status():
                       "  Check: hermes cron status from this profile should show its ticker heartbeat.\n")
 
     print()
-    _print_active_jobs_summary(list_jobs(include_disabled=False))
+    _print_active_jobs_summary(active_jobs)
     print()
 
 

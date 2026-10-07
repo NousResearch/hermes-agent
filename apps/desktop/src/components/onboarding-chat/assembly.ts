@@ -16,8 +16,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { DOCKED_SIDEBAR_MIN_PX } from '@/hooks/use-mobile'
-import { TRANSLATIONS } from '@/i18n/catalog'
-import { getRuntimeI18nLocale } from '@/i18n/runtime'
+import { runtimeTranslations } from '@/i18n/runtime'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { $interfaceMode, type InterfaceMode, setInterfaceMode } from '@/store/interface-mode'
 import { setSidebarOpen } from '@/store/layout'
@@ -42,7 +41,7 @@ export function pickOnboardingGreeting(): string {
     return existing
   }
 
-  const copy = TRANSLATIONS[getRuntimeI18nLocale()].guidedGreeting
+  const copy = runtimeTranslations().guidedGreeting
   const suggested = machineUserName()
 
   const greeting = suggested ? `${copy.line}\n\n${copy.nameSuggestion(suggested)}` : copy.line

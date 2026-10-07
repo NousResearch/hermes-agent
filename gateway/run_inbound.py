@@ -10,22 +10,25 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 import asyncio
-import concurrent.futures
+import concurrent.futures  # noqa: F401 -- kept public after the plugin-injection move
 import dataclasses
 import json
 import os
 import re
-import shutil
 import time
 from contextlib import suppress
 from pathlib import Path
 
+from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
+from gateway.run_inbound_media import rehome_inbound_media
+from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_inbound_unauthorized import (
-    PAIRING_RATE_LIMITED_REPLY, UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg,
+    UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
     unauthorized_owner_hint,
 )
 from gateway.session import (
@@ -41,45 +44,6 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
-
-
-def rehome_inbound_media(event: MessageEvent) -> None:
-    """Move adapter-cached attachments into the ACTIVE profile's ``cache/`` and repoint the event.
-
-    Adapters download and cache an attachment BEFORE the gateway routes the event to a profile, so
-    on a multiplexed gateway the file lands under the launch home while the routed turn's sandbox
-    mounts (``get_cache_directory_mounts``) and vision's ``_media_cache_roots`` resolve the routed
-    profile's ``cache/`` — the agent is handed a mounted, empty directory (#101134). Runs inside the
-    routed scope at the shared preprocessing choke point (every adapter, every media kind); a no-op
-    when the active home is the launch home, and idempotent (a moved entry is no longer under it).
-    """
-    if not event.media_urls:
-        return
-    from hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
-    active, launch = Path(get_hermes_home()), Path(get_routing_process_hermes_home())
-    if hermes_home_key(active) == hermes_home_key(launch):
-        return
-    from tools.credential_files import to_agent_visible_cache_path
-    rewritten = list(event.media_urls)
-    for i, raw in enumerate(event.media_urls):
-        src = Path(raw)
-        try:
-            rel = src.relative_to(launch / "cache")
-        except ValueError:
-            continue
-        dest = active / "cache" / rel
-        try:
-            if not src.is_file():
-                continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src), str(dest))
-        except OSError:
-            logger.warning("Could not move inbound attachment %s into the routed profile's cache", raw, exc_info=True)
-            continue
-        rewritten[i] = str(dest)
-        if event.text and raw in event.text:  # note an adapter already baked in (observed/replied media)
-            event.text = event.text.replace(raw, to_agent_visible_cache_path(str(dest)))
-    event.media_urls = rewritten
 
 
 def discord_triggering_note(message_id: Any) -> str:
@@ -103,7 +67,7 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text[len(prefix):] if message_text.startswith(prefix) else message_text
 
 
-class GatewayInboundMixin:
+class GatewayInboundMixin(GatewayPluginInjectionMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     async def _hm_pre_gateway_dispatch_hook(
@@ -158,7 +122,7 @@ class GatewayInboundMixin:
         if code:
             reply = pairing_code_reply(platform_name, code, pairing_profile_arg(pairing_store))
         else:
-            reply = PAIRING_RATE_LIMITED_REPLY
+            reply = pairing_rate_limited_reply()
         if adapter:
             await adapter.send(source.chat_id, reply)
         if not code:
@@ -327,7 +291,9 @@ class GatewayInboundMixin:
         self, event: "MessageEvent", source: SessionSource, is_internal: bool
     ) -> Optional[str]:
         """Global emergency-stop (`hermes pause`) notice when this turn must be blocked, else None.
-        Placed after auth so unauthorized senders can't probe pause state."""
+        Placed after auth so unauthorized senders can't probe pause state. A synthetic heartbeat that
+        slipped past the poller's pause check gets "" (blocked, nothing sent): nobody typed it, and
+        settle_heartbeat_attempt leaves its tick due for after resume."""
         if is_internal:
             return None
         try:
@@ -337,6 +303,9 @@ class GatewayInboundMixin:
         _paused_notice = _estop_paused_reply()
         if _paused_notice is None or self._hm_estop_turn_allowed(event, source):
             return None
+        if getattr(event, "_heartbeat_session_id", None):
+            logger.debug("Heartbeat turn dropped by global emergency stop")
+            return ""
         logger.info(
             "Gateway turn paused by global emergency stop (platform=%s chat=%s)",
             getattr(getattr(source, "platform", None), "value", "unknown"),
@@ -383,10 +352,10 @@ class GatewayInboundMixin:
             err = self._hm_write_update_response(response_text)
             if err is not None:
                 logger.warning("Failed to write update response: %s", err)
-                return f"✗ Failed to send response to update process: {err}"
+                return t("gateway.update.reply_failed", error=err)
             _up_state.persistent.update_prompt_pending = False
             label = response_text if len(response_text) <= 20 else response_text[:20] + "…"
-            return f"✓ Sent `{label}` to the update process."
+            return t("gateway.update.reply_sent", label=label)
         # Recognized slash command during a pending update prompt: write a blank response so the
         # detached update's ``_gateway_prompt`` returns the prompt's default (typically a safe
         # "n" / skip) and exits instead of blocking on stdin until the watcher timeout.
@@ -452,7 +421,9 @@ class GatewayInboundMixin:
                     try:
                         await _clarify_adapter.retire_clarify_card(
                             _pending_clarify.clarify_id,
-                            f"✅ answered: {_pending_clarify.response or _raw_clarify_reply}")
+                            t("gateway.clarify.answered",
+                              response=_raw_clarify_reply if _pending_clarify.response == _clarify_mod.SKIPPED
+                              else _pending_clarify.response or _raw_clarify_reply))
                     except Exception:
                         logger.debug("Failed to retire clarify card after typed answer", exc_info=True)
             return ""
@@ -464,7 +435,7 @@ class GatewayInboundMixin:
             # Native-choice prompts reject unmatched prose so it continues through normal busy
             # routing. Release this clarify first: redirect() degrades to steer() while tools
             # execute, and that steer cannot drain until the clarify tool returns.
-            if _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, ""):
+            if _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, _clarify_mod.CANCELLED):
                 # Adapters with a persistent native card (Slack Block Kit) retire it now, before the
                 # prose is routed, so its buttons stop advertising a dead answer path. The pop inside
                 # retire_clarify_card runs before its first await, so the agent thread's own expiry
@@ -475,7 +446,7 @@ class GatewayInboundMixin:
                     try:
                         await _clarify_adapter.retire_clarify_card(
                             _pending_clarify.clarify_id,
-                            "↩️ Clarification cancelled — your message will be handled as a follow-up.")
+                            t("gateway.clarify.cancelled"))
                     except Exception:
                         logger.debug("Failed to retire clarify card after prose cancellation", exc_info=True)
         return None
@@ -487,11 +458,15 @@ class GatewayInboundMixin:
         "always": "always", "remember": "always",
         "cancel": "cancel", "no": "cancel", "deny": "cancel", "nevermind": "cancel",
     }
-    _SLASH_CONFIRM_TEXT_CHOICES = {
-        "approve": "once", "approve once": "once", "once": "once",
-        "always": "always", "always approve": "always",
-        "cancel": "cancel", "nevermind": "cancel", "no": "cancel",
-    }
+    # Free-text spellings: ``approval.inputs.confirm_*`` comma-lists (English ∪ active language).
+    _SLASH_CONFIRM_TEXT_INPUT_KEYS = (("confirm_once", "once"), ("confirm_always", "always"), ("confirm_cancel", "cancel"))
+
+    def _slash_confirm_text_choices(self) -> Dict[str, str]:
+        choices: Dict[str, str] = {}
+        for input_key, choice in self._SLASH_CONFIRM_TEXT_INPUT_KEYS:
+            for word in approval_input_words(input_key):
+                choices.setdefault(word, choice)
+        return choices
 
     async def _hm_slash_confirm_reply(self, event: "MessageEvent", _quick_key: str) -> Optional[str]:
         """Resolve a reply (/approve, /always, /cancel + aliases) to a pending slash-confirm prompt;
@@ -511,7 +486,7 @@ class GatewayInboundMixin:
         _norm_reply = (event.text or "").strip().lstrip("!/").lower()
         _confirm_choice = (
             self._SLASH_CONFIRM_CMD_CHOICES.get(event.get_command())
-            or self._SLASH_CONFIRM_TEXT_CHOICES.get(_norm_reply)
+            or self._slash_confirm_text_choices().get(_norm_reply)
         )
         if _confirm_choice is not None:
             _resolved = await _slash_confirm_mod.resolve(
@@ -735,7 +710,7 @@ class GatewayInboundMixin:
             if event.get_command() == "stop":  # force-clean the sentinel so the session is unlocked
                 self._release_running_agent_state(_quick_key)
                 logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
-                return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
+                return EphemeralReply(t("gateway.stop.force_stopped_pending"))
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
             return None
         if self._draining:
@@ -743,9 +718,9 @@ class GatewayInboundMixin:
             if queue_during_drain:
                 self._queue_or_replace_pending_event(_quick_key, event)
             return (
-                f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                t("gateway.busy.drain_queued", action=self._status_action_gerund())
                 if queue_during_drain
-                else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                else t("gateway.busy.drain_rejected", action=self._status_action_gerund())
             )
         if effective_busy_input_mode == "queue":
             logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
@@ -823,7 +798,7 @@ class GatewayInboundMixin:
             message = hook_result.get("message")
             message = message if isinstance(message, str) and message else None
             if decision == "deny":
-                return True, message or f"Command `/{command}` was blocked by a hook.", None
+                return True, message or t("gateway.hooks.command_blocked", command=command), None
             if decision == "handled":
                 return True, message, None
             if decision == "rewrite":
@@ -890,7 +865,7 @@ class GatewayInboundMixin:
         if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
             return True, self._telegram_topic_root_new_message()
         return await self._hm_confirm_destructive(
-            event, "new", "This starts a fresh session and discards the current conversation history.",
+            event, "new", t("gateway.confirm.detail_new"),
             self._handle_reset_command,
         )
 
@@ -909,7 +884,7 @@ class GatewayInboundMixin:
         try:
             event.text = build()
         except Exception:
-            return True, f"Could not start /{name} — please try again."
+            return True, t("gateway.prompt_command.start_failed", command=name)
         return False, None
 
     # /learn and /plan: ack, rewrite the turn to a builder prompt, fall through to the agent.
@@ -917,14 +892,15 @@ class GatewayInboundMixin:
         from agent.learn_prompt import build_learn_prompt
 
         req = event.get_command_args().strip()
-        _ack = f"Learning a skill from {'what you described' if req else 'this conversation'}…"
+        _ack = t("gateway.learn.ack_described") if req else t("gateway.learn.ack_conversation")
         return await self._hm_rewrite_turn_to_prompt(event, source, "learn", _ack, lambda: build_learn_prompt(req))
 
     async def _hm_cmd_plan(self, event, source, _quick_key):
         from agent.plan_prompt import build_plan_prompt
 
         task = event.get_command_args().strip()
-        _ack = f"Planning: {task[:80]}{'…' if len(task) > 80 else ''}" if task else "Planning from this conversation's context…"
+        _ack = (t("gateway.plan.ack_task", task=task[:80] + ("…" if len(task) > 80 else ""))
+                if task else t("gateway.plan.ack_conversation"))
         return await self._hm_rewrite_turn_to_prompt(event, source, "plan", _ack, lambda: build_plan_prompt(task))
 
     async def _hm_cmd_init(self, event, source, _quick_key):
@@ -932,13 +908,19 @@ class GatewayInboundMixin:
         from hermes_cli.init_command import build_init_prompt_for_cwd
 
         try:
-            _init_prompt = build_init_prompt_for_cwd(extra=event.get_command_args().strip())
+            # The SESSION's active directory, not this process's launch dir: the desktop app
+            # launches the backend from the home directory, so a bare os.getcwd() scanned and
+            # updated the HOME's AGENTS.md instead of the workspace attached to the session.
+            _init_prompt = build_init_prompt_for_cwd(
+                extra=event.get_command_args().strip(),
+                session_key=_quick_key or self._session_key_for_source(source),
+            )
         except Exception:
-            return True, "Could not start /init — please try again."
+            return True, t("gateway.init.start_failed")
         _ack = (
-            "Updating AGENTS.md from a project scan…"
+            t("gateway.init.ack_update")
             if "UPDATE the existing AGENTS.md" in _init_prompt
-            else "Generating AGENTS.md from a project scan…"
+            else t("gateway.init.ack_generate")
         )
         await self._send_command_ack(source, _ack, "init")
         event.text = _init_prompt
@@ -967,21 +949,19 @@ class GatewayInboundMixin:
             with suppress(ValueError, IndexError):
                 _undo_n = max(1, int(_undo_raw.split()[0]))
         _undo_detail = (
-            "This removes the last user/assistant exchange from history."
+            t("gateway.confirm.detail_undo_one")
             if _undo_n == 1
-            else f"This removes the last {_undo_n} user turns from history."
+            else t("gateway.confirm.detail_undo_many", count=_undo_n)
         )
         return await self._hm_confirm_destructive(event, "undo", _undo_detail, self._handle_undo_command)
 
     # /queue and /steer on the idle path: no agent is running, so strip the prefix and send the
     # payload as a regular user turn; an empty payload surfaces the usage hint.
     async def _hm_cmd_queue(self, event, source, _quick_key):
-        return self._hm_send_payload_as_turn(event, "Usage: /queue <prompt>")
+        return self._hm_send_payload_as_turn(event, t("gateway.queue.usage"))
 
     async def _hm_cmd_steer(self, event, source, _quick_key):
-        return self._hm_send_payload_as_turn(
-            event, "Usage: /steer <prompt>  (no agent is running; sending as a normal message)"
-        )
+        return self._hm_send_payload_as_turn(event, t("gateway.steer.usage_idle"))
 
     @staticmethod
     def _hm_send_payload_as_turn(event, usage: str) -> Tuple[bool, Optional[str]]:
@@ -1018,7 +998,7 @@ class GatewayInboundMixin:
             }
             self._evict_cached_agent(_quick_key)
         except Exception:
-            return True, "Failed to prepare MoA turn."
+            return True, t("gateway.moa.prepare_failed")
         return False, None
 
     # Idle-path built-ins with bespoke flow (confirmations, prompt rewrites, one-shot MoA), each
@@ -1058,11 +1038,11 @@ class GatewayInboundMixin:
             if output:
                 from agent.redact import redact_sensitive_text
                 output = redact_sensitive_text(output)
-            return output or "Command returned no output."
+            return output or t("gateway.quick_command.no_output")
         except asyncio.TimeoutError:
-            return "Quick command timed out (30s)."
+            return t("gateway.quick_command.timed_out")
         except Exception as e:
-            return f"Quick command error: {e}"
+            return t("gateway.quick_command.error", error=e)
 
     async def _hm_dispatch_quick_and_plugin_commands(
         self, event: "MessageEvent", source: SessionSource, command: Optional[str]
@@ -1070,7 +1050,7 @@ class GatewayInboundMixin:
         """Drain gate, user-defined quick commands (exec/alias) and plugin slash commands →
         ``(handled, result, command)``; an alias quick command rewrites ``command``."""
         if self._draining:
-            return True, f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now.", command
+            return True, t("gateway.busy.drain_rejected_new_work", action=self._status_action_gerund()), command
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         qcmd = self._hm_quick_commands().get(command) if command else None
@@ -1087,13 +1067,13 @@ class GatewayInboundMixin:
             if qtype == "exec":
                 exec_cmd = qcmd.get("command", "")
                 if not exec_cmd:
-                    return True, f"Quick command '/{command}' has no command defined.", command
+                    return True, t("gateway.quick_command.no_command", command=command), command
                 return True, await self._hm_run_exec_quick_command(command, exec_cmd), command
             if qtype != "alias":
-                return True, f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias').", command
+                return True, t("gateway.quick_command.unsupported_type", command=command), command
             new_command = self._hm_expand_alias_quick_command(event, qcmd)
             if new_command is None:
-                return True, f"Quick command '/{command}' has no target defined.", command
+                return True, t("gateway.quick_command.no_target", command=command), command
             command = new_command  # Fall through to normal command dispatch below
 
         # Plugin-registered slash commands. Underscores normalize to hyphens so Telegram's
@@ -1173,12 +1153,7 @@ class GatewayInboundMixin:
             "Unrecognized slash command /%s from %s — replying with unknown-command notice",
             command, source.platform.value if source.platform else "?",
         )
-        return (
-            f"Unknown command `/{command}`. "
-            f"Type /commands to see what's available, "
-            f"or resend without the leading slash to send "
-            f"as a regular message."
-        )
+        return t("gateway.unknown_command", command=command)
 
     def _hm_skill_slash_rewrite(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str, command: Optional[str]
@@ -1199,7 +1174,7 @@ class GatewayInboundMixin:
             _plat = source.platform.value if source.platform else None
             user_instruction = event.get_command_args().strip()
             # Stacked slash-skill invocations: `/skill-a /skill-b do XYZ` loads every leading skill
-            # (up to 5), not just the first. Mirrors CLI.
+            # (up to 5), not just the first. Mirrors CLI. Native split: plugin skills are interactive-only.
             try:
                 from agent.skill_commands import (
                     build_stacked_skill_invocation_message as _build_stacked,
@@ -1217,27 +1192,20 @@ class GatewayInboundMixin:
                 from agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
                 _plat_disabled = _get_plat_disabled(platform=_plat)
                 if _skill_name and _skill_name in _plat_disabled:
-                    return (
-                        f"The **{_skill_name}** skill is disabled for {_plat}.\n"
-                        f"Enable it with: `hermes skills config`"
-                    )
+                    return t("gateway.skills.disabled_for_platform", name=_skill_name, platform=_plat)
                 _disabled_extra = [
                     skill_cmds.get(k, {}).get("name", "")
                     for k in extra_keys
                     if skill_cmds.get(k, {}).get("name", "") in _plat_disabled
                 ]
                 if _disabled_extra:
-                    return (
-                        f"The **{', '.join(_disabled_extra)}** skill(s) in this "
-                        f"stacked invocation are disabled for {_plat}.\n"
-                        f"Enable them with: `hermes skills config`"
-                    )
+                    return t("gateway.skills.stacked_disabled", names=", ".join(_disabled_extra), platform=_plat)
             if extra_keys and _build_stacked is not None:
                 stacked_result = _build_stacked(
                     [cmd_key, *extra_keys], stacked_instruction, task_id=_quick_key,
                 )
                 if not stacked_result:
-                    return f"Failed to load stacked skills for /{command}."
+                    return t("gateway.skills.stacked_load_failed", command=command)
                 event.text, _loaded, _missing = stacked_result
             else:
                 msg = build_skill_invocation_message(cmd_key, user_instruction, task_id=_quick_key)
@@ -1322,6 +1290,9 @@ class GatewayInboundMixin:
         if _admitted is None:
             return None
         event, source, is_internal = _admitted
+        if not is_internal:
+            from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
+            record_gateway_slash_command(event)
         # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
         # not on the adapter's raw inbound: profile routing, the ignored-channel
         # guard, plugin hooks and user authorization all reject events above,
@@ -1364,11 +1335,7 @@ class GatewayInboundMixin:
             # only fall to zero. Reversible.
             if self._external_drain_active:
                 logger.info("Refusing new turn for session %s — external drain active.", _quick_key)
-                return (
-                    "⏳ This agent is draining for a maintenance action and isn't "
-                    "accepting new turns right now. It'll be back in a moment — "
-                    "please resend shortly."
-                )
+                return t("gateway.busy.draining_maintenance")
 
         # Claim this session before any await: many awaits sit between here and _run_agent
         # registering the real AIAgent; without this sentinel a second message during any of them
@@ -1386,10 +1353,17 @@ class GatewayInboundMixin:
         _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
         _claim_state.turn.event = event
         _claim_state.turn.started_ts = time.time()
+        from hermes_cli.observability.shared_metrics_gateway import start_reply_clock
+        start_reply_clock(source, internal=is_internal)
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
+            if not is_internal:  # fail-open plugin consume, inside the claimed slot (#129958)
+                from gateway.run_inbound_consumer import run_post_admission_hook
+                _consumed, _consumer_reply = await run_post_admission_hook(self, event, source, _quick_key)
+                if _consumed:
+                    return _consumer_reply
             try:
                 _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             except TurnLeaseTimeoutError as exc:
@@ -1401,11 +1375,7 @@ class GatewayInboundMixin:
                     "the user must resend",
                     _quick_key, exc.session_id,
                 )
-                return (
-                    "⏳ Another turn is still running on this session. To "
-                    "protect the transcript, this message was not processed. "
-                    "Wait for the active turn to finish, then resend it."
-                )
+                return t("gateway.busy.another_turn_running")
             try:
                 await self._run_post_turn_hooks(
                     agent_result=_agent_result, source=source, is_internal=is_internal, event=event,
@@ -1538,7 +1508,7 @@ class GatewayInboundMixin:
         """Send each transcript back as ``🎙️ "…"`` (best-effort; failures are logged, never raised)."""
         for tx in transcripts:
             try:
-                await adapter.send(source.chat_id, f'🎙️ "{tx}"', metadata=metadata)
+                await adapter.send(source.chat_id, t("gateway.voice.transcript_echo_short", text=tx), metadata=metadata)
             except Exception as echo_exc:
                 logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
 
@@ -1726,7 +1696,7 @@ class GatewayInboundMixin:
                 if _adapter:
                     await _adapter.send(
                         source.chat_id,
-                        "\n".join(_ctx_result.warnings) or "Context injection refused.",
+                        "\n".join(_ctx_result.warnings) or t("gateway.notify.context_injection_refused"),
                     )
                 return None
             if _ctx_result.expanded:
@@ -1837,117 +1807,6 @@ class GatewayInboundMixin:
             for attr in ("_gateway_active_turn_session_key", "_gateway_active_turn_token"):
                 with suppress(AttributeError):
                     delattr(event, attr)
-
-    def _install_plugin_message_injector(self) -> None:
-        """Publish this live gateway's plugin message scheduler process-wide."""
-        from hermes_cli.plugins import publish_gateway_message_host
-
-        publish_gateway_message_host(self, self._schedule_plugin_message_injection)
-
-    def _clear_plugin_message_injector(self) -> None:
-        """Remove this runner's scheduler without clobbering a newer owner."""
-        from hermes_cli.plugins import clear_published_gateway_message_host
-
-        clear_published_gateway_message_host(self)
-
-    def _schedule_plugin_message_injection(
-        self, *, session_key: str, content: str, plugin_id: str
-    ) -> bool:
-        """Schedule a plugin-triggered turn on the live gateway loop (thread-safe)."""
-        from gateway.run import safe_schedule_threadsafe
-        loop = getattr(self, "_gateway_loop", None)
-        if not getattr(self, "_running", False) or loop is None or loop.is_closed():
-            return False
-
-        coro = self._dispatch_plugin_message_injection(
-            session_key=session_key, content=content, plugin_id=plugin_id,
-        )
-        try:
-            current_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            current_loop = None
-
-        if current_loop is loop:
-            try:
-                future = loop.create_task(coro)
-            except Exception:
-                coro.close()
-                logger.warning("Plugin message injection scheduling failed", exc_info=True)
-                return False
-            self._background_tasks.add(future)
-            future.add_done_callback(self._background_tasks.discard)
-        else:
-            future = safe_schedule_threadsafe(
-                coro, loop, logger=logger, log_message="Plugin message injection scheduling failed",
-                log_level=logging.WARNING,
-            )
-            if future is None:
-                return False
-
-        def _log_result(completed) -> None:
-            try:
-                if completed.result():
-                    return
-                what, exc = "was not routed", None
-            except (asyncio.CancelledError, concurrent.futures.CancelledError):
-                return
-            except Exception as err:
-                what, exc = "failed", err
-            logger.warning(
-                "Plugin message injection %s: plugin=%s session=%s", what, plugin_id, session_key, exc_info=exc,
-            )
-
-        future.add_done_callback(_log_result)
-        return True
-
-    async def _dispatch_plugin_message_injection(
-        self, *, session_key: str, content: str, plugin_id: str
-    ) -> bool:
-        """Route a plugin-triggered turn through the session's live adapter."""
-        def _accepting() -> bool:
-            return getattr(self, "_running", False) and not getattr(self, "_draining", False)
-
-        if not _accepting():
-            return False
-        entry = await self.async_session_store.lookup_by_session_key(session_key)
-        if entry is None or entry.origin is None or not _accepting():
-            return False
-
-        from gateway.session_identity import replace_source
-        source = replace_source(self._restored_source(entry))
-        try:
-            authorized = self._is_user_authorized_for_source(source, allow_adapter_delegation=False)
-        except Exception:
-            logger.warning(
-                "Plugin message injection authorization check failed: plugin=%s session=%s",
-                plugin_id, session_key, exc_info=True,
-            )
-            return False
-        if not authorized:
-            logger.warning(
-                "Plugin message injection denied by current gateway authorization: "
-                "plugin=%s session=%s", plugin_id, session_key,
-            )
-            return False
-
-        adapter = self._delivery_adapter_for(source)
-        if adapter is None:
-            return False
-
-        await adapter.handle_message(MessageEvent(
-            text=content, message_type=MessageType.TEXT, source=source, internal=True,
-            allow_gateway_control=False,
-            metadata={
-                "hermes_plugin_id": plugin_id, "hermes_plugin_injection": True,
-                "gateway_session_key": session_key, "gateway_session_id": entry.session_id,
-                "gateway_session_strict": True,
-            },
-        ))
-        logger.info(
-            "Plugin message injection dispatched: plugin=%s session=%s session_id=%s",
-            plugin_id, session_key, entry.session_id,
-        )
-        return True
 
     def _decide_image_input_mode(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,

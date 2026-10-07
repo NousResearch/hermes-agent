@@ -2246,7 +2246,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("todo_list", {"todos": []}),
         ("session_search", {"query": "needle"}),
         ("memory", {"action": "view", "target": "memory"}),
-        ("clarify", {"question": "Continue?"}),
+        ("clarify", {"questions": [{"question": "Continue?"}]}),
         ("read_terminal", {}),
         ("desktop_preview", {"action": "read"}),
         ("drive_preview", {"action": "elements"}),
@@ -3499,6 +3499,7 @@ class TestRunConversation:
         """A clean-stop reasoning answer returns without compression or recovery."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
+        agent._custom_providers = [{"base_url": agent.base_url, "capabilities": {"answer_in_reasoning": True}}]
         agent.compression_enabled = True
         empty_resp = _mock_response(
             content=None,
@@ -3523,7 +3524,6 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "reasoning only"
         assert result["api_calls"] == 1
-
 
     def test_truly_empty_response_stops_after_repeated_empty(self, agent):
         """Repeated empty responses stop after one retry and return an explanation."""
@@ -4482,7 +4482,7 @@ class TestRunConversation:
         agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
 
         with (
-            patch("run_agent.handle_function_call"),
+            patch("model_tools.handle_function_call"),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -4519,7 +4519,7 @@ class TestRunConversation:
         agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
 
         with (
-            patch("run_agent.handle_function_call"),
+            patch("model_tools.handle_function_call"),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),

@@ -979,7 +979,16 @@ def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
         # would import aiohttp and friends from the Hermes venv instead of its own (its venv's site-packages
         # are shadowed because PYTHONPATH precedes them) — and on Windows the loaded DLLs then lock the
         # Hermes venv, aborting `hermes update` with access-denied on .pyd files. (#78153)
-        child_env = os.environ.copy()
+        # The server's embedding/VLM models may read provider keys, so the bound profile's pass
+        # (never the launch profile's: under multiplex the process env belongs to whoever started
+        # the gateway, and with no bound profile the builder refuses); bot, gateway and relay
+        # tokens never do. HOME stays the user's: ov.conf defaults to ~/.openviking.
+        from tools.environments.local import hermes_subprocess_env, served_profile_child_env
+        # The profile overlay re-adds everything in its .env, bot tokens included; the second pass
+        # drops Tier 1 again while keeping the provider keys.
+        child_env = hermes_subprocess_env(
+            inherit_credentials=True, base_env=served_profile_child_env(inherit_credentials=True))
+        child_env["HOME"] = child_env["HERMES_REAL_HOME"]
         child_env.pop("PYTHONPATH", None)
         with log_path.open("ab") as log_file:
             subprocess.Popen([server_cmd, "--host", host, "--port", str(port)], stdout=log_file, stderr=log_file,

@@ -324,14 +324,10 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
             enabled.append("kanban")
         _apply_toolset_selection(tools, enabled, quiet_mode, disable=False)
     else:
-        from toolsets import get_all_toolsets
+        from toolsets import TOOLSET_SESSION_PLATFORMS, get_all_toolsets
         for ts_name in get_all_toolsets():
-            tools.update(resolve_toolset(ts_name))
-    # A role-reserved toolset (``setup``) reaches only a profile carrying that role, whatever the config,
-    # CLI flag, env pin or "all" asked for; this is the one point every surface's selection passes.
-    from toolsets import profile_role_toolsets
-    for ts_name in profile_role_toolsets()[1]:
-        tools.difference_update(resolve_toolset(ts_name))
+            if ts_name not in TOOLSET_SESSION_PLATFORMS:
+                tools.update(resolve_toolset(ts_name))
     # Disabled toolsets are always subtracted LAST, so a tool in a disabled
     # toolset is stripped even when a composite (hermes-cli) re-enables it.
     # This ensures that even if a composite toolset (like hermes-cli) is enabled, any tools belonging to a
@@ -739,8 +735,11 @@ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
         return None, (underlying_name, underlying_args)
     # Defense in depth: resolve_underlying_call only checks the global
     # registry; also require membership in the session-scoped catalog.
+    # Session-gated GUI tools fail fast with their real reason (#120413):
+    # tool_search can never surface them in this session.
     if underlying_name not in ts.scoped_deferrable_names(current_defs):
-        return tool_error(f"'{underlying_name}' is not available in this session. "
+        return tool_error(ts.out_of_scope_reason(underlying_name)
+                          or f"'{underlying_name}' is not available in this session. "
                           "Use tool_search to find tools you can call."), None
     # Validate against the deferred tool's concrete schema — the generic
     # ``arguments: object`` bridge schema can't enforce it.
@@ -928,7 +927,7 @@ def handle_function_call(
         if "manage_connections" not in _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode=True):
             return _emit(tool_error("Connectors are not available in this session."))
         if is_connector_name(function_name) and parse_connector_name(function_name) is None:
-            return _emit(tool_error("Malformed connector tool name; expected connectors__<connector>__<tool>."))
+            return _emit(tool_error("Malformed connector tool name; expected connectors__<connector>__{tool}."))
 
     original_args = dict(function_args)
     if not skip_tool_request_middleware:

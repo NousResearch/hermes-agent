@@ -75,7 +75,8 @@ def _signal_user_tts_provider(name: str, tts_config: Dict[str, Any], hook: str) 
                         env_passthrough=_command_provider_env_passthrough(cfg))
                 except Exception as exc:  # noqa: BLE001 — best-effort hook
                     logger.debug("[TTS] %s_command for %s failed: %s", hook, name, exc)
-            threading.Thread(target=_run, name=f"tts-{hook}-{name}", daemon=True).start()
+            # ctx_bound: env_passthrough resolves through the caller's profile secret scope.
+            threading.Thread(target=ctx_bound(_run), name=f"tts-{hook}-{name}", daemon=True).start()
             return hook
         plugin_provider = _lookup_plugin_provider(name)
         if plugin_provider is None:

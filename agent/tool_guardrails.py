@@ -154,10 +154,12 @@ class ToolCallGuardrailConfig:
 
 @dataclass(frozen=True)
 class IdenticalCallObservation:
-    """``notice`` is appended after the result, ``stub`` replaces a byte-identical duplicate result."""
+    """``notice`` is appended after the result, ``stub`` replaces a byte-identical duplicate result;
+    ``kind`` names the detector behind the notice (``identical_call_streak`` / ``identical_cycle``)."""
 
     notice: str | None = None
     stub: str | None = None
+    kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -458,9 +460,9 @@ class ToolCallGuardrailController:
             self._identical_streak_first_call_id = tool_call_id or ""
         count = self._identical_streak_count
 
-        notice = None
+        notice = kind = None
         if not is_stall_guard_repeatable(tool_name) and count >= STALL_GUARD_IDENTICAL_CALL_THRESHOLD:
-            notice = _IDENTICAL_CALL_NOTICE.format(ordinal=_ordinal(count), tool_name=tool_name)
+            notice, kind = _IDENTICAL_CALL_NOTICE.format(ordinal=_ordinal(count), tool_name=tool_name), "identical_call_streak"
             # The no-progress BLOCK in before_call only covers idempotent_tools; this streak
             # is tool-agnostic, so with hard stops on, halt at the same threshold (a model
             # replaying a successful `terminal` call otherwise runs to the budget).
@@ -477,14 +479,14 @@ class ToolCallGuardrailController:
             cycle = self._detect_identical_cycle()
             if cycle is not None:
                 period, laps = cycle
-                notice = _IDENTICAL_CYCLE_NOTICE.format(count=laps, period=period, tool_name=tool_name)
+                notice, kind = _IDENTICAL_CYCLE_NOTICE.format(count=laps, period=period, tool_name=tool_name), "identical_cycle"
                 if self.config.hard_stop_enabled and laps >= self.config.no_progress_block_after and self._halt_decision is None:
                     self._decide("halt", "identical_cycle_halt", tool_name, laps, signature, period=period)
 
         stub = None
         if is_plain_str and count >= 2 and not failed and len(result) >= IDENTICAL_RESULT_STUB_MIN_CHARS:
             stub = self._build_result_reference_stub(tool_name, args)
-        return IdenticalCallObservation(notice=notice, stub=stub)
+        return IdenticalCallObservation(notice=notice, stub=stub, kind=kind)
 
     def _detect_identical_cycle(self) -> tuple[int, int] | None:
         """Detect a repeating identical-call cycle ending at the latest observed call.

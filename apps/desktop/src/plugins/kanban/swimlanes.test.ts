@@ -8,7 +8,8 @@ import {
   laneKey,
   lanePreset,
   NO_LANE,
-  normalizeSwimlaneBy
+  normalizeSwimlaneBy,
+  sendDropPatch
 } from './swimlanes'
 import type { KanbanBoard, KanbanTask } from './types'
 
@@ -122,7 +123,37 @@ describe('dropPatch', () => {
   })
 })
 
+describe('sendDropPatch', () => {
+  it('a refused status move leaves the lane field unwritten', async () => {
+    const sent: object[] = []
+
+    const send = async (part: object) => {
+      sent.push(part)
+
+      if ('status' in part) {
+        throw new Error('409: unfinished parent')
+      }
+    }
+
+    await expect(sendDropPatch({ status: 'done', assignee: 'amy' }, send)).rejects.toThrow('409')
+    expect(sent).toEqual([{ status: 'done' }])
+  })
+
+  it('an accepted move writes the status, then the lane field', async () => {
+    const sent: object[] = []
+
+    await sendDropPatch({ status: 'done', assignee: 'amy' }, async part => void sent.push(part))
+    await sendDropPatch({ priority: 5 }, async part => void sent.push(part))
+
+    expect(sent).toEqual([{ status: 'done' }, { assignee: 'amy' }, { priority: 5 }])
+  })
+})
+
 describe('lanePreset', () => {
+  it('the no-tenant lane sends no tenant (an empty string would be a tenant of its own)', () => {
+    expect(lanePreset('tenant', NO_LANE)).toEqual({})
+  })
+
   it.each(DIMS)('a task created with a %s lane preset belongs to that lane', by => {
     for (const key of new Set(TASKS.map(t => laneKey(by, t)))) {
       const preset = lanePreset(by, key)

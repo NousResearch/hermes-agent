@@ -38,14 +38,13 @@ import {
   Switch,
   Textarea,
   Tip,
-  useGrabScroll,
   useMutation,
   useQuery,
   useQueryClient,
   useValue,
   WorkspacePageHeaderControl
 } from '@hermes/plugin-sdk'
-import { type DragEvent as ReactDragEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import {
   $boardSlug,
@@ -63,238 +62,43 @@ import {
   fetchBoard,
   fetchBoards,
   fetchProfiles,
-  fetchProjects,
   patchTask,
   profilesKey,
-  projectsKey,
   taskKey,
   useKanbanScope
 } from './api'
+import { BoardColumns, EmptyBoard } from './board-body'
 import { BoardSwitcher } from './board-switcher'
-import { Card } from './card'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
-import { initialAssignee, laneCreateFields, PARKED, submittedAssignee } from './new-task-fields'
-import { OrchestrationPanel } from './orchestration'
-import { laneTitle, SwimlaneGrid } from './swimlane-grid'
 import {
-  applyPatch,
-  dropPatch,
-  groupSwimlanes,
-  type LaneDimension,
-  laneKey,
-  type LanePreset,
-  lanePreset,
-  normalizeSwimlaneBy,
-  SWIMLANE_OPTIONS,
-  type TaskPatch
-} from './swimlanes'
+  assigneeOptions,
+  assigneeSelectValue,
+  initialAssignee,
+  laneCreateFields,
+  newTaskTitle,
+  PARKED,
+  submittedAssignee
+} from './new-task-fields'
+import { OrchestrationPanel } from './orchestration'
+import { applyPatch, laneKey, normalizeSwimlaneBy, sendDropPatch, SWIMLANE_OPTIONS, type TaskPatch } from './swimlanes'
 import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   $newTaskLane,
   Avatar,
-  columnHelp,
   columnLabel,
   errText,
   FIELD_LABEL,
   isLockedTarget,
-  lockedReason,
   useKanban,
   useOrchestration
 } from './ui'
+import { type NewTaskRequest, useSwimlanes } from './use-swimlanes'
 
 // ── optimistic board edits (reconciled by the follow-up refresh) ─────────────
 
 function removeCard(board: KanbanBoard, id: string): KanbanBoard {
   return { ...board, columns: board.columns.map(col => ({ ...col, tasks: col.tasks.filter(t => t.id !== id) })) }
-}
-
-// ── column ───────────────────────────────────────────────────────────────────
-
-function Column({
-  collapsed,
-  column,
-  columns,
-  onAdd,
-  onDelete,
-  onDropTask,
-  onMove,
-  onOpen,
-  onToggle,
-  onToggleSelect,
-  selected
-}: {
-  collapsed: boolean
-  column: { name: string; tasks: KanbanTask[] }
-  columns: string[]
-  onAdd: (status: string) => void
-  onDelete: (id: string) => void
-  onDropTask: (id: string, status: string) => void
-  onMove: (id: string, status: string) => void
-  onOpen: (id: string) => void
-  onToggle: () => void
-  onToggleSelect: (id: string) => void
-  selected: ReadonlySet<string>
-}) {
-  const k = useKanban()
-  const [over, setOver] = useState(false)
-  const meta = columnMeta(column.name)
-  const label = columnLabel(k, column.name)
-  const locked = isLockedTarget(column.name)
-  const byProfile = useValue($lanesByProfile)
-
-  // The dashboard's "lanes by profile": sub-group Running by assignee so a
-  // fleet's in-flight work reads per-worker. Null = flat (off, or trivial).
-  const lanes = useMemo(() => {
-    if (!byProfile || column.name !== 'running' || column.tasks.length === 0) {
-      return null
-    }
-
-    const groups = new Map<string, KanbanTask[]>()
-
-    for (const task of column.tasks) {
-      const key = task.assignee || UNASSIGNED_LANE
-      groups.set(key, [...(groups.get(key) ?? []), task])
-    }
-
-    return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))
-  }, [byProfile, column])
-
-  const dragHandlers = {
-    onDragLeave: () => setOver(false),
-    onDragOver: (event: ReactDragEvent<HTMLElement>) => {
-      // Locked lanes don't preventDefault → the OS shows the no-drop cursor
-      // and the drop event never fires. The lane is honest about itself.
-      if (locked) {
-        event.dataTransfer.dropEffect = 'none'
-
-        return
-      }
-
-      event.preventDefault()
-      event.dataTransfer.dropEffect = 'move'
-      setOver(true)
-    },
-    onDrop: (event: ReactDragEvent<HTMLElement>) => {
-      event.preventDefault()
-      setOver(false)
-      const id = event.dataTransfer.getData('text/plain')
-
-      if (id) {
-        onDropTask(id, column.name)
-      }
-    }
-  }
-
-  const wash = over && !locked ? 'bg-(--ui-bg-quinary)' : 'bg-[color-mix(in_srgb,var(--ui-bg-quinary)_50%,transparent)]'
-
-  // Collapsed = a thin vertical rail: dot, sideways label, count. Still a live
-  // drop target (drop straight onto the rail); click expands. The dot sits in
-  // the same h-5 header row as an expanded lane's, so dots align across the
-  // board regardless of collapse state.
-  if (collapsed) {
-    return (
-      <button
-        {...dragHandlers}
-        aria-label={k.expand(label)}
-        className={cn(
-          'flex h-full w-8 shrink-0 flex-col items-center gap-1.5 rounded-lg p-2 transition-colors hover:bg-(--ui-bg-quinary)',
-          wash
-        )}
-        onClick={onToggle}
-        type="button"
-      >
-        <span className="grid h-5 shrink-0 place-items-center">
-          <span className="size-1.5 rounded-full" style={{ backgroundColor: meta.tone }} />
-        </span>
-        <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary) [writing-mode:vertical-rl]">
-          {label}
-        </span>
-        {column.tasks.length > 0 && (
-          <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{column.tasks.length}</span>
-        )}
-      </button>
-    )
-  }
-
-  return (
-    <div
-      {...dragHandlers}
-      className={cn('group/col flex h-full w-64 shrink-0 flex-col rounded-lg p-2 transition-colors', wash)}
-    >
-      <header className="mb-1.5 flex h-5 items-center gap-1.5 px-1">
-        <span className="size-1.5 rounded-full" style={{ backgroundColor: meta.tone }} />
-        <Tip label={columnHelp(k, column.name)}>
-          <span className="cursor-help text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
-            {label}
-          </span>
-        </Tip>
-        <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{column.tasks.length}</span>
-        <button
-          aria-label={k.collapse(label)}
-          className="ml-auto grid size-5 place-items-center rounded text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100 group-hover/col:opacity-100"
-          onClick={onToggle}
-          type="button"
-        >
-          <Codicon name="chevron-left" size="0.75rem" />
-        </button>
-      </header>
-      <div className="relative flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
-        {lanes
-          ? lanes.map(([assignee, tasks]) => (
-              <div className="flex flex-col gap-2" key={assignee}>
-                <div className="flex items-center gap-1.5 px-1 pt-1 text-[0.625rem] text-(--ui-text-quaternary)">
-                  {assignee !== UNASSIGNED_LANE && <Avatar name={assignee} size="0.875rem" />}
-                  {assignee}
-                  <span className="tabular-nums">{tasks.length}</span>
-                </div>
-                {tasks.map(task => (
-                  <Card
-                    columns={columns}
-                    key={task.id}
-                    onDelete={onDelete}
-                    onMove={onMove}
-                    onOpen={onOpen}
-                    onToggleSelect={onToggleSelect}
-                    selected={selected.has(task.id)}
-                    task={task}
-                  />
-                ))}
-              </div>
-            ))
-          : column.tasks.map(task => (
-              <Card
-                columns={columns}
-                key={task.id}
-                onDelete={onDelete}
-                onMove={onMove}
-                onOpen={onOpen}
-                onToggleSelect={onToggleSelect}
-                selected={selected.has(task.id)}
-                task={task}
-              />
-            ))}
-        {/* Jira-style lane add — dashed, faded in on lane hover. Opacity (not
-            display) so it always holds its slot and never thrashes layout.
-            Locked lanes get none: you can't create into a system state. */}
-        {!locked && (
-          <button
-            aria-label={k.newTaskIn(label)}
-            className="flex shrink-0 items-center justify-center rounded-md border border-dashed border-(--ui-stroke-secondary) py-1.5 text-(--ui-text-tertiary) opacity-0 transition-[opacity,color,border-color] group-hover/col:opacity-100 hover:border-(--ui-text-quaternary) hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100"
-            onClick={() => onAdd(column.name)}
-            type="button"
-          >
-            <Codicon name="add" size="0.8rem" />
-          </button>
-        )}
-        {column.tasks.length === 0 && (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center text-[0.6875rem] text-(--ui-text-quaternary)">
-            {k.empty}
-          </div>
-        )}
-      </div>
-    </div>
-  )
 }
 
 // ── dialogs ──────────────────────────────────────────────────────────────────
@@ -311,16 +115,6 @@ function Field({ children, label }: { children: ReactNode; label: string }) {
   )
 }
 
-/** A new-task request: the column it lands in, plus — when raised from a
- *  swimlane cell — the lane's create-time fields and display name. */
-interface NewTaskTarget {
-  status: string
-  preset?: LanePreset
-  laneTitle?: string
-  /** The lane the task is meant for, to say so if it lands elsewhere. */
-  lane?: { by: LaneDimension; key: string; title: (key: string) => string }
-}
-
 function NewTaskDialog({
   onClose,
   parents,
@@ -328,7 +122,7 @@ function NewTaskDialog({
 }: {
   onClose: () => void
   parents: Array<{ id: string; title: string }>
-  request: NewTaskTarget | null
+  request: NewTaskRequest | null
 }) {
   const target = request?.status ?? null
   const preset = request?.preset
@@ -357,7 +151,10 @@ function NewTaskDialog({
   const [assignee, setAssignee] = useState('')
   const [priority, setPriority] = useState('0')
   const [skills, setSkills] = useState('')
-  const [workspaceKind, setWorkspaceKind] = useState<string>(boardDefaultKind)
+  // '' = the board's default kind, resolved at render: the board list can
+  // arrive after the dialog opens without resetting what the user typed.
+  const [kindChoice, setKindChoice] = useState('')
+  const workspaceKind = kindChoice || boardDefaultKind
   // Empty = inherit the board's default project dir (backend resolves it);
   // a path here overrides just this task. Only meaningful for dir/worktree.
   const [workspacePath, setWorkspacePath] = useState('')
@@ -382,17 +179,18 @@ function NewTaskDialog({
     }
   })
 
-  // Reset per open — the dialog is externally controlled (open = target set),
-  // so onOpenChange(true) never fires; key the reset off `target` (and the
-  // resolved board default, which may arrive after the first open).
+  // Reset per open — the dialog is externally controlled (open = request
+  // set), so onOpenChange(true) never fires. Keyed on the request ONLY: data
+  // that arrives later (orchestration defaults, the board list) must never
+  // wipe a draft in progress, so those are read at render/submit instead.
   useEffect(() => {
     if (request) {
       setTitle('')
       setBodyText('')
-      setAssignee(initialAssignee(preset, resolvedDefault))
-      setPriority(String(preset?.priority ?? 0))
+      setAssignee(initialAssignee(request.preset))
+      setPriority(String(request.preset?.priority ?? 0))
       setSkills('')
-      setWorkspaceKind(boardDefaultKind)
+      setKindChoice('')
       setWorkspacePath('')
       setParent('')
       setModelOverride(EMPTY_OVERRIDE)
@@ -401,7 +199,7 @@ function NewTaskDialog({
       setBusy(false)
       setEstimate(null)
     }
-  }, [request, preset, resolvedDefault, boardDefaultKind])
+  }, [request])
 
   const submit = async () => {
     const trimmed = title.trim()
@@ -476,13 +274,7 @@ function NewTaskDialog({
           becomes a no-op and can go. */}
       <DialogContent className="w-[min(42rem,94vw)] max-w-none overflow-visible">
         <DialogHeader>
-          <DialogTitle>
-            {target
-              ? k.newTaskIn(
-                  request?.laneTitle ? `${columnLabel(k, target)} · ${request.laneTitle}` : columnLabel(k, target)
-                )
-              : k.newTask}
-          </DialogTitle>
+          <DialogTitle>{newTaskTitle(k, target, request?.laneTitle)}</DialogTitle>
         </DialogHeader>
         <div className="flex max-h-[min(72vh,44rem)] flex-col gap-3 overflow-y-auto pr-0.5">
           <Input
@@ -509,7 +301,7 @@ function NewTaskDialog({
               <Input onChange={event => setPriority(event.target.value)} type="number" value={priority} />
             </Field>
             <Field label={k.workspace}>
-              <Select onValueChange={setWorkspaceKind} value={workspaceKind}>
+              <Select onValueChange={setKindChoice} value={workspaceKind}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -539,25 +331,24 @@ function NewTaskDialog({
           )}
 
           <Field label={k.assignee}>
-            <Select onValueChange={v => setAssignee(v === NO_PARENT ? '' : v)} value={assignee || NO_PARENT}>
+            <Select
+              onValueChange={v => setAssignee(v === NO_PARENT ? '' : v)}
+              value={assigneeSelectValue(assignee, resolvedDefault, NO_PARENT)}
+            >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={NO_PARENT}>{k.defaultOption(resolvedDefault)}</SelectItem>
-                {[
-                  ...(roster?.profiles ?? []).map(profile => profile.name),
-                  // A lane's assignee that isn't a local profile still has to be selectable.
-                  ...(assignee && assignee !== PARKED && !roster?.profiles.some(p => p.name === assignee)
-                    ? [assignee]
-                    : [])
-                ]
-                  .filter(name => name !== resolvedDefault)
-                  .map(name => (
-                    <SelectItem key={name} value={name}>
-                      {name}
-                    </SelectItem>
-                  ))}
+                {assigneeOptions(
+                  (roster?.profiles ?? []).map(profile => profile.name),
+                  assignee,
+                  resolvedDefault
+                ).map(name => (
+                  <SelectItem key={name} value={name}>
+                    {name}
+                  </SelectItem>
+                ))}
                 <SelectItem value={PARKED}>{k.parkedOption}</SelectItem>
               </SelectContent>
             </Select>
@@ -673,8 +464,6 @@ function Intro() {
     </div>
   )
 }
-
-const UNASSIGNED_LANE = 'unassigned'
 
 // ── filter kebab ─────────────────────────────────────────────────────────────
 
@@ -942,17 +731,8 @@ export function KanbanBoardPage() {
   })
 
   const [openId, setOpenId] = useState<null | string>(null)
-  const [adding, setAdding] = useState<NewTaskTarget | null>(null)
+  const [adding, setAdding] = useState<NewTaskRequest | null>(null)
   const setAddStatus = (status: string) => setAdding({ status })
-  const swimlaneBy = normalizeSwimlaneBy(useValue($swimlaneBy))
-  const laneBy = swimlaneBy === 'none' ? null : swimlaneBy
-  // Names for project lanes; the board switcher reads the same cached query.
-  const { data: projectList } = useQuery({ queryKey: projectsKey(scope), queryFn: fetchProjects, staleTime: 30_000 })
-
-  const projectNames = useMemo(
-    () => new Map((projectList?.projects ?? []).map(project => [project.id, project.name])),
-    [projectList]
-  )
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -1044,22 +824,9 @@ export function KanbanBoardPage() {
 
   const total = filtered?.columns.reduce((sum, col) => sum + col.tasks.length, 0) ?? 0
 
-  const swimlanes = useMemo(
-    () =>
-      laneBy && filtered
-        ? groupSwimlanes(
-            filtered.columns,
-            laneBy,
-            key => laneTitle(laneBy, key, k, projectNames),
-            // Every live project gets a lane, so the first task can be created into it.
-            laneBy === 'project' ? [...projectNames.keys()] : []
-          )
-        : null,
-    [filtered, laneBy, k, projectNames]
-  )
-
   const moveMut = useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: TaskPatch }) => patchTask(id, { ...patch }),
+    mutationFn: ({ id, patch }: { id: string; patch: TaskPatch }) =>
+      sendDropPatch(patch, part => patchTask(id, { ...part })),
     onMutate: async ({ id, patch }) => {
       await qc.cancelQueries({ queryKey: boardKey(scope, slug, archived) })
       const previous = qc.getQueryData<KanbanBoard>(boardKey(scope, slug, archived))
@@ -1105,41 +872,15 @@ export function KanbanBoardPage() {
     onSettled: () => void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
   })
 
-  const findTask = (id: string) => board?.columns.flatMap(col => col.tasks).find(candidate => candidate.id === id)
+  const swim = useSwimlanes({
+    columns: filtered?.columns ?? null,
+    findTask: id => board?.columns.flatMap(col => col.tasks).find(candidate => candidate.id === id),
+    move: (id, patch) => moveMut.mutate({ id, patch })
+  })
 
-  // One drop rule for the flat board (lane = null: status only) and the
-  // swimlane grid (a cross-lane drop also writes the lane's field).
-  const dropCard = (id: string, lane: null | string, status: string) => {
-    const task = findTask(id)
-    const patch = task ? dropPatch(swimlaneBy, task, lane, status) : null
-
-    if (!patch || Object.keys(patch).length === 0) {
-      return
-    }
-
-    if (patch.status && isLockedTarget(patch.status)) {
-      host.notify({ kind: 'info', message: lockedReason(k, patch.status) })
-
-      return
-    }
-
-    moveMut.mutate({ id, patch })
-  }
-
-  const canDropCard = (id: string, lane: string, status: string) => {
-    const task = findTask(id)
-    const patch = task ? dropPatch(swimlaneBy, task, lane, status) : null
-
-    return patch !== null && !(patch.status && isLockedTarget(patch.status))
-  }
-
-  const onMove = (id: string, status: string) => dropCard(id, null, status)
+  const onMove = (id: string, status: string) => swim.drop(id, null, status)
 
   const errorMessage = error ? errText(error) : null
-
-  // Grab-to-scrub the lane strip (shared primitive, same as the dashboard's pan).
-  const lanesRef = useRef<HTMLDivElement>(null)
-  const { grabbing, onMouseDown } = useGrabScroll(lanesRef)
 
   // Lane collapse: auto (empty → rail) unless the user overrode it. The map
   // stores only deviations from auto, so it stays tiny and self-heals. On a
@@ -1265,74 +1006,25 @@ export function KanbanBoardPage() {
         <div className="grid flex-1 place-items-center">
           <Loader type="lemniscate-bloom" />
         </div>
-      ) : total === 0 ? (
-        <div className="grid flex-1 place-items-center px-4 text-center">
-          <div className="flex flex-col items-center gap-2">
-            <Codicon className="text-(--ui-text-quaternary)" name="project" size="1.25rem" />
-            <p className="text-xs text-(--ui-text-tertiary)">{search || tenant || assignee ? k.noMatch : k.noTasks}</p>
-            <Button className="mt-0.5" onClick={() => setAddStatus('triage')} size="sm" variant="outline">
-              <Codicon name="add" size="0.75rem" />
-              {k.newTask}
-            </Button>
-          </div>
-        </div>
-      ) : laneBy && swimlanes ? (
-        <div
-          className={cn('min-h-0 flex-1 overflow-auto px-4 pb-3', grabbing && 'cursor-grabbing')}
-          onMouseDown={onMouseDown}
-          ref={lanesRef}
-        >
-          <SwimlaneGrid
-            by={laneBy}
-            canDrop={canDropCard}
-            collapsedColumn={col => laneOverrides[col.name] ?? autoCollapsed(col)}
-            columns={filtered.columns}
-            lanes={swimlanes}
-            onAdd={(status, lane) =>
-              setAdding({
-                status,
-                preset: lanePreset(laneBy, lane),
-                laneTitle: laneTitle(laneBy, lane, k, projectNames),
-                lane: { by: laneBy, key: lane, title: key => laneTitle(laneBy, key, k, projectNames) }
-              })
-            }
-            onDelete={id => deleteMut.mutate(id)}
-            onDrop={dropCard}
-            onMove={onMove}
-            onOpen={setOpenId}
-            onToggleColumn={col => toggleLane(col.name, autoCollapsed(col))}
-            onToggleSelect={toggleSelect}
-            projectNames={projectNames}
-            selected={selected}
-          />
-        </div>
+      ) : total === 0 && !swim.lanes?.length ? (
+        <EmptyBoard filtered={Boolean(search || tenant || assignee)} onNewTask={() => setAddStatus('triage')} />
       ) : (
-        <div
-          className={cn('flex flex-1 gap-2 overflow-x-auto px-4 pt-1 pb-3', grabbing && 'cursor-grabbing')}
-          onMouseDown={onMouseDown}
-          ref={lanesRef}
-        >
-          {filtered.columns.map(col => {
-            const auto = autoCollapsed(col)
-
-            return (
-              <Column
-                collapsed={laneOverrides[col.name] ?? auto}
-                column={col}
-                columns={columnNames}
-                key={col.name}
-                onAdd={setAddStatus}
-                onDelete={id => deleteMut.mutate(id)}
-                onDropTask={onMove}
-                onMove={onMove}
-                onOpen={setOpenId}
-                onToggle={() => toggleLane(col.name, auto)}
-                onToggleSelect={toggleSelect}
-                selected={selected}
-              />
-            )
-          })}
-        </div>
+        <BoardColumns
+          cards={{
+            onDelete: id => deleteMut.mutate(id),
+            onMove,
+            onOpen: setOpenId,
+            onToggleSelect: toggleSelect,
+            selected
+          }}
+          collapse={{
+            isCollapsed: col => laneOverrides[col.name] ?? autoCollapsed(col),
+            toggle: col => toggleLane(col.name, autoCollapsed(col))
+          }}
+          columns={filtered.columns}
+          onAdd={setAdding}
+          swim={swim}
+        />
       )}
 
       {selected.size > 0 && (

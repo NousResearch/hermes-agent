@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { initialAssignee, laneCreateFields, PARKED, submittedAssignee } from './new-task-fields'
+import { assigneeSelectValue, initialAssignee, laneCreateFields, PARKED, submittedAssignee } from './new-task-fields'
 import { type LaneDimension, laneKey, lanePreset, NO_LANE } from './swimlanes'
 import type { KanbanTask } from './types'
 
@@ -26,7 +26,7 @@ function dialogBody(by: LaneDimension, key: string) {
   const preset = lanePreset(by, key)
 
   return {
-    assignee: submittedAssignee(initialAssignee(preset, DEFAULT_PROFILE), DEFAULT_PROFILE),
+    assignee: submittedAssignee(initialAssignee(preset), DEFAULT_PROFILE),
     priority: preset.priority ?? 0,
     ...laneCreateFields(preset)
   }
@@ -52,8 +52,21 @@ describe('new task from a lane', () => {
   })
 
   it('preselects parked for the unassigned lane and the default row for the default profile', () => {
-    expect(initialAssignee(lanePreset('assignee', NO_LANE), DEFAULT_PROFILE)).toBe(PARKED)
-    expect(initialAssignee(lanePreset('assignee', DEFAULT_PROFILE), DEFAULT_PROFILE)).toBe('')
-    expect(initialAssignee(undefined, DEFAULT_PROFILE)).toBe('')
+    const DEFAULT_ROW = '__default__'
+
+    expect(initialAssignee(lanePreset('assignee', NO_LANE))).toBe(PARKED)
+    expect(
+      assigneeSelectValue(initialAssignee(lanePreset('assignee', DEFAULT_PROFILE)), DEFAULT_PROFILE, DEFAULT_ROW)
+    ).toBe(DEFAULT_ROW)
+    expect(assigneeSelectValue(initialAssignee(undefined), DEFAULT_PROFILE, DEFAULT_ROW)).toBe(DEFAULT_ROW)
+  })
+
+  it('a default that resolves after the dialog opened still submits the lane profile', () => {
+    // Opened while the orchestration default was still the 'default' fallback,
+    // submitted after it resolved to the lane's own profile.
+    const choice = initialAssignee(lanePreset('assignee', 'alice'))
+
+    expect(submittedAssignee(choice, 'alice')).toBe('alice')
+    expect(submittedAssignee(choice, DEFAULT_PROFILE)).toBe('alice')
   })
 })

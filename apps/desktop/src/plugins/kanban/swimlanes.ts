@@ -159,6 +159,23 @@ export function dropPatch(by: SwimlaneBy, task: KanbanTask, toLane: null | strin
   return { ...patch, ...change(toLane) }
 }
 
+/** Send a drop's patch so a refused status move changes nothing. The PATCH
+ *  route applies the assignee before the status and commits each on its own,
+ *  so one request carrying both can save the reassignment and then refuse the
+ *  move (a child of an unfinished parent dropped into Done). Status goes
+ *  first and alone; the lane field follows only once the move is accepted. */
+export async function sendDropPatch(patch: TaskPatch, send: (part: TaskPatch) => Promise<unknown>): Promise<void> {
+  const { status, ...lane } = patch
+
+  if (status !== undefined) {
+    await send({ status })
+  }
+
+  if (Object.keys(lane).length > 0) {
+    await send(lane)
+  }
+}
+
 /** Optimistic board edit for a patch: move columns on a status change, merge
  *  the lane fields in place. The follow-up refresh reconciles. */
 export function applyPatch(board: KanbanBoard, id: string, patch: TaskPatch): KanbanBoard {

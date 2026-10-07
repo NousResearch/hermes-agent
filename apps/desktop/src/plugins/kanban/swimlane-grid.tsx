@@ -4,13 +4,14 @@
  *  `dropPatch` in ./swimlanes, and the page refuses what it can't apply. */
 
 import { cn, Codicon, Tip, useValue } from '@hermes/plugin-sdk'
-import { type DragEvent as ReactDragEvent, type ReactNode, useRef, useState } from 'react'
+import { type ReactNode, useRef } from 'react'
 
 import { $collapsedSwimlanes } from './api'
 import { Card } from './card'
+import { ColumnAddButton, ColumnDot, ColumnHeaderBar, useDropTarget } from './column-parts'
 import { type LaneDimension, type Swimlane } from './swimlanes'
-import { columnMeta, type KanbanColumn } from './types'
-import { Avatar, columnHelp, columnLabel, isLockedTarget, type KanbanText, useKanban } from './ui'
+import { type KanbanColumn } from './types'
+import { Avatar, columnLabel, isLockedTarget, type KanbanText, useKanban } from './ui'
 
 const LANE_TITLE: Record<
   LaneDimension,
@@ -150,46 +151,30 @@ function ColumnHeader({
   onToggle: () => void
 }) {
   const k = useKanban()
-  const meta = columnMeta(column.name)
   const label = columnLabel(k, column.name)
-  const dot = <span className="size-1.5 shrink-0 rounded-full" style={{ backgroundColor: meta.tone }} />
 
   if (collapsed) {
     return (
       <Tip label={label}>
         <button
           aria-label={k.expand(label)}
-          className={cn(
-            RAIL_WIDTH,
-            'flex h-5 shrink-0 items-center justify-center gap-1 rounded hover:bg-(--ui-bg-quinary)'
-          )}
+          className={cn(RAIL_WIDTH, 'flex h-5 shrink-0 items-center justify-center rounded hover:bg-(--ui-bg-quinary)')}
           onClick={onToggle}
           type="button"
         >
-          {dot}
+          <ColumnDot name={column.name} />
         </button>
       </Tip>
     )
   }
 
   return (
-    <header className={cn(COLUMN_WIDTH, 'group/col flex h-5 shrink-0 items-center gap-1.5 px-3')}>
-      {dot}
-      <Tip label={columnHelp(k, column.name)}>
-        <span className="cursor-help text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
-          {label}
-        </span>
-      </Tip>
-      <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{column.tasks.length}</span>
-      <button
-        aria-label={k.collapse(label)}
-        className="ml-auto grid size-5 place-items-center rounded text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100 group-hover/col:opacity-100"
-        onClick={onToggle}
-        type="button"
-      >
-        <Codicon name="chevron-left" size="0.75rem" />
-      </button>
-    </header>
+    <ColumnHeaderBar
+      className={cn(COLUMN_WIDTH, 'group/col shrink-0 px-3')}
+      count={column.tasks.length}
+      name={column.name}
+      onCollapse={onToggle}
+    />
   )
 }
 
@@ -246,38 +231,10 @@ function Cell({
   dragId: { current: null | string }
   lane: string
 }) {
-  const k = useKanban()
-  const [over, setOver] = useState(false)
-  const locked = isLockedTarget(column.name)
-  const label = columnLabel(k, column.name)
-
-  const dragHandlers = {
-    onDragLeave: () => setOver(false),
-    onDragOver: (event: ReactDragEvent<HTMLElement>) => {
-      // Not calling preventDefault refuses the drop: the OS shows no-drop and
-      // the drop event never fires.
-      if (locked || (dragId.current !== null && !canDrop(dragId.current, lane, column.name))) {
-        event.dataTransfer.dropEffect = 'none'
-
-        return
-      }
-
-      event.preventDefault()
-      event.dataTransfer.dropEffect = 'move'
-      setOver(true)
-    },
-    onDrop: (event: ReactDragEvent<HTMLElement>) => {
-      event.preventDefault()
-      setOver(false)
-      const id = event.dataTransfer.getData('text/plain')
-
-      if (id) {
-        onDrop(id, lane, column.name)
-      }
-    }
-  }
-
-  const wash = over ? 'bg-(--ui-bg-quinary)' : 'bg-[color-mix(in_srgb,var(--ui-bg-quinary)_50%,transparent)]'
+  const { handlers: dragHandlers, wash } = useDropTarget(
+    () => !isLockedTarget(column.name) && (dragId.current === null || canDrop(dragId.current, lane, column.name)),
+    id => onDrop(id, lane, column.name)
+  )
 
   if (collapsed) {
     return (
@@ -313,16 +270,7 @@ function Cell({
           task={task}
         />
       ))}
-      {!locked && (
-        <button
-          aria-label={k.newTaskIn(label)}
-          className="flex shrink-0 items-center justify-center rounded-md border border-dashed border-(--ui-stroke-secondary) py-1.5 text-(--ui-text-tertiary) opacity-0 transition-[opacity,color,border-color] group-hover/col:opacity-100 hover:border-(--ui-text-quaternary) hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100"
-          onClick={() => onAdd(column.name, lane)}
-          type="button"
-        >
-          <Codicon name="add" size="0.8rem" />
-        </button>
-      )}
+      <ColumnAddButton name={column.name} onAdd={() => onAdd(column.name, lane)} />
     </div>
   )
 }

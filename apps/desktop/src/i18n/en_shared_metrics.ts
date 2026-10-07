@@ -11,7 +11,7 @@ export const enSharedMetrics: Translations['sharedMetrics'] = {
   collectedModels: 'Model routes and token totals',
   collectedNames: 'Built-in tool, command and catalog names',
   collectedMilestones: 'Bucketed setup counts',
-  collectedReliability: 'Update results and timing, crashes, startup and reply speed, messaging-platform health',
+  collectedReliability: 'Update and install results and timing (with a fixed-list reason and the stage when one fails, including a fresh install recorded on this machine and counted only once you opt in), crashes, startup and reply speed, messaging-platform health',
   collectedUsage:
     'How Hermes gets used: agent accuracy and efficiency (edit matches, loops, recoveries, tokens and tool calls per task, cache breaks), active time per surface and Desktop mode, which app areas, actions and settings are used, closed quickly or switched off, and provider setup outcomes',
   collectedMachine:
@@ -19,7 +19,7 @@ export const enSharedMetrics: Translations['sharedMetrics'] = {
   installId:
     'Sending uploads each daily package to the Nous telemetry service. Packages carry this profile’s install ID: a stable random UUID with no personal information, reset by deleting the shared-metrics directory.',
   consentWindow:
-    'Only packages whose entire collection period falls inside a recorded consent window are ever sent — data from before you opt in, or from any gap while sending was off, stays on this machine. Sending can be turned off again at any time.',
+    'Only packages whose entire collection period falls inside a recorded consent window are ever sent. Apart from the fresh-install note (noted on this machine and counted only once you opt in), data from before you opt in, or from any gap while sending was off, stays on this machine. Sending can be turned off again at any time.',
   readDocs: 'Read the full details',
   share: 'Collect and send to Nous',
   local: 'Collect locally only',

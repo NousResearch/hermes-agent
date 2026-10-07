@@ -26,9 +26,9 @@ def test_unknown_key_runs_the_call_and_names_the_ignored_argument(tmp_path):
     (tmp_path / "b.ini").write_text("needle\n")
     result = _call("search_files", {"pattern": "needle", "path": str(tmp_path), "include": "*.ini"}, "t-inc")
     assert result["total_count"] == 2                       # still ran
-    assert "include" in result["_arg_warning"] and "file_glob" in result["_arg_warning"]
+    assert "include" in result["warning"] and "file_glob" in result["warning"]
     valid = _call("search_files", {"pattern": "needle", "path": str(tmp_path), "file_glob": "*.ini"}, "t-ok")
-    assert valid["total_count"] == 1 and "_arg_warning" not in valid
+    assert valid["total_count"] == 1 and "warning" not in valid
 
 
 def test_write_file_rejects_edit_keys_without_touching_the_file(tmp_path):
@@ -60,7 +60,7 @@ def test_execute_code_does_not_treat_command_as_an_alias(monkeypatch):
     args = {"code": "print(1)", "command": "print(2)"}
     result = _call("execute_code", args, "code-and-command")
     assert seen == [args] and result["output"] == "ran code"
-    assert "Ignored unknown argument(s): command." in result["_arg_warning"]
+    assert "Ignored unknown argument(s): command." in result["warning"]
 
 
 def _install_argument_rewrite(monkeypatch, phase, rewrite):
@@ -94,7 +94,7 @@ def test_rewritten_arguments_are_validated_and_warnings_name_only_dropped_keys(t
         task_id=f"rewrite-{phase}", skip_tool_request_middleware=True,
     ))
     assert result["total_count"] == 1
-    warning_keys = result["_arg_warning"].split(". Valid arguments:")[0]
+    warning_keys = result["warning"].split(". Valid arguments:")[0]
     assert "unused_option" in warning_keys
     assert "query" not in warning_keys and "include" not in warning_keys
 
@@ -149,3 +149,11 @@ def test_invalid_writes_report_validation_errors(tmp_path, monkeypatch, shape):
     assert len(events) == 2
     assert all(event["status"] == "error" and event["error_type"] == "invalid_arguments" for event in events)
     assert all(event["error_message"] == result["error"] for event in events)
+
+
+def test_warning_is_first_field_and_keeps_a_handler_warning():
+    from tools.arg_validation import attach_arg_warning
+    out = attach_arg_warning(json.dumps({"output": "x", "warning": "truncated"}), "Ignored unknown argument(s): a.")
+    data = json.loads(out)
+    assert next(iter(data)) == "warning"
+    assert data["warning"].startswith("Ignored unknown argument(s): a.") and data["warning"].endswith("truncated")

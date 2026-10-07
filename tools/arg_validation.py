@@ -57,11 +57,14 @@ def validate_tool_args(tool_name: str, args: Dict[str, Any]) -> Tuple[Optional[s
         return tool_error(
             f"{tool_name} does not accept argument(s): {', '.join(unknown)}. "
             f"The tool was NOT invoked and nothing was changed. Valid arguments: {valid}."), None
-    return None, f"Ignored unknown argument(s): {', '.join(unknown)}. Valid arguments: {valid}."
+    return None, (f"Ignored unknown argument(s): {', '.join(unknown)}. The tool ran WITHOUT them, so the result "
+                  f"may not be what you intended. Valid arguments: {valid}. See the tool description for what "
+                  f"each argument does, and retry with the correct ones if you still need that behavior.")
 
 
 def attach_arg_warning(result: Any, warning: Optional[str]) -> Any:
-    """Add ``_arg_warning`` to a JSON-object tool result; anything else passes through."""
+    """Put ``warning`` first in a JSON-object tool result; anything else passes through.
+    A handler's own ``warning`` (e.g. execute_code truncation) is kept after ours."""
     if not warning or not isinstance(result, str):
         return result
     try:
@@ -70,5 +73,6 @@ def attach_arg_warning(result: Any, warning: Optional[str]) -> Any:
         return result
     if not isinstance(data, dict):
         return result
-    data["_arg_warning"] = warning
-    return json.dumps(data, ensure_ascii=False)
+    existing = data.pop("warning", None)
+    first = f"{warning}\n{existing}" if existing else warning
+    return json.dumps({"warning": first, **data}, ensure_ascii=False)

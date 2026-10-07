@@ -2439,3 +2439,128 @@ def test_same_provider_switch_on_session_only_custom_endpoint_keeps_endpoint(mon
     assert result.success
     assert result.base_url == "http://10.0.0.5:8000/v1"
     assert result.api_key == "session-secret"
+
+
+@pytest.mark.parametrize(
+    ("model_key", "configured_key"),
+    [("api_key", "sk-custom-test"), ("api", "sk-legacy-test")],
+)
+def test_bare_custom_picker_probe_uses_configured_api_key(
+    monkeypatch, model_key, configured_key
+):
+    """Authenticated bare custom endpoints must receive the model config key (#83837)."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "model": {
+                "provider": "custom",
+                "base_url": "https://custom.example.test/v1",
+                model_key: configured_key,
+            }
+        },
+    )
+    captured = {}
+
+    def _fake_fetch(api_key, api_url, *_args, **_kwargs):
+        captured.update(api_key=api_key, api_url=api_url)
+        return ["model-a", "model-b"]
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers._fetch_picker_live_models", _fake_fetch
+    )
+
+    rows = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://custom.example.test/v1",
+        current_model="model-a",
+        user_providers={},
+        custom_providers=[],
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+    )
+
+    row = next(p for p in rows if p["slug"] == "custom")
+    assert captured == {
+        "api_key": configured_key,
+        "api_url": "https://custom.example.test/v1",
+    }
+    assert row["models"] == ["model-a", "model-b"]
+
+
+def test_bare_custom_picker_does_not_send_config_key_to_different_endpoint(monkeypatch):
+    """A session URL override must not receive the persisted endpoint's key."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "model": {
+                "provider": "custom",
+                "base_url": "https://configured.example.test/v1",
+                "api_key": "sk-configured-test",
+            }
+        },
+    )
+    captured = {}
+
+    def _fake_fetch(api_key, api_url, *_args, **_kwargs):
+        captured.update(api_key=api_key, api_url=api_url)
+        return ["model-a"]
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers._fetch_picker_live_models", _fake_fetch
+    )
+
+    list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://session.example.test/v1",
+        current_model="model-a",
+        user_providers={},
+        custom_providers=[],
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+    )
+
+    assert captured == {
+        "api_key": "",
+        "api_url": "https://session.example.test/v1",
+    }
+
+
+def test_bare_custom_picker_url_match_preserves_path_case(monkeypatch):
+    """Case-distinct URL paths must not share an inline credential."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "model": {
+                "provider": "custom",
+                "base_url": "https://custom.example.test/Tenant/v1",
+                "api_key": "sk-tenant-test",
+            }
+        },
+    )
+    captured = {}
+
+    def _fake_fetch(api_key, *_args, **_kwargs):
+        captured["api_key"] = api_key
+        return ["model-a"]
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers._fetch_picker_live_models", _fake_fetch
+    )
+
+    list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://custom.example.test/tenant/v1",
+        current_model="model-a",
+        user_providers={},
+        custom_providers=[],
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+    )
+
+    assert captured["api_key"] == ""

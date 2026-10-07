@@ -1044,6 +1044,35 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
         b.record_section3_pair(display_name, ep_url_norm)
 
 
+def _bare_custom_model_api_key(current_base_url: str) -> str:
+    """Inline key for a direct ``model.provider: custom`` endpoint.
+
+    Resolves ``model.api_key`` / legacy ``model.api`` exactly as the runtime's
+    bare-custom candidates loop does — but only when the persisted model config
+    is bare ``custom`` AND its ``base_url`` owns the endpoint being probed.
+    Session/runtime URL overrides therefore never receive a persisted key, and
+    URL path case is preserved (comparison only strips whitespace and a single
+    trailing slash)."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        model_cfg = load_config_readonly().get("model", {})
+        if not isinstance(model_cfg, dict):
+            return ""
+        configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+        configured_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+        current_url = str(current_base_url or "").strip().rstrip("/")
+        if configured_provider != "custom" or not configured_url or configured_url != current_url:
+            return ""
+        for key in ("api_key", "api"):
+            value = model_cfg.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    except (OSError, TypeError, KeyError, AttributeError):
+        pass
+    return ""
+
+
 def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None:
     """Section 3b: ``model.provider: custom`` + ``model.base_url`` with no named
     providers:/custom_providers row — surface it so /model does not look like it ignored
@@ -1059,7 +1088,7 @@ def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None
     native_catalog_empty = False
     try:
         discovered, native_catalog_empty = _discover_endpoint_models(
-            "", api_url, "custom", False, headers=None, api_mode=None,
+            _bare_custom_model_api_key(api_url), api_url, "custom", False, headers=None, api_mode=None,
             probe_live=bool(b.refresh or b.probe_current_custom_provider), discovery_allowed=True,
             fast_custom_probe=b.resolved_fast_custom_probe)
         if discovered is not None:

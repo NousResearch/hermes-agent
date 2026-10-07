@@ -80,11 +80,24 @@ def _resolve_git_executable() -> Optional[str]:
 
 
 class PluginOperationError(Exception):
-    """Recoverable plugin install/update failure (CLI exits; HTTP maps to 4xx)."""
+    """Recoverable plugin install/update failure (CLI exits; HTTP maps to 4xx).
+
+    ``failure_class`` names the raise site for the extension-install metric (a closed name from
+    ``shared_metrics_contract.EXTENSION_PLUGIN_FAILURE_CLASSES``); untagged sites read ``other``.
+    """
+
+    failure_class = "other"
+
+    def __init__(self, *args, failure_class: Optional[str] = None):
+        super().__init__(*args)
+        if failure_class is not None:
+            self.failure_class = failure_class
 
 
 class PluginScanBlocked(PluginOperationError):
     """Plugin failed the security scan and was not installed."""
+
+    failure_class = "scan_blocked"
 
     def __init__(self, message: str, scan_result=None):
         super().__init__(message)
@@ -104,6 +117,43 @@ def _table(columns, **kwargs):
     for header, style in columns:
         table.add_column(header, style=style)
     return table
+
+
+RUNNING_GATEWAY_PLUGIN_MUTATION_ERROR = (
+    "the messaging gateway is running and its loaded plugin callbacks import from the "
+    "installed checkouts. Run `hermes gateway stop`, apply the change, then `hermes gateway "
+    "start`. To skip this check pass --allow-live-gateway (callbacks may fail until restart)."
+)
+
+
+def _gateway_is_running() -> bool:
+    """Is the active profile's gateway live? Same liveness read as the dashboard status
+    surfaces (``resolve_gateway_liveness``), never mutating the profile's identity files."""
+    from hermes_cli.profiles import _check_gateway_running
+
+    try:
+        return _check_gateway_running(get_hermes_home())
+    except Exception:
+        # A failed probe must not strand an uninstallable plugin (issue #70473's fix may not
+        # become its own lock-out); treat unknown liveness as not running.
+        logger.exception("gateway liveness probe failed; proceeding without the live-gateway guard")
+        return False
+
+
+def _refuse_live_gateway_mutation(action: str, *, allow_live_gateway: bool = False) -> None:
+    """Fail before any mutating git operation on an installed plugin (#70473).
+
+    Pulling, re-cloning or deleting a checkout under a running gateway breaks its
+    already-loaded plugin callbacks (a deferred relative import hits files the
+    operation just removed). *action* names the refusal ("update", "remove", ...).
+    """
+    if allow_live_gateway:
+        return
+    if _gateway_is_running():
+        raise PluginOperationError(
+            f"Cannot {action} plugin files while {RUNNING_GATEWAY_PLUGIN_MUTATION_ERROR}",
+            failure_class="already_installed",
+        )
 
 
 def _is_tty() -> bool:
@@ -322,11 +372,14 @@ def _resolve_subdir_within(clone_root: Path, subdir: str) -> Path:
     clone_root = clone_root.resolve()
     candidate = (clone_root / subdir).resolve()
     if candidate != clone_root and clone_root not in candidate.parents:
-        raise PluginOperationError(f"Plugin subdirectory '{subdir}' escapes the repository.")
+        raise PluginOperationError(f"Plugin subdirectory '{subdir}' escapes the repository.",
+                                   failure_class="invalid_source")
     if not candidate.exists():
-        raise PluginOperationError(f"Plugin subdirectory '{subdir}' does not exist in the repository.")
+        raise PluginOperationError(f"Plugin subdirectory '{subdir}' does not exist in the repository.",
+                                   failure_class="invalid_source")
     if not candidate.is_dir():
-        raise PluginOperationError(f"Plugin subdirectory '{subdir}' is not a directory.")
+        raise PluginOperationError(f"Plugin subdirectory '{subdir}' is not a directory.",
+                                   failure_class="invalid_source")
     return candidate
 
 
@@ -345,7 +398,7 @@ def _native_manifest_file(plugin_dir: Path) -> Optional[Path]:
     try:
         return native_manifest_file(plugin_dir)
     except ValueError as exc:
-        raise PluginOperationError(str(exc)) from exc
+        raise PluginOperationError(str(exc), failure_class="manifest_invalid") from exc
 
 
 def _has_portable_manifest(plugin_dir: Path) -> bool:
@@ -987,20 +1040,21 @@ _PLUGIN_ACTIONS = {
         ref=getattr(args, "ref", None),
         allow_removed=getattr(args, "allow_removed", False),
         no_deps=getattr(args, "no_deps", False),
-        yes_deps=getattr(args, "yes_deps", False)),
+        yes_deps=getattr(args, "yes_deps", False),
+        allow_live_gateway=getattr(args, "allow_live_gateway", False)),
     "search": lambda args: _catalog().cmd_search(
         getattr(args, "term", "") or "", json_output=getattr(args, "json", False)),
     "browse": lambda args: _catalog().cmd_search(""),
     "validate": lambda args: _catalog().cmd_validate(
         args.path, as_json=getattr(args, "json", False), install_deps=getattr(args, "install_deps", False)),
-    "update": lambda args: cmd_update(args.name),
+    "update": lambda args: cmd_update(args.name, allow_live_gateway=getattr(args, "allow_live_gateway", False)),
     "adopt": lambda args: cmd_adopt(args.name),
     "trust-update-url": lambda args: cmd_trust_update_url(args.name),
     "check-updates": lambda args: cmd_check_updates(args),
     "check": lambda args: cmd_check_updates(args),
-    "remove": lambda args: cmd_remove(args.name),
-    "rm": lambda args: cmd_remove(args.name),
-    "uninstall": lambda args: cmd_remove(args.name),
+    "remove": lambda args: cmd_remove(args.name, allow_live_gateway=getattr(args, "allow_live_gateway", False)),
+    "rm": lambda args: cmd_remove(args.name, allow_live_gateway=getattr(args, "allow_live_gateway", False)),
+    "uninstall": lambda args: cmd_remove(args.name, allow_live_gateway=getattr(args, "allow_live_gateway", False)),
     "enable": lambda args: cmd_enable(
         args.name,
         allow_tool_override=_tri_state_flag(args, "allow_tool_override", "no_allow_tool_override")),

@@ -172,6 +172,30 @@ def begin_voice_turn_route(agent: Any, messages: List[Dict[str, Any]], system_pr
     return agent._cached_system_prompt or system_prompt
 
 
+class _SessionRuntimeView:
+    """``agent`` with the session's own route and effort in place of a live voice turn's."""
+
+    def __init__(self, agent: Any, state: Dict[str, Any]) -> None:
+        snapshot = state.get("snapshot") or {}
+        own = {name: snapshot[name] for name in ("model", "provider", "base_url", "api_mode") if name in snapshot}
+        if "anthropic_base_url" in snapshot:
+            own["_anthropic_base_url"] = snapshot["anthropic_base_url"]
+        own["reasoning_config"] = state.get("reasoning_config")
+        self.__dict__.update(_agent=agent, _own=own)
+
+    def __getattr__(self, name: str) -> Any:
+        own = self.__dict__["_own"]
+        return own[name] if name in own else getattr(self.__dict__["_agent"], name)
+
+
+def session_runtime_view(agent: Any) -> Any:
+    """What a surface reports or persists as the SESSION's model and effort. Mid voice turn the agent
+    runs on the voice route (often reasoning off); reported as the chat's own setting, Desktop adopted
+    it into the composer, and every new chat it opened inherited reasoning off."""
+    state = getattr(agent, "_voice_route_state", None)
+    return _SessionRuntimeView(agent, state) if state else agent
+
+
 def end_voice_turn_route(agent: Any) -> None:
     """Undo ``begin_voice_turn_route`` (idempotent; every turn exit calls it)."""
     state = getattr(agent, "_voice_route_state", None)

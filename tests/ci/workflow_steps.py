@@ -81,7 +81,12 @@ def _run(step: dict, ctx: dict, cwd: Path | None = None, *, receipt: bool = Fals
             cwd=cwd or root, env=env, stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=30,
         )
-        assert result.returncode == 0, result.stdout + result.stderr
+        # workflow_steps is not a test module, so pytest does not rewrite this assert: the
+        # message is all a CI failure shows. A child that dies without a word (a Windows
+        # NTSTATUS exit, a process killed from outside) must still name its exit code.
+        assert result.returncode == 0, (
+            f"replayed step exited {result.returncode} (0x{result.returncode & 0xFFFFFFFF:08X}) "
+            f"under {bash}\n--- stdout ---\n{result.stdout}--- stderr ---\n{result.stderr}")
         return (dict(line.split("=", 1) for line in output.read_text(encoding="utf-8-sig").splitlines()),
                 [json.loads(line) for line in calls.read_text(encoding="utf-8-sig").splitlines()])
 

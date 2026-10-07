@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import * as sessionOwnerUtils from '@/app/session/hooks/use-session-actions/utils'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
+import { $busyInputMode, setBusyInputModeFromConfig } from '@/store/busy-input-mode'
 import { $clarifyRequests } from '@/store/clarify'
 import {
   clearComposerTerminalSelections,
@@ -344,6 +345,9 @@ describe('useComposerSubmit external request routing', () => {
 describe('useComposerSubmit busy-turn routing', () => {
   afterEach(() => {
     cleanup()
+    // The mode atom is module state; the queue-mode tests below must not leak
+    // into the redirect assertions of every other test in this file.
+    $busyInputMode.set('interrupt')
     vi.restoreAllMocks()
     clearComposerTerminalSelections()
   })
@@ -362,6 +366,102 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
     expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('queues a busy plain-text submit when display.busy_input_mode is queue', () => {
+    // The composer used to hardcode the redirect: `queue` promises the CLI's
+    // park-as-next-turn routing, so the live turn must keep running (#125963).
+    setBusyInputModeFromConfig('queue')
+
+    const { hook, onCancel, onSubmit, onSteer, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      text: 'run this next'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(onCancel).not.toHaveBeenCalled()
+  })
+
+  it.each(['interrupt', 'turbo'] satisfies unknown[])(
+    'still redirects a busy plain-text submit when busy_input_mode is %s',
+    async mode => {
+      setBusyInputModeFromConfig(mode)
+
+      const { hook, onSteer, onSteerHidden, queueCurrentDraft } = renderSubmitHook({
+        busy: true,
+        text: 'redirect me'
+      })
+
+      act(() => {
+        hook.result.current.submitDraft()
+      })
+
+      await waitFor(() => expect(onSteer).toHaveBeenCalledWith('redirect me'))
+      expect(onSteerHidden).not.toHaveBeenCalled()
+      expect(queueCurrentDraft).not.toHaveBeenCalled()
+    }
+  )
+
+  it('injects a busy plain-text submit via session.steer when busy_input_mode is steer', async () => {
+    // CLI parity: `steer` must not stop-and-correct — the text rides
+    // session.steer into the model's next tool result and records no user
+    // turn, exactly like the TUI's handleBusyInput (#125983).
+    setBusyInputModeFromConfig('steer')
+
+    const { hook, onSteer, onSteerHidden, onSubmit, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      text: 'nudge the model'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSteerHidden).toHaveBeenCalledWith('nudge the model'))
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+
+  it('queues a busy steer submit when the gateway refuses the injection', async () => {
+    // The TUI contract falls back to the queue when session.steer is
+    // rejected (no agent / no tool window) so the words are never lost.
+    setBusyInputModeFromConfig('steer')
+
+    const { hook, onSteerHidden } = renderSubmitHook({ busy: true, text: 'hold this' })
+    onSteerHidden.mockRejectedValueOnce(new Error('request timed out: session.steer'))
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['hold this']))
+    clearQueuedPrompts('stored-session')
+  })
+
+  it('runs a slash command immediately even when busy_input_mode is queue', () => {
+    // Queuing them would make every slash command wait for the current turn —
+    // the busy-branch contract above the mode switch must stay untouched.
+    setBusyInputModeFromConfig('queue')
+
+    const { hook, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      text: '/status'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith('/status', { composerScope: 'stored-session' })
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
   })
 
   it('puts a refused steer back in the composer when there is no queue to hold it', async () => {

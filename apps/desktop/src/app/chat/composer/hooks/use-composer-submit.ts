@@ -6,6 +6,7 @@ import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
+import { $busyInputMode } from '@/store/busy-input-mode'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import {
   clearSessionDraft,
@@ -314,12 +315,26 @@ export function useComposerSubmit({
         clearDraft()
         dispatchSubmit(text)
       } else if (!blockingPrompt && !attachments.length && text.trim()) {
-        // Cursor-style stop-and-correct: interrupt the live turn and redirect
-        // it with this text. redirect() preserves the shown reasoning/work; if
-        // the turn already ended, steerDraft re-queues so nothing is lost.
-        // Compaction is the gateway's call: it answers `queued` under the
-        // compression lock. The client flag can outlive an aborted compaction.
-        steerDraft()
+        // `display.busy_input_mode: queue` opts out of the redirect entirely —
+        // park the text as the next turn (the CLI routing in
+        // cli_tui_mixin.py); `steer` injects the text into the live turn via
+        // session.steer with no user turn (the TUI's handleBusyInput
+        // contract); interrupt and unknown values keep the historical
+        // stop-and-correct below (#125963).
+        const busyInputMode = $busyInputMode.get()
+
+        if (busyInputMode === 'queue') {
+          queueCurrentDraft()
+        } else if (busyInputMode === 'steer' && onSteerHidden) {
+          steerDraft('steer')
+        } else {
+          // Cursor-style stop-and-correct: interrupt the live turn and redirect
+          // it with this text. redirect() preserves the shown reasoning/work; if
+          // the turn already ended, steerDraft re-queues so nothing is lost.
+          // Compaction is the gateway's call: it answers `queued` under the
+          // compression lock. The client flag can outlive an aborted compaction.
+          steerDraft()
+        }
       } else if (payloadPresent) {
         // Attachments can't ride a redirect (no tool-result image carriage) —
         // queue the whole payload for the next turn. Same for a turn parked on
@@ -351,12 +366,18 @@ export function useComposerSubmit({
   // Redirect the live turn with a correction. The gateway either restarts the
   // active model request with its displayed context or waits for the current
   // tool boundary. If the turn already ended, queue the words instead.
-  const steerDraft = () => {
+  // `via` picks the wire: 'interrupt' (default) sends session.redirect, which
+  // paints the correction as the user's own turn; 'steer' sends session.steer
+  // — the `display.busy_input_mode: steer` contract, same as the TUI — which
+  // injects the text into the model's next tool result and records no user
+  // turn. Both keep the queue/restore fallback when the gateway refuses.
+  const steerDraft = (via: 'interrupt' | 'steer' = 'interrupt') => {
+    const send = via === 'steer' ? onSteerHidden : onSteer
     const text = draftRef.current.trim()
 
     // Guard on live editor state, not the render-lagged `canSteer`: a redirect
     // fired on a fast Enter must not be dropped because state hasn't synced.
-    if (!onSteer || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
+    if (!send || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
       return
     }
 
@@ -396,7 +417,7 @@ export function useComposerSubmit({
       }
     }
 
-    void Promise.resolve(onSteer(frozen.transportText))
+    void Promise.resolve(send(frozen.transportText))
       .then(accepted => {
         if (!accepted) {
           keep()

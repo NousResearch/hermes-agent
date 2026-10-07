@@ -315,6 +315,20 @@ _MALFORMED_TOOL_ARGS_PATTERNS = (
     "function call arguments are invalid", "function_call arguments are invalid",
 )
 
+# A harmony/jinja2 chat-template render that failed to close a channel and left control
+# tokens in the message header. Reported as 400 by vLLM-based servers, but it is NOT a
+# property of the request: measured against integrate.api.nvidia.com (openai/gpt-oss-20b)
+# on 2026-09-25, four such rejections carried zero harmony tokens in any field of the
+# payload, valid tool-call arguments and correct role alternation — and the byte-identical
+# payload was accepted on 8/8 replays minutes later. The prose the server quotes in the
+# error is the model's own analysis, produced inside the failed render; the client never
+# sent it. Transient despite the 400, so it must not land on the terminal format_error
+# default, which kills the turn with "not retryable" and no recovery attempt.
+_HARMONY_HEADER_RENDER_PATTERNS = (
+    "unexpected tokens remaining in message header",
+    "tokens remaining in message header",
+)
+
 # Malformed request, identical on every retry. Some gateways (codex.nekos.me)
 # return these as 5xx, so the 5xx path also checks them.
 _REQUEST_VALIDATION_PATTERNS = (
@@ -1166,6 +1180,11 @@ def _classify_400(c: _Ctx) -> Verdict:
     # loop drops it and retries once. Must precede request-validation, which would abort as format_error.
     if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg):
         return _V_REASONING_MANDATORY
+    # Server-side template render failure, not a bad request: transient, retry identical
+    # (same semantics as the injected-param case below). Before request-validation and the
+    # terminal format_error default, which would kill the turn on the first attempt.
+    if any(p in msg for p in _HARMONY_HEADER_RENDER_PATTERNS):
+        return _V_SERVER_ERROR
     # 400 blaming a field this route never sent (Codex OAuth injects then rejects
     # prompt_cache_retention ~20% of the time): transient, retry identical request.
     if _is_server_injected_param_rejection(msg, c.provider_slug):

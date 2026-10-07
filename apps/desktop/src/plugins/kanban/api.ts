@@ -503,7 +503,8 @@ export const exportBoard = (slug: string, output: string) =>
 export const importBoard = (archive: string) =>
   call<BoardImportResult>('/boards/import', { method: 'POST', body: { archive } })
 
-export const nudgeDispatcher = () => call<{ spawned?: unknown[] }>(withBoard('/dispatch'), { method: 'POST', body: {} })
+export const nudgeDispatcher = () =>
+  call<{ spawned?: unknown[]; warning?: string }>(withBoard('/dispatch'), { method: 'POST', body: {} })
 
 export const saveOrchestration = (patch: Record<string, unknown>) =>
   call<OrchestrationSettings>('/orchestration', { method: 'PUT', body: patch })

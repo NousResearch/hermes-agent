@@ -485,6 +485,34 @@ class TestWriteClaudeCodeCredentials:
         # Pre-existing scopes survive when the refresh omits them.
         assert data["claudeAiOauth"]["scopes"] == ["user:inference"]
 
+    @pytest.mark.parametrize(
+        "refresh_scopes,expected_scopes",
+        [
+            (None, ["user:inference"]),
+            (["user:inference", "user:profile"], ["user:inference", "user:profile"]),
+        ],
+    )
+    def test_scopes_merge_behavior(self, tmp_path, monkeypatch, refresh_scopes, expected_scopes):
+        """When refresh response specifies scopes, they replace existing ones;
+        when omitted (None), previous scopes are preserved."""
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        cred_dir = tmp_path / ".claude"
+        cred_dir.mkdir()
+        cred_file = cred_dir / ".credentials.json"
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "old-tok",
+                "refreshToken": "old-ref",
+                "expiresAt": 1,
+                "scopes": ["user:inference"],
+                "subscriptionType": "max",
+            },
+        }))
+        _write_claude_code_credentials("new-tok", "new-ref", 99999, scopes=refresh_scopes)
+        data = json.loads(cred_file.read_text())
+        assert data["claudeAiOauth"]["scopes"] == expected_scopes
+        assert data["claudeAiOauth"]["subscriptionType"] == "max"
+
     def test_creates_oauth_object_when_file_has_none(self, tmp_path, monkeypatch):
         """A file without a claudeAiOauth object behaves as before: the object
         is created from scratch and sibling keys survive."""

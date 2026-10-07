@@ -1243,7 +1243,8 @@ def _write_claude_code_credentials(
         # (refreshTokenExpiresAt, subscriptionType, rateLimitTier). Replacing
         # the whole object dropped them, silently downgrading Claude Code
         # from subscription to API-key mode (#83338). Update only the fields
-        # Hermes manages and keep everything else intact.
+        # Hermes manages and keep everything else intact. Note that this is a
+        # conservative one-way preservation of unmanaged metadata across refreshes.
         existing_oauth = existing.get("claudeAiOauth")
         merged = dict(existing_oauth) if isinstance(existing_oauth, dict) else {}
         merged.update(oauth_data)

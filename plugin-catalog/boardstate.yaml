@@ -1,0 +1,39 @@
+name: boardstate
+title: Boardstate
+repo: https://github.com/100yenadmin/boardstate-hermes-plugin
+sha: ec0cf5f302526da95dedbcbb76d743eb8d919ea9
+description: "A live board the agent builds for you: a Board tab in the Hermes dashboard and a Desktop page where the agent lays out tabs and widgets (notes, markdown, tables, charts, KPI cards, live Hermes data, approvals) through 19 native boardstate_* tools. Runs a local Node >= 20 sidecar on loopback with a per-spawn nonce; no network access unless you opt in to operator-gated connectors. Disclosure — spawns a local Node.js ≥20 sidecar (from PATH/HERMES_NODE_BIN, nothing downloaded) on 127.0.0.1 on first use; state under HERMES_HOME/boardstate-state/. Reads the dashboard's loopback session token from Hermes internals (web_server._SESSION_TOKEN) and passes it to the sidecar for live usage/sessions/cron widgets; mounts one token-gated static route for approved widget assets. No outbound network unless you author boardstate.connectors.json (stdio/HTTP MCP connectors); connector actions need operator approval."
+maintainer: 100yenadmin
+tier: community
+category: desktop
+requires_hermes: '>=0.21.2'
+docs_url: https://github.com/100yenadmin/boardstate-hermes-plugin#readme
+version: "1.5.1"
+screenshots:
+  - https://raw.githubusercontent.com/100yenadmin/boardstate-hermes-plugin/958b5d07e4f95964b4345933b6fbdd7828a9b24d/docs/screenshots/desktop-board.png
+  - https://raw.githubusercontent.com/100yenadmin/boardstate-hermes-plugin/958b5d07e4f95964b4345933b6fbdd7828a9b24d/docs/screenshots/web-board.png
+platforms: []
+capabilities:
+  provides_tools:
+    - boardstate_workspace_get
+    - boardstate_tab_create
+    - boardstate_tab_update
+    - boardstate_tab_delete
+    - boardstate_tabs_reorder
+    - boardstate_widget_add
+    - boardstate_widget_update
+    - boardstate_widget_move
+    - boardstate_widget_remove
+    - boardstate_layout_set
+    - boardstate_workspace_replace
+    - boardstate_undo
+    - boardstate_widget_catalog
+    - boardstate_design_review
+    - boardstate_tool_search
+    - boardstate_widget_scaffold
+    - boardstate_data_read
+    - boardstate_connector_read
+    - boardstate_connector_invoke
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

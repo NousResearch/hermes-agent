@@ -1,4 +1,4 @@
-"""Regression tests for the Codex time-to-first-byte (TTFB) watchdog.
+"""Regression tests for the Codex TTFB (first parsed stream event) watchdog.
 
 The chatgpt.com/backend-api/codex endpoint has an intermittent failure mode
 where it accepts the connection but never emits a single stream event. The
@@ -8,10 +8,13 @@ retry loop can reconnect promptly. Once any stream event arrives, the TTFB
 watchdog is satisfied and a separate idle watchdog handles streams that stop
 emitting SSE events.
 
-The "bytes flowing" signal is ``agent._codex_stream_last_event_ts``, set on
-*any* event by ``codex_runtime.run_codex_stream`` — so reasoning-only or
-tool-call-only turns (which emit no output-text deltas) are not mistaken for a
-stall.
+Parsed-event activity is recorded on the request-local watchdog state;
+substantive model progress is recorded separately. For the implicit official
+OpenAI Codex policy on large contexts, lifecycle frames prove transport liveness
+but do not restart the attempt-local first-progress budget; substantive progress
+moves the attempt into the normal event-idle phase. Small requests, explicit
+overrides, and compatible backends retain their first-parsed-event semantics.
+Raw SSE comments are outside this layer.
 """
 
 from __future__ import annotations
@@ -22,7 +25,6 @@ import time
 import types
 from types import SimpleNamespace
 
-import httpx
 import pytest
 
 # Stub optional heavy imports so run_agent imports cleanly in isolation.
@@ -31,17 +33,28 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 
-def _make_codex_agent(tmp_path, monkeypatch):
+def _make_codex_agent(
+    tmp_path,
+    monkeypatch,
+    *,
+    provider="openai-codex",
+    base_url="https://chatgpt.com/backend-api/codex",
+):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
     (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+    # Every test here reasons about the built-in TTFB defaults; a developer shell override
+    # must not leak in (tests that need an override setenv it after this).
+    for name in ("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "HERMES_CODEX_TTFB_MAX_SECONDS",
+                 "HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", "HERMES_CODEX_TTFB_STRICT"):
+        monkeypatch.delenv(name, raising=False)
     from run_agent import AIAgent
 
     agent = AIAgent(
         model="gpt-5.5",
-        provider="openai-codex",
+        provider=provider,
         api_key="sk-dummy",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url=base_url,
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
@@ -59,8 +72,70 @@ def _make_codex_agent(tmp_path, monkeypatch):
     return agent
 
 
+def _shorten_implicit_idle_watchdog(monkeypatch, helpers, timeout=2.0, **overrides):
+    """Keep the resolver on its implicit branch while scaling time for tests.
+
+    ``timeout`` shortens ``idle_timeout``; ``overrides`` set any other resolved field."""
+    monkeypatch.delenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
+    original = helpers._resolve_nonstream_watchdogs
+
+    def resolve(agent, api_kwargs):
+        watchdogs = original(agent, api_kwargs)
+        watchdogs.idle_timeout = timeout
+        for field, value in overrides.items():
+            setattr(watchdogs, field, value)
+        return watchdogs
+
+    monkeypatch.setattr(helpers, "_resolve_nonstream_watchdogs", resolve)
+
+
+def _install_codex_event_stream(agent, monkeypatch, event_factory, closes):
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **_kwargs: event_factory())
+    )
+    monkeypatch.setattr(
+        agent, "_create_request_openai_client", lambda **_kwargs: client
+    )
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda _client, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_close_request_openai_client",
+        lambda _client, reason=None: closes.append(reason),
+    )
+
+
+def test_local_endpoint_ttfb_default_uses_local_stale_ceiling(tmp_path, monkeypatch):
+    """#92302: a local Responses endpoint gets the local stale ceiling as its implicit
+    no-event TTFB cutoff (the chat-completions siblings already grant local servers that
+    prefill grace); hosted endpoints keep the 120s default."""
+    from agent import chat_completion_helpers as h
+
+    monkeypatch.setenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", "600")
+    local = _make_codex_agent(tmp_path, monkeypatch, provider="custom", base_url="http://127.0.0.1:11434/v1")
+    hosted = _make_codex_agent(tmp_path, monkeypatch, provider="custom", base_url="https://api.example.com/v1")
+    kwargs = {"model": "qwen3-27b", "input": "hi"}
+
+    assert h._resolve_nonstream_watchdogs(local, kwargs).ttfb_timeout == 600.0
+    assert h._resolve_nonstream_watchdogs(hosted, kwargs).ttfb_timeout == 120.0
+
+
+def test_local_endpoint_ttfb_explicit_env_still_wins(tmp_path, monkeypatch):
+    """An operator-set HERMES_CODEX_TTFB_TIMEOUT_SECONDS is honoured verbatim on local endpoints."""
+    from agent import chat_completion_helpers as h
+
+    monkeypatch.setenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", "600")
+    local = _make_codex_agent(tmp_path, monkeypatch, provider="custom", base_url="http://127.0.0.1:11434/v1")
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "45")
+
+    assert h._resolve_nonstream_watchdogs(local, {"model": "qwen3-27b", "input": "hi"}).ttfb_timeout == 45.0
+
+
 def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
-    """The no-first-byte watchdog should surface the same actionable hint as the
+    """The no-first-event watchdog should surface the same actionable hint as the
     stale-call timeout path when the model matches the silent-hang heuristic."""
     from agent import chat_completion_helpers as h
 
@@ -96,14 +171,155 @@ def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
         with pytest.raises(TimeoutError) as excinfo:
             h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
         message = str(excinfo.value)
-        assert "gpt-5.4" in message
-        assert "gpt-5.3-codex" in message
-        assert "gpt-5.4-codex" in message
+        hint = agent._codex_silent_hang_hint(model="gpt-5.5")
+        assert hint, "gpt-5.5 on the Codex backend must match the silent-hang heuristic"
+        assert hint in message
         assert "codex_ttfb_kill" in closes
         assert statuses, "expected a user-facing watchdog status"
-        assert any("gpt-5.4" in s and "gpt-5.3-codex" in s for s in statuses)
+        assert any(hint in s for s in statuses)
     finally:
         stop["flag"] = True
+
+
+def test_ttfb_installs_and_retires_the_codex_request_token(tmp_path, monkeypatch):
+    """The watchdog must publish a per-request token and clear it on the kill.
+
+    ``run_codex_stream`` reads ``agent._active_codex_stream_request_token`` to
+    tell whether it is still the owning attempt. Without an install here the
+    whole retirement guard would be inert, and without the clear on kill a
+    retired worker would keep normalizing partial deltas into a "completed"
+    response.
+
+    The worker also unwinds with its own local error after the force-close;
+    that error must not replace the watchdog's retryable ``TimeoutError``.
+    """
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "1")
+
+    closes: list = []
+    seen = {"token_while_running": None}
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+        seen["token_while_running"] = getattr(
+            agent, "_active_codex_stream_request_token", None
+        )
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if getattr(agent, "_active_codex_stream_request_token", None) is None:
+                # Retired by the watchdog — mimic the transport unwinding.
+                raise RuntimeError("retired worker stream ended without terminal")
+            time.sleep(0.02)
+        raise RuntimeError("test timed out waiting for retirement")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
+
+    with pytest.raises(TimeoutError) as excinfo:
+        h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+
+    assert seen["token_while_running"] is not None, (
+        "interruptible_api_call must install a request token before the worker runs"
+    )
+    assert "TTFB" in str(excinfo.value)
+    assert "retired worker" not in str(excinfo.value)
+    assert "codex_ttfb_kill" in closes
+    assert getattr(agent, "_active_codex_stream_request_token", None) is None
+
+
+def test_abort_retires_codex_request_before_releasing_blocked_transport(
+    tmp_path, monkeypatch
+):
+    """A watchdog abort must revoke logical ownership before waking the socket.
+
+    The transport abort runs synchronously under the request-client registry
+    lock.  Hold it open long enough for the blocked worker to handle the
+    resulting transport error: a still-current request would enter the inner
+    retry and call ``responses.create`` a second time before the abort returns.
+    A retired request must instead stop at the retry ownership fence.  The
+    non-cancelled retry control remains covered by
+    ``test_event_stale_phase_is_scoped_to_physical_stream_attempt[retry_gap]``.
+    """
+    from agent.chat_completion_nonstream import _NonStreamRequest
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    transport_released = threading.Event()
+    first_read_blocked = threading.Event()
+    retry_opened = threading.Event()
+    worker_retired = threading.Event()
+    create_calls: list[int] = []
+
+    class BlockedStream:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            first_read_blocked.set()
+            assert transport_released.wait(timeout=5), "transport abort never released the read"
+            raise ConnectionError("watchdog shut down the request transport")
+
+        def close(self):
+            return None
+
+    def create(**_kwargs):
+        create_calls.append(len(create_calls) + 1)
+        if len(create_calls) == 1:
+            return BlockedStream()
+        retry_opened.set()
+        raise AssertionError("retired logical request opened another physical stream")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **_kwargs: client)
+
+    def abort_transport(_client, *, reason):
+        assert reason == "codex_ttfb_kill"
+        transport_released.set()
+        # Keep the registry lock until the worker has handled the forced error.
+        # Its final retirement happens immediately before it tries to reacquire
+        # this lock for client cleanup, so waiting here does not deadlock.
+        assert worker_retired.wait(timeout=5), "worker did not handle the forced transport error"
+
+    monkeypatch.setattr(agent, "_abort_request_openai_client", abort_transport)
+    monkeypatch.setattr(agent, "_close_request_openai_client", lambda *_args, **_kwargs: None)
+
+    request = _NonStreamRequest(agent, {"model": "gpt-5.5", "input": "hi"})
+    worker = threading.Thread(target=request._call, daemon=True)
+    retire_codex_request_token = request._retire_codex_request_token
+
+    def retire_and_observe_worker():
+        retire_codex_request_token()
+        if threading.current_thread() is worker:
+            worker_retired.set()
+
+    monkeypatch.setattr(request, "_retire_codex_request_token", retire_and_observe_worker)
+    request.thread = worker
+    worker.start()
+    assert first_read_blocked.wait(timeout=5), "request never reached the blocked transport read"
+
+    request._abort_request("codex_ttfb_kill")
+    worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert create_calls == [1]
+    assert not retry_opened.is_set()
+    assert request.result == {"response": None, "error": None}
+    assert getattr(agent, "_active_codex_stream_request_token", None) is None
+
+
+
+
 
 
 def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
@@ -129,9 +345,14 @@ def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
     sentinel = SimpleNamespace(ok=True)
 
     def fake_stream(api_kwargs, client=None, on_first_delta=None):
-        # Bytes flowing: mark stream activity right away, then keep generating
+        # A parsed event marks stream activity right away; then keep generating
         # past the 0.4s TTFB cutoff before returning a real response.
-        agent._codex_stream_last_event_ts = time.time()
+        from agent.codex_runtime import _codex_watchdog_state_var
+
+        now = time.time()
+        state = _codex_watchdog_state_var.get()
+        with state.lock:
+            state.last_event_ts = now
         if on_first_delta:
             on_first_delta()
         time.sleep(0.9)
@@ -145,6 +366,166 @@ def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
+    ("provider", "base_url", "input_chars", "idle_env", "idle_enabled", "requires_progress"),
+    [
+        ("openai-codex", "https://chatgpt.com/backend-api/codex", 40_004, None, True, True),
+        ("openai-codex", "https://chatgpt.com/backend-api/codex", 40_004, "2", True, False),
+        ("openai-codex", "https://chatgpt.com/backend-api/codex", 40_000, None, True, False),
+        ("xai-oauth", "https://api.x.ai/v1", 40_004, None, True, False),
+        ("openai-codex", "https://chatgpt.com/backend-api/codex", 40_004, "", True, True),
+        ("openai-codex", "https://chatgpt.com/backend-api/codex", 40_004, "invalid", True, True),
+        ("openai-codex", "https://chatgpt.com/backend-api/codex", 40_004, "0", False, False),
+    ],
+)
+def test_idle_phase_policy_is_narrow_and_preserves_operator_overrides(
+    tmp_path,
+    monkeypatch,
+    provider,
+    base_url,
+    input_chars,
+    idle_env,
+    idle_enabled,
+    requires_progress,
+):
+    """Only an implicit, large, official request uses progress-phase arming."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(
+        tmp_path, monkeypatch, provider=provider, base_url=base_url
+    )
+    if idle_env is None:
+        monkeypatch.delenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", idle_env)
+
+    watchdogs = h._resolve_nonstream_watchdogs(
+        agent, {"model": "gpt-5.6-sol", "input": "x" * input_chars}
+    )
+
+    assert watchdogs.est_tokens == input_chars // 4
+    assert watchdogs.idle_enabled is idle_enabled
+    assert watchdogs.idle_requires_progress is requires_progress
+    assert (watchdogs.progress_timeout > 0) is requires_progress
+
+
+def test_lifecycle_event_does_not_restart_first_progress_deadline():
+    """The budget belongs to the physical attempt, not to the first lifecycle frame."""
+    from agent import chat_completion_wait_notice as wn
+
+    deadline = wn.codex_watchdog_deadline(
+        stale_timeout=900.0, ttfb_enabled=True, ttfb_timeout=300.0,
+        last_event_ts=280.0, last_progress_ts=None, retry_started_ts=None,
+        call_start=100.0, idle_enabled=True, idle_timeout=120.0,
+        idle_requires_progress=True, progress_timeout=300.0, elapsed=250.0,
+    )
+
+    assert deadline == ("first progress", 50.0)
+
+
+def test_large_codex_lifecycle_only_stream_hits_attempt_progress_budget(tmp_path, monkeypatch):
+    """Lifecycle events may change phase diagnostics, but cannot buy another full grace period."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    _shorten_implicit_idle_watchdog(monkeypatch, h, ttfb_timeout=0.9, progress_timeout=0.9)
+    closes = []
+
+    def stream_attempt():
+        time.sleep(0.7)
+        yield SimpleNamespace(type="response.created")
+        while getattr(agent, "_active_codex_stream_request_token", None) is not None:
+            time.sleep(0.02)
+        raise ConnectionError("retired lifecycle-only stream")
+
+    _install_codex_event_stream(agent, monkeypatch, stream_attempt, closes)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="no substantive model progress"):
+        h.interruptible_api_call(agent, {"model": "gpt-5.6-sol", "input": "x" * 40_004})
+
+    assert time.monotonic() - started < 1.5
+    assert "codex_progress_kill" in closes
+
+
+@pytest.mark.parametrize(
+    "mode", ["initial_gap", "stall", "retry_gap", "retry_no_event"]
+)
+def test_event_stale_phase_is_scoped_to_physical_stream_attempt(
+    tmp_path, monkeypatch, mode
+):
+    """Retry lifecycle resets phase without hiding a zero-event reconnect hang."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    _shorten_implicit_idle_watchdog(monkeypatch, h)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "2")
+    monkeypatch.setenv("HERMES_CODEX_TTFB_STRICT", "1")
+    monkeypatch.setenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", "5")
+
+    closes: list = []
+    attempts = {"count": 0}
+
+    def stream_attempt():
+        attempts["count"] += 1
+        if mode == "initial_gap":
+            yield SimpleNamespace(type="response.created")
+            yield SimpleNamespace(type="response.in_progress")
+            time.sleep(3.0)
+            yield SimpleNamespace(type="response.reasoning_text.delta", delta="working")
+            yield SimpleNamespace(type="response.output_text.delta", delta="done")
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", id="resp-1", usage=None),
+            )
+            return
+        if mode == "retry_no_event" and attempts["count"] == 2:
+            while getattr(agent, "_active_codex_stream_request_token", None) is not None:
+                time.sleep(0.02)
+            raise RuntimeError("retired zero-event retry")
+        if mode == "retry_gap" and attempts["count"] == 2:
+            yield SimpleNamespace(type="response.created")
+            yield SimpleNamespace(type="response.in_progress")
+            time.sleep(3.0)
+            yield SimpleNamespace(type="response.reasoning_text.delta", delta="retry step")
+            yield SimpleNamespace(type="response.output_text.delta", delta="done")
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", id="resp-2", usage=None),
+            )
+            return
+
+        yield SimpleNamespace(type="response.created")
+        if mode != "retry_no_event":
+            yield SimpleNamespace(type="response.reasoning_text.delta", delta="first step")
+        if mode in {"retry_gap", "retry_no_event"}:
+            raise ConnectionError("retry physical stream")
+        while getattr(agent, "_active_codex_stream_request_token", None) is not None:
+            time.sleep(0.02)
+        raise ConnectionError("retired stalled stream")
+
+    _install_codex_event_stream(agent, monkeypatch, stream_attempt, closes)
+
+    if mode in {"initial_gap", "retry_gap"}:
+        response = h.interruptible_api_call(
+            agent, {"model": "gpt-5.6-sol", "input": "x" * 40_004}
+        )
+        assert response.output_text == "done"
+        assert attempts["count"] == (1 if mode == "initial_gap" else 2)
+    else:
+        error_match = "no parsed stream event" if mode == "retry_no_event" else "no SSE events"
+        with pytest.raises(TimeoutError, match=error_match):
+            h.interruptible_api_call(
+                agent, {"model": "gpt-5.6-sol", "input": "x" * 40_004}
+            )
+
+    assert ("codex_stream_idle_kill" in closes) is (mode == "stall")
+    assert ("codex_ttfb_kill" in closes) is (mode == "retry_no_event")
+    if mode == "stall":
+        assert attempts["count"] == 1
+    if mode == "retry_no_event":
+        assert attempts["count"] == 2
+
+
+@pytest.mark.parametrize(
     "stale_timeout",
     [float("inf"), float("-inf"), float("nan")],
 )
@@ -152,24 +533,31 @@ def test_wait_notice_omits_reconnect_when_all_deadlines_are_non_finite(
     stale_timeout,
 ):
     """A disabled watchdog must not be advertised as a future reconnect."""
-    from agent import chat_completion_helpers as h
+    from agent import chat_completion_wait_notice as wn
 
-    recovery = h._codex_wait_notice_recovery(
+    recovery = wn.codex_watchdog_deadline(
         stale_timeout=stale_timeout,
         ttfb_enabled=False,
         ttfb_timeout=float("nan"),
         last_event_ts=None,
+        last_progress_ts=None,
+        retry_started_ts=None,
         call_start=100.0,
         idle_enabled=False,
         idle_timeout=float("nan"),
+        idle_requires_progress=False,
         elapsed=30.0,
     )
 
-    assert recovery == ""
+    assert recovery is None
+
+
+
+
 
 
 def test_moa_heartbeat_survives_infinite_stale_timeout(monkeypatch):
-    """The full 100-poll MoA heartbeat must leave a healthy call running."""
+    """A MoA silence notice must leave an unbounded healthy call running."""
     from agent import chat_completion_helpers as h
 
     notices: list[str] = []
@@ -185,8 +573,11 @@ def test_moa_heartbeat_survives_infinite_stale_timeout(monkeypatch):
         _emit_wait_notice=notices.append,
     )
 
+    now = [1000.0]
+    monkeypatch.setattr(h.time, "time", lambda: now[0])
+
     class HeartbeatThread:
-        """Keep the synthetic worker alive through one heartbeat."""
+        """Keep the synthetic worker alive through the first silence notice."""
 
         def __init__(self, *, target, daemon):
             self._polls = 0
@@ -196,11 +587,11 @@ def test_moa_heartbeat_survives_infinite_stale_timeout(monkeypatch):
             pass
 
         def join(self, timeout=None):
-            pass
+            now[0] = round(now[0] + timeout, 1)
 
         def is_alive(self):
             self._polls += 1
-            if self._polls == 101:
+            if self._polls == 201:
                 self._target()
                 return False
             return True
@@ -236,6 +627,9 @@ def test_wait_notice_formatting_error_does_not_abort_request(monkeypatch):
         _emit_wait_notice=lambda _message: None,
     )
 
+    now = [1000.0]
+    monkeypatch.setattr(h.time, "time", lambda: now[0])
+
     class HeartbeatThread:
         def __init__(self, *, target, daemon):
             self._polls = 0
@@ -245,11 +639,11 @@ def test_wait_notice_formatting_error_does_not_abort_request(monkeypatch):
             pass
 
         def join(self, timeout=None):
-            pass
+            now[0] = round(now[0] + timeout, 1)
 
         def is_alive(self):
             self._polls += 1
-            if self._polls == 101:
+            if self._polls == 201:
                 self._target()
                 return False
             return True
@@ -260,9 +654,11 @@ def test_wait_notice_formatting_error_does_not_abort_request(monkeypatch):
         "_dispatch_nonstreaming_api_request",
         lambda *_args, **_kwargs: response,
     )
+    from agent import chat_completion_wait_notice as wn
+
     monkeypatch.setattr(
-        h,
-        "_codex_wait_notice_recovery",
+        wn,
+        "codex_watchdog_deadline",
         lambda **_kwargs: (_ for _ in ()).throw(ValueError("bad display state")),
     )
 
@@ -271,9 +667,17 @@ def test_wait_notice_formatting_error_does_not_abort_request(monkeypatch):
     assert result is response
 
 
+
+
+
+
+
+
+
+
 def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkeypatch):
     """#64507 regression: a large Codex request (TTFB watchdog disabled by the
-    size gate, stale floor *raised*) that never emits a single byte must still
+    size gate, stale floor *raised*) that never emits a parsed event must still
     be reclaimed at a finite hard ceiling — not hang for 13+ minutes while the
     worker stays idle and the session shows as active.
 
@@ -284,7 +688,7 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
     # Real default TTFB threshold (no HERMES_CODEX_TTFB_* override) → for a
-    # >10k-token request the no-byte TTFB watchdog is auto-disabled.
+    # >10k-token request the no-event TTFB watchdog is auto-disabled.
     monkeypatch.setenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", "3")
 
     closes: list = []
@@ -325,164 +729,33 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
         stop["flag"] = True
 
 
-def test_ttfb_abandoned_worker_cannot_supersede_replacement_request(
-    tmp_path, monkeypatch
-):
-    """A watchdog-abandoned Codex worker must not reclaim writer ownership via
-    run_codex_stream's inner retry after the outer layer has already started a
-    replacement request.
-
-    Timeline pinned here:
-    1. Request A opens a physical stream that never emits a first byte.
-    2. The TTFB watchdog aborts A and returns to the caller after the 2s join.
-    3. Replacement request B starts and claims the single-writer token.
-    4. The abandoned A worker finally sees its transport error.
-    5. Buggy behavior: A performs the inner retry, reclaims the writer token,
-       emits stale deltas, and fences B out before B reaches its terminal
-       response.
-
-    The fix must stop A before step 5: no inner retry, no stale deltas, B keeps
-    the writer token and consumes its terminal response.
-    """
+def test_large_request_keeps_scaled_ttfb_instead_of_recapping(tmp_path, monkeypatch):
+    """#91621 regression: with no TTFB env overrides, a >100k-token openai-codex
+    request scales the no-byte cutoff up to the 180s idle default — the cap must
+    not immediately claw it back to 120s and kill a healthy prefill."""
     from agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
-    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "0.2")
+    agent.reasoning_config = {"enabled": False}  # no effort floor: isolate the cap interaction
 
-    delivered: list[str] = []
-    setattr(agent, "stream_delta_callback", lambda text: delivered.append(text))
-    setattr(agent, "_stream_callback", None)
+    huge_input = "x" * 440_000  # ~110k estimated tokens → largest idle bucket
+    wd = h._resolve_nonstream_watchdogs(agent, {"model": "gpt-5.5", "input": huge_input})
 
-    a_retry_started = threading.Event()
-    a_retry_finished = threading.Event()
+    assert wd.est_tokens > 100_000, f"fixture too small: ~{wd.est_tokens} tokens"
+    assert wd.ttfb_enabled
+    assert wd.ttfb_timeout == 180.0, f"scale-up nullified by the cap: {wd.ttfb_timeout}"
 
-    def _event(event_type, **fields):
-        return SimpleNamespace(type=event_type, **fields)
 
-    class _AbortThenTimeoutStream:
-        def __init__(self, abort_event: threading.Event):
-            self._abort_event = abort_event
-            self._raised = False
+def test_explicit_ttfb_max_seconds_still_caps(tmp_path, monkeypatch):
+    """An explicit HERMES_CODEX_TTFB_MAX_SECONDS override still bounds the
+    scaled cutoff."""
+    from agent import chat_completion_helpers as h
 
-        def __iter__(self):
-            return self
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    agent.reasoning_config = {"enabled": False}
+    monkeypatch.setenv("HERMES_CODEX_TTFB_MAX_SECONDS", "90")
 
-        def __next__(self):
-            if self._raised:
-                raise StopIteration
-            assert self._abort_event.wait(timeout=5.0), "watchdog never aborted request A"
-            self._raised = True
-            # Outlive interruptible_api_call's fixed 2s join so the outer layer
-            # abandons this worker before the inner retry path wakes up.
-            time.sleep(2.05)
-            raise httpx.ReadTimeout("request A transport aborted")
+    huge_input = "x" * 440_000
+    wd = h._resolve_nonstream_watchdogs(agent, {"model": "gpt-5.5", "input": huge_input})
 
-        def close(self):
-            self._abort_event.set()
-
-    class _A2RetryStream:
-        def __init__(self):
-            self._step = 0
-
-        def __iter__(self):
-            return self
-
-        def __next__(self):
-            self._step += 1
-            if self._step == 1:
-                return _event("response.output_text.delta", delta="A2")
-            if self._step == 2:
-                return _event(
-                    "response.completed",
-                    response=SimpleNamespace(
-                        id="resp_a2", status="completed", output=[], usage=None
-                    ),
-                )
-            a_retry_finished.set()
-            raise StopIteration
-
-        def close(self):
-            a_retry_finished.set()
-
-    class _ReplacementStream:
-        def __init__(self):
-            self._step = 0
-
-        def __iter__(self):
-            return self
-
-        def __next__(self):
-            self._step += 1
-            if self._step == 1:
-                return _event("response.output_text.delta", delta="B1")
-            if self._step == 2:
-                # Give the abandoned A worker a small window to attempt the
-                # buggy inner retry. Under the fix no retry ever starts, so we
-                # simply continue to B's tail delta and terminal event.
-                a_retry_started.wait(timeout=0.75)
-                return _event("response.output_text.delta", delta="B2")
-            if self._step == 3:
-                return _event(
-                    "response.completed",
-                    response=SimpleNamespace(
-                        id="resp_b", status="completed", output=[], usage=None
-                    ),
-                )
-            raise StopIteration
-
-        def close(self):
-            return None
-
-    class _FakeRequestClient:
-        def __init__(self, logical_name: str):
-            self.logical_name = logical_name
-            self.abort_event = threading.Event()
-            self._attempt = 0
-            self.responses = SimpleNamespace(create=self._create)
-
-        def _create(self, **_kwargs):
-            self._attempt += 1
-            if self.logical_name == "A":
-                if self._attempt == 1:
-                    return _AbortThenTimeoutStream(self.abort_event)
-                if self._attempt == 2:
-                    a_retry_started.set()
-                    return _A2RetryStream()
-                raise AssertionError(f"unexpected A attempt {self._attempt}")
-            if self.logical_name == "B":
-                if self._attempt == 1:
-                    return _ReplacementStream()
-                raise AssertionError(f"unexpected B attempt {self._attempt}")
-            raise AssertionError(f"unknown logical request {self.logical_name}")
-
-    client_order = iter(["A", "B"])
-
-    monkeypatch.setattr(
-        agent,
-        "_create_request_openai_client",
-        lambda **_kwargs: _FakeRequestClient(next(client_order)),
-    )
-    monkeypatch.setattr(
-        agent,
-        "_abort_request_openai_client",
-        lambda client, reason=None: client.abort_event.set(),
-    )
-    monkeypatch.setattr(agent, "_close_request_openai_client", lambda *a, **k: None)
-    monkeypatch.setattr(agent, "_buffer_status", lambda *a, **k: None)
-    monkeypatch.setattr(agent, "_emit_status", lambda *a, **k: None)
-
-    with pytest.raises(TimeoutError):
-        h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "request A"})
-
-    replacement = h.interruptible_api_call(
-        agent, {"model": "gpt-5.5", "input": "request B"}
-    )
-    assert replacement is not None
-
-    if a_retry_started.is_set():
-        assert a_retry_finished.wait(timeout=2.0), "abandoned retry never finished"
-
-    assert not a_retry_started.is_set(), "abandoned request A retried after watchdog timeout"
-    assert delivered == ["B1", "B2"]
-    assert replacement.output_text == "B1B2"
-    assert replacement.id == "resp_b"
+    assert wd.ttfb_timeout == 90.0, f"explicit cap ignored: {wd.ttfb_timeout}"

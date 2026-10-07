@@ -106,7 +106,6 @@ class TestZaiGLM52ReasoningEffort:
         assert extra_body == {"thinking": {"type": "disabled"}}
         assert top_level == {}
 
-
     @pytest.mark.parametrize(
         "model",
         [
@@ -134,6 +133,75 @@ class TestZaiGLM52ReasoningEffort:
             model=model,
         )
         assert top_level == {}
+
+
+class TestZaiGLM53ReasoningEffort:
+    """GLM-5.3's graded low/medium/high/max effort scale (issue #91789).
+
+    Verified live on api.z.ai/api/coding/paas/v4: all four levels accepted
+    with monotonic reasoning-token scaling. Unlike 5.2, low and medium must
+    reach the wire instead of clamping up to high.
+    """
+
+    @pytest.mark.parametrize(
+        ("effort", "expected"),
+        [
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("max", "max"),
+            ("xhigh", "max"),
+            ("minimal", "low"),
+        ],
+    )
+    def test_graded_efforts_pass_through(self, zai_profile, effort, expected):
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="glm-5.3",
+        )
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": expected}
+
+    @pytest.mark.parametrize(
+        "model",
+        ["z-ai/glm-5.3", "glm-5-3", "glm-5p3", "zai-org-glm-5-3"],
+    )
+    def test_alias_spellings_get_graded_scale(self, zai_profile, model):
+        _, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "low"},
+            model=model,
+        )
+        assert top_level == {"reasoning_effort": "low"}
+
+    def test_glm_5_2_still_clamps_low_to_high(self, zai_profile):
+        """The 5.3 widening must not leak into 5.2's two-level wire."""
+        _, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "low"},
+            model="glm-5.2",
+        )
+        assert top_level == {"reasoning_effort": "high"}
+
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "glm-5.3",
+            "glm-5.3-flash",
+            "z-ai/glm-5.3",
+            "z-ai/glm-5.3-flash",
+            "glm-5-3",
+            "glm-5p3",
+        ],
+    )
+    def test_disabled_becomes_enabled_plus_low(self, zai_profile, model):
+        """#85890 / #96373 — 5.3 rejects thinking.type=disabled (HTTP 400 / 1210)."""
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model=model,
+        )
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": "low"}
+
 
 
 class TestZaiModelGating:
@@ -176,3 +244,24 @@ class TestZaiFullKwargsIntegration:
         )
         assert kwargs["reasoning_effort"] == "max"
         assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+
+    @pytest.mark.parametrize("model,reasoning,thinking,effort", [
+        ("glm-5.3-flash", {"enabled": False}, "enabled", "low"),
+        ("glm-5.2", {"enabled": False}, "disabled", None),
+        ("glm-5.3", None, None, None),
+    ])
+    def test_glm_thinking_preference_reaches_transport(self, zai_profile, model, reasoning, thinking, effort):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=zai_profile,
+            reasoning_config=reasoning,
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            provider_name="zai",
+        )
+        assert kwargs.get("reasoning_effort") == effort
+        expected = {"type": thinking} if thinking is not None else None
+        assert kwargs.get("extra_body", {}).get("thinking") == expected

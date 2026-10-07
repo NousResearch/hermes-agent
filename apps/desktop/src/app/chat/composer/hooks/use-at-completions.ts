@@ -2,15 +2,21 @@ import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-u
 import { useCallback } from 'react'
 
 import { refChipLabel } from '@/components/assistant-ui/directive-text'
+import { useContributions } from '@/contrib/react/use-contributions'
 import type { HermesGateway } from '@/hermes'
 import { cachedPathCompletion, hasCachedPathCompletion } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
+
+import type { ComposerAtCompletionSource } from '../contrib'
+import { COMPOSER_AREAS } from '../contrib'
 
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
 import { useLiveCompletionAdapter } from './use-live-completion-adapter'
 
 const KIND_RE = /^@(file|folder|url|image|tool|git):(.*)$/
 const REF_STARTERS = new Set(['file', 'folder', 'url', 'image', 'tool', 'git'])
+// These bare tokens are context actions, not profile handles.
+const SIMPLE_CONTEXT_REFS = new Set(['@diff', '@staged'])
 
 const STARTER_META: Record<string, string> = {
   file: 'Attach a file reference',
@@ -31,6 +37,38 @@ function starterEntries(query: string): CompletionEntry[] {
     display: `@${kind}:`,
     meta: STARTER_META[kind] || ''
   }))
+}
+
+function mergeCompletionEntries(
+  preferred: CompletionEntry[],
+  fallback: CompletionEntry[],
+  claimedHandles?: Set<string>
+): CompletionEntry[] {
+  const seenHandles = new Set<string>()
+
+  return [...preferred, ...fallback].filter(entry => {
+    const key = normalize(entry.text)
+
+    if (!/^@[^:\s]+$/.test(key) || SIMPLE_CONTEXT_REFS.has(key)) {
+      return true
+    }
+
+    // A contributed row claimed this handle as another label for a target it
+    // already lists (a bot's raw profile name under its title slug). The
+    // gateway's own row for that name is the same routable identity offered
+    // a second time — keep the contributed row, drop this one.
+    if (claimedHandles?.has(key)) {
+      return false
+    }
+
+    if (seenHandles.has(key)) {
+      return false
+    }
+
+    seenHandles.add(key)
+
+    return true
+  })
 }
 
 interface AtItemMetadata extends Record<string, string> {
@@ -82,7 +120,9 @@ function classify(entry: CompletionEntry): {
   }
 }
 
-/** Live `@` completions backed by the gateway's `complete.path` RPC. */
+/** Live `@` completions backed by the gateway's `complete.path` RPC, with
+ *  contributed sources (composer.atCompletions — e.g. Bot Mode agent handles)
+ *  merged ahead of the path results. */
 export function useAtCompletions(options: {
   gateway: HermesGateway | null
   sessionId: string | null
@@ -90,6 +130,68 @@ export function useAtCompletions(options: {
 }): { adapter: Unstable_TriggerAdapter; loading: boolean } {
   const { gateway, sessionId, cwd } = options
   const enabled = Boolean(gateway)
+
+  const contributed = useContributions(COMPOSER_AREAS.atCompletions)
+
+  // Contributed rows for the query, mapped into the gateway entry shape so
+  // one classify/toItem path renders every row. Provider errors are isolated:
+  // a throwing source drops ITS rows, never the popover.
+  const contributedEntries = useCallback(
+    (query: string): { entries: CompletionEntry[]; claimedHandles: Set<string> } => {
+      const out: CompletionEntry[] = []
+      const claimedHandles = new Set<string>()
+
+      for (const contribution of contributed) {
+        const source = contribution.data as ComposerAtCompletionSource | undefined
+
+        if (!source || typeof source.provide !== 'function') {
+          continue
+        }
+
+        try {
+          for (const item of source.provide(query) || []) {
+            if (!item || typeof item.insert !== 'string' || !item.insert) {
+              continue
+            }
+
+            // Handles a source declares as aliases of its own row are the
+            // identity it owns: the gateway lists the same target under one
+            // of them (the raw profile name), and that twin gets dropped in
+            // the merge below.
+            //
+            // A handle that is the row's own text names no alias and claims
+            // nothing. Taken at face value it deleted the row that declared
+            // it, so a bot whose mention tag equals its profile name never
+            // reached the popover — it was listed in the Bots pane and absent
+            // from the one picker that could insert it. The roster emits such
+            // a handle for every local profile, and which rows hit it depends
+            // on the user's naming, so it read as "only the default bot works".
+            const own = normalize(item.insert)
+
+            for (const handle of item.handles || []) {
+              const claimed = normalize(handle)
+
+              if (claimed && claimed !== own) {
+                claimedHandles.add(claimed)
+              }
+            }
+
+            out.push({
+              text: item.insert,
+              display: item.display || item.insert,
+              meta: item.meta || '',
+              icon: item.icon || ''
+            } as CompletionEntry)
+          }
+        } catch {
+          /* a broken source must not take down @ completions */
+        }
+      }
+
+      return { entries: out, claimedHandles }
+    },
+    [contributed]
+  )
 
   // Cache key: the completion depends on the query AND the directory it's
   // resolved against, so a cwd or session change can't serve another tree's
@@ -99,9 +201,10 @@ export function useAtCompletions(options: {
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
       const starters = starterEntries(query)
+      const { entries: extras, claimedHandles } = contributedEntries(query)
 
       if (!gateway) {
-        return { items: starters, query }
+        return { items: mergeCompletionEntries(extras, starters, claimedHandles), query }
       }
 
       const word = REF_STARTERS.has(query) ? `@${query}:` : `@${query}`
@@ -126,13 +229,14 @@ export function useAtCompletions(options: {
         )
 
         const items = result.items ?? []
+        const base = items.length > 0 ? items : starters
 
-        return { items: items.length > 0 ? items : starters, query }
+        return { items: mergeCompletionEntries(extras, base, claimedHandles), query }
       } catch {
-        return { items: starters, query }
+        return { items: mergeCompletionEntries(extras, starters, claimedHandles), query }
       }
     },
-    [cacheKey, gateway, sessionId, cwd]
+    [cacheKey, contributedEntries, gateway, sessionId, cwd]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {

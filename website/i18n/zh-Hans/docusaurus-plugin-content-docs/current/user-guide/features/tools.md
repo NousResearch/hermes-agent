@@ -6,14 +6,17 @@ description: "Hermes Agent 工具概览——可用工具、工具集工作方�
 
 # 工具与工具集
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](../../reference/package-management.md#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 工具是扩展 Agent 能力的函数。它们被组织为逻辑上的**工具集**，可按平台启用或禁用。
 
 ## 可用工具
 
-Hermes 内置了丰富的工具注册表，涵盖网页搜索、浏览器自动化、终端执行、文件编辑、记忆、委托、RL 训练、消息投递、Home Assistant 等功能。
+Hermes 内置了丰富的工具注册表，涵盖网页搜索、浏览器自动化、终端执行、文件编辑、记忆、委托、RL 训练、消息投递等功能。插件还可以提供更多工具，例如 Home Assistant 设备控制由插件目录中的 `homeassistant` 插件提供。
 
 :::note
-**Honcho 跨会话记忆**作为记忆提供者插件（`plugins/memory/honcho/`）提供，而非内置工具集。安装方式请参阅 [Plugins](./plugins.md)。
+**Honcho 跨会话记忆**作为插件目录中的记忆提供者插件提供（`hermes plugins install honcho`），而非内置工具集。参见 [Memory Providers](./memory-providers.md#honcho)。
 :::
 
 高层分类：
@@ -28,9 +31,9 @@ Hermes 内置了丰富的工具注册表，涵盖网页搜索、浏览器自动�
 | **Agent 编排** | `todo`, `clarify`, `execute_code`, `delegate_task` | 规划、澄清、代码执行及子 Agent 委托。 |
 | **记忆与召回** | `memory`, `session_search` | 持久化记忆与会话搜索。 |
 | **自动化与投递** | `cronjob`, `send_message` | 支持创建/列出/更新/暂停/恢复/运行/删除操作的定时任务，以及出站消息投递。 |
-| **集成** | `ha_*`、MCP server 工具 | Home Assistant、MCP 及其他集成。 |
+| **集成** | MCP server 工具、插件工具 | MCP 及插件集成，例如 Home Assistant（`ha_*`，来自[插件目录中的 `homeassistant` 插件](../messaging/homeassistant.md)）。 |
 
-如需查看由代码派生的权威注册表，请参阅 [内置工具参考](/reference/tools-reference) 和 [工具集参考](/reference/toolsets-reference)。
+如需查看由代码派生的权威注册表，请参阅 [内置工具参考](../../reference/tools-reference.md) 和 [工具集参考](../../reference/toolsets-reference.md)。
 
 :::tip Nous Tool Gateway
 付费 [Nous Portal](https://portal.nousresearch.com) 订阅者可通过 **[Tool Gateway](tool-gateway.md)** 使用网页搜索、图像生成、TTS 和浏览器自动化——无需单独配置 API 密钥。运行 `hermes model` 启用，或通过 `hermes tools` 配置各工具。
@@ -49,9 +52,9 @@ hermes tools
 hermes tools
 ```
 
-常用工具集包括 `web`、`search`、`terminal`、`file`、`browser`、`vision`、`image_gen`、`moa`、`skills`、`tts`、`todo`、`memory`、`session_search`、`cronjob`、`code_execution`、`delegation`、`clarify`、`homeassistant`、`messaging`、`spotify`、`discord`、`discord_admin`、`debugging` 和 `safe`。
+常用工具集包括 `web`、`search`、`terminal`、`file`、`browser`、`vision`、`image_gen`、`moa`、`skills`、`tts`、`todo`、`memory`、`session_search`、`cronjob`、`code_execution`、`delegation`、`clarify`、`messaging`、`spotify`、`discord`、`discord_admin`、`debugging` 和 `safe`。
 
-完整列表（包括 `hermes-cli`、`hermes-telegram` 等平台预设以及 `mcp-<server>` 等动态 MCP 工具集）请参阅 [工具集参考](/reference/toolsets-reference)。
+完整列表（包括 `hermes-cli`、`hermes-telegram` 等平台预设以及 `mcp-<server>` 等动态 MCP 工具集）请参阅 [工具集参考](../../reference/toolsets-reference.md)。
 
 ## 终端后端
 
@@ -118,7 +121,7 @@ hermes config set terminal.singularity_image ~/python.sif
 ### Modal（无服务器云）
 
 ```bash
-uv pip install modal
+python -c "import pm; pm.sync_venv(['modal'], explicit=True)"
 modal setup
 hermes config set terminal.backend modal
 ```
@@ -126,7 +129,7 @@ hermes config set terminal.backend modal
 ### Vercel Sandbox
 
 ```bash
-pip install 'hermes-agent[vercel]'
+python -c "import pm; pm.sync_venv(['vercel'], explicit=True)"
 hermes config set terminal.backend vercel_sandbox
 hermes config set terminal.vercel_runtime node24
 ```
@@ -197,6 +200,22 @@ process(action="write", session_id="proc_abc123", data="y")  # 发送输入
 ```
 
 PTY 模式（`pty=true`）可启用 Codex 和 Claude Code 等交互式 CLI 工具。
+
+## 已完成后台进程的结果
+
+后台命令完成后，其退出状态和捕获的输出会保留在当前配置档案中。
+无头父进程退出或 Hermes 重启后，请恢复启动该命令的会话（或其上下文压缩后的
+延续会话），再使用原始 `session_id` 调用 `process(action="log")` 读取输出、
+调用 `process(action="poll")` 查看退出状态。即使知道完整进程标识，其他会话
+或未绑定所属会话的请求也不能读取保留的结果。`process(action="list")`
+也会列出当前任务或会话的保留结果。
+
+每个配置档案在 `logs/process-results/` 下最多保留最近 **64 个已完成结果**，
+自完成起保存不超过 **7 天**。每份记录最多包含滚动输出末尾的 **200,000 个字符**，
+始终使用终端的敏感信息脱敏规则，即使实时输出的脱敏功能已关闭。
+后续读取或写入结果时会清理过期记录。
+恢复结果不会重新运行命令，也不会重放完成通知。这仅保护父进程存活期间已经
+完成的工作，不保证未完成的子进程在超时或崩溃后继续运行。
 
 ## Sudo 支持
 

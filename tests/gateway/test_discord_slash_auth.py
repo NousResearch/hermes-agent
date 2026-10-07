@@ -3,7 +3,7 @@
 Slash invocations (``_run_simple_slash``, ``_handle_thread_create_slash``)
 historically bypassed every gate ``on_message`` enforces — DISCORD_ALLOWED_USERS,
 DISCORD_ALLOWED_ROLES, DISCORD_ALLOWED_CHANNELS, DISCORD_IGNORED_CHANNELS.
-Any guild member could invoke ``/background``, ``/restart``, etc. as the
+Any guild member could invoke ``/bg``, ``/restart``, etc. as the
 operator. ``_check_slash_authorization`` mirrors all four gates one-for-one.
 
 These tests pin the security-correct behavior so the bypass cannot regress.
@@ -213,7 +213,7 @@ async def test_no_allowlist_allows_with_gateway_allow_all(adapter, monkeypatch):
 async def test_allowed_user_passes(adapter):
     adapter._allowed_user_ids = {"100200300"}
     interaction = _make_interaction("100200300")
-    assert await adapter._check_slash_authorization(interaction, "/background hi") is True
+    assert await adapter._check_slash_authorization(interaction, "/bg hi") is True
     interaction.response.send_message.assert_not_awaited()
 
 
@@ -243,6 +243,40 @@ async def test_role_member_passes(adapter):
     assert await adapter._check_slash_authorization(interaction, "/help") is True
 
 
+def _gateway_authorizes(source):
+    """The real gateway authz verdict for a runner with no allowlist and no pairing store."""
+    from gateway.run import GatewayRunner
+
+    return object.__new__(GatewayRunner)._is_user_authorized(source)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("builder", ["slash", "thread_starter"])
+@pytest.mark.parametrize("actor_roles,gateway_admits", [
+    ([1234], True),   # role-only member the slash gate admits
+    ([7], False),     # unrelated role: the builder must not mint a grant for this actor
+])
+async def test_native_event_carries_this_actors_role_grant(adapter, builder, actor_roles, gateway_admits):
+    """Regression for #118958: a role-only member passes the slash gate, and the event a native
+    builder dispatches must carry that verdict, or the gateway answers with a pairing code."""
+    adapter._allowed_role_ids = {1234}
+    interaction = _make_interaction("999999999")
+    interaction.user.roles = [SimpleNamespace(id=r) for r in actor_roles]
+    interaction.user.display_name = "member"
+    interaction.guild.name = "guild"
+    dispatched = []
+    adapter.handle_message = AsyncMock(side_effect=dispatched.append)
+
+    if builder == "slash":
+        dispatched.append(adapter._build_slash_event(interaction, "/reset"))
+    else:
+        thread = SimpleNamespace(id=555, name="topic", guild=interaction.guild, topic=None,
+                                 parent=SimpleNamespace(id=100, name="general", guild=interaction.guild))
+        await adapter._dispatch_thread_session(interaction, thread, "hello")
+
+    assert [_gateway_authorizes(event.source) for event in dispatched] == [gateway_admits]
+
+
 # ---------------------------------------------------------------------------
 # Channel allowlist (DISCORD_ALLOWED_CHANNELS) parity — the gate prajer used
 # ---------------------------------------------------------------------------
@@ -256,7 +290,7 @@ async def test_channel_not_in_allowlist_rejected(adapter, monkeypatch, caplog):
     monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "1111,2222")
     interaction = _make_interaction("100200300", channel_id=9999)
     with caplog.at_level(logging.WARNING):
-        assert await adapter._check_slash_authorization(interaction, "/background hi") is False
+        assert await adapter._check_slash_authorization(interaction, "/bg hi") is False
     assert any("DISCORD_ALLOWED_CHANNELS" in r.message for r in caplog.records)
 
 
@@ -284,7 +318,7 @@ async def test_unauthorized_attempt_notifies_telegram(adapter):
     adapter._allowed_user_ids = {"100200300"}
 
     interaction = _make_interaction("999999999")
-    await adapter._check_slash_authorization(interaction, "/background hi")
+    await adapter._check_slash_authorization(interaction, "/bg hi")
 
     # Notify is fire-and-forget — let the scheduled task run.
     await asyncio.sleep(0)
@@ -295,7 +329,7 @@ async def test_unauthorized_attempt_notifies_telegram(adapter):
     assert chat_id == "987654321"
     assert "Unauthorized" in msg
     assert "999999999" in msg
-    assert "/background hi" in msg
+    assert "/bg hi" in msg
     assert "DISCORD_ALLOWED_USERS" in msg
 
 
@@ -432,7 +466,7 @@ def _capture_skill_registration(adapter, monkeypatch, entries):
         # (categories_dict, uncategorized_list, hidden_count)
         return ({}, list(entries), 0)
 
-    import hermes_cli.commands as _hc
+    import hermes_cli.commands_platforms as _hc
     monkeypatch.setattr(
         _hc, "discord_skill_commands_by_category", fake_categories,
     )
@@ -514,9 +548,9 @@ async def test_skill_handler_rejects_before_dispatch_for_unauthorized(
     interaction.response.send_message.assert_awaited_once()
     args, kwargs = interaction.response.send_message.call_args
     assert kwargs.get("ephemeral") is True
-    assert "not authorized" in (
+    assert "hermes pairing approve discord" in (
         args[0] if args else kwargs.get("content", "")
-    ).lower()
+    )
     # Critically: nothing was dispatched, and the auth message did NOT
     # mention the skill name "alpha" (no catalog leak).
     assert dispatched == []

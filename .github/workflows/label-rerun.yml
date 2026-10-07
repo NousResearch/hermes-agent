@@ -1,14 +1,13 @@
 name: Label rerun
 
-# When the ``ci-reviewed`` label is added to a PR, rerun all failed jobs in
-# the latest CI run. This re-evaluates ``review-labels`` (which now sees the
-# label) and GitHub automatically reruns dependent jobs (``comment-live``,
-# ``all-checks-pass``) — so the review comment gets updated too.
+# When the ``run-e2e`` label is added, rerun the head commit's CI, Docker and
+# Nix runs in full. Their ``detect`` job reads the PR's labels through the API
+# (a rerun replays the original event payload), so the rerun turns every slow
+# lane on (scripts/ci/classify_changes.py).
 #
-# If the CI run is still in progress when the label is added, we wait for it
-# to finish before rerunning (``gh run rerun`` only works on completed runs).
-# The wait can be long (20+ min for a full CI run), but it's better than
-# silently failing and leaving the reviewer stuck.
+# The review comment updates without help. The poller in
+# ci-review-comment.yml watches the CI run through the API. It gets the
+# rerun results.
 
 on:
   pull_request:
@@ -19,63 +18,51 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: label-rerun-${{ github.event.pull_request.number }}
+  group: label-rerun-${{ github.event.pull_request.number }}-${{ github.event.label.name }}
   cancel-in-progress: true
 
 jobs:
-  rerun-review-labels:
-    name: Rerun review-labels job
-    if: github.event.label.name == 'ci-reviewed'
+  rerun-with-e2e:
+    name: Rerun CI with every E2E lane
+    if: github.event.label.name == 'run-e2e'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 15
     steps:
-      - name: Wait for CI run to finish, then rerun failed jobs
+      - name: Cancel and rerun the head commit's CI, Docker and Nix runs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           set -uo pipefail
-
-          # Find the latest CI run for this PR's head SHA.
-          RUN_ID=$(gh run list \
-            --repo "$REPO" \
-            --commit "$HEAD_SHA" \
-            --workflow ci.yml \
-            --limit 1 \
-            --json databaseId,status \
-            --jq '.[0] | "\(.databaseId) \(.status)"' 2>/dev/null || true)
-
-          if [ -z "$RUN_ID" ]; then
-            echo "No CI run found for this PR — nothing to rerun."
-            exit 0
-          fi
-
-          # Split "RUN_ID STATUS" into two vars.
-          RUN_ID="${RUN_ID%% *}"
-          STATUS="${RUN_ID##* }"
-
-          echo "Latest CI run: $RUN_ID (status: $STATUS)"
-
-          # If the run is still in progress, wait for it to finish.
-          # gh run rerun only works on completed runs — if we try while it's
-          # running, GitHub rejects with "cannot be rerun; This workflow is
-          # already running".
-          if [ "$STATUS" != "completed" ]; then
-            echo "Run is $STATUS — waiting for completion (this may take a while)..."
-            # gh run watch --exit-status exits non-zero if the run fails,
-            # which is expected (the label gate fails). Don't let that kill
-            # the workflow — we WANT to rerun failed jobs.
-            timeout 2100 gh run watch "$RUN_ID" --repo "$REPO" --interval 15 || true
-
-            # Verify it's actually completed now.
-            STATUS=$(gh run view "$RUN_ID" --repo "$REPO" --json status --jq '.status' 2>/dev/null || echo "unknown")
-            if [ "$STATUS" != "completed" ]; then
-              echo "Run is still $STATUS after wait — giving up."
+          for workflow in ci.yaml docker.yml nix.yml; do
+            RUN_ID=$(gh run list --repo "$REPO" --commit "$HEAD_SHA" --workflow "$workflow" \
+              --event pull_request --limit 1 --json databaseId --jq '.[0].databaseId // empty' || true)
+            if [ -z "$RUN_ID" ]; then
+              echo "$workflow: no run for $HEAD_SHA"
+              continue
+            fi
+            # A run in progress was classified without the label: stop it,
+            # then rerun it once GitHub marks it completed.
+            STATUS=$(gh run view "$RUN_ID" --repo "$REPO" --json status --jq .status || echo unknown)
+            if [ "$STATUS" != completed ]; then
+              gh run cancel "$RUN_ID" --repo "$REPO" || true
+              for _ in $(seq 60); do
+                STATUS=$(gh run view "$RUN_ID" --repo "$REPO" --json status --jq .status || echo unknown)
+                [ "$STATUS" = completed ] && break
+                sleep 5
+              done
+            fi
+            # Same supersede guard as above: never rerun a run for an old head.
+            CURRENT_HEAD=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid || true)
+            if [ "$CURRENT_HEAD" != "$HEAD_SHA" ]; then
+              echo "PR head moved to $CURRENT_HEAD; not rerunning superseded $workflow run $RUN_ID."
               exit 0
             fi
-          fi
-
-          echo "Run completed. Rerunning all failed jobs..."
-          gh run rerun "$RUN_ID" --repo "$REPO" --failed || true
-          echo "Done. GitHub will rerun review-labels and all dependent jobs."
+            if gh run rerun "$RUN_ID" --repo "$REPO"; then
+              echo "$workflow: rerunning $RUN_ID"
+            else
+              echo "::warning::$workflow: could not rerun $RUN_ID (status $STATUS)"
+            fi
+          done

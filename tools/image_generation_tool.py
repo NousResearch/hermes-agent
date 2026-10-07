@@ -816,6 +816,8 @@ def _fall_back_to_fal(raw: str, prompt: str, aspect_ratio: str, sources: dict[st
     note = (f"Krea was unavailable, so this image was generated on FAL ({DEFAULT_MODEL}) instead."
             if fal_result.get("success") else
             f"Krea was unavailable and the fallback to FAL ({DEFAULT_MODEL}) also failed.")
+    if fal_result.get("upscaled"):
+        note += f" The upscale ran on FAL's {UPSCALER_MODEL}, not Krea Enhance."
     fal_result.update(
         provider="fal", model=DEFAULT_MODEL, fallback_from="krea", fallback_reason=result.get("error"), note=note)
     return json.dumps(fal_result)

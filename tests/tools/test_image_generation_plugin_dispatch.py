@@ -99,6 +99,29 @@ class TestPluginDispatch:
         assert result["success"] is fal_ok
         assert ("generated on FAL" if fal_ok else "also failed") in result["note"]
 
+    def test_fallback_keeps_the_upscale_and_names_the_fal_upscaler(self, monkeypatch, tmp_path):
+        """An upscale asked of Krea still runs on the FAL rerun, and the note says which upscaler did it."""
+        from tools import image_generation_tool as ig
+
+        krea_error = {"success": False, "image": None, "error": "refused", "error_type": "connection_error",
+                      "fallback_eligible": True}
+        fal_calls = []
+
+        def fake_fal(prompt, aspect_ratio, **kwargs):
+            fal_calls.append(kwargs)
+            return json.dumps({"success": True, "image": "/tmp/fal.png", "modality": "text", "upscaled": True})
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(ig, "_dispatch_to_plugin_provider", lambda *a, **k: None)
+        monkeypatch.setattr(ig, "_maybe_route_managed_model", lambda *a, **k: json.dumps(krea_error))
+        monkeypatch.setattr(ig, "image_generate_tool", fake_fal)
+        monkeypatch.setattr("plugins.image_gen.krea.fallback_to_fal_enabled", lambda: True)
+
+        result = json.loads(ig._handle_image_generate({"prompt": "draw cat", "aspect_ratio": "square", "upscale": True}))
+
+        assert fal_calls[0]["upscale"] is True
+        assert ig.UPSCALER_MODEL in result["note"] and "Krea Enhance" in result["note"]
+
     def test_deepinfra_key_alone_does_not_select_image_backend(self, monkeypatch):
         """DeepInfra chat credentials do not imply consent to image billing."""
         from tools import image_generation_tool

@@ -18,6 +18,12 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     "/api/config/schema",
     # Read-only model metadata — same shape as public provider catalogs.
     "/api/model/info",
+    # Login bootstrap: provider names + capability flags (or 503 when none are
+    # registered) so native clients and the SPA can render the sign-in options
+    # *before* any credential exists. Already public under the OAuth gate
+    # (``_GATE_PUBLIC_PREFIXES``); the legacy token gate 401'd it in loopback
+    # mode and no discovery could complete (#134345).
+    "/api/auth/providers",
     # Read-only theme + plugin manifests for the dashboard skin engine.
     "/api/dashboard/themes",
     "/api/dashboard/plugins",

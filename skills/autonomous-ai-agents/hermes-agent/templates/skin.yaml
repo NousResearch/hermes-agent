@@ -31,6 +31,7 @@ colors:
   # CLI / TUI chrome.
   prompt: "#e6e0ff"
   input_rule: "#ff5fd2"
+  user_rule: "#3a2a63"     # TUI turn rule; falls back to ui_border
   response_border: "#7ef9ff"
   status_bar_bg: "#120a24"
   status_bar_text: "#e6e0ff"

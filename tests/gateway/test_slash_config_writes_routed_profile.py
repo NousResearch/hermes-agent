@@ -129,3 +129,46 @@ async def test_memory_and_skills_review_commands_use_routed_profile_from_dispatc
     assert not (default_home / "memories").exists()
     assert not (default_home / "skills").exists()
     assert (default_home / "config.yaml").read_bytes() == default_before
+
+
+@pytest.mark.asyncio
+async def test_creation_only_approval_keeps_existing_gateway_commands(homes):
+    """The old toggles preserve scope; review stays in the routed profile."""
+    import json
+    from tools.skill_manager_tool import skill_manage
+
+    default_home, routed_home = homes
+    default_before = (default_home / "config.yaml").read_bytes()
+    (routed_home / "config.yaml").write_text(
+        "skills:\n  write_approval: true\n  write_approval_mode: create\n")
+    runner = _Runner()
+    runner.routed_home = routed_home
+    body = "---\nname: existing\ndescription: Use when testing approvals.\n---\n\nOld body.\n"
+    path = routed_home / "skills" / "existing" / "SKILL.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(body)
+
+    with _profile_runtime_scope(default_home):
+        assert "scope: create" in await runner.slash("skills", "")
+        assert "set to 'off'" in await runner.slash("skills", "approval off")
+        assert "set to 'on'" in await runner.slash("skills", "approval on")
+    config = yaml.safe_load((routed_home / "config.yaml").read_text())
+    assert config["skills"]["write_approval_mode"] == "create"
+    assert config["skills"]["write_approval"] is True
+
+    with _profile_runtime_scope(routed_home):
+        edited = json.loads(skill_manage(action="patch", name="existing",
+                                        old_string="Old body.", new_string="New body."))
+        assert edited["success"] and not edited.get("staged"), edited
+        staged = json.loads(skill_manage(action="create", name="new-skill",
+                                        content=body.replace("existing", "new-skill")))
+        assert staged["staged"] is True
+    assert "New body." in path.read_text()
+    pid = staged["pending_id"]
+    with _profile_runtime_scope(default_home):
+        assert pid in await runner.slash("skills", "pending")
+        assert "Old body." in await runner.slash("skills", f"diff {pid}")
+        assert "Approved 1 skills write(s)." in await runner.slash("skills", f"approve {pid}")
+    assert (routed_home / "skills" / "new-skill" / "SKILL.md").exists()
+    assert (default_home / "config.yaml").read_bytes() == default_before
+    assert not (default_home / "skills").exists()

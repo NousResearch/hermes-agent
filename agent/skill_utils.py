@@ -30,22 +30,23 @@ EXCLUDED_SKILL_DIRS = frozenset((
 # via skill_view(skill, file_path=...), never scanned as standalone skills.
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
 
-def is_excluded_skill_path(path, *, root: Optional[Path] = None) -> bool:
+def is_excluded_skill_path(path, *, root: Optional[Path] = None, exists=None) -> bool:
     """True if *path* should be skipped by skill scanners (VCS/dependency/cache
     dirs + support packages). Apply to every SKILL.md from a direct ``rglob``."""
     parts = PurePath(str(path)).parts
-    return any(part in EXCLUDED_SKILL_DIRS for part in parts) or is_skill_support_path(path, root=root)
+    return any(part in EXCLUDED_SKILL_DIRS for part in parts) or is_skill_support_path(path, root=root, exists=exists)
 
 
-def is_skill_support_path(path, *, root: Optional[Path] = None) -> bool:
+def is_skill_support_path(path, *, root: Optional[Path] = None, exists=None) -> bool:
     """True if *path* is under a support dir sitting directly inside a skill root
     (``skills/scripts/foo`` stays discoverable: no ``SKILL.md`` above ``scripts``)."""
     path_obj = path if isinstance(path, Path) else Path(str(path))
     parts = path_obj.parts
     base = root if root is not None and not path_obj.is_absolute() else Path()
+    exists = exists or Path.exists
     # Only components before the leaf can be containing support directories.
     return any(
-        part in SKILL_SUPPORT_DIRS and (base / Path(*parts[:idx]) / "SKILL.md").exists()
+        part in SKILL_SUPPORT_DIRS and exists(base / Path(*parts[:idx]) / "SKILL.md")
         for idx, part in enumerate(parts[:-1])
         if idx > 0
     )
@@ -317,7 +318,7 @@ def _config_str_list(raw) -> List[str]:
     return [e for e in (str(entry).strip() for entry in raw) if e]
 
 
-def get_external_skills_dirs() -> List[Path]:
+def get_external_skills_dirs(*, is_dir=None) -> List[Path]:
     """Validated, deduplicated ``skills.external_dirs`` (existing dirs only). Entries
     are ``~``/``${VAR}`` expanded, relative to HERMES_HOME; the local skills dir is skipped."""
     config_path = get_config_path()
@@ -325,7 +326,7 @@ def get_external_skills_dirs() -> List[Path]:
         return []
     full_key = _config_cache_key(config_path)
     cache_key = full_key
-    cached = _EXTERNAL_DIRS_CACHE.get(cache_key) if cache_key is not None else None
+    cached = _EXTERNAL_DIRS_CACHE.get(cache_key) if cache_key is not None and is_dir is None else None
     if cached is not None:
         return list(cached)  # copy so callers can't mutate the cache
     skills_cfg = _skills_cfg()
@@ -337,11 +338,11 @@ def get_external_skills_dirs() -> List[Path]:
         p = _home_relative(_expand_path(entry)).resolve()
         if p == local_skills or p in result:
             continue
-        if p.is_dir():
+        if (is_dir or Path.is_dir)(p):
             result.append(p)
         else:
             logger.debug("External skills dir does not exist, skipping: %s", p)
-    if cache_key is not None:
+    if cache_key is not None and is_dir is None:
         _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
     return result
 
@@ -389,16 +390,16 @@ AMBIGUOUS_SKILL_PREFIX = "Ambiguous skill name "
 _SHADOW_CHECKED: Set[Tuple[str, ...]] = set()
 
 
-def get_skill_search_roots(local: Optional[Path] = None, *, include_project: bool = True) -> List[Tuple[int, Path]]:
+def get_skill_search_roots(local: Optional[Path] = None, *, include_project: bool = True, is_dir=None) -> List[Tuple[int, Path]]:
     """``(tier, dir)`` for every skill root in precedence order — the ONE ordering the skills list,
     prompt index, slash commands, skill_view, preload and cron share. *local* overrides the profile
     skills dir (skills_tool passes its live root); that entry is kept even when missing."""
-    roots = [(TIER_PROJECT, d) for d in get_project_skills_dirs()] if include_project else []
+    roots = [(TIER_PROJECT, d) for d in get_project_skills_dirs(is_dir=is_dir)] if include_project else []
     roots.append((TIER_LOCAL, Path(local) if local is not None else get_skills_dir()))
     create_dir = get_skill_create_dir()
-    if create_dir is not None and create_dir.is_dir():
+    if create_dir is not None and (is_dir or Path.is_dir)(create_dir):
         roots.append((TIER_CREATE_DIR, create_dir))
-    roots += [(TIER_EXTERNAL, d) for d in get_external_skills_dirs()]
+    roots += [(TIER_EXTERNAL, d) for d in get_external_skills_dirs(is_dir=is_dir)]
     seen: Set[Path] = set()
     return [(t, d) for t, d in roots if not (d in seen or seen.add(d))]
 
@@ -551,14 +552,14 @@ def is_project_root_trusted(root: Path) -> bool:
         return False
 
 
-def _candidate_project_skills_dirs(root: Path) -> List[Path]:
+def _candidate_project_skills_dirs(root: Path, *, is_dir=None) -> List[Path]:
     """Existing skill dirs under *root*, excluding the profile's own skills dir
     (HERMES_HOME itself may live inside a git checkout)."""
     local_skills = get_skills_dir().resolve()
     dirs: List[Path] = []
     for cand in (root / sub for sub in PROJECT_SKILLS_SUBDIRS):
         try:
-            if cand.is_dir() and cand.resolve() != local_skills:
+            if (is_dir or Path.is_dir)(cand) and cand.resolve() != local_skills:
                 dirs.append(cand.resolve())
         except OSError:
             continue
@@ -573,10 +574,10 @@ def _current_project_root(trusted: bool) -> Optional[Path]:
     return root if root is not None and is_project_root_trusted(root) == trusted else None
 
 
-def get_project_skills_dirs() -> List[Path]:
+def get_project_skills_dirs(*, is_dir=None) -> List[Path]:
     """Trusted project-local skill dirs for the current cwd (may be empty)."""
     root = _current_project_root(trusted=True)
-    return _candidate_project_skills_dirs(root) if root is not None else []
+    return _candidate_project_skills_dirs(root, is_dir=is_dir) if root is not None else []
 
 
 def get_untrusted_project_skills_root() -> Optional[Tuple[Path, int]]:
@@ -839,11 +840,16 @@ def is_skill_description_truncated_for_prompt(frontmatter: Dict[str, Any]) -> bo
     return len(_normalize_skill_description(frontmatter)) > SKILL_PROMPT_DESC_LIMIT
 
 
-def iter_skill_index_files(skills_dir: Path, filename: str):
+def iter_skill_index_files(skills_dir: Path, filename: str, *, manifest_changes=None, is_dir=None):
     """Walk skills_dir yielding sorted paths matching *filename*; prunes
     EXCLUDED_SKILL_DIRS and support dirs of skill roots."""
     matches: list[str] = []
-    for root, dirs, files in os.walk(str(skills_dir), followlinks=True):
+    if manifest_changes is None:
+        nodes = os.walk(str(skills_dir), followlinks=True)
+    else:
+        from agent.skill_manifest_overlay import walk_proposed_manifests
+        nodes = walk_proposed_manifests(skills_dir, manifest_changes, is_dir=is_dir)
+    for root, dirs, files in nodes:
         has_skill_md = "SKILL.md" in files
         dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
         if filename in files:

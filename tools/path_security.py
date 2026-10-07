@@ -5,10 +5,10 @@ from pathlib import Path
 from typing import Optional
 
 
-def validate_within_dir(path: Path, root: Path) -> Optional[str]:
+def validate_within_dir(path: Path, root: Path, *, resolve=None) -> Optional[str]:
     """Error message if *path* does not resolve inside *root* (symlinks and ``..`` followed)."""
     try:
-        path.resolve().relative_to(root.resolve())
+        (resolve or Path.resolve)(path).relative_to((resolve or Path.resolve)(root))
     except (ValueError, OSError) as exc:
         return f"Path escapes allowed directory: {exc}"
     return None

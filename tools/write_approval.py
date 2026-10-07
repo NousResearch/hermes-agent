@@ -4,8 +4,9 @@
 A per-subsystem boolean ``write_approval`` gates the agent's cross-session writes —
 **memory** (MEMORY.md / USER.md) and **skills** (SKILL.md + files) — from either
 origin (**foreground** turn or **background_review** fork). ``false`` (default)
-writes freely; ``true`` never commits directly: it prompts inline (memory,
-interactive CLI only) or **stages** the write under
+writes freely; ``true`` requires approval for all writes by default, or just
+skill creation with ``skills.write_approval_mode: create``. Gated writes
+prompt inline (memory, interactive CLI only) or **stage** under
 ``<HERMES_HOME>/pending/{memory,skills}/<id>.json`` for out-of-band review.
 """
 
@@ -58,6 +59,16 @@ def _normalize_enabled(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return isinstance(value, str) and value.strip().lower() in _TRUTHY_STRINGS
+
+
+def skill_write_approval_mode() -> str:
+    """Resolve the active profile's scope without changing the boolean approval toggle."""
+    from hermes_cli.config import load_config, cfg_get
+    mode = cfg_get(load_config(), SKILLS, "write_approval_mode", default="all")
+    if mode not in ("all", "create"):
+        raise ValueError("skills.write_approval_mode must be 'all' or 'create'. "
+                         "Set it in config.yaml before retrying the skill write.")
+    return mode
 
 
 # --- Pending store (file-backed) ---
@@ -198,15 +209,23 @@ def _staged(subsystem: str) -> GateDecision:
                                              f"Not yet saved — {where}."))
 
 
-def evaluate_gate(subsystem: str, *, inline_summary: str = "", inline_detail: str = "") -> GateDecision:
-    """Decide what to do with a pending write: gate off → allow; gate on + skills (any origin) or
-    background → stage; gate on + memory + foreground → inline prompt when an interactive channel
+def evaluate_gate(subsystem: str, *, inline_summary: str = "", inline_detail: str = "",
+                  skill_operations: Optional[List[Dict[str, Any]]] = None) -> GateDecision:
+    """Decide what to do with a pending write: gate off → allow; scoped skills (any origin) or
+    background memory → stage; gate on + memory + foreground → inline prompt when an interactive channel
     exists, else stage. The gate only ever delays a write, never silently refuses it; ``blocked``
     is produced only when the user actively denies the inline prompt."""
     if not write_approval_enabled(subsystem):
         return GateDecision(allow=True)
-    # Skills are too big to review inline; a background write runs in a daemon thread with no user.
-    if subsystem == SKILLS or current_origin() == "background_review":
+    # Unknown action scope stays gated; a mixed batch must never apply just its exempt edits.
+    if subsystem == SKILLS:
+        from tools.skill_write_approval import requires_creation_approval
+        if (skill_write_approval_mode() == "create" and skill_operations is not None
+                and not requires_creation_approval(skill_operations)):
+            return GateDecision(allow=True)
+        return _staged(subsystem)
+    # A background write runs in a daemon thread with no user.
+    if current_origin() == "background_review":
         return _staged(subsystem)
     granted = _prompt_inline_memory_approval(inline_summary, inline_detail)
     if granted is None:

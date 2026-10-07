@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from typing import List, Optional
 
 from tools import write_approval as wa
@@ -11,7 +12,10 @@ from tools import write_approval as wa
 
 def _fmt_state(subsystem: str) -> str:
     on = wa.write_approval_enabled(subsystem)
-    return f"{subsystem}.write_approval = {'on' if on else 'off'}"
+    state = f"{subsystem}.write_approval = {'on' if on else 'off'}"
+    if on and subsystem == wa.SKILLS:
+        state += f" (scope: {wa.skill_write_approval_mode()})"
+    return state
 
 
 def _fmt_pending_list(subsystem: str) -> str:
@@ -46,10 +50,8 @@ def handle_pending_subcommand(
     sub, rest = args[0].lower(), args[1:]
     if sub == "pending":
         return _fmt_pending_list(subsystem)
-    if sub in {"approve", "apply"}:
-        return _approve(subsystem, rest, memory_store)
-    if sub in {"reject", "deny", "drop"}:
-        return _reject(subsystem, rest)
+    if sub in {"approve", "apply", "reject", "deny", "drop"}:
+        return _review_write(subsystem, sub, rest, memory_store)
     if sub == "diff" and subsystem == wa.SKILLS:
         return _diff(rest)
     if sub in {"approval", "mode"}:  # 'mode' kept as a back-compat alias
@@ -59,6 +61,21 @@ def handle_pending_subcommand(
 
 def _usage(subsystem: str) -> str:
     return f"Usage: /{subsystem} approve|reject <id>  (or 'all')"
+
+
+def _review_write(subsystem, sub, rest, memory_store):
+    """Hold the skill fence through lookup, apply/reject and removal of the exact pending ID."""
+    from tools.skill_write_approval import creation_transaction
+    fence = creation_transaction() if subsystem == wa.SKILLS else nullcontext()
+    try:
+        with fence:
+            if sub in {"approve", "apply"}:
+                return _approve(subsystem, rest, memory_store)
+            return _reject(subsystem, rest)
+    except TimeoutError:
+        return "Another skill writer is busy. Pending requests were not changed; retry the review command."
+    except ValueError as exc:
+        return str(exc)
 
 
 def _approve(subsystem: str, rest: List[str], memory_store) -> str:

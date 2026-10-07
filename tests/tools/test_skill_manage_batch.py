@@ -287,15 +287,15 @@ class TestSkillManageBatch(unittest.TestCase):
             message = "staged for review"
 
         staged = {}
-
-        def fake_stage_write(area, payload, summary=None, origin=None):
-            staged.update(payload=payload, summary=summary)
-            return {"id": "pend_1"}
-
         import tools.write_approval as wa
+        native_stage_write = wa.stage_write
+
+        def capture_stage_write(area, payload, summary="", origin="foreground"):
+            staged.update(payload=payload, summary=summary)
+            return native_stage_write(area, payload, summary=summary, origin=origin)
 
         with _patch.object(wa, "evaluate_gate", return_value=_Decision()), \
-             _patch.object(wa, "stage_write", side_effect=fake_stage_write):
+             _patch.object(wa, "stage_write", side_effect=capture_stage_write):
             r = self._call("probe", [
                 {"action": "create", "content": SK.format(n="probe")},
                 {"action": "write_file", "file_path": "references/a.md",

@@ -144,16 +144,18 @@ def _pinned_guard(name: str) -> Optional[str]:
     """Refusal message if *name* is pinned or essential, else None. Pin only guards DELETION;
     patches/edits stay allowed. ESSENTIAL_SKILLS are permanently pinned (the system prompt
     references them). Best-effort: an unreadable sidecar lets the delete through."""
+    from tools.skill_target_resolution import metadata_names
+    names = metadata_names(name)
     try:
         from agent.skill_utils import ESSENTIAL_SKILLS
-        if name in ESSENTIAL_SKILLS:
+        if any(key in ESSENTIAL_SKILLS for key in names):
             return (
                 f"Skill '{name}' is essential to Hermes (the agent's own "
                 f"operating manual referenced by the system prompt) and "
                 f"cannot be deleted. Patches and edits are still allowed.")
     except Exception:
         logger.debug("essential-guard lookup failed for %s", name, exc_info=True)
-    if _is_pinned(name, "pinned-guard"):
+    if any(_is_pinned(key, "pinned-guard") for key in names):
         return (
             f"Skill '{name}' is pinned and cannot be deleted by skill_manage. Ask the user to "
             f"run `hermes curator unpin {name}` if they want to delete it. Patches and edits "
@@ -168,7 +170,10 @@ def _background_review_delete_guard(name: str, skill_dir: Path) -> Optional[Dict
     if not _is_background_review():
         return None
     refuse = "Refusing background curator delete for"
-    if _is_pinned(name, "pinned skill guard"):
+    from tools.skill_target_resolution import metadata_name, metadata_names
+    names = metadata_names(name, skill_dir)
+    name = metadata_name(name, skill_dir)
+    if any(_is_pinned(key, "pinned skill guard") for key in names):
         return _refusal(
             f"{refuse} pinned skill '{name}': pinned skills "
             f"are off-limits to autonomous maintenance. Ask the user to run `hermes curator "
@@ -187,7 +192,7 @@ def _background_review_delete_guard(name: str, skill_dir: Path) -> Optional[Dict
             (skill_usage.is_protected_builtin, "protected built-in"),
             (skill_usage.is_hub_installed, "hub-installed"),
             (skill_usage.is_bundled, "bundled")):
-            if predicate(name):
+            if any(predicate(key) for key in names):
                 return _refusal(f"{refuse} {label} skill '{name}'.")
         # Not curator-managed (no `created_by: "agent"`) => user-owned, never archived
         # autonomously. A MISSING record and `created_by: null` must resolve identically:

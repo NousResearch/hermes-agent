@@ -14,8 +14,9 @@ function psLiteral(value) {
 
   // Stdin scripts use ASCII on Windows PowerShell 5.1, independently of the
   // remote console code page. Encode Unicode values as data, never as code.
-  if (/[^\x00-\x7F]/.test(text)) {
+  if (/\P{ASCII}/u.test(text)) {
     const encoded = Buffer.from(text, 'utf16le').toString('base64')
+
     return `([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encoded}')))`
   }
 
@@ -131,6 +132,7 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const lines = stripPowerShellNoise(
     await ssh.exec(powerShellStdinCommand(), { stdinData: powerShellStdinData(script) })
   )
+
   const parsed = JSON.parse(lines[lines.length - 1] || 'null')
 
   if (!parsed?.os || !parsed?.arch) {

@@ -507,7 +507,7 @@ test('Windows platform probe streams long PowerShell scripts over stdin', async 
   assert.match(command, /-Command -$/)
   assert.doesNotMatch(command, /-EncodedCommand/)
   assert.ok(command.length < 1024)
-  assert.doesNotMatch(stdinData, /[^\x00-\x7F]/)
+  assert.doesNotMatch(stdinData, /\P{ASCII}/u)
   assert.match(stdinData, /Assert-NoReparse/)
 })
 
@@ -566,6 +566,7 @@ function runLocalWindowsCommand(command, stdinData) {
       windowsHide: true,
       env: { ...process.env, PROCESSOR_ARCHITECTURE: '' }
     })
+
     const stdout: Buffer[] = []
     const stderr: Buffer[] = []
 

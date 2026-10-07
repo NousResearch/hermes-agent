@@ -441,3 +441,37 @@ async def test_label_reads_stuck_on_the_database_lock_occupy_one_private_thread(
     assert len(threads) == 2
     await restarted.disconnect()
     assert restarted._discord_labels_reader is None and restarted._discord_labels_reads == {}
+
+
+@pytest.mark.asyncio
+async def test_disconnect_leaves_a_running_label_read_and_drops_queued_ones(tmp_path):
+    """Reads never write, so disconnect() does not wait for one stuck on SessionDB's lock; a read
+    queued behind it is cancelled, and the running one still settles once the lock frees."""
+    store, adapter = _labelled_store(tmp_path)
+    await adapter._on_inbound(_message({"chat_id": "ch1", "chat_type": "group"}))
+    restarted = _restarted(store)
+    entered, real_read = threading.Event(), store.chat_labels
+
+    def entered_read(*args):
+        entered.set()
+        return real_read(*args)
+
+    store.chat_labels = entered_read
+    release, holder = _hold_db_lock(store._routing_db)
+    try:
+        running = restarted._discord_labels_read(store, "g1", "ch1")
+        queued = restarted._discord_labels_read(store, "g1", "ch2")
+        await asyncio.to_thread(entered.wait, 5)
+        started = time.monotonic()
+        await restarted.disconnect()
+        elapsed = time.monotonic() - started
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert queued.cancelled()
+        assert not running.done()
+    finally:
+        release.set()
+        await asyncio.to_thread(holder.join, 5)
+    assert elapsed < 2
+    assert restarted._discord_labels_reader is None and restarted._discord_labels_reads == {}
+    assert await asyncio.wait_for(running, 5) == ("Hermes Server / #ops", "Incident triage")

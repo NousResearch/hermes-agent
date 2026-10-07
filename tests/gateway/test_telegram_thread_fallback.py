@@ -628,7 +628,7 @@ async def test_slash_confirm_forum_callback_followup_keeps_existing_thread_behav
         call_log.append(dict(kwargs))
         return SimpleNamespace(message_id=9001)
 
-    async def resolve(_session_key, _confirm_id, _choice):
+    async def resolve(_session_key, _confirm_id, _choice, **_answerer):
         return "done"
 
     from tools import slash_confirm

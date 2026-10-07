@@ -1083,8 +1083,27 @@ def _resolve_review_provider() -> tuple:
 
 
 def _run_llm_review(prompt: str) -> Dict[str, Any]:
+    """Entry point: install the active profile's secret scope (only when the process is a
+    multiplexer) around the real review fork. Without this, under ``gateway.multiplex_profiles``
+    the curator fork ran with no scope installed — every run recorded
+    ``llm: error: get_secret('..._API_KEY') called with no profile secret scope active`` while
+    ``hermes curator status`` still said ENABLED (secrets never fail loud, curator just silently
+    never worked). Single-profile deployments are unaffected: ``is_multiplex_active()`` is False,
+    so ``get_secret`` keeps reading ``os.environ`` exactly as before."""
+    from agent import secret_scope
+    if not secret_scope.is_multiplex_active():
+        return _run_llm_review_unscoped(prompt)
+    token = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(get_hermes_home()))
+    try:
+        return _run_llm_review_unscoped(prompt)
+    finally:
+        secret_scope.reset_secret_scope(token)
+
+
+def _run_llm_review_unscoped(prompt: str) -> Dict[str, Any]:
     """Spawn an AIAgent fork on the review prompt. Returns ``final`` (untruncated response), ``summary`` (240-char cap),
-    ``model``/``provider`` (what ran), ``tool_calls`` ([{name, arguments}], truncated) and ``error``. Never raises."""
+    ``model``/``provider`` (what ran), ``tool_calls`` ([{name, arguments}], truncated) and ``error``. Never raises.
+    Call ``_run_llm_review`` instead — it installs the profile secret scope this needs when multiplexing."""
     result_meta: Dict[str, Any] = _llm_meta("")
     try:
         from run_agent import AIAgent
@@ -1135,9 +1154,22 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
             _reset_background_review_read_marks()
         # Silence the fork's tool-call chatter (CLI synchronous foreground runs).
-        with open(os.devnull, "w", encoding="utf-8") as devnull, \
-             contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
-            conv_result = review_agent.run_conversation(user_message=prompt)
+        # 2026-09-20 (re-applied 2026-09-30): run_conversation has no wall-clock
+        # bound (max_iterations=9999), so one model that never finishes
+        # streaming parked this thread forever and the gateway logged the turn
+        # as wedged (`Agent idle for 1808s`). Bound it under the gateway's own
+        # 1800s idle limit and report a timeout as an error; nobody awaits this.
+        def _do_review():
+            with open(os.devnull, "w", encoding="utf-8") as devnull, \
+                 contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+                return review_agent.run_conversation(user_message=prompt)
+
+        from agent.deadline import run_bounded_sync
+        _limit = float(os.environ.get("HERMES_CURATOR_LLM_TIMEOUT", "1500") or 1500)
+        _bounded = run_bounded_sync(_do_review, _limit, label="curator-llm-review")
+        if _bounded.timed_out:
+            raise TimeoutError(f"curator LLM review exceeded {_limit:.0f}s and was abandoned")
+        conv_result = _bounded.value
         final = str(conv_result.get("final_response") or "").strip() if isinstance(conv_result, dict) else ""
         result_meta["final"] = final
         result_meta["summary"] = (final[:240] + "…") if len(final) > 240 else (final or "no change")

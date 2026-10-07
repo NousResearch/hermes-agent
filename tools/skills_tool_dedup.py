@@ -15,10 +15,10 @@ _skill_view_tracker_lock = threading.Lock()
 _SKILL_VIEW_DEDUP_CAP = 200
 
 _SKILL_VIEW_DEDUP_MESSAGE = (
-    "Skill content unchanged since it was loaded earlier in this "
-    "conversation — refer to the earlier skill_view result; it is still "
-    "current and complete. (Re-issued after context compression, this "
-    "returns the full content again.)")
+    "Skill file unchanged since it was loaded earlier in this conversation. "
+    "If that result is still complete, refer to it. If it was truncated or "
+    "pruned, call skill_view again with the same arguments: the next call "
+    "returns the full content. This stub does not contain the procedure.")
 
 
 def _skill_view_fingerprint(payload: dict) -> tuple | None:
@@ -51,8 +51,18 @@ def _record_skill_view(task_id, name, file_path, payload: dict) -> None:
 
 def _check_skill_view_dedup(task_id, name, file_path) -> str | None:
     """Dedup stub when this exact skill file was already served to this task and
-    is unchanged on disk; None otherwise."""
+    is unchanged on disk; None otherwise.
+
+    Never dedups inside the curator review fork: the stub carries no content and
+    sets no read mark, so the background-review read-before-write guard refuses
+    every skill_manage patch that follows and the pass dies retrying (2026-09-07,
+    Mac curator run 20260907-160753 — 107 skill_view calls, 8 refused patches,
+    nothing consolidated).
+    """
     if not task_id:
+        return None
+    from tools.skill_provenance import is_background_review
+    if is_background_review():
         return None
     n = str(name)
     with _skill_view_tracker_lock:
@@ -74,6 +84,8 @@ def _check_skill_view_dedup(task_id, name, file_path) -> str | None:
             if changed:
                 cache.pop(key, None)
                 return None
+            # One no-content hint only: transport pruning may be invisible here.
+            cache.pop(key, None)
             return json.dumps({
                 "success": True, "status": "unchanged", "name": rec_name,
                 "file": file_path or "SKILL.md", "dedup": True, "content_returned": False,

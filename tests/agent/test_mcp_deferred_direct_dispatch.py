@@ -230,3 +230,21 @@ def test_tool_call_bridge_still_dispatches_mcp_tools():
     # it — the same registry the direct path now reaches (#84772).
     assert dispatched == ["mcp__automem__store_memory"]
     assert '"ok": true' in result
+
+
+def test_get_session_tool_names_memoized():
+    """get_session_tool_names memoizes catalog resolution for identical toolset scopes."""
+    model_tools.clear_session_tool_names_cache()
+    calls = []
+
+    def _fake_get_defs(*args, **kwargs):
+        calls.append((kwargs.get("enabled_toolsets"), kwargs.get("disabled_toolsets")))
+        return list(_PRE_ASSEMBLY_CATALOG)
+
+    with patch.object(model_tools, "get_tool_definitions", side_effect=_fake_get_defs):
+        first = model_tools.get_session_tool_names(["mcp"], None)
+        second = model_tools.get_session_tool_names(["mcp"], None)
+
+    assert first == second
+    assert len(calls) == 1, "Second invocation must be served from cache without recomputing definitions"
+    model_tools.clear_session_tool_names_cache()

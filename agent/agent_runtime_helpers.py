@@ -4100,10 +4100,10 @@ def dispatch_valid_tool_names(agent) -> set:
                 getattr(agent, "enabled_toolsets", None),
                 getattr(agent, "disabled_toolsets", None),
             )
-    except Exception:
+    except Exception as exc:
         # Never break dispatch on a gate-computation failure: fall back to
         # the post-assembly names (pre-fix behavior).
-        pass
+        logger.debug("dispatch_valid_tool_names failed to resolve deferred tools: %s", exc)
     return names
 
 

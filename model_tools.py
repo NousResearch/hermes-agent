@@ -659,6 +659,16 @@ def has_deferrable_tools() -> bool:
         return False
 
 
+_SESSION_TOOL_NAMES_CACHE: dict = {}
+_SESSION_TOOL_NAMES_CACHE_LOCK = threading.Lock()
+
+
+def clear_session_tool_names_cache() -> None:
+    """Clear the memoized pre-assembly tool-name sets."""
+    with _SESSION_TOOL_NAMES_CACHE_LOCK:
+        _SESSION_TOOL_NAMES_CACHE.clear()
+
+
 def get_session_tool_names(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
@@ -672,10 +682,22 @@ def get_session_tool_names(
     present here, which is what makes direct ``mcp__<server>__<tool>`` calls
     pass the dispatch validation (#84772).
 
+    Memoized by ``(enabled_toolsets, disabled_toolsets)`` to avoid repeated
+    discovery overhead on every tool turn in a session.
+
     Returns:
         Set of tool names in the session's full (pre-assembly) catalog.
         Empty set on any failure — callers treat it as "no deferred names".
     """
+    key = (
+        tuple(sorted(enabled_toolsets)) if enabled_toolsets is not None else None,
+        tuple(sorted(disabled_toolsets)) if disabled_toolsets is not None else None,
+    )
+    with _SESSION_TOOL_NAMES_CACHE_LOCK:
+        cached = _SESSION_TOOL_NAMES_CACHE.get(key)
+    if cached is not None:
+        return set(cached)
+
     try:
         defs = get_tool_definitions(
             enabled_toolsets=enabled_toolsets,
@@ -683,7 +705,10 @@ def get_session_tool_names(
             quiet_mode=True,
             skip_tool_search_assembly=True,
         ) or []
-        return {t["function"]["name"] for t in defs if t.get("function")}
+        names = {t["function"]["name"] for t in defs if t.get("function")}
+        with _SESSION_TOOL_NAMES_CACHE_LOCK:
+            _SESSION_TOOL_NAMES_CACHE[key] = names
+        return set(names)
     except Exception as e:  # pragma: no cover — defensive
         logger.warning("get_session_tool_names failed: %s", e)
         return set()

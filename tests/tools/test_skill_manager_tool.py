@@ -1063,6 +1063,125 @@ class TestBackgroundOwnershipPolicyConsistency:
 
 
 # ---------------------------------------------------------------------------
+# Category-qualified addressing — the same skill, two names (#121887).
+# ---------------------------------------------------------------------------
+
+
+class TestCategoryQualifiedGuardKeying:
+    """skill_manage accepts both ``axolotl`` and ``mlops/axolotl`` for a nested
+    skill, but the usage store keys every policy fact (pin, curator-management
+    marker, telemetry) under the bare name. Keying the delete guards and the
+    telemetry writes on the name as passed let a qualified address read a
+    forked record — sidestepping a pin or forking telemetry (#121887)."""
+
+    def test_qualified_delete_cannot_bypass_the_pin(self, tmp_path):
+        """The pin record lives under the bare name; a ``category/name``
+        address must not sidestep delete protection."""
+        with _skill_dir(tmp_path):
+            _create_skill("axolotl", VALID_SKILL_CONTENT, category="mlops")
+            with patch(
+                "tools.skill_usage.get_record",
+                side_effect=lambda n: ({"pinned": True}
+                                       if n == "axolotl" else {"pinned": False}),
+            ):
+                result = _delete_skill("mlops/axolotl")
+
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+        assert (tmp_path / "mlops" / "axolotl" / "SKILL.md").exists()
+
+    def test_qualified_delete_cannot_bypass_a_pin_via_the_background_guard(
+        self, tmp_path
+    ):
+        """The #121887 fork shape: activity recorded under the qualified key
+        forked an agent-created, unpinned record while the bare record is
+        pinned. Keying the background delete guard on the name as passed let
+        the fork authorize archiving a pinned skill."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        with _skill_dir(tmp_path):
+            _create_skill("axolotl", VALID_SKILL_CONTENT, category="mlops")
+            _create_skill("umbrella", VALID_SKILL_CONTENT)
+            with (
+                patch(
+                    "tools.skill_usage.load_usage",
+                    return_value={
+                        "axolotl": {"created_by": None, "pinned": True},
+                        "mlops/axolotl": {"created_by": "agent", "pinned": False},
+                    },
+                ),
+                patch(
+                    "tools.skill_usage.get_record",
+                    side_effect=lambda n: (
+                        {"created_by": None, "pinned": True}
+                        if n == "axolotl"
+                        else {"created_by": "agent", "pinned": False}
+                    ),
+                ),
+                patch(
+                    "tools.skill_usage.is_protected_builtin",
+                    return_value=False,
+                ),
+                patch(
+                    "tools.skill_usage.is_hub_installed",
+                    return_value=False,
+                ),
+                patch(
+                    "tools.skill_usage.is_bundled",
+                    return_value=False,
+                ),
+            ):
+                token = set_current_write_origin(BACKGROUND_REVIEW)
+                try:
+                    result = json.loads(
+                        skill_manage(
+                            action="delete",
+                            name="mlops/axolotl",
+                            absorbed_into="umbrella",
+                        )
+                    )
+                finally:
+                    reset_current_write_origin(token)
+
+        assert result["success"] is False, result
+        assert "pinned" in result["error"].lower()
+        assert (tmp_path / "mlops" / "axolotl" / "SKILL.md").exists()
+
+    def test_qualified_patch_records_usage_under_the_bare_name(
+        self, tmp_path, monkeypatch
+    ):
+        """Telemetry must land on the bare record, not fork a second one under
+        the qualified key (#121887). Real usage store, no stubbing."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes" / "skills").mkdir(parents=True, exist_ok=True)
+        from tools import skill_usage
+
+        with _skill_dir(tmp_path):
+            _create_skill("axolotl", VALID_SKILL_CONTENT, category="mlops")
+            skill_usage.mark_agent_created("axolotl")
+            result = json.loads(
+                skill_manage(
+                    action="patch",
+                    name="mlops/axolotl",
+                    old_string="Do the thing.",
+                    new_string="Do the new thing.",
+                )
+            )
+
+        assert result["success"] is True, result
+        usage = skill_usage.load_usage()
+        assert usage["axolotl"].get("created_by") == "agent"
+        assert usage["axolotl"]["patch_count"] == 1
+        assert "mlops/axolotl" not in usage, (
+            "telemetry forked a second record under the category-qualified key"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Pinned-skill guard — skill_manage refuses only `delete` on pinned skills.
 # Patches and edits go through so pinned skills can still evolve as pitfalls
 # come up. The user unpins via `hermes curator unpin <name>` to delete.

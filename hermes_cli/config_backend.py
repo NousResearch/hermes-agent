@@ -94,8 +94,9 @@ class FileBackend:
     # that are not a home's config.yaml (see ``_route``).
     @staticmethod
     def version_path(path: Path) -> Tuple[int, int, int, int]:
+        st = path.stat()  # before the import: a missing file must not need the utils stack (PM runtime)
         from utils import file_signature
-        return file_signature(path.stat())
+        return file_signature(st)
 
     @staticmethod
     def read_path(path: Path) -> Any:

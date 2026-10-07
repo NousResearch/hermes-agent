@@ -257,6 +257,7 @@ class TestReaderGate:
         "p = home / 'config.yaml'\n    return io.open(p)",
         "p = home / 'config.yaml'\n    return builtins.open(p)",
         "p = home / 'config.yaml'\n    return open(file=p)",
+        "first = home / 'config.yaml'\n    second = first\n    third = second\n    return third.read_text()",
     ])
     def test_every_binding_form_is_tracked(self, tmp_path, body):
         # Tuple unpacking, attributes, loop targets, unbound Path methods, copies, byte reads.

@@ -128,8 +128,9 @@ class _Scanner:
             for a in (*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs):
                 if a.arg in CONFIG_PARAM_NAMES:
                     names.add(a.arg)
-        # Two passes so `a = home / "config.yaml"; b = a` binds b too.
-        for _ in range(2):
+        # Until no new name binds, so alias chains (`a = home / "config.yaml"; b = a; c = b`) of any length bind.
+        while True:
+            before = len(names)
             for node in _scope_nodes(scope):
                 if isinstance(node, ast.Assign):
                     pairs = [(t, node.value) for t in node.targets]
@@ -143,7 +144,8 @@ class _Scanner:
                     continue
                 for target, value in pairs:
                     self._bind(target, value, names)
-        return names
+            if len(names) == before:
+                return names
 
     def _bind(self, target: ast.AST, value: ast.AST, names: set[str]) -> None:
         """Add *target* (a name, ``self.attr``, or an unpacked tuple element) when *value* is a config path."""

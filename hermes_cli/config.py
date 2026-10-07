@@ -24,7 +24,6 @@ import sys
 import tempfile
 import threading
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Dict, Any, Literal, Optional, List, Tuple, Set
@@ -45,6 +44,7 @@ from hermes_constants import (
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_replace, fast_safe_load, file_signature, mkstemp_beside
+from hermes_cli.config_issues import ConfigIssue, _issue  # noqa: F401  ConfigIssue re-exported
 from hermes_cli.config_backend import (
     config_exists, config_version, probe_config_readable, read_config_doc, supports_file_tooling,  # noqa: F401  config_exists re-exported for facades
     write_config_document)
@@ -972,18 +972,6 @@ _VALID_CUSTOM_PROVIDER_FIELDS = {
 
 # Fields that look like they should be inside custom_providers, not at root
 _CUSTOM_PROVIDER_LIKE_FIELDS = {"base_url", "api_key", "rate_limit_delay", "api_mode"}
-
-
-@dataclass
-class ConfigIssue:
-    """A detected config structure problem."""
-    severity: str  # "error", "warning"
-    message: str
-    hint: str
-
-
-def _issue(issues: list[ConfigIssue], severity: str, message: str, hint: str) -> None:
-    issues.append(ConfigIssue(severity, message, hint))
 
 
 def _require_fields(

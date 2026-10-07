@@ -3,7 +3,7 @@
 
 from typing import Any, Dict, List
 
-from hermes_cli.config import ConfigIssue, _issue
+from hermes_cli.config_issues import ConfigIssue, _issue
 
 
 def _validate_voice(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:

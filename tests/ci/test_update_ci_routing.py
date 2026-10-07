@@ -650,6 +650,8 @@ def _imports(path: Path) -> frozenset[str]:
                 base = ".".join([*parts, base] if base else parts)
             names.add(base)
             names.update(f"{base}.{a.name}" for a in node.names)
+    # Importing a.b.c runs a/__init__.py and a/b/__init__.py first.
+    names |= {".".join(n.split(".")[:i]) for n in names for i in range(1, n.count(".") + 1)}
     found = set()
     for name in names:
         target = _module_file(name)

@@ -95,7 +95,60 @@ for (const route of ["/send", "/send-attachment"]) {
   });
 }
 
-for (const failure of ["timeout", "drop", "503", "spoof", "wrong-code"]) {
+for (const caption of [undefined, "caption"]) {
+  test(`build-only native voice reply refusal falls back once${caption ? " with unthreaded caption" : ""}`, async t => {
+    const {post, events} = await start(t);
+    const response = await post("/send-attachment", {spaceId: "space", path: "voice-refusal", kind: "voice",
+      name: "note.m4a", mimeType: "audio/mp4", caption, replyToId: "stale"});
+    assert.equal(response.status, 200);
+    assert.equal(response.body.messageId, "sent");
+    const sends = events.filter(e => e.type === "send").map(e => e.builder);
+    assert.deepEqual(sends.map(s => s.type), caption ? ["reply", "voice", "text"] : ["reply", "voice"]);
+    assert.ok(events.filter(e => e.type === "send").every(e =>
+      e.publicBuilderKeys.length === 1 && e.publicBuilderKeys[0] === "build"));
+    assert.equal(sends[0].target.id, "stale");
+    assert.deepEqual(sends[1], sends[0].content, "native voice builder is retained exactly");
+    assert.deepEqual(events.filter(e => e.type === "delivered").map(e => e.builder.type), caption ? ["voice", "text"] : ["voice"]);
+    assert.equal(events.filter(e => e.type === "lookup").length, 0);
+    const followup = await post("/send", {spaceId: "space", text: "cache-preserved", replyToId: "stale"});
+    assert.equal(followup.status, 200);
+    assert.equal(events.filter(e => e.type === "lookup").length, 0, "content refusal must not evict the valid cached anchor");
+    assert.equal(events.filter(e => e.type === "send").at(-1).builder.type, "reply");
+  });
+}
+
+test("native voice caption keeps text provenance and never replays a voice-only refusal", async t => {
+  const {post, events} = await start(t);
+  const response = await post("/send-attachment", {spaceId: "space", path: "note.m4a", kind: "voice",
+    caption: "voice-refusal", replyToId: "anchor"});
+  assert.equal(response.status, 200, "native voice was delivered before caption refusal");
+  const sends = events.filter(e => e.type === "send").map(e => e.builder);
+  assert.deepEqual(sends.map(s => s.type), ["reply", "reply"]);
+  assert.deepEqual(sends.map(s => s.content.type), ["voice", "text"]);
+  assert.equal(events.filter(e => e.type === "delivered").length, 1);
+});
+
+test("native voice refusal variants never replay", async t => {
+  const {post, events} = await start(t);
+  for (const variant of ["grpc", "code", "retryable", "missing-retryable", "spoof", "ambiguous"]) {
+    const before = events.filter(e => e.type === "send").length;
+    const response = await post("/send-attachment", {spaceId: "space", path: `voice-refusal-${variant}`,
+      kind: "voice", caption: "not sent", replyToId: "anchor"});
+    assert.equal(response.status, 500, variant);
+    assert.equal(events.filter(e => e.type === "send").length, before + 1, variant);
+    assert.equal(events.filter(e => e.type === "send").at(-1).builder.type, "reply", variant);
+  }
+  assert.equal(events.filter(e => e.type === "delivered").length, 0);
+});
+
+test("native voice refusal without a reply target is never replayed", async t => {
+  const {post, events} = await start(t);
+  const response = await post("/send-attachment", {spaceId: "space", path: "voice-refusal-no-target", kind: "voice"});
+  assert.equal(response.status, 500);
+  assert.equal(events.filter(e => e.type === "send").length, 1);
+});
+
+for (const failure of ["timeout", "drop", "503", "spoof", "wrong-code", "voice-refusal"]) {
   test(`${failure} is never resent for text, media or caption`, async t => {
     const {post, events} = await start(t);
     let response = await post("/send", {spaceId: "space", text: failure, replyToId: "anchor"});

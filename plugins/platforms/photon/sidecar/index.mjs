@@ -309,6 +309,7 @@ let Spectrum,
   spectrumPoll,
   spectrumReply,
   IMessageNotFoundError,
+  IMessageValidationError,
   IMessageErrorCode,
   imessageEffect;
 try {
@@ -325,7 +326,7 @@ try {
   } = await import("spectrum-ts"));
   ({ imessage, effect: imessageEffect } = await import("spectrum-ts/providers/imessage"));
   // Use the pinned provider's actual error class, not message/name matching.
-  ({ NotFoundError: IMessageNotFoundError, ErrorCode: IMessageErrorCode } =
+  ({ NotFoundError: IMessageNotFoundError, ValidationError: IMessageValidationError, ErrorCode: IMessageErrorCode } =
     await import("@photon-ai/advanced-imessage/grpc"));
 } catch (e) {
   console.error(
@@ -382,8 +383,8 @@ function rememberKnownSpace(id, space) {
 
 // Resolve a reply target once per request (attachment and caption share it).
 // Lookup failure precedes delivery, so an unthreaded send is safe. After a
-// send attempt, recover only from a typed target refusal or SDK-skipped content.
-async function sendMaybeThreaded(space, builder, replyToId, replyState = {}) {
+// send attempt, recover only from a definitive typed refusal or SDK-skipped content.
+async function sendMaybeThreaded(space, builder, replyToId, replyState = {}, isNativeVoice = false) {
   if (!replyToId || typeof replyToId !== "string" || !spectrumReply) {
     return await space.send(builder);
   }
@@ -406,6 +407,17 @@ async function sendMaybeThreaded(space, builder, replyToId, replyState = {}) {
   try {
     result = await space.send(spectrumReply(builder, target));
   } catch (e) {
+    // The pinned provider refuses native audio + reply before delivery with
+    // this exact contract. It is a content limitation, not a stale anchor:
+    // keep the cache, but make this request's voice and caption unthreaded.
+    // SDK builders expose only build(); voice provenance belongs to this send,
+    // not shared replyState, because the subsequent caption is text.
+    if (isNativeVoice && e instanceof IMessageValidationError &&
+        e.grpcCode === 9 && e.code === "internalError" && e.retryable === false &&
+        e.message === "[upstream] is_audio_message with reply_to is not supported by the IMAgentKit send path") {
+      replyState.target = undefined;
+      return await space.send(builder);
+    }
     // advanced-imessage 2.1.0 maps a server NOT_FOUND (gRPC 5) plus
     // error-code=messageNotFound into this typed refusal. On a reply send
     // the only message reference is the reply target. Generic errors, 5xx,
@@ -1172,7 +1184,7 @@ const server = http.createServer(async (req, res) => {
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
       const replyState = {};
-      const result = await sendMaybeThreaded(space, builder, replyToId, replyState);
+      const result = await sendMaybeThreaded(space, builder, replyToId, replyState, kind === "voice");
 
       // iMessage delivers the caption as a separate bubble; send it
       // after the media, with the same resolved target as the attachment.

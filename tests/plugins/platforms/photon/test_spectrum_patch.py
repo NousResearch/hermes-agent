@@ -97,6 +97,7 @@ def _write_sidecar_fixture(tmp_path: Path, *, sdk_available: bool) -> Path:
     )
     (grpc_package / "grpc.js").write_text(
         "export class NotFoundError extends Error {}\n"
+        "export class ValidationError extends Error {}\n"
         "export const ErrorCode = {messageNotFound: 'messageNotFound'};\n",
         encoding="utf-8",
     )

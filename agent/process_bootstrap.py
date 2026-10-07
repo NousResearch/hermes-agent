@@ -324,12 +324,41 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
         return None
 
 
+def _unwrap_stdio_stream(stream):
+    """Descend through Hermes stdio wrappers to the innermost actual stream.
+
+    Returns ``(innermost, routing)`` where ``routing`` is the outermost
+    ``_ThreadRoutingStream`` layer seen (None if none), so callers can preserve
+    thread-routing semantics instead of wrapping over them. Cycle-safe: descent
+    stops at an already-visited object, so a corrupt chain cannot hang the
+    bootstrap.
+    """
+    from agent.thread_scoped_output import _ThreadRoutingStream
+
+    visited = set()
+    routing = None
+    while isinstance(stream, (_SafeWriter, _ThreadRoutingStream)) and id(stream) not in visited:
+        visited.add(id(stream))
+        if routing is None and isinstance(stream, _ThreadRoutingStream):
+            routing = stream
+        stream = stream._inner if isinstance(stream, _SafeWriter) else stream._passthrough
+    return stream, routing
+
+
 def _install_safe_stdio() -> None:
     """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
-        if stream is not None and not isinstance(stream, _SafeWriter):
-            setattr(sys, stream_name, _SafeWriter(stream))
+        if stream is None or isinstance(stream, _SafeWriter):
+            continue
+        inner, routing = _unwrap_stdio_stream(stream)
+        if routing is not None:
+            # A routing proxy's writes already swallow failures; adding a
+            # _SafeWriter layer over it only deepened the alternating wrapper
+            # chain by one layer per agent build (recursion crash on long-lived
+            # gateways).
+            continue
+        setattr(sys, stream_name, _SafeWriter(inner))
 
 
 # Drop-in for ``openai.OpenAI``.
@@ -337,7 +366,7 @@ OpenAI = _OpenAIProxy()
 
 
 __all__ = [
-    "OpenAI", "_OpenAIProxy", "_load_openai_cls", "_SafeWriter", "_install_safe_stdio", "_get_proxy_from_env",
+    "OpenAI", "_OpenAIProxy", "_load_openai_cls", "_SafeWriter", "_install_safe_stdio", "_unwrap_stdio_stream", "_get_proxy_from_env",
     "_get_proxy_for_base_url", "build_keepalive_http_client", "close_shared_transports",
     "enable_happy_eyeballs_on_client",
 ]

@@ -1,18 +1,24 @@
 name: openviking
+title: OpenViking
 repo: https://github.com/volcengine/OpenViking
-sha: 3b65218eef43aba7a680cf143278ad4c153b0e9f
+sha: a768dfb5523597261b412f5109d2323b6c4c6104
 subdir: examples/hermes-plugin
-version: "2.0.1"
-description: OpenViking context-database memory provider — session-managed memory with automatic
-  extraction, tiered retrieval and filesystem-style knowledge browsing. Maintained by Volcengine; the
-  same provider that shipped in-tree. Disclosure — conversation turns, tool results and MEMORY.md /
-  USER.md edits are sent to the configured OpenViking server (local 127.0.0.1 by default; setup offers
-  a Volcengine cloud endpoint); when the local server is down it starts `openviking-server` from PATH
-  in the background, and at this pin that child inherits the full Hermes environment.
+version: "2.1.0"
+image: https://raw.githubusercontent.com/volcengine/OpenViking/a768dfb5523597261b412f5109d2323b6c4c6104/docs/images/openviking-social.jpg
+description: >-
+  Long-term memory and searchable knowledge for Hermes. Automatically capture conversations,
+  extract memories and recall them across sessions. Six provider tools search, read and browse
+  knowledge, save facts, remove memories and add resources. Setup offers Quick Local,
+  OpenViking Service or your own server.
+  Disclosure — conversation turns, tool results and MEMORY.md / USER.md edits are sent to the
+  configured OpenViking server. Quick Local downloads a private server runtime and local embedding
+  model, copies the configured Hermes static LLM credentials for extraction, and keeps its server
+  running after Hermes exits. Extraction can use a remote LLM. Custom localhost connections can
+  start openviking-server from PATH with a filtered profile environment.
 maintainer: volcengine
 tier: community
 category: memory
-docs_url: https://github.com/volcengine/OpenViking/tree/main/examples/hermes-plugin#readme
+docs_url: https://github.com/volcengine/OpenViking/tree/a768dfb5523597261b412f5109d2323b6c4c6104/examples/hermes-plugin#readme
 capabilities:
   provides_tools: []
   provides_hooks:

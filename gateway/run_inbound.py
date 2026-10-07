@@ -75,8 +75,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     ) -> Optional["MessageEvent"]:
         """Run the ``pre_gateway_dispatch`` plugin hook; None = drop, else the (maybe rewritten) event.
         Results: ``{"action": "skip"}`` → drop; ``{"action": "rewrite", "text"}`` → replace ``event.text``;
-        ``allow``/None → normal dispatch. Any ``skip`` wins over ``rewrite``/``allow``; otherwise the first
-        action wins. Runs BEFORE auth so plugins can handle unauthorized senders."""
+        ``allow``/None → dispatch. Any ``skip`` beats ``rewrite``/``allow``; else the first wins. Runs BEFORE auth so plugins can handle unauthorized senders."""
         try:
             from hermes_cli.lifecycle import ainvoke_hook as _ainvoke_hook
             _hook_results = await _ainvoke_hook(

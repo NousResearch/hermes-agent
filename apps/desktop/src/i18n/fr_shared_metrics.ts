@@ -10,7 +10,7 @@ export const frSharedMetrics = {
   collectedNames: 'Noms des outils, commandes et éléments du catalogue intégrés',
   collectedMilestones: 'Comptes de configuration regroupés',
   collectedReliability:
-    'Résultats et durée des mises à jour, plantages, vitesse de démarrage et de réponse, état des plateformes de messagerie',
+    'Résultats et durée des mises à jour et installations (avec un motif issu d’une liste fixe et l’étape en cas d’échec, y compris une nouvelle installation enregistrée sur cette machine et comptée seulement après votre accord), plantages, vitesse de démarrage et de réponse, état des plateformes de messagerie',
   collectedUsage:
     "Comment Hermes est utilisé : précision et efficacité de l'agent (modifications réussies, boucles, reprises après erreur, jetons et appels d'outils par tâche, ruptures de cache), temps actif par interface et mode Desktop, zones, actions et réglages de l'app utilisés, vite fermés ou désactivés, et résultats de la configuration des fournisseurs",
   collectedMachine:
@@ -18,7 +18,7 @@ export const frSharedMetrics = {
   installId:
     'L’envoi transmet chaque paquet quotidien au service de télémétrie de Nous. Les paquets portent l’identifiant d’installation de ce profil : un UUID aléatoire stable sans information personnelle, réinitialisé en supprimant le dossier des métriques partagées.',
   consentWindow:
-    'Seuls les paquets dont toute la période de collecte tombe dans une fenêtre de consentement enregistrée sont envoyés — les données d’avant votre accord, ou de toute période où l’envoi était désactivé, restent sur cette machine. L’envoi peut être désactivé à tout moment.',
+    'Seuls les paquets dont toute la période de collecte tombe dans une fenêtre de consentement enregistrée sont envoyés. Hormis la note de nouvelle installation (enregistrée sur cette machine et comptée seulement après votre accord), les données d’avant votre accord, ou de toute période où l’envoi était désactivé, restent sur cette machine. L’envoi peut être désactivé à tout moment.',
   readDocs: 'Lire tous les détails',
   share: 'Collecter et envoyer à Nous',
   local: 'Collecter en local uniquement',

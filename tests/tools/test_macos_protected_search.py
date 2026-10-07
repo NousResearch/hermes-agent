@@ -194,3 +194,105 @@ def test_real_ripgrep_does_not_descend_into_protected_folder(tmp_path, monkeypat
     paths = [match.path for match in result.matches]
     assert any("visible.txt" in path for path in paths)
     assert all("protected.txt" not in path for path in paths)
+
+
+@pytest.mark.platforms("macos")
+def test_broad_rg_files_search_warns_folders_are_still_opened(monkeypatch):
+    """rg's '!<dir>/**' globs exclude only the folder's CONTENTS — the folder
+    entry itself is still opened, so the TCC prompt can fire mid-search. The
+    warning must not claim the prompt was avoided (#134775)."""
+    env = RecordingEnvironment("/Users/alice")
+    ops = ShellFileOperations(env)
+    monkeypatch.setattr(file_operations, "_HOME", "/Users/alice")
+
+    def stub_exec(command, cwd=None, **kwargs):
+        env.commands.append(command)
+        if command.startswith("test -e"):
+            return {"output": "exists\n", "returncode": 0}
+        if command.startswith("command -v rg"):
+            return {"output": "/usr/bin/rg\n", "returncode": 0}
+        if "--files" in command:
+            return {"output": "safe/visible.txt\n", "returncode": 0}
+        return {"output": "", "returncode": 1}
+
+    env.execute = stub_exec
+    result = ops.search("*.txt", path="/Users/alice", target="files")
+
+    command = _rg_files_commands(env.commands)[0]
+    assert "'!Downloads/**'" in command
+    assert result.warning is not None
+    assert "Excluded the contents of macOS protected folders" in result.warning
+    assert "still opens those folders" in result.warning
+    assert "Skipped macOS protected folders" not in result.warning
+
+
+@pytest.mark.platforms("macos")
+def test_real_ripgrep_broad_content_search_warns_folders_are_still_opened(tmp_path, monkeypatch):
+    home = tmp_path / "Users" / "alice"
+    safe = home / "safe"
+    protected = home / "Downloads"
+    safe.mkdir(parents=True)
+    protected.mkdir()
+    (safe / "visible.txt").write_text("needle")
+    (protected / "protected.txt").write_text("needle")
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(home)))
+
+    result = ops.search("needle", path=str(home), target="content")
+
+    assert result.warning is not None
+    assert "Excluded the contents of macOS protected folders" in result.warning
+    assert "still opens those folders" in result.warning
+    assert "Skipped macOS protected folders" not in result.warning
+
+
+@pytest.mark.platforms("macos")
+def test_grep_pruned_broad_search_keeps_skipped_warning(tmp_path, monkeypatch):
+    """find -prune genuinely never descends into the protected dirs, so that
+    transport keeps the strong 'Skipped …' wording."""
+    home = tmp_path / "Users" / "alice"
+    safe = home / "safe"
+    protected = home / "Downloads"
+    safe.mkdir(parents=True)
+    protected.mkdir()
+    (safe / "visible.txt").write_text("needle here\n")
+    (protected / "secret.txt").write_text("needle protected\n")
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(home)))
+    monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+
+    result = ops.search("needle", path=str(home), target="content")
+
+    matched_paths = [m.path for m in (result.matches or [])]
+    assert any("visible.txt" in p for p in matched_paths)
+    assert not any("secret.txt" in p for p in matched_paths)
+    assert result.warning is not None
+    assert result.warning.startswith("Skipped macOS protected folders")
+    assert "to avoid an unattended privacy prompt" in result.warning
+
+
+@pytest.mark.platforms("macos")
+def test_multi_path_search_warns_folders_are_still_opened(monkeypatch):
+    env = RecordingEnvironment("/Users/alice")
+    ops = ShellFileOperations(env)
+    monkeypatch.setattr(file_operations, "_HOME", "/Users/alice")
+
+    def stub_exec(command, cwd=None, **kwargs):
+        env.commands.append(command)
+        if command.startswith("test -e"):
+            output = "not_found\n" if "'/Users/alice /repo'" in command else "exists\n"
+            return {"output": output, "returncode": 0}
+        if command.startswith("command -v rg"):
+            return {"output": "/usr/bin/rg\n", "returncode": 0}
+        if "--files" in command:
+            return {"output": "safe.txt\n", "returncode": 0}
+        raise AssertionError(command)
+
+    env.execute = stub_exec
+    result = ops.search("*.txt", path="/Users/alice /repo", target="files")
+
+    assert result.error is None
+    assert result.warning is not None
+    assert "path contained 2 entries; searched 2 that exist" in result.warning
+    assert "Excluded the contents of macOS protected folders" in result.warning
+    assert "Skipped macOS protected folders" not in result.warning

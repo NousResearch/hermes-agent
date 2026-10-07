@@ -5,13 +5,13 @@
 # data feed (kfchow.com value leaderboard), never the plugin's own files.
 name: kfchow-llm-value-router
 repo: https://github.com/kfchow-ai/kfchow-llm-value-router
-sha: "2cce70a132f43a501e863a0a49934fdcd32ca308"
+sha: "39a6944280c2156f816df8641d3d01d743aec564"
 description: Per-turn LLM routing: on each matching turn a TypeSafe Jev classifier call (api.typesafe.ai) receives turn-shape features plus the first 1200 chars of the last user message (shadow mode included) and labels it free/paid; high-confidence routine turns are downgraded to the provider's configured free rung, strategic mid-rung turns on Nous are escalated to the configured premium rung after a 2-token billed credit probe (Nous only, fail-closed). Fail-open, shadow-by-default, per-provider rungs from the user's lane2_config.json (leaderboard resolver script optional). Probe model id is fixed in code (z-ai/glm-5.3-flash).
 maintainer: KFChow
 tier: community
 category: models
 requires_hermes: ">=0.21.5"
-version: "1.0.5"
+version: "1.0.6"
 platforms: [linux, macos]
 docs_url: https://github.com/kfchow-ai/kfchow-llm-value-router
 capabilities:

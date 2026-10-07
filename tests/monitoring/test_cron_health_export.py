@@ -34,7 +34,7 @@ def test_execution_projection_is_opaque_bounded_and_content_free():
     assert "alice@example.com" not in str(event)
     assert "top-secret-token" not in str(event)
 
-def test_cron_store_writability_is_exported(monkeypatch):
+def test_cron_store_writability_is_exported(monkeypatch, tmp_path):
     """A degraded store exports writable=0 with its skipped runs, a cleared one writable=1."""
     import errno
     from agent.monitoring.cron_health import build_cron_health_snapshot
@@ -48,6 +48,10 @@ def test_cron_store_writability_is_exported(monkeypatch):
             _metric(degraded, "hermes.cron.store.skipped_runs").value) == (0, 1)
     store_health._degraded.clear()
     assert _metric(build_cron_health_snapshot(), "hermes.cron.store.writable").value == 1
+    # A secondary profile's store (not the exporter's scope) must not read as healthy.
+    store_health.note_unwritable(OSError(errno.ENOSPC, "full"), "x", "scan", cron_dir=tmp_path / "other" / "cron")
+    assert _metric(build_cron_health_snapshot(), "hermes.cron.store.writable").value == 0
+    store_health._degraded.clear()
 
 @pytest.mark.parametrize("message", ["oauth refresh failed", "tokenizer crashed", "HTTP 4015"])
 def test_error_classification_avoids_auth_substring_false_positives(message):

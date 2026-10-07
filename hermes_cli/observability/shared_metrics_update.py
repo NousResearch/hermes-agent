@@ -15,6 +15,7 @@ and counted here, never by the RPC, so no run is counted twice.
 
 from __future__ import annotations
 
+import builtins
 import json
 import logging
 import os
@@ -41,6 +42,108 @@ _DESKTOP_APPLY_MODES = {
     "electron-updater": "package", "app-installer": "package", "microsoft-store": "package",
     "windows-handoff": "git", "posix-handoff": "git",
 }
+# ---- iuf c1 ----
+# ``finalize_pending_update_receipt`` stores ``f"{type(exc).__name__}: {exc}"`` as the stop reason of
+# a run that ended on an exception (main.cmd_update, update_completion._finish). Only the leading
+# type name is read, never the message; other stop reasons ("sys.exit(1)", "completion exited 1",
+# "Windows gateway recovery failed: ...") do not start with a bare CamelCase name and a colon
+# (the fixed prefixes Hermes writes are matched by _STOP_REASON_PREFIX_CLASSES).
+_EXCEPTION_STOP_REASON = re.compile(r"([A-Z][A-Za-z0-9_]*):(?: |$)")
+# pm's own failure types (pm/package.py, pm/environment.py, pm/downloader.py, pm/lock.py, ...).
+_PM_ERROR_TYPES = frozenset({
+    "BuildFailure", "DownloadError", "DownloadPaused", "DownloadTransportError", "FeatureProbeError",
+    "HashError", "InstallError", "PinMismatch", "ResolutionConflict", "StaleLockRow",
+})
+# Built-in OSError and its subclasses (disk full, permissions, a file held open on Windows).
+_OS_ERROR_TYPES = frozenset(
+    name for name, value in vars(builtins).items() if isinstance(value, type) and issubclass(value, OSError))
+# subprocess.SubprocessError and its subclasses that reached the command boundary uncaught.
+_SUBPROCESS_ERROR_TYPES = frozenset({"CalledProcessError", "SubprocessError", "TimeoutExpired"})
+# Exception type name -> class, first match wins; any other type reads ``exception``.
+_EXCEPTION_TYPE_CLASSES = (
+    (_PM_ERROR_TYPES, "deps_failed"), (_OS_ERROR_TYPES, "os_error"), (_SUBPROCESS_ERROR_TYPES, "subprocess_failed"),
+)
+# Fixed stop-reason prefixes Hermes itself writes (only the prefix is read, never what follows):
+# _update_takeover's preparation failure and update_completion's Windows gateway resume failure.
+_STOP_REASON_PREFIX_CLASSES = (
+    ("historical takeover preparation failed", "deps_failed"), ("Windows gateway recovery failed", "restart_failed"),
+)
+# ---- end iuf c1 ----
+
+
+# ---- iuf c1 ----
+def _fleet_bad(receipt: dict[str, Any]) -> bool:
+    fleet = receipt.get("fleet")
+    return isinstance(fleet, list) and any(
+        isinstance(row, dict) and row.get("state") in _FLEET_BAD_STATES for row in fleet)
+
+
+def _restart_incomplete(receipt: dict[str, Any]) -> bool:
+    restart = receipt.get("gateway_restart")
+    if isinstance(restart, dict) and (
+            restart.get("incomplete") is True or restart.get("phase_error") or restart.get("failed_units")):
+        return True
+    outcomes = receipt.get("runtime_outcomes")
+    return isinstance(outcomes, list) and any(
+        isinstance(row, dict) and row.get("outcome") == "failed" for row in outcomes)
+
+
+def update_failure_class(receipt: dict[str, Any], stages: list[dict[str, Any]], outcome: str) -> str:
+    """Why a failed/refused run stopped, from fields the FINAL receipt already carries.
+
+    The parked copy (update_receipt._metric_receipt) keeps outcome, stages, the admission step and
+    fleet states but no stop_reason / exit_code / gateway_restart, so a parked run can only be told
+    apart by its stages; full receipts carry every field read here (``schema`` marks one).
+    """
+    if outcome not in {"failed", "refused"}:
+        return "none"
+    raw_steps = receipt.get("steps")
+    steps: list[Any] = raw_steps if isinstance(raw_steps, list) else []
+    if any(isinstance(s, dict) and s.get("name") == "admission" and not s.get("ok") for s in steps):
+        return "managed_install"
+    raw_reason = receipt.get("stop_reason")
+    reason: str = raw_reason if isinstance(raw_reason, str) else ""
+    exit_code = receipt.get("exit_code")
+    match = _EXCEPTION_STOP_REASON.match(reason)
+    exc_type = match.group(1) if match else ""
+    if exc_type == "KeyboardInterrupt" or exit_code == 130:
+        return "interrupted"
+    if outcome == "refused":
+        # Exit 2 at the command boundary is the updater's refusal convention; on main the only
+        # open-receipt exit 2 is another updater holding the lock (update_finish).
+        return "lock_held" if exit_code == 2 else "other"
+    failed_marks = {s["name"] for s in stages if s.get("outcome") == "failed"}
+    if "build" in failed_marks:
+        return "build_failed"
+    if _fleet_bad(receipt):
+        return "fleet_stale"
+    if "restart" in failed_marks or _restart_incomplete(receipt):
+        return "restart_failed"
+    if receipt.get("outcome") == "partial":
+        return "fleet_unverified"  # verification failed with no stale/down row and no failed restart
+    if stages and stages[-1]["name"] == "restart" and stages[-1].get("outcome") == "skipped":
+        return "restart_failed"  # a skipped restart left the fleet owing one (completion exit 1)
+    if by_reason := next((cls for prefix, cls in _STOP_REASON_PREFIX_CLASSES if reason.startswith(prefix)), None):
+        return by_reason
+    if exc_type:
+        return next((cls for types, cls in _EXCEPTION_TYPE_CLASSES if exc_type in types), "exception")
+    marked = {s["name"] for s in stages}
+    if "apply" in marked:
+        if "deps" not in marked:
+            return "deps_failed"  # the PM preparation child never reached --prepared
+        if "build" not in marked:
+            return "build_failed"
+        return "other"
+    if "schema" not in receipt:
+        # A parked copy (update_receipt._metric_receipt): parked only when the checkout already
+        # moved under the pre-pull interpreter, and it carries no stop reason or exit code.
+        return "other"
+    # update_cmd._handle_update_called_process_error is the one finalize("failed") with neither a
+    # stop reason nor an exit code: a git/installer subprocess failed before the checkout moved.
+    if not reason and exit_code is None:
+        return "git_failed"
+    return "aborted_before_apply"
+# ---- end iuf c1 ----
 
 
 def _epoch(value: Any) -> float | None:
@@ -71,7 +174,14 @@ def _receipt_stages(receipt: dict[str, Any]) -> list[dict[str, Any]]:
     fleet = receipt.get("fleet")
     # The fleet matrix is only passed to finalize by the post-restart verification.
     if isinstance(fleet, list) and fleet and not any(s["name"] == "verify" for s in stages):
-        bad = any(isinstance(row, dict) and row.get("state") in _FLEET_BAD_STATES for row in fleet)
+        # ---- iuf c1 ----
+        # ``partial`` is written only by update_cmd_fleet._verify_fleet_after_update, which also
+        # writes it for a failed build or restart; with no failed stage mark, verification itself
+        # failed even when every fleet row reads current (zero rows expected, an unaccounted
+        # runtime, a dashboard that did not come back, a Windows resume failure).
+        bad = _fleet_bad(receipt) or (
+            receipt.get("outcome") == "partial" and not any(s.get("outcome") == "failed" for s in stages))
+        # ---- end iuf c1 ----
         stages.append({
             "name": "verify", "outcome": "failed" if bad else "success",
             "duration_ms": _elapsed_ms(previous, receipt.get("finished_at")),
@@ -89,7 +199,11 @@ def _failed_stage(stages: list[dict[str, Any]]) -> str:
     terminal = last["name"] == "verify" or (last["name"] == "restart" and last.get("outcome") == "skipped")
     if last.get("outcome") == "failed" or terminal:
         failed = [s["name"] for s in stages if s.get("outcome") == "failed"]
-        return failed[-1] if failed else "other"
+        # ---- iuf c1 ----
+        # A failed run whose last mark is a skipped restart failed AT the restart: the completion
+        # exits 1 when a skipped restart leaves the fleet owing one, or the Windows resume fails.
+        return failed[-1] if failed else last["name"]
+        # ---- end iuf c1 ----
     index = UPDATE_STAGE_ORDER.index(last["name"])
     return UPDATE_STAGE_ORDER[index + 1] if index + 1 < len(UPDATE_STAGE_ORDER) else "other"
 
@@ -124,6 +238,9 @@ def update_receipt_fields(receipt: dict[str, Any]) -> tuple[dict[str, str], list
         "from_version_age_bucket": version_age_bucket(age_ms),
         "kind": "desktop" if receipt.get("initiator") == "desktop" else "cli",
         "outcome": outcome,
+        # ---- iuf c1 ----
+        "failure_class": update_failure_class(receipt, stages, outcome),
+        # ---- end iuf c1 ----
     }
     if run["outcome"] == "refused" and not stages:
         run["failed_stage"] = "none"
@@ -258,6 +375,10 @@ def desktop_update_fields(
         "from_version_age_bucket": version_age_bucket(age_ms),
         "kind": "desktop",
         "outcome": outcome_value,
+        # ---- iuf c1 ----
+        # The Desktop RPC carries a stage, never a reason.
+        "failure_class": "unknown" if outcome_value in {"failed", "refused"} else "none",
+        # ---- end iuf c1 ----
     }
 
 

@@ -54,7 +54,11 @@ def _make_up_to_date_side_effect(sha="abc123"):
     return side_effect
 
 
-def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
+# Full object names: the pull refuses a target that does not resolve to one (F17).
+PRE_SHA, POST_SHA = "abc123" + "0" * 34, "def456" + "0" * 34
+
+
+def _make_head_moved_side_effect(pre_sha=PRE_SHA, post_sha=POST_SHA):
     """Simulate git commands where HEAD advances from pre_sha to post_sha."""
     advanced = False
 
@@ -70,6 +74,9 @@ def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
         if "rev-list" in joined:
             return SimpleNamespace(returncode=0, stdout="3\n", stderr="")
 
+        if "rev-parse -q --verify" in joined:  # the pull's resolved target
+            return SimpleNamespace(returncode=0, stdout=f"{post_sha}\n", stderr="")
+
         if joined.endswith("rev-parse HEAD"):
             return SimpleNamespace(returncode=0, stdout=f"{post_sha if advanced else pre_sha}\n", stderr="")
 
@@ -84,6 +91,13 @@ def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
 def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     """Isolate machine maintenance while exercising interrupted fleet updates."""
     monkeypatch.setattr(hermes_main.subprocess, "run", run_side_effect)
+    # The update's git (the commit point's target resolve, the move itself) goes through the custody
+    # runner; off Windows it calls subprocess.run, on Windows a job-bound Popen the fake above
+    # would miss. Fake the runner itself so the seam holds on every OS.
+    from hermes_cli import update_custody
+
+    monkeypatch.setattr(update_custody, "run",
+                        lambda argv, *, inherit_lock=False, **kw: run_side_effect(list(argv), **kw))
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **k: None)
     (tmp_path / ".git").mkdir()
@@ -449,7 +463,7 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
     # verifier polls its full no-rows window, ~2 min of wall clock).
     monkeypatch.setattr(
         "hermes_cli.update_receipt.collect_fleet_versions",
-        lambda **_k: [{"profile": "default", "pid": 4444, "code_sha": "def456",
+        lambda **_k: [{"profile": "default", "pid": 4444, "code_sha": POST_SHA,
                        "code_version": "0.21.0", "state": "current"}],
     )
     # Real survivor probe semantics against a fake ledger: pid 5555 is still
@@ -524,7 +538,7 @@ def test_clean_update_defers_desktop_owned_serve_and_clears_marker(
     # The gateway leg is healthy on the new code; only the Desktop serve is left.
     monkeypatch.setattr(
         "hermes_cli.update_receipt.collect_fleet_versions",
-        lambda **_k: [{"profile": "default", "pid": 4444, "code_sha": "def456",
+        lambda **_k: [{"profile": "default", "pid": 4444, "code_sha": POST_SHA,
                        "code_version": "0.21.0", "state": "current"}],
     )
     # Same incarnation still alive: the Desktop serve genuinely survived on pre-update code.
@@ -566,7 +580,7 @@ def test_interrupt_between_pull_and_restart_leaves_marker(
     assert exc.value.code == 130
     assert update_cmd_fleet._fleet_restart_obligation_armed()
     record = json.loads(host_obligation.host_obligation_path().read_text(encoding="utf-8"))
-    assert record["expected_sha"] == "def456"
+    assert record["expected_sha"] == POST_SHA
 
 
 def test_startup_warn_prints_when_marker_present(capsys):

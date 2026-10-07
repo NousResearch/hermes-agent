@@ -16,7 +16,7 @@ Full reference: https://hermes-agent.nousresearch.com/docs/user-guide/configurat
 | `stt` | `enabled`, `provider` (local/groq/openai/mistral/elevenlabs/deepinfra) |
 | `tts` | `provider` (edge/elevenlabs/openai/minimax/mistral/neutts/gemini/piper/kittentts/deepinfra/xai) |
 | `memory` | `memory_enabled`, `user_profile_enabled`, `provider`, `write_approval` |
-| `security` | `redact_secrets`, `tirith_enabled`, `website_blocklist` |
+| `security` | `redact_secrets`, `website_blocklist` |
 | `delegation` | `model`, `provider`, `max_concurrent_children`, `max_iterations` (50), `max_spawn_depth` |
 | `checkpoints` | `enabled`, `max_snapshots` (50) |
 | `curator` | `enabled`, `consolidate` (false, opt-in aux-model consolidation), `interval_hours`, `stale_after_days` |

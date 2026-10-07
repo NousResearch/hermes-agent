@@ -289,9 +289,15 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions, launchApp:
   try {
     fs.accessSync(options.exe, fs.constants.X_OK)
     fs.accessSync(options.root)
+    const launch: Launch = resolveSmokeLaunch(options)
+    const bundleEnv: Record<string, string | null> | undefined = options.origin === 'bundled' ? readBundledBundleEnv(options.root) : undefined
+    predictedHome = bundleEnv ? predictSmokeHermesHome(launch.env, bundleEnv) : undefined
+
+    // Check before the driver creates its sandbox folders inside this home.
+    if (predictedHome) { requireEmptyHermesHome(predictedHome) }
+
     fs.mkdirSync(options.home, { recursive: true })
     fs.mkdirSync(options['user-data'], { recursive: true })
-    const launch = resolveSmokeLaunch(options)
     fs.mkdirSync(launch.env.HOME!, { recursive: true })
     // Electron resolves shell folders before app 'ready': Windows SHGetFolderPath
     // fails (and applyDesktopIdentity crashes the process) when the roaming/local
@@ -310,10 +316,7 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions, launchApp:
     // provider config and .env. When the artifact's stamp carries its baked
     // bundle env, predict the home the app will actually resolve and seed that
     // too, refusing to seed a non-empty one.
-    const bundleEnv = options.origin === 'bundled' ? readBundledBundleEnv(options.root) : undefined
-    predictedHome = bundleEnv ? predictSmokeHermesHome(launch.env, bundleEnv) : undefined
     for (const home of new Set([...candidateSmokeHermesHomes(options.home, options['user-data']), ...(predictedHome ? [predictedHome] : [])])) {
-      if (predictedHome && home === predictedHome) { requireEmptyHermesHome(home) }
       writeMockProviderConfig(home, mockUrl)
       writeEnvFile(home, 'e2e-mock-key', mockUrl)
     }

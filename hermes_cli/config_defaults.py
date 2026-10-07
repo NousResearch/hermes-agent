@@ -179,7 +179,7 @@ DEFAULT_CONFIG = {
         # GPT-5+ file writes: a grammar-constrained freeform apply_patch tool in place of write_file
         # and patch, as OpenAI's Codex does; JSON-escaped whole-file arguments can loop until the
         # output cap. "auto" = GPT-5+ on OpenRouter; true/false; or a list of model-name substrings
-        # (for presets that hide the model).
+        # enabled on top of auto (for presets that hide the model).
         "apply_patch_tool": "auto",
         # Anti-stall guards: (1) identical-call loop breaker appends a notice when the same tool is
         # called 3+ times with identical args AND results (never blocks; pollers like `process`

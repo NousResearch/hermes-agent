@@ -110,9 +110,10 @@ def is_enabled(setting: Any, model: str, provider: str, api_mode: str) -> bool:
     """Whether a request to ``model`` should offer apply_patch in place of the file tools.
 
     ``setting`` is ``agent.apply_patch_tool`` from config.yaml: ``"auto"``
-    (default), ``True``/``False``, or a list of model-name substrings, the form
-    for OpenRouter presets whose names hide the serving model. Only the
-    chat-completions wire is implemented, so other API modes never enable it.
+    (default), ``True``/``False``, or a list of model-name substrings enabled in
+    addition to auto detection, for OpenRouter presets whose names hide the
+    serving model. Only the chat-completions wire is implemented, so other API
+    modes never enable it.
     """
     if api_mode != "chat_completions":
         return False
@@ -127,7 +128,8 @@ def is_enabled(setting: Any, model: str, provider: str, api_mode: str) -> bool:
         return setting
     if isinstance(setting, (list, tuple)):
         lowered = (model or "").lower()
-        return any(isinstance(s, str) and s.lower() in lowered for s in setting)
+        listed = any(isinstance(s, str) and s.lower() in lowered for s in setting)
+        return listed or _auto_enabled(model, provider, api_mode)
     return _auto_enabled(model, provider, api_mode)
 
 

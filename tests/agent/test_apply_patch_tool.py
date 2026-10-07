@@ -43,9 +43,12 @@ class TestIsEnabled:
     def test_should_stay_off_by_default_elsewhere(self, model, provider):
         assert not apply_patch_tool.is_enabled("auto", model, provider, "chat_completions")
 
-    def test_should_match_a_preset_listed_by_name(self):
-        assert apply_patch_tool.is_enabled(["@preset/omnio"], "@preset/omnio-brand-setup", "openrouter", "chat_completions")
-        assert not apply_patch_tool.is_enabled(["@preset/omnio"], "deepseek/deepseek-v4", "openrouter", "chat_completions")
+    def test_should_add_listed_presets_to_auto_detection(self):
+        listed = ["@preset/omnio-brand-setup"]
+        assert apply_patch_tool.is_enabled(listed, "@preset/omnio-brand-setup", "openrouter", "chat_completions")
+        assert apply_patch_tool.is_enabled(listed, "openai/gpt-5.6-luna@preset/omnio", "openrouter", "chat_completions")
+        assert not apply_patch_tool.is_enabled(listed, "@preset/omnio", "openrouter", "chat_completions")
+        assert not apply_patch_tool.is_enabled(listed, "deepseek/deepseek-v4", "openrouter", "chat_completions")
 
     def test_should_follow_an_explicit_switch(self):
         assert apply_patch_tool.is_enabled(True, "anything", "custom", "chat_completions")

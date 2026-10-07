@@ -36,4 +36,5 @@ class TokenHubProfile(ProviderProfile):
 
 register_provider(TokenHubProfile(
     name="tencent-tokenhub", display_name="Tencent TokenHub", supports_health_check=False,
+    env_vars=("TOKENHUB_API_KEY", "TOKENHUB_BASE_URL"),
 ))

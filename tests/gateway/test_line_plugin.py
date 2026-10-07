@@ -341,9 +341,9 @@ class TestStandaloneSend:
     def test_missing_token_returns_error(self, monkeypatch):
         monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
         from gateway.config import PlatformConfig
-        cfg = PlatformConfig(enabled=True, extra={})
-        result = asyncio.run(_standalone_send(cfg, "Uchat", "hi"))
-        assert "error" in result
+        for extra in ({}, {"channel_access_token": "   "}):  # a blank token never reaches the push API
+            result = asyncio.run(_standalone_send(PlatformConfig(enabled=True, extra=extra), "Uchat", "hi"))
+            assert "missing token" in result["error"]
 
 
 class TestPostbackButtonShape:

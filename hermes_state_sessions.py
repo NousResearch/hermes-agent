@@ -253,11 +253,12 @@ def _compression_lineage_ids(conn, session_ids: List[str]) -> List[str]:
     if not seeds:
         return []
     # Canonical continuation child edge — exactly its documented definition (parent ended
-    # 'compression', child is not a branch / delegate / tool row). Branch children join the walk
-    # only under the seeds themselves (see below).
+    # 'compression', child is not a branch / reset / delegate / tool row). Branch children join
+    # the walk only under the seeds themselves (see below).
     comp_child = (
         f"({_COMPRESSION_CHILD_SQL.format(a='child')}"
         f" AND NOT ({_BRANCH_CHILD_SQL.format(a='child')})"
+        f" AND NOT ({_RESET_CHILD_SQL.format(a='child')})"
         f" AND {_delegate_from_json('child.model_config')} IS NULL"
         f" AND COALESCE(child.source, '') != 'tool')"
     )

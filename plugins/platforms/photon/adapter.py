@@ -532,6 +532,7 @@ def _lookup_sent_text(chat_id: Optional[str], message_id: Optional[str]) -> Opti
         from gateway import rich_sent_store
         return rich_sent_store.lookup(_sent_text_key(chat_id), message_id)
     except Exception:
+        logger.debug("[photon] sent-text index lookup failed", exc_info=True)
         return None
 
 

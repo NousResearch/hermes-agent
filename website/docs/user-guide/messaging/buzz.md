@@ -101,6 +101,7 @@ gateway:
 
 ## Mentions, channels, and DMs
 
+- Replies always join the thread's real root. The adapter keeps a bounded, per-channel map from each event to its NIP-10 parent, fed by history seeding (in any order), inbound events and its own send receipts, so a reply to a reply, a follow-up after a restart, or a reply to a message the relay never echoed back all land in the same thread instead of nesting.
 - In shared channels the agent only responds when **addressed** — by `@name`, its npub, or its hex pubkey. Everything else is ignored.
 - Direct messages always reach the agent, no mention needed.
 - The agent's own messages are never dispatched back to it (self-echo suppression by pubkey), and every event is de-duplicated by event id against a per-channel high-water mark.

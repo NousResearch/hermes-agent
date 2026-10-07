@@ -56,6 +56,12 @@ _LIKE_COALESCED_COLUMN_SQL = (
 )
 # ``sort`` -> ORDER BY for the FTS routes; unknown values are rank-only (user input passes through).
 _FTS_ORDER_BY = {"newest": "ORDER BY m.timestamp DESC, rank", "oldest": "ORDER BY m.timestamp ASC, rank"}
+# The CJK router's LIKE leg (lone 1-char CJK runs, or any CJK query when the trigram
+# route is unavailable) scans the canonical message table without an index. A
+# cooperative SQLite VM deadline keeps a short query on a large live store from
+# monopolising the scan until the tool timeout kills the whole search (#134779);
+# the canonical LIKE fallback carries the same bound (#129839).
+_CJK_LIKE_SEARCH_TIMEOUT_SECONDS = 3.0
 # Indexed neighbor seeks avoid scanning whole sessions for a sparse set of hits.
 _CONTEXT_WINDOW_SQL = """WITH target AS (
     SELECT session_id, timestamp, id FROM messages WHERE id IN ({ids})
@@ -962,10 +968,40 @@ class SessionSearchMixin:
                 fail_open, exc)
             return None
 
-    def _like_rows(self, where: List[str], params: list, *, order_by: str, limit_sql: str) -> List[Dict[str, Any]]:
-        """Canonical-table LIKE scan; ``params[0]`` is the snippet anchor term."""
+    def _like_rows(self, where: List[str], params: list, *, order_by: str, limit_sql: str,
+                   timeout_seconds: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Canonical-table LIKE scan; ``params[0]`` is the snippet anchor term.
+
+        Scanning the canonical message table has no index to lean on, so callers
+        routing unavoidable scans here can set a cooperative SQLite VM deadline.
+        Timing out raises instead of manufacturing a successful empty result.
+        """
         sql = _search_select_sql(_LIKE_SNIPPET_SQL, "messages m", where, order_by, limit_sql)
-        return [dict(row) for row in self._read_all(sql, params)]
+        if timeout_seconds is None:
+            return [dict(row) for row in self._read_all(sql, params)]
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        interrupted_by_deadline = False
+
+        def _deadline_progress_handler() -> int:
+            nonlocal interrupted_by_deadline
+            if time.monotonic() >= deadline:
+                interrupted_by_deadline = True
+                return 1
+            return 0
+
+        try:
+            with self._read_ctx() as conn:
+                conn.set_progress_handler(_deadline_progress_handler, 1000)
+                try:
+                    rows = conn.execute(sql, params).fetchall()
+                finally:
+                    conn.set_progress_handler(None, 0)
+        except sqlite3.OperationalError as exc:
+            if interrupted_by_deadline and "interrupt" in str(exc).lower():
+                raise TimeoutError(
+                    f"session search LIKE scan exceeded {timeout_seconds:g}s deadline") from exc
+            raise
+        return [dict(row) for row in rows]
 
     @staticmethod
     def _compile_like_boolean_query(query: str) -> Tuple[str, List[Any], Optional[str]]:
@@ -1214,9 +1250,11 @@ class SessionSearchMixin:
         filters = {k: route[k] for k in ("include_inactive", "source_filter", "exclude_sources", "role_filter",
                                          "after_ts", "before_ts")}
         _search_filter_clauses(like_where, like_params, **filters)
-        # instr() for the snippet uses the first search token.
+        # instr() for the snippet uses the first search token. The scan is index-free;
+        # the deadline keeps a short query on a large store from riding the tool timeout (#134779).
         return self._like_rows(like_where, [non_op_tokens[0], *like_params, route["limit"], route["offset"]],
-                               order_by="ORDER BY m.timestamp DESC", limit_sql="LIMIT ? OFFSET ?")
+                               order_by="ORDER BY m.timestamp DESC", limit_sql="LIMIT ? OFFSET ?",
+                               timeout_seconds=_CJK_LIKE_SEARCH_TIMEOUT_SECONDS)
 
     def _search_unindexed_gap(self, fts_query: str, limit: int, **filters) -> List[Dict[str, Any]]:
         """LIKE-scan ids in (fts_rebuild_progress, fts_rebuild_high_water] — rows the deferred

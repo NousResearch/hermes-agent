@@ -1,5 +1,6 @@
 """Tests for tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
 
+import io
 import json
 import os
 import time
@@ -15,7 +16,7 @@ from tools.skills_hub_install import (
     bundle_content_hash, check_for_skill_updates, install_from_quarantine, quarantine_bundle,
 )
 from tools.skills_hub_models import SkillBundle, SkillMeta, SkillSource, _referenced_support_paths
-from tools.skills_hub_official import OptionalSkillSource
+from tools.skills_hub_official import HermesIndexSource, OptionalSkillSource
 from tools.skills_hub_search import (
     HERMES_INDEX_TTL, _load_hermes_index, create_source_router, parallel_search_sources, unified_search,
 )
@@ -2184,3 +2185,40 @@ class TestGitHubSourceFetchMissingReferencedFile:
         assert bundle.files["references/guide.md"] == b"# guide"
         # …and the missing one is warned about and skipped, not fatal.
         assert "references/missing.md" not in bundle.files
+
+
+class TestNestedRateLimitVisibility:
+    """Adapters that delegate to an internal GitHubSource must surface its rate-limit flag:
+    the install failure classifier blames a "stale index entry" whenever it cannot see one
+    (#130443 — a rate-limited install of a skill that very much exists upstream)."""
+
+    @staticmethod
+    def _official_with_limited_github():
+        src = OptionalSkillSource(auth=GitHubAuth())
+        src._github = MagicMock(is_rate_limited=True)
+        return src
+
+    def test_optional_skill_source_surfaces_nested_rate_limit(self):
+        assert self._official_with_limited_github().is_rate_limited is True
+
+    def test_hermes_index_source_surfaces_nested_rate_limit(self):
+        src = HermesIndexSource(auth=GitHubAuth())
+        src._github = MagicMock(is_rate_limited=True)
+        assert src.is_rate_limited is True
+
+    def test_lazy_unused_nested_client_is_not_rate_limited(self):
+        assert OptionalSkillSource(auth=GitHubAuth()).is_rate_limited is False
+
+    def test_fetch_failure_names_rate_limit_over_stale_index_entry(self):
+        from hermes_cli.skills_hub import _print_fetch_failure
+        from rich.console import Console
+        buf = io.StringIO()
+        console = Console(file=buf, width=250, force_terminal=False)
+        src = self._official_with_limited_github()
+        meta = SkillMeta(name="dynamic-workflow", description="", source="hermes-index",
+                         identifier="official/autonomous-ai-agents/dynamic-workflow", trust_level="builtin")
+        _print_fetch_failure(console, [src], "official/autonomous-ai-agents/dynamic-workflow",
+                             meta=meta, source=src)
+        out = buf.getvalue().lower()
+        assert "rate limit" in out
+        assert "no longer exist upstream" not in out

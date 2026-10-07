@@ -1830,10 +1830,11 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     cold-start disk I/O — async callers run this on a worker thread."""
     from pathlib import Path
     from hermes_cli.config import get_config_path, read_user_config_raw
-    from hermes_cli.config_backend import write_config_key
+    from hermes_cli.config_backend import write_config_keys
     path = Path(config_path) if config_path else get_config_path()
-    for key, value in model_selection_config_updates(result, read_user_config_raw(path).get("model")).items():
-        write_config_key(path, f"model.{key}", value)
+    updates = model_selection_config_updates(result, read_user_config_raw(path).get("model"))
+    # One write: a refused key (a Remote Config lock) must not leave a half-switched route.
+    write_config_keys(path, {f"model.{key}": value for key, value in updates.items()})
     try:  # owner-only: config files contain API keys
         os.chmod(path, 0o600)
     except (OSError, NotImplementedError):

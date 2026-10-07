@@ -1892,17 +1892,25 @@ def _write_config_changes(sets: dict, unsets: tuple = ()) -> None:
 
 
 def _write_config_key(key_path: str, value):
+    _write_config_keys({key_path: value})
+
+
+def _write_config_keys(updates: dict) -> None:
+    """Set related dotted keys together: ONE backend write without a config file (remote), so a
+    refused key changes none of them; one raw round-trip save with the file backend."""
     if not supports_file_tooling():
-        _write_config_changes({key_path: value})
+        _write_config_changes(updates)
         return
     # Write-back round-trip: raw read is mandatory — saving the overlaid/expanded view would persist it.
-    cfg = current = _load_cfg_raw()
-    *parents, leaf = key_path.split(".")
-    for key in parents:
-        if not isinstance(current.get(key), dict):
-            current[key] = {}
-        current = current[key]
-    current[leaf] = value
+    cfg = _load_cfg_raw()
+    for key_path, value in updates.items():
+        current = cfg
+        *parents, leaf = key_path.split(".")
+        for key in parents:
+            if not isinstance(current.get(key), dict):
+                current[key] = {}
+            current = current[key]
+        current[leaf] = value
     _save_cfg(cfg)
 
 

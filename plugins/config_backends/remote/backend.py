@@ -79,8 +79,7 @@ class _ProfileState:
     gen: int = 0
     installed: int = 0         # bumped by every _install; a GET started before a newer install is stale
     base: Optional[Dict[str, Any]] = None  # the migrated doc writes diff against (None = server_config)
-    postprocessed: bool = False
-    in_postprocess: bool = False
+    postprocessed: bool = False   # st.doc is the completed migration output of generation `installed`
     fetched_at: float = 0.0
     last_error: Optional[str] = None
     next_poll: float = 0.0
@@ -279,20 +278,38 @@ class RemoteBackend:
         st.fetched_at, st.last_error = time.time(), None
         st.next_poll = time.monotonic() + poll_interval() * random.uniform(0.9, 1.1)
 
-    def _postprocess(self, st: _ProfileState) -> None:
+    _MAX_POSTPROCESS = 8  # passes when polls keep installing newer docs mid-migration
+
+    def _completed(self, st: _ProfileState) -> bool:
+        """Bring the published doc to its completed postprocess output; False when that is not
+        possible yet (``hermes_cli.config`` still importing during the boot fetch)."""
+        if _private_for(st) is not None:
+            return True  # a migration's own reads use its private copy (never another pass)
+        for _ in range(self._MAX_POSTPROCESS):
+            ready = self._postprocess(st)
+            if not ready:
+                return False
+            with st.lock:
+                if st.postprocessed:
+                    return True
+        raise ConfigWriteError("Remote Config: the profile's config kept changing while it was migrated in memory",
+                               code="config_version_conflict")
+
+    def _postprocess(self, st: _ProfileState) -> bool:
         """First read after a change: warn on unknown keys and migrate in memory (D12). Runs on a
         read, not at fetch, because both need ``hermes_cli.config``, which may still be importing
-        when the boot fetch runs."""
+        when the boot fetch runs (then False: nothing could be done).
+
+        No single flight: a reader or writer that finds the published doc unmigrated runs its own
+        private pass, even while another thread's pass is in flight, and the first pass to finish
+        publishes. Waiting for the other pass instead could deadlock (a migration reads through
+        hermes_cli.config's _CONFIG_LOCK, which the waiting caller may hold), and returning the
+        unmigrated doc meanwhile would hand that caller legacy settings the migration removes."""
         if _private_for(st) is not None:
-            return  # a migration's own reads: never start another one
-        # The flag, not st.lock, guards the work: a migration reads through hermes_cli.config (its
-        # _CONFIG_LOCK), and holding st.lock across that could deadlock against a writer that holds
-        # _CONFIG_LOCK and waits for st.lock. A concurrent reader meanwhile gets the published
-        # (unmigrated) doc, and a concurrent writer diffs against its matching base.
+            return True  # a migration's own reads: never start another one
         with st.lock:
-            if st.postprocessed or st.in_postprocess:
-                return
-            st.in_postprocess = True
+            if st.postprocessed:
+                return True
             # The doc, its schema version and its generation are captured together: a poll may
             # install a newer doc at any point after this, and migrating that doc from THIS version
             # would run steps its data never needed (and, D12, drop settings it holds on purpose).
@@ -300,25 +317,25 @@ class RemoteBackend:
             current = int(st.doc.get("_config_version") or 0)
             doc = copy.deepcopy(st.doc)
         try:
-            try:
-                from hermes_cli.config import _known_top_level_keys
-                from hermes_cli.config_migrations import SUPPORT_FLOOR_VERSION
-            except ImportError:
-                return  # still importing; the next read retries
-            for key in sorted(set(doc) - _known_top_level_keys() - {"_config_version"}):
-                if key not in self._unknown_warned:
-                    self._unknown_warned.add(key)
-                    logger.warning("Remote Config: unknown config key %r is ignored by this Hermes version", key)
-            latest = _latest_config_version()
-            if SUPPORT_FLOOR_VERSION <= current < latest:
-                self._migrate_in_memory(st, seen, current, doc)
-            elif current < SUPPORT_FLOOR_VERSION:
-                logger.warning("Remote Config: profile %r was written by config version %d, below the "
-                               "migration floor %d; not migrated", st.profile, current, SUPPORT_FLOOR_VERSION)
-            with st.lock:
-                st.postprocessed = st.installed == seen  # a doc installed meanwhile needs its own pass
-        finally:
-            st.in_postprocess = False
+            from hermes_cli.config import _known_top_level_keys
+            from hermes_cli.config_migrations import SUPPORT_FLOOR_VERSION
+        except ImportError:
+            return False  # still importing; the next read retries
+        for key in sorted(set(doc) - _known_top_level_keys() - {"_config_version"}):
+            if key not in self._unknown_warned:
+                self._unknown_warned.add(key)
+                logger.warning("Remote Config: unknown config key %r is ignored by this Hermes version", key)
+        latest = _latest_config_version()
+        if SUPPORT_FLOOR_VERSION <= current < latest:
+            self._migrate_in_memory(st, seen, current, doc)
+            return True
+        if current < SUPPORT_FLOOR_VERSION:
+            logger.warning("Remote Config: profile %r was written by config version %d, below the "
+                           "migration floor %d; not migrated", st.profile, current, SUPPORT_FLOOR_VERSION)
+        with st.lock:
+            if st.installed == seen:  # a doc installed meanwhile needs its own pass
+                st.postprocessed = True
+        return True
 
     def _run_private(self, st: _ProfileState, doc: Dict[str, Any], current: int) -> Dict[str, Any]:
         """Run the migrations from schema *current* over a private copy of *doc* and return it.
@@ -341,22 +358,24 @@ class RemoteBackend:
         """Migrate doc generation *started* (*doc*, schema version *current*) in memory (D12).
 
         The steps work on a private copy; the result is published with its diff base in one step,
-        and only while generation *started* is still the installed one: once a poll or write has
-        installed another doc, nothing of this migration lands on it (that doc gets its own pass).
+        and only while generation *started* is still the installed one and no concurrent pass over
+        it has published first: once a poll or write has installed another doc, nothing of this
+        migration lands on it (that doc gets its own pass).
         The migrated doc becomes the base later writes diff against: a reader was handed the
         migrated doc, so a write that leaves the migration's changes in place must not send them
         (D12: never write the migration back)."""
         with st.lock:
-            if st.installed != started:
-                return  # replaced before we began
+            if st.installed != started or st.postprocessed:
+                return  # replaced, or another pass already published this generation
         migrated = self._run_private(st, doc, current)
         migrated["_config_version"] = _latest_config_version()
         base = copy.deepcopy(migrated)
         base.pop("_config_version", None)
         with st.lock:
-            if st.installed != started:
-                return  # a poll or write installed a newer doc mid-migration
+            if st.installed != started or st.postprocessed:
+                return  # a poll or write installed a newer doc, or a concurrent pass published
             self._publish_locked(st, migrated, base)
+            st.postprocessed = True
         logger.info("Remote Config: migrated profile %r in memory from config version %d", st.profile, current)
 
     @staticmethod
@@ -368,22 +387,38 @@ class RemoteBackend:
 
     # --- ConfigBackend: reads ---------------------------------------------------------------
 
+    def _snapshot(self, st: _ProfileState, take):
+        """``take()`` under st.lock once the published doc is completed postprocess output (or
+        this thread's own migration copy). A poll that installs a newer doc between completing
+        and taking sends the caller round again, so no reader ever sees an unmigrated doc."""
+        for _ in range(self._MAX_POSTPROCESS):
+            ready = self._completed(st)
+            with st.lock:
+                if not ready or st.postprocessed or _private_for(st) is not None:
+                    return take()
+        raise ConfigWriteError("Remote Config: the profile's config kept changing while it was read",
+                               code="config_version_conflict")
+
     def read_user_layer(self, home: Path) -> UserLayer:
         st = self._state(home)
-        self._postprocess(st)
-        with st.lock:
+
+        def take():
             m = _private_for(st)
-            doc = copy.deepcopy(m.doc if m is not None else st.doc)
-            version = self._version_of(st)
-            locks = {encode(p): level for p, level in st.locks}
+            return (copy.deepcopy(m.doc if m is not None else st.doc), self._version_of(st),
+                    {encode(p): level for p, level in st.locks})
+
+        doc, version, locks = self._snapshot(st, take)
         return UserLayer(doc=doc, version=version, locks=locks,
                          provenance=f"remote:{client.base_url()} profile={st.profile}")
 
     def read_user_doc_readonly(self, home: Path) -> Any:
         st = self._state(home)
-        self._postprocess(st)
-        m = _private_for(st)
-        return m.doc if m is not None else st.doc
+
+        def take():
+            m = _private_for(st)
+            return m.doc if m is not None else st.doc
+
+        return self._snapshot(st, take)
 
     @staticmethod
     def _version_of(st: _ProfileState) -> Tuple[Any, ...]:
@@ -425,11 +460,14 @@ class RemoteBackend:
         st = self._state(home)
         intent: Optional[Tuple[Dict[KeyPath, Any], List[KeyPath]]] = None
         for attempt in (1, 2):
-            # Diff against the doc readers get, i.e. migrated in memory (D12) — also after the CAS
-            # re-read below. Outside st.lock: a migration reads through hermes_cli.config.
-            self._postprocess(st)
             for _ in range(self._MAX_PREPARE):
+                # Diff against the doc readers get, i.e. migrated in memory (D12) — also after the
+                # CAS re-read below or a poll landing mid-prepare. Outside st.lock: a migration
+                # reads through hermes_cli.config.
+                ready = self._completed(st)
                 with st.lock:
+                    if ready and not st.postprocessed:
+                        continue  # a poll installed a newer doc since: complete that one first
                     seen = st.installed
                     if intent is None:
                         intent = self._intent(st, changes)

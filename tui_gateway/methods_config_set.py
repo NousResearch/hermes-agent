@@ -260,14 +260,15 @@ def _set_focus(rid, params, key, value, session):
         return _err(rid, 4002, f"unknown focus value: {value} (use on|off|status)")
     if action == "status" or target is None:
         return _kv(rid, key, "on" if cur_focus else "off", tool_progress=_load_tool_progress_mode())
+    updates = {}
     if target:
         saved = (cur_focus and d_f.get("focus_saved_tool_progress")) or _load_tool_progress_mode()
-        _write_config_key("display.focus_saved_tool_progress", normalize_tool_progress_mode(saved))
+        updates["display.focus_saved_tool_progress"] = normalize_tool_progress_mode(saved)
         effective = FOCUS_TOOL_PROGRESS_MODE
     else:
         effective = normalize_tool_progress_mode(d_f.get("focus_saved_tool_progress") or "all")
-    _write_config_key("display.tool_progress", effective)
-    _write_config_key("display.focus_view", bool(target))
+    updates.update({"display.tool_progress": effective, "display.focus_view": bool(target)})
+    _write_config_keys(updates)  # one write: a refused key leaves focus fully as it was
     if session:
         session["focus_view"] = bool(target)
         session["tool_progress_mode"] = effective
@@ -362,8 +363,8 @@ def _word_setters() -> dict:
             sections={section: w for section in _DETAIL_SECTION_NAMES}, details_mode=w)),
         # thinking_mode also keeps details_mode aligned (compat bridge).
         "thinking_mode": (_word, {"collapsed", "truncated", "full"}, "unknown thinking_mode: {value}", lambda w: (
-            _write_config_key("display.thinking_mode", w),
-            _write_config_key("display.details_mode", "expanded" if w == "full" else "collapsed"))),
+            _write_config_keys({"display.thinking_mode": w,
+                                "display.details_mode": "expanded" if w == "full" else "collapsed"}))),
         # 'light'/'dark' pin beats background auto-detection (xterm.js hosts misreport OSC 11).
         "theme": (_word, {"auto", "light", "dark"}, "unknown theme value: {value} (use auto|light|dark)",
                   lambda w: _write_config_key("display.tui_theme", w)),

@@ -329,8 +329,18 @@ def write_config_document(config_path: PathLike, document: dict, *, extra_conten
 
 def write_config_key(config_path: PathLike, key_path: str, value: Any) -> None:
     """Set one dotted key (``None`` removes it) — ``atomic_roundtrip_yaml_update`` semantics."""
+    write_config_keys(config_path, {key_path: value})
+
+
+def write_config_keys(config_path: PathLike, updates: Mapping[str, Any]) -> None:
+    """Set several related dotted keys (``None`` removes one) as ONE write.
+
+    A remote backend sends them as one CAS PATCH, so a refusal of any of them (a lock, a value
+    check) changes none of them: a grouped edit such as a model switch (default + provider + ...)
+    never lands half-applied. The file backend applies them key by key, as before."""
     backend, target, is_layer = _route(config_path)
-    changes = Changes(unset=(key_path,)) if value is None else Changes(set={key_path: value})
+    changes = Changes(set={k: v for k, v in updates.items() if v is not None},
+                      unset=tuple(k for k, v in updates.items() if v is None))
     backend.write_changes(target, changes) if is_layer else backend.write_path(target, changes)
 
 

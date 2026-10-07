@@ -1303,10 +1303,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _gateway_is_draining() -> bool:
         """Whether the owning gateway currently refuses new agent turns."""
         try:
+            from gateway.platforms.api_server_fire_startup import runner_is_draining
             from gateway.run import _gateway_runner_ref
             runner = _gateway_runner_ref()
-            return bool(runner and (getattr(runner, "_draining", False)
-                                    or getattr(runner, "_external_drain_active", False)))
+            return bool(runner) and runner_is_draining(runner)
         except Exception:
             return False
 

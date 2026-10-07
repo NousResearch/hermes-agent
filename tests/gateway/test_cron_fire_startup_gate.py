@@ -156,17 +156,17 @@ async def test_started_gateway_is_accepted_immediately(adapter, provider):
 async def test_slow_token_verify_spends_the_startup_budget(adapter, provider, monkeypatch):
     """The budget runs from handler entry: a slow JWKS fetch plus a full wait would outlast the dashboard
     forwarder's timeout, NAS would retry while this handler still ran the job, and it would run twice."""
-    monkeypatch.setattr(api_server_fire_startup, "FIRE_STARTUP_WAIT_SECONDS", 1.5)
+    monkeypatch.setattr(api_server_fire_startup, "FIRE_STARTUP_WAIT_SECONDS", 0.3)
 
     async def _slow_verifier(**_kw):
-        await asyncio.sleep(2.0)
+        await asyncio.sleep(0.4)
         return {"purpose": "cron_fire"}
 
     monkeypatch.setattr("plugins.cron_providers.chronos.verify.get_fire_verifier", lambda: _slow_verifier)
     runner = SimpleNamespace(_draining=False, _external_drain_active=False, _running=False, adapters={})
 
     async def _finish_startup():  # inside a wait measured from the gate, outside one measured from entry
-        await asyncio.sleep(2.5)
+        await asyncio.sleep(0.5)
         runner._running = True
 
     finisher = asyncio.ensure_future(_finish_startup())

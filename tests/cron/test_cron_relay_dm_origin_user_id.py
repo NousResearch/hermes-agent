@@ -73,7 +73,8 @@ def test_cold_adapter_send_reaches_the_transport_with_user_id(monkeypatch):
     """End to end through the live lane: what the connector sees on the wire for a cold-cache relay DM."""
     monkeypatch.setattr(sd, "_maybe_mirror_cron_delivery", lambda *a, **k: None)
     loop = asyncio.new_event_loop()
-    threading.Thread(target=loop.run_forever, daemon=True).start()
+    th = threading.Thread(target=loop.run_forever, daemon=True)
+    th.start()
     try:
         relay = _Relay()
         t = _target(
@@ -84,4 +85,6 @@ def test_cold_adapter_send_reaches_the_transport_with_user_id(monkeypatch):
             t, "hi", [], target_errors=target_errors, delivery_errors=delivery_errors, unverified_targets=[])
     finally:
         loop.call_soon_threadsafe(loop.stop)
+        th.join(5)
+        loop.close()
     assert [m.get("user_id") for m in relay.sent] == [DM_USER]

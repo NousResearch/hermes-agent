@@ -236,6 +236,32 @@ def _durable_session_exists(db, session_id: str) -> Optional[bool]:
         return None
 
 
+def declare_history_snapshot(agent, watermark: int) -> None:
+    """Tell the next admission that the caller's history is a state.db read taken at *watermark*
+    (``get_active_message_watermark``, read BEFORE the rows so it can only be too old).
+
+    For surfaces that load the transcript per request and have no memory of their own: another
+    writer can finish a whole turn between that read and an uncontended admission, which no wait
+    reveals (#84235). Surfaces whose history is not the stored transcript never declare one."""
+    agent._history_snapshot_watermark = int(watermark)
+
+
+def _snapshot_is_behind(agent, db, session_id: str) -> bool:
+    watermark = getattr(agent, "_history_snapshot_watermark", None)
+    agent._history_snapshot_watermark = None  # one turn only
+    if type(watermark) is not int:
+        return False
+    try:
+        return db.get_active_message_watermark(session_id) != watermark
+    except Exception:
+        # Same rule as the row probe (#84234): a read that fails proves nothing, the turn still runs.
+        logger.warning(
+            "Could not compare the history snapshot with the transcript; keeping the snapshot",
+            exc_info=True,
+        )
+        return False
+
+
 def admit_durable_turn_lease(
     agent, *, session_id: str, relay_turn_id: str, task_context: Dict[str, Any],
     conversation_history: Optional[List[Dict[str, Any]]],
@@ -309,11 +335,13 @@ def admit_durable_turn_lease(
         # row is written, and reloading an absent row would erase that seed. An unknown row still
         # reads the transcript after a wait and adopts it only if it returns rows; that read
         # raising ends the turn.
-        if reload_needed and durable is not False:
+        behind = _snapshot_is_behind(agent, db, session_id)
+        if (reload_needed or behind) and durable is not False:
             if announced:
                 agent._emit_status("Session is free; loading the latest transcript...")
             # The holder may have compressed/rotated the session while we waited: reload only
-            # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
+            # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss)
+            # unless the caller declared a snapshot the transcript has since moved past.
             latest_session_id = db.resolve_resume_session_id(session_id)
             if latest_session_id:
                 agent.session_id = latest_session_id

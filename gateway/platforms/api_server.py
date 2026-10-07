@@ -3054,6 +3054,19 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
 
+    async def _history_watermark_for_session(self, session_id: str) -> Optional[int]:
+        """Transcript position for a history load, read BEFORE the load so it can only be too old.
+        The handler loads history before the turn takes the session lease; turn admission reloads
+        when another writer has moved the transcript past this position meanwhile (#84235)."""
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return None
+        try:
+            return await asyncio.to_thread(db.get_active_message_watermark, session_id)
+        except Exception as exc:
+            logger.warning("Failed to read the transcript watermark for %s: %s", session_id, exc)
+            return None
+
     async def run_internal_session_turn(self, *, session_id: str, text: str, profile: str,
                                         notification_category: str = "result") -> None:
         """Run one background wake turn against a raw session id IN-PROCESS (no HTTP, no API key);
@@ -3585,8 +3598,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return handed_off
         gateway_session_key = ctx["gateway_session_key"]
         session_id = ctx["session_id"]
+        watermark = await self._history_watermark_for_session(session_id)
         history = await self._conversation_history_for_session(session_id)
-        result, usage = await self._run_agent(conversation_history=history, **ctx["run_kwargs"])
+        result, usage = await self._run_agent(
+            conversation_history=history, history_watermark=watermark, **ctx["run_kwargs"])
         # One policy-gated re-run of a transiently failed turn — the peer-DM transport's half of the
         # retry the local (``tools.bot_mode_dm``) and relayed (``tui_gateway.methods_bot_relay``)
         # delivery lanes already apply (#93091 item 5, #115325). Same policy, same gate: transient
@@ -3671,9 +3686,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "runtime": runtime_meta}))
                 self._set_run_status(run_id, "running", last_event="run.started")
                 await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
+                watermark = await self._history_watermark_for_session(session_id)
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
-                    conversation_history=history, stream_delta_callback=_delta,
+                    conversation_history=history, history_watermark=watermark,
+                    stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress, interim_assistant_callback=_commentary,
                     active_run_id=run_id, approval_notify_callback=approval_notify,
                     approval_session_key=run_id, **ctx["run_kwargs"])
@@ -4197,7 +4214,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
         relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result",
         resume_unanswered_turn: bool = False, approval_notify_callback=None,
-        approval_session_key: Optional[str] = None) -> tuple:
+        approval_session_key: Optional[str] = None,
+        history_watermark: Optional[int] = None) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``approval_notify_callback`` (with ``approval_session_key``) routes dangerous-command
         approval requests to the caller's stream, keyed like ``/v1/runs`` approvals (#51871).
@@ -4211,7 +4229,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``resume_unanswered_turn`` marks a policy-gated re-run of a turn whose user row the failed attempt
         already persisted: the transcript's unanswered tail row is adopted from ``conversation_history``
         as THIS turn's user message instead of being appended a second time
-        (``agent.session_persistence.adopt_unanswered_turn``; #115325)."""
+        (``agent.session_persistence.adopt_unanswered_turn``; #115325).
+        ``history_watermark`` says ``conversation_history`` is the stored transcript read at that
+        position (``_history_watermark_for_session``); caller-supplied history never passes one."""
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()
@@ -4250,6 +4270,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         from agent.session_persistence import adopt_unanswered_turn
 
                         adopt_unanswered_turn(conversation_history, user_message, agent)
+                    elif history_watermark is not None:
+                        # Not on a re-run: its adopted tail row is staged outside the history, and
+                        # a reload would bring the same row back beside it.
+                        from agent.turn_facade_lease import declare_history_snapshot
+
+                        declare_history_snapshot(agent, history_watermark)
                     if active_run_id:
                         self._active_run_agents[active_run_id] = agent
                     effective_task_id = session_id or str(uuid.uuid4())

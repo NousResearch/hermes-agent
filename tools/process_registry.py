@@ -174,16 +174,17 @@ def _worker_memory_max_bytes() -> int:
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
 
-def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
+def _systemd_scope_argv(binary: str, unit_name: str, *argv: str, memory_max: bool = True) -> List[str]:
     """``systemd-run --user --scope`` argv shared by the probe and real spawns.
     ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl.
     No ``OOMPolicy=``: transient scopes reject it on systemd <253 (#102486).
-    ``--expand-environment=no`` keeps the command byte-identical (#132385)."""
+    ``--expand-environment=no`` keeps the command byte-identical (#132385).
+    ``memory_max=False`` keeps the separate cgroup but no worker cap (foreground commands)."""
     no_expand = ["--expand-environment=no"] if _SYSTEMD_RUN_NO_EXPAND else []
+    limit = ["--property", f"MemoryMax={_worker_memory_max_bytes()}"] if memory_max else []
     return [
         binary, "--user", "--scope", "--quiet", *no_expand, "--unit", unit_name, "--collect",
-        "--property", "MemoryAccounting=yes",
-        "--property", f"MemoryMax={_worker_memory_max_bytes()}",
+        "--property", "MemoryAccounting=yes", *limit,
         "--", *argv,
     ]
 
@@ -324,7 +325,8 @@ def _is_supervised_gateway_process() -> bool:
         return False
 
 
-def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str) -> List[str]:
+def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str, *,
+                              prefix: str = "hermes-worker", memory_max: bool = True) -> List[str]:
     """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation with its own
     memory accounting, so an OOM in the worker cannot kill the gateway cgroup.
 
@@ -337,7 +339,7 @@ def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str) -> List[s
     if binary is None:
         # Caller should have probed availability; never pass None into Popen anyway.
         return shell_argv
-    return _systemd_scope_argv(binary, f"hermes-worker-{unit_suffix}", *shell_argv)
+    return _systemd_scope_argv(binary, f"{prefix}-{unit_suffix}", *shell_argv, memory_max=memory_max)
 
 
 _scope_degraded_warned = False
@@ -465,40 +467,6 @@ def restart_safe_gateway_child_argv(
     if scoped == command:
         return _degrade("systemd-run disappeared after the availability probe")
     return GatewayChildDispatch("scoped", scoped)
-
-
-def _stop_systemd_unit(unit_name: str) -> bool:
-    """Stop a transient systemd user scope by unit name.
-    Reaps the *entire* cgroup — catching double-forked descendants reparented to init
-    inside the scope that survive a plain PID signal (SIGTERM all, SIGKILL after
-    ``TimeoutStopSec``). True if stopped or already gone; False if ``systemctl`` is
-    unavailable or the stop failed.
-
-    See #70716.
-    """
-    import shutil
-
-    binary = shutil.which("systemctl")
-    if binary is None:
-        return False
-    try:
-        result = subprocess.run(
-            [binary, "--user", "stop", unit_name],
-            capture_output=True,
-            timeout=15,
-            stdin=subprocess.DEVNULL,
-            env=systemd_user_bus_env(),
-        )
-        if result.returncode != 0:
-            stderr = (result.stderr or b"").decode(errors="replace").strip()
-            if any(marker in stderr.lower() for marker in ("not loaded", "not found", "does not exist")):
-                return True
-            logger.debug("systemctl --user stop %s exited %d: %s", unit_name, result.returncode, stderr)
-            return False
-        return True
-    except Exception as exc:
-        logger.debug("systemctl --user stop %s failed: %s", unit_name, exc)
-        return False
 
 
 def format_uptime_short(seconds: int) -> str:
@@ -1201,6 +1169,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
         for interactive CLIs, falling back to a plain pipe when unavailable or failing.
         ``persist_on_release`` keeps the process out of agent-lifecycle kill sweeps (#41225)."""
+        from tools.process_registry_systemd import _stop_systemd_unit
         # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds our stdout
         # pipe open forever when B is a long-running server. The rewriter turns it into
         # ``A && { B & }``. Lazy import: terminal_tool imports this module.
@@ -1255,6 +1224,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
     def _reap_untracked(self, session: ProcessSession, proc: subprocess.Popen) -> None:
         """Post-Popen setup failed: kill the orphaned subprocess (and any setsid
         descendants) so nothing leaks untracked."""
+        from tools.process_registry_systemd import _stop_systemd_unit
         with suppress(Exception):
             if session.systemd_unit:
                 # Scope teardown is the authoritative cleanup for the worker cgroup;
@@ -1280,6 +1250,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         session.process = proc
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
+        # Carry the transient scope the foreground spawn used (#70716): without it a later
+        # `process kill` / checkpoint recovery has no unit to stop and a double-forked
+        # descendant of the adopted command survives inside its own cgroup.
+        session.systemd_unit = getattr(proc, "_hermes_scope_unit", "") or ""
         session.notify_on_complete = notify_on_complete
         if output_so_far:
             session.append_output(output_so_far)
@@ -2165,6 +2139,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         output). Bulk cleanup passes false so it doesn't suppress an autonomous
         completion notification — except abandoned-turn reaping (``kill_started_since``),
         which passes true so a killed abandoned process can't revive stopped work."""
+        from tools.process_registry_systemd import _stop_systemd_unit
         session = self.get(session_id)
         if session is None:
             return _not_found(session_id)
@@ -2267,6 +2242,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         """Deliver the kill via PTY, local Popen tree, sandbox exec or recovered host
         PID. Returns a final result dict when the kill cannot proceed (recycled/dead
         recovered PID, or no runtime handle), else None."""
+        from tools.process_registry_systemd import _stop_systemd_unit
         if session._pty:
             try:
                 session._pty.terminate(force=True)

@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -965,6 +966,142 @@ def _kill_process_windows(proc) -> None:
         proc.wait(timeout=2.0)
 
 
+# --- Foreground cgroup isolation for gateway-spawned local commands -----------------
+# #70716 isolates *background* executors in a transient systemd scope. A foreground
+# command still runs inside the gateway's own cgroup, so a memory-heavy foreground
+# build/test can push that cgroup past MemoryHigh/MemoryMax and let systemd-oomd kill the
+# whole messaging control plane — the same failure domain the background fix closed. Import is
+# function-local because tools.process_registry imports this module at module level.
+_FOREGROUND_SCOPE_PREFIX = "hermes-fg"
+
+
+_FOREGROUND_DEGRADED_CONSEQUENCE = (
+    "foreground commands share the gateway cgroup, so a memory-heavy one can take the "
+    "messaging control plane down with it. Give this user a session bus "
+    "(`loginctl enable-linger <user>`) or install systemd-run.")
+_foreground_degraded_warned = False
+# Set once this process wraps a foreground command; gates the exit-time sweep below.
+_foreground_scope_issued = False
+
+
+def _warn_foreground_scope_degraded(detail: str) -> None:
+    """Report degraded foreground isolation once per process.
+
+    Separate flag from ``process_registry._warn_scope_degraded_once`` on purpose: that one
+    is a topic-level latch shared by cron/worker dispatch, and a condition there would
+    otherwise silence this one entirely.
+    """
+    global _foreground_degraded_warned
+    if _foreground_degraded_warned:
+        return
+    _foreground_degraded_warned = True
+    logger.warning("%s; %s", detail, _FOREGROUND_DEGRADED_CONSEQUENCE)
+
+
+def _foreground_scope_argv(args: list[str], run_env: dict) -> "tuple[list[str], str | None, dict]":
+    """Wrap *args* in a transient ``systemd-run --user --scope`` when this process is the
+    supervised gateway on Linux.
+
+    Returns ``(argv, unit_name, run_env)``. The environment is completed with the user-bus
+    variables on the scoped path only — the availability probe derives them
+    (``systemd_user_bus_env``) so a system-level unit without login variables can still
+    reach the manager, and a later spawn that skipped them would fail where the probe
+    succeeded. Every helper used here fails closed, so a fallback leaves the command
+    unwrapped (``unit_name is None``).
+    """
+    if _IS_WINDOWS:
+        return args, None, run_env
+    from tools import process_registry as _pr
+    # Same gate and order as ``restart_safe_gateway_child_argv``: only a systemd-managed
+    # gateway has a user manager to scope into (an s6/Docker supervised gateway has none and
+    # must not warn), and the free env check runs before the gateway-identity probe.
+    if not (_pr._IS_LINUX and os.environ.get("INVOCATION_ID")):
+        return args, None, run_env
+    if not _pr._is_supervised_gateway_process():
+        return args, None, run_env
+    # Past this point the command is *meant* to be isolated, so every fallback is a
+    # degraded failure domain and must be reported (once), not silently degraded.
+    if not _pr._systemd_run_user_scope_available():
+        _warn_foreground_scope_degraded("systemd-run --user --scope is unavailable")
+        return args, None, run_env
+    # The probe verdict is cached; a user bus lost since then would make systemd-run fail
+    # before the command runs (cron's ``scoped_spawn_lost_user_bus`` race). Run it unwrapped.
+    # Re-derive without an inherited address, or that stale value would pass for a live bus.
+    probe_env = dict(run_env)
+    probe_env.pop("DBUS_SESSION_BUS_ADDRESS", None)
+    bus_env = _pr.systemd_user_bus_env(probe_env)
+    if "DBUS_SESSION_BUS_ADDRESS" not in bus_env:
+        _warn_foreground_scope_degraded("user D-Bus session is gone")
+        return args, None, run_env
+    # systemd-run needs the user bus, but the command must keep the bus _make_run_env chose
+    # (the Bot Desktop's private Xfce bus, #125830), so re-apply it inside the scope.
+    own_bus = run_env.get("DBUS_SESSION_BUS_ADDRESS")
+    inner = args
+    if own_bus and own_bus != bus_env["DBUS_SESSION_BUS_ADDRESS"]:
+        inner = ["env", f"DBUS_SESSION_BUS_ADDRESS={own_bus}", *args]
+    # Random, not a counter: a scope leaked past a restart must not collide with a later
+    # gateway that reuses the same PID ("Unit ... already exists").
+    suffix = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    # Own cgroup only, no worker MemoryMax: a foreground build may legitimately need
+    # more than the background cap; the isolation alone protects the gateway.
+    scoped = _pr._build_systemd_scope_argv(inner, unit_suffix=suffix, prefix=_FOREGROUND_SCOPE_PREFIX,
+                                           memory_max=False)
+    if scoped == inner:
+        _warn_foreground_scope_degraded("no systemd-run wrapper could be built")
+        return args, None, run_env
+    global _foreground_scope_issued
+    _foreground_scope_issued = True
+    return scoped, f"{_FOREGROUND_SCOPE_PREFIX}-{suffix}.scope", bus_env
+
+
+def foreground_scope_pid(unit_name: str) -> int | None:
+    """The gateway PID encoded in a foreground scope's name, or ``None`` if it is not one."""
+    prefix = f"{_FOREGROUND_SCOPE_PREFIX}-"
+    if not unit_name.startswith(prefix) or not unit_name.endswith(".scope"):
+        return None
+    head = unit_name[len(prefix) : -len(".scope")].split("-", 1)[0]
+    return int(head) if head.isdigit() else None
+
+
+def sweep_dead_foreground_scopes() -> int:
+    """Stop every loaded foreground scope whose gateway PID is gone; returns how many.
+
+    The ExecStopPost half of #70716. It enumerates the units instead of deriving the PID
+    from the gateway's record: a record is not proof of a crash (a concurrent status read
+    can clean a stale one, and a ``--replace`` unlink no-ops when it already names the new
+    process), while the PID embedded in each unit name says exactly which gateway issued
+    it — so a live gateway keeps its scopes by construction rather than by timing. Best
+    effort: an unreachable manager or an unnameable unit means no stop, and enqueuing a
+    stop is not proof the scope is gone.
+    """
+    from gateway.status import _pid_exists
+    from tools.process_registry_systemd import _stop_systemd_unit, list_systemd_user_scope_units
+
+    swept = 0
+    for unit in list_systemd_user_scope_units(f"{_FOREGROUND_SCOPE_PREFIX}-*.scope"):
+        pid = foreground_scope_pid(unit)
+        if pid is None or _pid_exists(pid):
+            continue
+        if _stop_systemd_unit(unit, no_block=True):
+            swept += 1
+    return swept
+
+
+def stop_foreground_scopes() -> None:
+    """Stop this process's foreground scopes at host exit, once any was issued.
+
+    The PID stays in the glob, so profiles sharing one user manager never stop each
+    other's commands, and a glob that matches nothing is a no-op (``systemctl stop``
+    exits 0). A dead gateway's scopes are swept by ``sweep_dead_foreground_scopes``.
+    The stop is enqueued, not awaited: a SIGTERM-ignoring escapee must not hold gateway
+    shutdown for the stop job's timeout.
+    """
+    if not _foreground_scope_issued:
+        return
+    from tools.process_registry_systemd import _stop_systemd_unit
+    _stop_systemd_unit(f"{_FOREGROUND_SCOPE_PREFIX}-{os.getpid()}-*.scope", no_block=True)
+
+
 class LocalEnvironment(BaseEnvironment):
     """Run commands directly on the host: every execute() spawns a fresh bash;
     the session snapshot preserves env vars across calls; CWD persists via the
@@ -1066,8 +1203,12 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
+        # Foreground parity with the background scope: an OOM/limit breach inside the
+        # command must not take the gateway cgroup (and the messaging control plane)
+        # down with it. See #70716.
+        scoped_args, scope_unit, run_env = _foreground_scope_argv(args, _make_run_env(self.env))
         proc = subprocess.Popen(
-            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
+            scoped_args, text=True, env=run_env, encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True, cwd=self.cwd,
@@ -1081,17 +1222,34 @@ class LocalEnvironment(BaseEnvironment):
                 # platform, macOS included.
                 from gateway.status import get_process_start_time
                 proc._hermes_pgid_start = get_process_start_time(proc.pid)
+        if scope_unit:
+            proc._hermes_scope_unit = scope_unit
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
 
     def _kill_process(self, proc):
-        """Kill the entire process group (all children)."""
+        """Kill the entire process group (all children), then the transient scope that
+        held them: a double-forked descendant reparented to init still dies with its
+        cgroup when the wrapper's group no longer covers it. The scope is stopped only
+        after the parent was signalled (tools/AGENTS.md teardown order), and still when the
+        group kill raised something that is not an ``OSError`` — a leaked transient unit
+        outlives the command. See #70716."""
         try:
             (_kill_process_windows if _IS_WINDOWS else _kill_process_group_posix)(proc)
-        except OSError:  # ProcessLookupError / PermissionError included
+        except Exception as exc:
             with contextlib.suppress(Exception):
                 proc.kill()
+            if not isinstance(exc, OSError):  # ProcessLookupError / PermissionError are expected
+                raise
+        finally:
+            unit = getattr(proc, "_hermes_scope_unit", None)
+            if unit:
+                from tools.process_registry_systemd import _stop_systemd_unit
+                if not _stop_systemd_unit(unit):
+                    logger.debug(
+                        "foreground scope %s could not be reaped; the unit may "
+                        "outlive the command (its cgroup still holds survivors)", unit)
 
     def _force_kill_process(self, proc):
         """SIGKILL the whole group with no TERM grace or wait: the caller os._exit()s next."""
@@ -1107,6 +1265,17 @@ class LocalEnvironment(BaseEnvironment):
                 os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (_IS_WINDOWS returned above)
         with contextlib.suppress(OSError):
             proc.kill()
+        unit = getattr(proc, "_hermes_scope_unit", None)
+        systemctl = shutil.which("systemctl") if unit else None
+        if systemctl:
+            # A setsid escapee lives in the scope, not the gateway cgroup, so the gateway
+            # unit's KillMode no longer reaps it. Fire-and-forget: no wait before os._exit().
+            from tools.process_registry import systemd_user_bus_env
+            with contextlib.suppress(OSError):
+                subprocess.Popen(
+                    [systemctl, "--user", "--no-block", "kill", "--signal=SIGKILL", unit],
+                    env=systemd_user_bus_env(), stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _extract_cwd_from_output(self, result: dict):
         """Base semantics plus: Git Bash ``pwd -P`` emits MSYS form on Windows —

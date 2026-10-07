@@ -111,3 +111,63 @@ class TestLiveGatewayGuard:
         killed.clear()
         assert cgroup_cleanup.reap_cgroup(cgroup_path) == 1
         assert killed == [888]
+
+
+class TestForegroundScopeSweep:
+    """The ExecStopPost parity for foreground scopes (#70716): a SIGKILLed gateway
+    leaves its long-lived command in ``hermes-fg-<pid>-*.scope``, which neither the
+    unit's KillMode nor the cgroup reap reaches, and the next gateway has a new PID.
+
+    The sweep enumerates those units and reads the PID out of each name, so it never
+    consults a PID record: one can be cleaned by a concurrent status read or left naming
+    the replacement gateway, while the unit name cannot lie about who issued it."""
+
+    def test_sweep_stops_only_the_scopes_of_a_gone_pid(self, monkeypatch):
+        import shutil
+        import subprocess
+
+        import gateway.status
+
+        live = os.getpid()  # this test process: alive on purpose
+        monkeypatch.setattr(gateway.status, "_pid_exists", lambda pid: pid == live)
+        units = [
+            "hermes-fg-4242-c0ffee01.scope",  # a gateway that is gone: its command stops
+            f"hermes-fg-{live}-c0ffee02.scope",  # a live gateway: it keeps its command
+            "hermes-fg-4242-c0ffee03.scope",  # the dead gateway's second command
+            "hermes-fg-c0ffee04.scope",  # no PID in the name: never touched
+            "hermes-pty-99.scope",  # another scope family entirely
+        ]
+        # Real `systemctl --user list-units --plain --no-legend` rows: the parser keeps column 1.
+        listing = "".join(f"{u} loaded active running Scope for a command\n" for u in units).encode()
+        stops: list[list[str]] = []
+
+        def fake_run(argv, **_kw):
+            if "list-units" in argv:
+                return subprocess.CompletedProcess(argv, 0, stdout=listing, stderr=b"")
+            stops.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(shutil, "which", lambda name, *a, **k: f"/usr/bin/{name}")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        assert cgroup_cleanup.reap_foreground_scopes() is True
+        # --no-block: on the restart path a stop job for a SIGTERM-ignoring escapee must not
+        # spend the unit's TimeoutStopSec.
+        assert stops == [
+            ["/usr/bin/systemctl", "--user", "--no-block", "stop", "hermes-fg-4242-c0ffee01.scope"],
+            ["/usr/bin/systemctl", "--user", "--no-block", "stop", "hermes-fg-4242-c0ffee03.scope"],
+        ]
+
+    def test_main_sweeps_only_after_a_permitted_reap(self, monkeypatch):
+        monkeypatch.setattr(cgroup_cleanup, "_parent_is_systemd", lambda: True)
+        swept: list = []
+        monkeypatch.setattr(cgroup_cleanup, "reap_foreground_scopes", lambda *a, **kw: swept.append(a))
+
+        # Refusal path (a live gateway is in the cgroup): its scopes must survive.
+        monkeypatch.setattr(cgroup_cleanup, "reap_cgroup", lambda *_a: None)
+        assert cgroup_cleanup.main() == 1
+        assert swept == []
+
+        monkeypatch.setattr(cgroup_cleanup, "reap_cgroup", lambda *_a: 0)
+        assert cgroup_cleanup.main() == 0
+        assert swept == [()]

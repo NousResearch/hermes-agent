@@ -111,6 +111,32 @@ def reap_cgroup(cgroup_path: str | None = None) -> int | None:
     return killed
 
 
+def reap_foreground_scopes() -> bool:
+    """Stop the foreground scopes of every gateway PID that is no longer alive.
+
+    A foreground ``terminal`` command runs in ``hermes-fg-<gateway pid>-*.scope``
+    (see #70716), which neither this unit's ``KillMode=`` nor the cgroup reap above
+    reaches: the gateway stops its own scopes from inside the process, so a gateway that
+    was SIGKILLed never runs that funnel, and the next gateway has a new PID.
+
+    The units are *enumerated* rather than derived from the gateway's PID record, because
+    ``$MAINPID`` is unset in ``ExecStopPost`` (``man systemd.service``; measured on
+    systemd 255, including a stop that hit the ``TimeoutStopSec`` escalation) and the
+    record is a weaker signal than it looks: a concurrent status read with
+    ``cleanup_stale=True`` can unlink a stale record before this hook runs, and a
+    ``--replace`` unlink no-ops when the record already names the new process. Each unit's
+    own name carries the PID that issued it, so a live gateway keeps its scopes by
+    construction and a dead one's are stopped without needing any record at all.
+
+    Returns True when at least one unit was stopped. Best effort by construction: an
+    unreachable manager or an unnameable unit means no stop, and enqueuing a stop is
+    not proof that the scope is gone before ``Restart=`` starts the next gateway.
+    """
+    from tools.environments.local import sweep_dead_foreground_scopes
+
+    return sweep_dead_foreground_scopes() > 0
+
+
 def main() -> int:
     if not _parent_is_systemd():
         print(
@@ -121,7 +147,12 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    return 1 if reap_cgroup() is None else 0
+    killed = reap_cgroup()
+    # Only after a permitted reap: the one refusal above means a live gateway is in
+    # this cgroup, and its foreground scopes must not be stopped.
+    if killed is not None:
+        reap_foreground_scopes()
+    return 1 if killed is None else 0
 
 
 if __name__ == "__main__":

@@ -539,6 +539,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "tools/environments/local.py",
+    "symbol": "LocalEnvironment._force_kill_process",
+    "kind": "bare_which"
+  },
+  {
     "path": "tools/environments/singularity.py",
     "symbol": "_find_singularity_executable",
     "kind": "bare_which"
@@ -564,13 +569,18 @@
     "kind": "bare_which"
   },
   {
-    "path": "tools/process_registry.py",
+    "path": "tools/process_registry_systemd.py",
     "symbol": "_stop_systemd_unit",
     "kind": "bare_which"
   },
   {
     "path": "tools/process_registry.py",
     "symbol": "_systemd_run_user_scope_available",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/process_registry_systemd.py",
+    "symbol": "list_systemd_user_scope_units",
     "kind": "bare_which"
   },
   {

@@ -4,7 +4,7 @@ import { useSearchParams } from "react-router";
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { Markdown } from "@/components/Markdown";
 import { useProfileScope } from "@/contexts/useProfileScope";
-import { api, type SessionMessage } from "@/lib/api";
+import { api, type SessionMessage, type SessionSearchResult } from "@/lib/api";
 import { GatewayClient } from "@/lib/gatewayClient";
 import { cn } from "@/lib/utils";
 import { ChatBar } from "@/chat/composer/ChatBar";
@@ -44,6 +44,49 @@ export default function ChatNative() {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const scopeRef = useRef<string | null>(null);
   const lastUserTextRef = useRef<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<SessionSearchResult[] | null>(null);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) {
+      setResults(null);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const timer = window.setTimeout(() => {
+      api
+        .searchSessions(q, profile || undefined)
+        .then((res) => {
+          setResults(res.results);
+        })
+        .catch(() => {
+          setResults([]);
+        })
+        .finally(() => {
+          setSearching(false);
+        });
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [query, profile]);
+
+  const pickSearchResult = useCallback(
+    (id: string) => {
+      setQuery("");
+      setResults(null);
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set("resume", id);
+          return next;
+        },
+        { replace: false },
+      );
+    },
+    [setSearchParams],
+  );
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -222,11 +265,39 @@ export default function ChatNative() {
   return (
     <div className="flex min-h-0 flex-1 gap-4">
       <div className="hidden w-64 shrink-0 overflow-hidden border-r border-current/10 pr-2 lg:block">
-        <ChatSessionList
-          activeSessionId={activeSessionId}
-          profile={profile}
-          onNewChat={newChat}
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search chats…"
+          aria-label="Search chats"
+          className="mb-2 w-full rounded border border-current/20 bg-background-base px-2 py-1.5 text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground"
         />
+        {query.trim() ? (
+          <div className="min-h-0 overflow-y-auto">
+            {searching && (
+              <div className="px-2 py-2 text-xs text-text-secondary">Searching…</div>
+            )}
+            {!searching && results?.length === 0 && (
+              <div className="px-2 py-2 text-xs text-text-secondary">No matches.</div>
+            )}
+            {(results ?? []).map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => pickSearchResult(s.id)}
+                className="block w-full truncate rounded px-2 py-1.5 text-left text-sm text-text-secondary hover:bg-midground/5 hover:text-midground"
+              >
+                {s.title?.trim() || s.preview?.trim() || "Untitled"}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <ChatSessionList
+            activeSessionId={activeSessionId}
+            profile={profile}
+            onNewChat={newChat}
+          />
+        )}
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="min-h-0 flex-1 overflow-y-auto">

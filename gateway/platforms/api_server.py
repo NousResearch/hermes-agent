@@ -3984,6 +3984,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """POST /api/cron/fire — Chronos fire webhook (NAS -> agent), authenticated by a
         NAS-minted JWT via the pluggable verifier, NOT API_SERVER_KEY. 202 + background run so
         a long turn never trips NAS's timeout; the store CAS claim guards double-fire on retry."""
+        # The startup wait's budget runs from here: a slow JWKS fetch must not push it past the
+        # dashboard forwarder's timeout (see api_server_fire_startup).
+        received_at = asyncio.get_running_loop().time()
         from hermes_cli.config import cfg_get, load_config
         from plugins.cron_providers.chronos.verify import get_fire_verifier
         auth = request.headers.get("Authorization", "")
@@ -4037,7 +4040,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     from gateway.run import _gateway_runner_ref
                     runner = _gateway_runner_ref()
             from gateway.platforms.api_server_fire_startup import refuse_until_started
-            refusal = await refuse_until_started(runner, job_id)
+            refusal = await refuse_until_started(runner, job_id, received_at=received_at)
             if refusal is not None:
                 return refusal
             # Live adapters (parity with the built-in ticker): E2EE / relay-fronted platforms

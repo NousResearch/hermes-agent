@@ -898,6 +898,40 @@ class TestOptOutEssentialTopLevelLink:
         assert "hermes-agent" not in result["copied"]
         assert "hermes-agent" not in manifest  # a differing copy is never baselined
 
+    def test_optout_defer_removes_preexisting_top_level_link(self, tmp_path):
+        """The ``_defer_to_external`` symlink-unlink branch (card t_720d0321, residual of t_d31a747c).
+
+        Opted-out lane whose essential is provided by external_dirs AND already carries a
+        pre-existing top-level link at ``<skills_dir>/hermes-agent -> bundled source`` (the shape a
+        prior sync / the lane relink instruments leave). Deferring must UNLINK that stale link.
+        Without the branch the code falls through to
+        ``dest.exists() and _dir_hash(dest) == bundled_hash``: ``_dir_hash`` follows the link, so the
+        hash equals the bundled source's and ``_rmtree_writable`` is pointed at a path that resolves
+        OUTSIDE the skills root, raising ``ValueError: refusing to rmtree ... (scope guard)``.
+        """
+        bundled, skill = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        skills_dir.mkdir()
+        manifest_file = skills_dir / ".bundled_manifest"
+        home = self._opted_out_home(tmp_path)
+        # (c) the pre-existing top-level link, pointing at the bundled source dir.
+        os.symlink(str(skill.resolve()), str(skills_dir / "hermes-agent"))
+        # (d) external_dirs provides hermes-agent; the inner patch overrides the [] in _patches().
+        ext = tmp_path / "external_skills"
+        (ext / "autonomous-ai-agents" / "hermes-agent").mkdir(parents=True)
+        (ext / "autonomous-ai-agents" / "hermes-agent" / "SKILL.md").write_text(
+            "---\nname: hermes-agent\n---\next\n")
+
+        with self._patches(bundled, skills_dir, manifest_file, home):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[ext]):
+                result = sync_skills(quiet=True)
+
+        # (e) the sync completed, the essential was deferred, and the stale link is gone.
+        assert "hermes-agent" in result["shadowed_by_external"]
+        assert "hermes-agent" not in result["copied"]
+        assert not os.path.lexists(str(skills_dir / "hermes-agent")), (
+            "the stale top-level link must be unlinked, not rmtree'd through to the bundled source")
+
     def test_non_opted_out_still_uses_nested_real_copy(self, tmp_path):
         bundled = tmp_path / "bundled"
         (bundled / "category" / "new-skill").mkdir(parents=True)

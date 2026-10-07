@@ -185,6 +185,33 @@ def test_commit_pin_rejects_revisions_without_the_bootstrap_interfaces(tmp_path)
     assert pinned.returncode == 0, pinned.stdout + pinned.stderr
 
 
+def test_commit_pin_refusal_leaves_an_existing_install_untouched(tmp_path):
+    """#134733 rerun-over-install variant: the gate must refuse BEFORE the tree
+    moves. When the probe ran after the pinning checkout, a rerun with a pre-PM
+    pin left a working install parked on the pre-PM tree with a venv/PM state
+    built for the newer one."""
+    origin = _origin(tmp_path / "origin", "pre-pm", bootstrap=False)
+    pre_pm = _git(origin, "rev-parse", "HEAD")
+    (origin / "pm").mkdir()
+    (origin / "pm" / "lock.json").write_text(
+        '{"packages": {"python": {"version": "3.14.0"}}}'
+    )
+    (origin / "pm" / "cli.py").write_text("")
+    (origin / "hermes_cli").mkdir()
+    (origin / "hermes_cli" / "source_completion.py").write_text("")
+    _git(origin, "add", "pm", "hermes_cli")
+    _git(origin, "commit", "-qm", "pm era")
+    pm_era = _git(origin, "rev-parse", "HEAD")
+    assert _stage(tmp_path, origin, commit=pm_era).returncode == 0
+    install = tmp_path / "install"
+    before = _git(install, "rev-parse", "HEAD")
+    refused = _stage(tmp_path, origin, commit=pre_pm)
+    assert refused.returncode != 0
+    assert "predates the PM bootstrap" in refused.stdout + refused.stderr
+    assert _git(install, "rev-parse", "HEAD") == before  # the tree never moved
+    assert (install / "pm" / "lock.json").exists()  # still the PM-era working tree
+
+
 def test_commitless_checkout_is_moved_aside_and_recloned(tmp_path):
     origin = _origin(tmp_path / "origin")
     install = tmp_path / "install"

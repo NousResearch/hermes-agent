@@ -935,14 +935,22 @@ class GatewaySlashCommandsMixin(
         return run_approval_mode_command(requested).message
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
-        """Handle /yolo — toggle dangerous command approval bypass for this session only."""
+        """Handle /yolo — toggle dangerous command approval bypass for this session only. The flag is
+        persisted on the routing entry so it survives a gateway restart."""
         from tools.approval import disable_session_yolo, enable_session_yolo, is_session_yolo_enabled
         session_key = self._session_key_for_source(event.source)
-        if is_session_yolo_enabled(session_key):
-            disable_session_yolo(session_key)
-            return EphemeralReply(t("gateway.yolo.disabled"))
-        enable_session_yolo(session_key)
-        return EphemeralReply(t("gateway.yolo.enabled"))
+        if self.session_store is not None:
+            # A first-message /yolo has no routing entry yet; materialize it so the flag has a home.
+            entry = await self.async_session_store.get_or_create_session(event.source)
+            # After a restart only the persisted copy is set: the user still sees it ON.
+            enable = not (entry.yolo is True or is_session_yolo_enabled(session_key))
+            # Persist BEFORE flipping the live flag: a turn restoring in between then never revives a
+            # bypass that is being switched off.
+            await self.async_session_store.set_session_yolo(session_key, enable)
+        else:
+            enable = not is_session_yolo_enabled(session_key)
+        (enable_session_yolo if enable else disable_session_yolo)(session_key)
+        return EphemeralReply(t("gateway.yolo.enabled" if enable else "gateway.yolo.disabled"))
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
         """Handle /verbose — cycle tool progress display mode (off → new → all → verbose → log) per

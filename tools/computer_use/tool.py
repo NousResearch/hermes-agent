@@ -310,6 +310,8 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     click, drag, scroll = _noop_stub("click"), _noop_stub("drag"), _noop_stub("scroll")
     type_text, key, set_value = _noop_stub("type", "text"), _noop_stub("key", "keys"), _noop_stub("set_value", "value", "element")
     list_apps, list_windows = _noop_stub("list_apps", result=[]), _noop_stub("list_windows", result=[])
+    launch_app = _noop_stub("launch_app", "bundle_id", "name", "path", "aumid", "launch_path", "urls",
+                            "additional_arguments", "creates_new_application_instance", "start_minimized", "wait_timeout")
     focus_app = _noop_stub("focus_app", "app", "raise_window")
 
 # ── Dispatch ────────────────────────────────────────────────────────────────
@@ -382,13 +384,19 @@ def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
     gateway pending, cron/unattended policy, fail-closed with nobody to ask) is ``tools.approval``'s shared gate,
     so a computer_use grant is one store entry like any terminal pattern. Scope key ``cua:<action>:<mode>``:
     foreground delivery is a visible focus change, so a background ``session`` grant must NOT cover it (#67052).
+    Launches with an argument vector add a digest of the effectful request so one grant cannot authorize different
+    executable arguments.
     """
     from tools.approval import _run_approval_gate
 
     mode = "foreground" if args.get("delivery_mode") == "foreground" else "background"
     description = f"Allow computer_use to perform `{action}`?"
+    pattern_key = f"cua:{action}:{mode}"
+    if action == "launch_app" and args.get("additional_arguments"):
+        encoded = json.dumps(_launch_approval_payload(args), sort_keys=True, separators=(",", ":")).encode()
+        pattern_key += f":request:{hashlib.sha256(encoded).hexdigest()}"
     result = _run_approval_gate(
-        pattern_key=f"cua:{action}:{mode}", description=description,
+        pattern_key=pattern_key, description=description,
         display_target=f"computer_use: {_summarize_action(action, args)}", approval_callback=_approval_callback,
         subject=f"computer_use `{action}` requires approval", noun="desktop actions",
         advice="Find an alternative approach that avoids driving the desktop.",
@@ -443,12 +451,26 @@ def _do_capture(backend, action, args, fence=lambda: None, session_id=None, **_)
     return _capture_response(cap, session_id=session_id)
 
 def _do_listing(backend, action, args, key, **_):
-    return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
+    filters = {k: args[k] for k in ("on_screen_only", "pid") if args.get(k) is not None} if action == "list_windows" else {}
+    return json.dumps({key: (items := getattr(backend, action)(**filters)), "count": len(items)})
 
 def _summarize_click(action: str, args: Dict[str, Any], fg: str) -> str:
     where = (f" element #{args['element']}" if args.get("element") is not None
              else f" at {tuple(args['coordinate'])}" if args.get("coordinate") else "")
     return f"{action}{where}{fg}"
+
+_LAUNCH_EFFECT_FIELDS = (
+    "bundle_id", "name", "path", "aumid", "launch_path", "urls", "additional_arguments",
+    "creates_new_application_instance", "start_minimized",
+)
+
+def _launch_approval_payload(args: Dict[str, Any]) -> Dict[str, Any]:
+    """The exact effectful launch fields shown to the user and bound to a scoped grant."""
+    return {key: value for key in _LAUNCH_EFFECT_FIELDS if (value := args.get(key))}
+
+def _summarize_launch(action: str, args: Dict[str, Any], fg: str) -> str:
+    payload = json.dumps(_launch_approval_payload(args), ensure_ascii=False, sort_keys=True)
+    return f"launch {payload}"
 
 # One `action`. ``input``: native input to the backend's sticky target (gets delivery kwargs + the `app=` mismatch
 # guard). ``destructive``: mutates user-visible state -> approval prompt (the rest only read).
@@ -476,6 +498,11 @@ _ACTIONS: Dict[str, _ActionSpec] = {
         json.dumps({"error": "focus_app requires `app`"}) if not args.get("app")
         else backend.focus_app(args["app"], raise_window=bool(args.get("raise_window")))), destructive=True,
         summarize=lambda a, args, fg: f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")),
+    "launch_app": _ActionSpec(lambda backend, action, args, **_: backend.launch_app(**{
+        k: args[k] for k in ("bundle_id", "name", "path", "aumid", "launch_path", "urls",
+                            "additional_arguments", "creates_new_application_instance", "start_minimized", "wait_timeout")
+        if args.get(k) is not None
+    }), destructive=True, summarize=_summarize_launch),
     "capture": _ActionSpec(_do_capture),
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),
@@ -499,13 +526,13 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], fe
     if spec is None:
         return json.dumps({"error": f"unknown action {action!r}" + (f" — did you mean {hint!r}? See the action enum in the tool schema."
                                                                  if (hint := _ACTION_SUGGESTIONS.get(str(action))) else "")})
-    # app= guard: input goes to the sticky target from the last capture/focus_app and the backend drops app=
+    # app= guard: input goes to the sticky target from the last capture/focus_app/launch_app and the backend drops app=
     # silently — refuse a clear mismatch rather than type into the wrong window while reporting ok:true.
     if (spec.input and isinstance(requested_app := args.get("app"), str) and requested_app.strip()
             and (mismatch := _input_target_mismatch(backend, requested_app)) is not None):
         return json.dumps({"ok": False, "action": action, "code": "input_target_mismatch", "error": (
             f"{action} would go to the current target {mismatch!r}, not {requested_app.strip()!r} "
-            "— input actions always hit the sticky target from the last capture/focus_app. "
+            "— input actions always hit the sticky target from the last capture/focus_app/launch_app. "
             f"Call capture(app={requested_app.strip()!r}) or focus_app first, then retry.")})
     # delivery_mode / bring_to_front thread through every input action (background → foreground ladder); input
     # handlers forward their kwargs to the backend verbatim, so the lease fence and the dedup session key ride
@@ -519,6 +546,17 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], fe
 def _classify_action_result(res: ActionResult) -> Dict[str, Any]:
     """Next ladder step from semantic evidence, in precedence order. Escalation is advisory: it never overrides
     a confirmed effect nor licenses repeating input."""
+    if res.action == "launch_app":
+        if res.code in {"transport_outcome_unknown", "timeout_outcome_unknown"}:
+            return {"decision": "verify_fresh_state", "hint": (
+                "Launch outcome is unknown. Inspect fresh app/window state before any retry.")}
+        if res.meta.get("window_ready") is False:
+            return {"decision": "wait_for_window", "hint": (
+                "Launch was accepted. Do not repeat it: inspect list_windows(on_screen_only=false), "
+                "then capture the app's explicit pid/window_id.")}
+        return {"decision": "verify_fresh_state" if res.ok else "resolve_launch_error", "hint": (
+            "Capture the returned pid/window_id before input." if res.ok else
+            "Inspect the launch error and list_apps identifiers before choosing another launch request.")}
     if res.effect == "confirmed" or res.verified is True:
         return {"decision": "done"}
     if res.effect == "unverifiable":
@@ -740,7 +778,7 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
 def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
                           fence: Callable[[], None] = lambda: None, session_id: Optional[str] = None) -> Any:
     # No follow-up capture after a failed action: a normal-looking screenshot would suggest success.
-    if not do_capture or not res.ok:
+    if not do_capture or not res.ok or (res.action == "launch_app" and res.meta.get("window_ready") is not True):
         return _text_response(res)
     try:
         # Recapture the exact window when known: on Linux several unrelated windows may share an app name, so

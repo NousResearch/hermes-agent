@@ -301,6 +301,33 @@ then, run `cua-driver skills install` once and point your harness at
 the resulting `~/.cua-driver/skills/cua-driver` directory (or symlink
 it into your usual skill space).
 
+## Opening an app with no window
+
+Apps do not need a Dock or taskbar icon to be discoverable. If the requested
+app has no window, the agent can inspect `computer_use(action="list_apps")`
+and call `computer_use(action="launch_app", name="<exact app name>",
+capture_after=True)` through the normal approval gate.
+
+Prefer an exact identifier from `list_apps`: `bundle_id` on macOS,
+`launch_path` / `aumid` / executable `path` on Windows, and `launch_path` on
+Linux. Arguments remain an array of literal strings in `additional_arguments`.
+Hermes checks the driver's live tool schema and reports unsupported fields
+instead of silently dropping them.
+
+Launch waits for a window for up to `wait_timeout` seconds (default 10,
+maximum 30), then binds its exact PID and window ID. `capture_after=True`
+captures that window rather than the previously selected app. Discovery
+includes hidden windows and windows on other Spaces; Hermes does not request
+foreground activation. Capture a fresh state before using element indices.
+
+An accepted launch can return `ok: true` with `meta.window_ready: false` and
+`code: "window_not_ready"` (or `"window_discovery_failed"`). This means the app
+may already be running: do not launch it again automatically. Hermes clears
+the old target and skips the follow-up capture. Inspect
+`list_windows(on_screen_only=False, pid=<returned pid>)` (omit `pid` if unknown) and
+capture the app's explicit `pid` / `window_id` when a window appears. A refused
+launch leaves the prior target intact and preserves the driver's error.
+
 ## Quick example
 
 User prompt: *"Find my latest email from Stripe and summarise what they want me to do."*
@@ -369,7 +396,7 @@ magic-byte sniffing.
 
 Hermes applies multi-layer guardrails:
 
-- Destructive actions (click, type, drag, scroll, key, focus_app)
+- Destructive actions (click, type, drag, scroll, key, focus_app, launch_app)
   require approval through the same gate as dangerous shell commands —
   interactively via the CLI dialog or the messaging-platform approval
   buttons. Once/session/always grants are keyed

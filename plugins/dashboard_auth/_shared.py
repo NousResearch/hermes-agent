@@ -44,7 +44,9 @@ def _request_limited_response(method: str, url: str, **kwargs: Any) -> httpx.Res
 
     Content-Length is prechecked when declared; the streamed body is capped
     chunk-by-chunk either way (a lying/absent header cannot bypass the bound).
-    Returns a fully-read ``httpx.Response`` with the same status/headers.
+    Returns a fully-read ``httpx.Response`` with the same status and headers,
+    except content-encoding/content-length: the body is returned decompressed,
+    so keeping them would make httpx decode it twice (#134462).
     """
     with httpx.stream(method, url, **kwargs) as response:
         declared = response.headers.get("content-length")
@@ -69,10 +71,22 @@ def _request_limited_response(method: str, url: str, **kwargs: Any) -> httpx.Res
                 )
             chunks.append(chunk)
 
+        # iter_bytes() transparently decompresses the body (gzip/deflate/br), so what is
+        # rebuilt below is plain bytes. Carrying the streamed response's content-encoding
+        # over made httpx decompress the already-decoded payload a second time on
+        # .json()/.text — the Portal's gzipped token responses surfaced as "Error -3
+        # while decompressing data: incorrect header check" (#134462). content-length
+        # goes too: it describes the compressed size, and httpx recomputes it.
+        body = b"".join(chunks)
+        rebuilt_headers = {
+            k: v
+            for k, v in response.headers.items()
+            if k.lower() not in ("content-encoding", "content-length")
+        }
         return httpx.Response(
             status_code=response.status_code,
-            headers=response.headers,
-            content=b"".join(chunks),
+            headers=rebuilt_headers,
+            content=body,
             request=response.request,
         )
 

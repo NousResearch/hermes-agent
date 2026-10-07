@@ -964,8 +964,8 @@ class SignalAdapter(BasePlatformAdapter):
             await self.send_reaction(event.source.chat_id, "👀", *target)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: "ProcessingOutcome") -> None:
-        """Swap 👀 for ✅/❌; on CANCELLED the 👀 stays to keep reflecting "in progress" (matches Telegram)."""
-        if outcome == ProcessingOutcome.CANCELLED or not self._reactions_enabled(event):
+        """Clear 👀 on completion; cancelled/refused turns have no final verdict."""
+        if not self._reactions_enabled(event):
             return
         if not (target := self._extract_reaction_target(event)):
             return

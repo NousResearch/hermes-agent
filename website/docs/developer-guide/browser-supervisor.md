@@ -91,7 +91,7 @@ Configurable via `config.yaml` under `browser.dialog_policy`:
   with no response, auto-dismiss and log. Prevents a buggy agent from stalling
   forever.
 - `auto_dismiss` — record and dismiss immediately; agent sees it after the
-  fact via `browser_state` inside `browser_snapshot`.
+  fact via `recent_dialogs` inside `browser_snapshot`.
 - `auto_accept` — record and accept (useful for `beforeunload` where the
   workflow wants to navigate away cleanly).
 

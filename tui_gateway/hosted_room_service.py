@@ -268,7 +268,10 @@ class HostedRoomService:
         self, binding: HostedRoomBinding, task: Mapping[str, Any], route: PeerMemberRoute,
         client: Any) -> None:
         """Rediscover an admitted peer run without advancing its generation."""
-        recover = _hook(client, "recover_dispatch")
+        stopping = task.get("status") == "stopping"
+        recover = _hook(client, "cancel_dispatch" if stopping else "recover_dispatch")
+        if stopping and recover is None:
+            raise RuntimeError("peer cannot cancel an uncertain admission; update the target gateway")
         identity, payload = task.get("identity"), task.get("payload")
         execution_generation = int(task.get("execution_generation") or 0)
         if (

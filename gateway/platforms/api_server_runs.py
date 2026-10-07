@@ -233,7 +233,9 @@ def _initialize_run_state(self, *, store_factory) -> None:
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
     return [
-        ("POST", "/v1/runs", self._handle_runs), ("GET", "/v1/runs/{run_id}", self._handle_get_run),
+        ("POST", "/v1/runs", self._handle_runs),
+        ("POST", "/v1/runs/stop", self._handle_stop_run),
+        ("GET", "/v1/runs/{run_id}", self._handle_get_run),
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
@@ -244,6 +246,7 @@ def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
     return {
         "supported": True,
         "durable": self._run_idempotency_store.durable,
+        "cancel_by_key": self._run_idempotency_store.durable,
         "retention_seconds": store_type.RETENTION_SECONDS}
 
 
@@ -412,7 +415,10 @@ def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, 
             status="interrupted", error="The gateway restarted before this run settled.",
             last_event="run.interrupted", updated_at=time.time())
         self._run_idempotency_store.update_status(run_id, status)
-    self._run_statuses[run_id] = status
+    # Another process may own the live executor. Do not freeze its status in this
+    # process: subsequent polls must observe the owner's durable terminal receipt.
+    if status.get("status") in TERMINAL_STATUSES:
+        self._run_statuses[run_id] = status
     self._run_idempotency_ids.add(run_id)
     self._run_owners[run_id] = scope
     return status
@@ -743,7 +749,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
     # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
-    admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
+    admitted = (
+        await self._admit_to_live_bot_chat(session_id, user_message, turn_author)
+        if selected_session_id and not _run_stop_requested(self, run_id) else None)
     if admitted is not None:
         task = self._active_run_tasks[run_id] = asyncio.create_task(
             _execute_run_via_live_owner(self, launch, *admitted, _api_server=_api_server))
@@ -827,9 +835,12 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             _api_server._publish_turn_process_ownership(agent, effective_task_id)
             # Passed only when set: a human turn keeps today's call shape.
             author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
-            r = agent.run_conversation(
-                user_message=run.user_message, conversation_history=run.conversation_history,
-                task_id=effective_task_id, **author_kwargs)
+            if _run_stop_requested(self, run.run_id):
+                r = {"interrupted": True}
+            else:
+                r = agent.run_conversation(
+                    user_message=run.user_message, conversation_history=run.conversation_history,
+                    task_id=effective_task_id, **author_kwargs)
         finally:
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)
@@ -867,8 +878,8 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
     The receipt is the only truth about the turn: ``settled`` completes the run with the owner's
     reply, a failed receipt fails it with the owner's classified reason. ``/stop`` cannot reach the
     owner's turn — the mailbox has no recall once a record is claimed — so a stop ends this run
-    as ``cancelled`` while the chat finishes on its own; the stop handler already reports that a
-    run without an in-process agent is not interruptible here.
+    as ``cancelled`` while the chat finishes on its own for ordinary API runs. A RoomLink Stop
+    must prove that execution ended, so room runs keep observing the owner's terminal receipt.
     """
     from tools.bot_live_delivery import await_delivery_async
 
@@ -887,7 +898,8 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
     try:
         self._set_run_status(run_id, "running", delivery_id=delivery_id)
         record = await await_delivery_async(
-            home, delivery_id, None, should_stop=lambda: run_id in self._stopping_run_ids) or record
+            home, delivery_id, None,
+            should_stop=lambda: run.agent_kwargs["room_dispatch"] is None and _run_stop_requested(self, run_id)) or record
         if record["status"] in ("queued", "claimed"):
             _finish("cancelled", completed=False, partial=False, interrupted=True)
             return
@@ -954,7 +966,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             _finish("interrupted")
             return
         self._set_run_status(run_id, "running")
-        if run_id in self._stopping_run_ids:
+        if _run_stop_requested(self, run_id):
             _finish("cancelled")
             return
         with self._profile_scope(run.request_profile):
@@ -963,8 +975,18 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 interim_assistant_callback=_interim_cb, **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
-        result, usage, served_runtime = await _submit_api_worker(
+        worker = _submit_api_worker(
             loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
+        if run.agent_kwargs["room_dispatch"] is not None:
+            # A different HTTP process may receive Stop for this same durable key.
+            # Consume its intent while running, including while waiting for approval.
+            while not worker.done():
+                await asyncio.wait({worker}, timeout=0.5)
+                if _run_stop_requested(self, run_id) and run_id not in self._stopping_run_ids:
+                    _stop_loaded_run(
+                        self, run_id, self._run_statuses[run_id], agent,
+                        self._active_run_tasks.get(run_id), _api_server=_api_server)
+        result, usage, served_runtime = await worker
         # Publish request metrics (daily counters + latency) with each completed run (#52323).
         self._record_api_metrics(usage, time.perf_counter() - _run_started_at)
         if not isinstance(result, dict):
@@ -1250,19 +1272,63 @@ async def _handle_steer_run(self, request: "web.Request", *, _api_server) -> "we
     return web.json_response({"object": "hermes.run.steer", "run_id": run_id, "accepted": True})
 
 
+def _run_stop_requested(self, run_id: str) -> bool:
+    return run_id in self._stopping_run_ids or (
+        run_id in self._run_idempotency_ids and self._run_idempotency_store.stop_requested(run_id))
+
+
+async def _handle_stop_run_admission(self, request: "web.Request", *, _api_server) -> "web.Response":
+    """Stop a RoomLink generation, fencing late admission when no run exists yet."""
+    from gateway.platforms.api_server_room_dispatch import _validate_room_stop
+
+    try:
+        body = await request.json()
+        _validate_room_stop(self, request, body, _api_server=_api_server)
+        scope = self._run_idempotency_scope(request)
+    except (ValueError, TypeError) as exc:
+        return _room_grant_error_response(exc, _openai_error=_api_server._openai_error)
+    if not self._run_idempotency_store.durable:
+        return _json_error(
+            _api_server._openai_error, "Durable admission cancellation is unavailable.",
+            code="run_cancellation_unavailable", status=503)
+    run_id, now = f"run_{uuid.uuid4().hex}", time.time()
+    cancelled = {
+        "object": "hermes.run", "run_id": run_id, "status": "cancelled",
+        "admission_cancelled": True, "created_at": now, "updated_at": now}
+    _, record = self._run_idempotency_store.reserve(
+        scope, request.headers["Idempotency-Key"].strip(), "", run_id, cancelled,
+        retention_until=_room_retention_until(request), cancel_if_missing=True)
+    run_id = str(record["run_id"])
+    status = self._durable_run_status(request, run_id) or record["status"]
+    return _stop_loaded_run(
+        self, run_id, status, self._active_run_agents.get(run_id), self._active_run_tasks.get(run_id),
+        _api_server=_api_server)
+
+
 async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web.Response":
-    """POST /v1/runs/{run_id}/stop — interrupt a running agent."""
-    _openai_error = _api_server._openai_error
+    """Stop an exact run, or atomically cancel a RoomLink admission identity."""
+    if not request.match_info.get("run_id"):
+        return await _handle_stop_run_admission(self, request, _api_server=_api_server)
     run_id, status, agent, task, err = _load_owned_run(
         self, request, _api_server=_api_server, permission="stop", active_fallback=True)
     if err is not None:
         return err
+    if run_id in self._run_idempotency_ids:
+        self._run_idempotency_store.request_stop(self._run_idempotency_scope(request), run_id)
+    return _stop_loaded_run(self, run_id, status, agent, task, _api_server=_api_server)
+
+
+def _stop_loaded_run(self, run_id, status, agent, task, *, _api_server):
     if status.get("status") in TERMINAL_STATUSES:
         return web.json_response(status)
-    if agent is None and task is None:
+    if agent is None and task is None and not _run_stop_requested(self, run_id):
         return _json_error(
-            _openai_error, f"Run is not active in this gateway process: {run_id}",
+            _api_server._openai_error, f"Run is not active in this gateway process: {run_id}",
             code="run_not_active", status=409)
+    if agent is None and task is None and run_id not in self._run_statuses:
+        # Its executor lives in another process; only that owner may publish terminal
+        # state. The durable intent will be consumed there, and polls read its receipt.
+        return web.json_response({"run_id": run_id, "status": "stopping"})
     self._set_run_status(run_id, "stopping", last_event="run.stopping")
     self._stopping_run_ids.add(run_id)
     if agent is not None:

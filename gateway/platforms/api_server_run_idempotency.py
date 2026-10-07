@@ -32,7 +32,8 @@ _MIGRATIONS = {
     "owner_pid": "INTEGER NOT NULL DEFAULT 0",
     "owner_started": "INTEGER NOT NULL DEFAULT 0",
     "retention_until": "REAL NOT NULL DEFAULT 0",
-    "acknowledged_at": "REAL"}
+    "acknowledged_at": "REAL",
+    "stop_requested": "INTEGER NOT NULL DEFAULT 0"}
 
 
 def _encode_status(status: Dict[str, Any]) -> str:
@@ -47,7 +48,10 @@ def _record(run_id, status_json, owner_pid, owner_started, updated_at) -> dict[s
 
 def _outcome(row, fingerprint):
     """Classify a stored ``(scope, key)`` row against the caller's fingerprint."""
-    return ("reused" if hmac.compare_digest(row[0], fingerprint) else "conflict"), _record(*row[1:])
+    record = _record(*row[1:])
+    # A cancellation fences the identity itself, including a delayed, changed payload.
+    matches = record["status"].get("admission_cancelled") or hmac.compare_digest(row[0], fingerprint)
+    return ("reused" if matches else "conflict"), record
 
 
 class RunIdempotencyStore:
@@ -131,8 +135,13 @@ class RunIdempotencyStore:
                 raise
 
     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: Dict[str, Any], *,
-                owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0):
-        """Atomically reserve a key; return ``(outcome, stored_record)``."""
+                owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0,
+                cancel_if_missing: bool = False):
+        """Reserve admission, or atomically fence an absent key and stop its existing run.
+
+        Cancellation addresses the scoped identity, not a payload fingerprint. Its durable
+        intent also covers an owner still between reservation and scheduling.
+        """
         now = time.time()
         retention_until = max(0.0, float(retention_until or 0))
         encoded = _encode_status(status)
@@ -142,8 +151,12 @@ class RunIdempotencyStore:
             if row is not None:
                 if retention_until:
                     self._conn.execute(_EXTEND_RETENTION_BY_KEY, (retention_until, scope, key, fingerprint))
+                if cancel_if_missing:
+                    self._conn.execute(
+                        "UPDATE run_idempotency SET stop_requested=1 WHERE scope=? AND idempotency_key=?",
+                        (scope, key))
                 self._conn.commit()
-                return _outcome(row, fingerprint)
+                return ("reused", _record(*row[1:])) if cancel_if_missing else _outcome(row, fingerprint)
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"
@@ -170,16 +183,20 @@ class RunIdempotencyStore:
         """Prune aged replay records only once their stored run is terminal (caller holds the
         lock + transaction): a long or disconnected room turn may outlive the retention window."""
         stale = self._conn.execute(
-            """SELECT scope, idempotency_key, status_json
+            """SELECT scope, idempotency_key, status_json, stop_requested
                  FROM run_idempotency
                 WHERE acknowledged_at <= ?
                    OR (retention_until > 0 AND retention_until <= ?)
                    OR (retention_until <= 0 AND updated_at < ?)""",
             (now - self.ACKNOWLEDGED_RETENTION_SECONDS, now, now - self.RETENTION_SECONDS),
         ).fetchall()
-        for stale_scope, stale_key, stale_status in stale:
+        for stale_scope, stale_key, stale_status, stop_requested in stale:
             try:
-                terminal = json.loads(stale_status).get("status") in TERMINAL_STATUSES
+                status = json.loads(stale_status)
+                # A renewed grant may still carry the same generation after normal replay TTL.
+                # Never turn proof of non-admission back into an admissible absent key.
+                terminal = (status.get("status") in TERMINAL_STATUSES
+                            and not status.get("admission_cancelled") and not stop_requested)
             except Exception:
                 terminal = False
             if terminal:
@@ -216,6 +233,19 @@ class RunIdempotencyStore:
             row = self._conn.execute(
                 "SELECT 1 FROM run_idempotency WHERE scope=? AND run_id=?", (scope, run_id)).fetchone()
         return row is not None
+
+    def request_stop(self, scope: str, run_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE run_idempotency SET stop_requested=1 WHERE scope=? AND run_id=?", (scope, run_id))
+            self._conn.commit()
+
+    def stop_requested(self, run_id: str) -> bool:
+        """Read cancellation intent across processes without changing the public run status."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT stop_requested FROM run_idempotency WHERE run_id=?", (run_id,)).fetchone()
+        return bool(row and row[0])
 
     def update_status(self, run_id: str, status: Dict[str, Any]) -> None:
         with self._lock:

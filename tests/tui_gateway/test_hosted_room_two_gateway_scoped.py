@@ -1,11 +1,17 @@
-"""Scoped grant UAT: home service to a real peer API adapter, no Desktop."""
+"""Scoped grant UAT: home service to a real peer API adapter, no Desktop.
+
+Regression for #99960: cancelling an unseen admission must never admit it.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import errno
+import json
+import sqlite3
 import threading
 import urllib.error
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -64,8 +70,11 @@ def _target_app(adapter):
         adapter._handle_room_member_capabilities,
     )
     app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_post("/v1/runs/stop", adapter._handle_stop_run)
     app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
+    app.router.add_post(
+        "/v1/room-members/grants/revoke", adapter._handle_room_member_grant_revoke)
     return app
 
 
@@ -252,6 +261,167 @@ async def test_lost_admission_reply_and_refused_replay_run_the_turn_once(
     assert set(keys) == {f"room:{task['identity'].task_id}:1"}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["stop", "disband"])
+async def test_cancel_of_absent_deferred_peer_fences_late_admission_after_restart(
+    tmp_path: Path, monkeypatch, operation,
+):
+    """Stop/Disband proves absence without admitting work, even across target restart."""
+    import tui_gateway.server as rpc_server
+    from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+
+    target, server, home = await _linked_home(tmp_path)
+    home.runtime.lease_ttl_seconds = 1.0
+    home.runtime.poll_interval_seconds = 0.05
+    home.runtime.indeterminate_defer_seconds = 0.5
+    real_open = urllib_security.open_credentialed_url
+    original_requests, delivered_admissions, cancellation_requests = [], [], []
+    peer_down, cancellation_down, cancellation_reply_lost = (
+        threading.Event(), threading.Event(), threading.Event())
+    peer_down.set()
+    cancellation_down.set()
+
+    def drop_before_target_then_stay_down(request, timeout):
+        if request.get_method() == "POST" and request.full_url.endswith("/v1/runs"):
+            original_requests.append(request)
+            if len(original_requests) == 1:
+                raise urllib.error.URLError(ConnectionResetError(errno.ECONNRESET, "request lost"))
+            if not peer_down.is_set():
+                delivered_admissions.append(request)
+        if peer_down.is_set():
+            raise urllib.error.URLError(ConnectionRefusedError(errno.ECONNREFUSED, "refused"))
+        if request.get_method() == "POST" and request.full_url.endswith("/v1/runs/stop"):
+            cancellation_requests.append(request)
+            if len(cancellation_requests) == 1:
+                with real_open(request, timeout=timeout) as response:
+                    response.read()
+                cancellation_reply_lost.set()
+                raise urllib.error.URLError(ConnectionResetError(errno.ECONNRESET, "cancellation reply lost"))
+        if cancellation_reply_lost.is_set() and cancellation_down.is_set():
+            raise urllib.error.URLError(ConnectionRefusedError(errno.ECONNREFUSED, "refused"))
+        return real_open(request, timeout=timeout)
+
+    monkeypatch.setattr(urllib_security, "open_credentialed_url", drop_before_target_then_stay_down)
+    monkeypatch.setattr(rpc_server, "get_hosted_room_service", lambda: home)
+    agent, release = _agent(), threading.Event()
+
+    def run_until_stopped(*args, **kwargs):
+        assert release.wait(20)
+        return {"final_response": "", "interrupted": True}
+
+    agent.run_conversation.side_effect = run_until_stopped
+    agent.interrupt.side_effect = lambda *a, **kw: release.set()
+    admissions, factories = [], []
+    try:
+        with ExitStack() as patches:
+            def instrument(adapter):
+                admissions.append(patches.enter_context(patch.object(
+                    adapter, "_activate_admitted_request", wraps=adapter._activate_admitted_request)))
+                factories.append(patches.enter_context(patch.object(
+                    adapter, "_create_agent", return_value=agent)))
+
+            instrument(target)
+            home.start()
+            home.send(
+                room_id="room-1", event_id="user-1",
+                payload={"text": "@reviewer inspect", "thread_id": "thread-1"},
+            )
+            deferred = await _peer_task_in(home, ("deferred",))
+            assert deferred["execution_generation"] == 1
+            assert sum(admission.call_count for admission in admissions) == 0
+            assert home.stop(timeout=5.0)
+            home = HostedRoomService(_server_module(), db_path=home.db_path)
+            home.rpc = home.runtime.rpc = _LocalRPC()
+            home.local_profiles = lambda: ("local",)
+            home.runtime.poll_interval_seconds = 0.05
+            home.start()
+            peer_down.clear()
+            handler = rpc_server._methods[f"groups.{operation}"]
+            params = {"room_id": "room-1", "cancel_id": "cancel-absent"}
+            response = await asyncio.to_thread(handler, 1, params)
+            if "error" in response:
+                assert operation == "disband" and "still stopping" in response["error"]["message"], response
+            assert sum(admission.call_count for admission in admissions) == 0
+            assert cancellation_reply_lost.is_set()
+            pending = driver.get_task(home.db_path, deferred["identity"])
+            assert (pending["status"], pending["execution_generation"]) == ("stopping", 1)
+            assert not delivered_admissions and agent.run_conversation.call_count == 0
+            key = f"room:{deferred['identity'].task_id}:1"
+            with sqlite3.connect(tmp_path / "target-runs.db") as conn:
+                [stored] = conn.execute(
+                    "SELECT status_json FROM run_idempotency WHERE idempotency_key=?", (key,)).fetchall()
+            proof = json.loads(stored[0])
+            assert proof["status"] == "cancelled" and proof["admission_cancelled"] is True
+            assert home.stop(timeout=5.0)
+            home = HostedRoomService(_server_module(), db_path=home.db_path)
+            home.rpc = home.runtime.rpc = _LocalRPC()
+            home.local_profiles = lambda: ("local",)
+            home.runtime.poll_interval_seconds = 0.05
+            home.start()
+            cancellation_down.clear()
+            response = await asyncio.to_thread(handler, 2, params)
+            if "error" in response:
+                assert operation == "disband" and "still stopping" in response["error"]["message"], response
+            task = await _settled_peer_turn(home)
+            if operation == "disband" and "error" in response:
+                response = await asyncio.to_thread(handler, 3, params)
+            assert "error" not in response, response
+            assert (task["status"], task["execution_generation"]) == ("cancelled", 1)
+            assert sum(admission.call_count for admission in admissions) == 0
+            assert sum(factory.call_count for factory in factories) == 0
+            assert agent.run_conversation.call_count == 0
+            assert not delivered_admissions
+            assert not target._active_run_tasks and not target._run_streams
+            assert {request.get_header("Idempotency-key") for request in original_requests} == {key}
+            assert len(cancellation_requests) >= 2
+            assert {request.get_header("Idempotency-key") for request in cancellation_requests} == {key}
+            assert home.stop(timeout=5.0)
+
+            async def deliver_original_and_check_absence():
+                def deliver():
+                    try:
+                        with real_open(original_requests[0], timeout=5) as reply:
+                            return reply.status, json.loads(reply.read())
+                    except urllib.error.HTTPError as exc:
+                        return exc.code, json.loads(exc.read())
+
+                status, body = await asyncio.to_thread(deliver)
+                if operation == "stop":
+                    assert status == 202 and body["status"] == "cancelled", (status, body)
+                    assert body["replayed"] is True
+                else:
+                    assert status == 403, (status, body)
+                with sqlite3.connect(tmp_path / "target-runs.db") as conn:
+                    rows = conn.execute(
+                        "SELECT status_json FROM run_idempotency WHERE idempotency_key=?", (key,)).fetchall()
+                assert len(rows) == 1
+                proof = json.loads(rows[0][0])
+                assert proof["status"] == "cancelled" and proof["admission_cancelled"] is True
+                assert sum(admission.call_count for admission in admissions) == 0
+                assert sum(factory.call_count for factory in factories) == 0
+                assert agent.run_conversation.call_count == 0
+                assert not target._active_run_tasks and not target._run_streams
+
+            await deliver_original_and_check_absence()
+            peer_port = server.port
+            await server.close()
+            target._run_idempotency_store.close()
+            target = APIServerAdapter(
+                PlatformConfig(enabled=True, extra={"key": "target-peer-key-1234567890"}))
+            target._run_idempotency_store.close()
+            target._run_idempotency_store = RunIdempotencyStore(str(tmp_path / "target-runs.db"))
+            instrument(target)
+            server = TestServer(_target_app(target), port=peer_port)
+            await server.start_server()
+            await deliver_original_and_check_absence()
+    finally:
+        release.set()
+        home.stop(timeout=5.0)
+        await asyncio.gather(*target._active_run_tasks.values(), return_exceptions=True)
+        await server.close()
+        target._run_idempotency_store.close()
+
+
 async def _peer_task_in(home, statuses, *, timeout: float = 20.0):
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
@@ -417,6 +587,7 @@ async def test_stop_of_deferred_peer_waits_for_exact_remote_acknowledgement(
 
     assert agent.run_conversation.call_count == 1
     assert set(keys) == {f"room:{task['identity'].task_id}:1"}
+    assert agent.interrupt.call_count == 1
 
 
 @pytest.mark.asyncio

@@ -456,7 +456,10 @@ def _archived_user_turns(session, sid, history, cut_index, survivor_ids) -> int:
         if physical is None:
             rows = _load_durable_truncation_history(session, sid, repair_alternation=False) or []
             physical = {_message_row_id(row): row for row in rows if isinstance(row, dict)}
-        for rid in {_message_row_id(message), *absorbed} - survivor_ids - {None}:
+        own = _message_row_id(message)
+        # A carrier with no id of its own still holds its own (unaddressable) user turn.
+        archived += own is None
+        for rid in {own, *absorbed} - survivor_ids - {None}:
             row = physical.get(rid)
             archived += row is None or user_originated_turn_view(row) is not None
     return archived

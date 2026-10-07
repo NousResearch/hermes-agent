@@ -59,6 +59,7 @@ import {
   planConfirmedReload,
   planRestore,
   rebindSurvivorRowIds,
+  revalidateEditPlan,
   runRewindSubmit,
   type SurvivorUserRowIds
 } from '../session/hooks/use-prompt-actions/rewind'
@@ -707,15 +708,24 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
   const editMessage = useCallback(
     async (edited: AppendMessage, answeredFor?: ChatMessage[]): Promise<void> => {
-      const messages = readMessages()
+      const planning = readMessages()
       const confirmDeep = () => confirm(deepCutConfirmRequest(t.assistant.thread))
-      const forceDeep = answeredFor !== undefined && answeredFor === messages
-      const planned = await planConfirmedEdit(messages, edited, forceDeep ? async () => true : confirmDeep)
-      const plan = planned && forceDeep ? { ...planned, confirmDeepTruncate: true } : planned
+      const forceDeep = answeredFor !== undefined && answeredFor === planning
+      const planned = await planConfirmedEdit(planning, edited, forceDeep ? async () => true : confirmDeep)
+      const forced = planned && forceDeep ? { ...planned, confirmDeepTruncate: true } : planned
 
-      // Edit interrupts a live turn on purpose; only output that landed during the confirm makes
-      // the plan's index and rollback snapshot stale.
-      if (!plan || (plan.confirmDeepTruncate && readMessages() !== messages)) {
+      if (!forced) {
+        return
+      }
+
+      // Same re-aim as the primary edit: a stream may have grown the transcript during the confirm.
+      const messages = forced.confirmDeepTruncate ? readMessages() : planning
+      const plan = messages === planning ? forced : revalidateEditPlan(forced, messages, edited)
+
+      if (!plan) {
+        // The edited turn moved while the confirm was open: nothing was sent.
+        notify({ kind: 'warning', message: copy.editFailed })
+
         return
       }
 
@@ -759,7 +769,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           notifyError(err, copy.editFailed)
         } else if (await confirmDeep()) {
           // Re-run from the top: the session is re-read and re-validated after this wait.
-          await editMessageRef.current(edited, messages)
+          await editMessageRef.current(edited, planning)
         }
       }
     },

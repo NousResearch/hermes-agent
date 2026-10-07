@@ -95,6 +95,7 @@ def test_deep_truncate_counts_every_durable_row_a_merged_carrier_holds(monkeypat
         assert refused["error"]["code"] == 4033
         assert refused["error"]["data"]["archived_user_turns"] == 3
         assert sess["history"] == history and replaced == []
+
     finally:
         server._sessions.pop("deep-carrier-sid", None)
 
@@ -180,3 +181,20 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
         ]
     finally:
         server._sessions.pop("confirm-empty-sid", None)
+
+
+def test_archived_user_turns_counts_a_carrier_without_its_own_row_id():
+    """An unstamped carrier's own turn has no id to look up; it still counts (fail closed)."""
+    from tui_gateway import methods_prompt
+
+    history = [{"role": "user", "content": "x"}, {"role": "assistant", "content": "r"},
+               {"_absorbed_row_ids": [102], "role": "user", "content": "b\n\nc"}]
+    sess = _session(history=history)
+    physical = {"rows": [{"_row_id": 102, "role": "user", "content": "c"}]}
+    original = methods_prompt._load_durable_truncation_history
+    methods_prompt._load_durable_truncation_history = lambda *a, **k: physical["rows"]
+    try:
+        assert methods_prompt._archived_user_turns(sess, "sid", history, 2, set()) == 2
+    finally:
+        methods_prompt._load_durable_truncation_history = original
+

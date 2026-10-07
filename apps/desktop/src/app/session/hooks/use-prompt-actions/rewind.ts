@@ -740,6 +740,30 @@ export async function planConfirmedEdit(
   return plan && confirmIfDeepCut(messages, plan, plan.sourceIndex, confirmDeep)
 }
 
+/**
+ * After an awaited confirm, an edit plan still holds when the same turn is the target in the
+ * current transcript. Streaming replaces the array on every delta, so identity is not the test:
+ * re-plan and compare the turn's address. The re-planned index is the one to apply.
+ */
+export function revalidateEditPlan<P extends EditPlan>(
+  plan: P,
+  current: ChatMessage[],
+  edited: AppendMessage
+): P | null {
+  const fresh = planEdit(current, edited)
+
+  if (
+    !fresh ||
+    fresh.truncateMessageId !== plan.truncateMessageId ||
+    fresh.truncateRowId !== plan.truncateRowId ||
+    fresh.truncateOrdinal !== plan.truncateOrdinal
+  ) {
+    return null
+  }
+
+  return { ...plan, ...fresh, confirmDeepTruncate: (plan as P & { confirmDeepTruncate?: boolean }).confirmDeepTruncate }
+}
+
 /** Optimistic rewind-to state for restore/edit: drop everything after the
  *  source turn (edit swaps in the edited message; restore keeps the original). */
 export function applyRewindOptimistic(

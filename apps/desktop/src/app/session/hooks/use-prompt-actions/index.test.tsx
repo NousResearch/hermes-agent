@@ -6200,6 +6200,67 @@ describe('usePromptActions reloadFromMessage failed-submit rollback (#95745)', (
   })
 })
 
+describe('usePromptActions deep edit confirmed while output streams (#133716)', () => {
+  afterEach(() => {
+    cleanup()
+    clearNotifications()
+    setMessages([])
+    $busy.set(false)
+  })
+
+  it('re-aims a confirmed deep edit at the grown transcript instead of dropping it', async () => {
+    const seed = [
+      { id: 'u1', parts: [textPart('first')], role: 'user' as const, rowId: 11, timestamp: 0 },
+      { id: 'a1', parts: [textPart('reply')], role: 'assistant' as const, timestamp: 1 },
+      { id: 'u2', parts: [textPart('later')], role: 'user' as const, rowId: 13, timestamp: 2 },
+      { id: 'a2', parts: [textPart('later reply')], role: 'assistant' as const, timestamp: 3 }
+    ]
+
+    setMessages(seed as never)
+    const submits: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submits.push(params ?? {})
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | undefined
+
+    await actRender(
+      <Harness
+        onReady={h => {
+          handle = h
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={seed}
+      />
+    )
+
+    // A stream delta replaces the transcript array while the user reads the dialog.
+    const stopConfirming = $confirmRequest.listen(request => {
+      if (request) {
+        setMessages([...seed, { id: 'a2b', parts: [textPart('more')], role: 'assistant', timestamp: 4 }] as never)
+        settleConfirm(true)
+      }
+    })
+
+    await handle!.editMessage({
+      content: [{ text: 'edited first', type: 'text' }],
+      parentId: null,
+      role: 'user',
+      sourceId: 'u1'
+    } as never)
+    stopConfirming()
+
+    expect(submits).toHaveLength(1)
+    expect(submits[0]).toMatchObject({ confirm_deep_truncate: true, truncate_before_row_id: 11, text: 'edited first' })
+  })
+})
+
 describe('usePromptActions live-owner refusal (#106217)', () => {
   afterEach(() => {
     cleanup()

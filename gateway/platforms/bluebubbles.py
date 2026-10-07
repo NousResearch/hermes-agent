@@ -120,6 +120,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         path = str(_extra_or_secret(extra, "webhook_path", "BLUEBUBBLES_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH))
         self.webhook_path = path if path.startswith("/") else f"/{path}"
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
+        self._reply_to_mode: str = getattr(config, "reply_to_mode", "first") or "first"
         _require_mention = extra.get("require_mention")
         if _require_mention is None:
             _require_mention = _get_scoped_secret("BLUEBUBBLES_REQUIRE_MENTION")
@@ -359,6 +360,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # Base splitter minus "(1/3)" pagination suffixes — iMessage bubbles flow naturally.
         return [_PAGINATION_SUFFIX_RE.sub("", c) for c in BasePlatformAdapter.truncate_message(content, max_length)]
 
+    def _should_thread_reply(self, reply_to: Optional[str], chunk_index: int) -> bool:
+        """Whether this bubble (0 = first) should be an inline reply to ``reply_to``, per reply_to_mode."""
+        if not reply_to or self._reply_to_mode == "off":
+            return False
+        return self._reply_to_mode == "all" or chunk_index == 0  # "first" (default)
+
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         text = self.format_message(content)
@@ -369,14 +376,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         chunks = [c for para in paragraphs for c in (
             [para] if len(para) <= self.MAX_MESSAGE_LENGTH else self.truncate_message(para, self.MAX_MESSAGE_LENGTH))]
         last = SendResult(success=True)
-        for chunk in chunks:
+        for index, chunk in enumerate(chunks):
             guid = await self._resolve_chat_guid(chat_id)
             if not guid:
                 if self._private_api_enabled and ("@" in chat_id or _ADDRESS_RE.match(chat_id)):  # address → new chat
                     return await self._create_chat_for_handle(chat_id, chunk)
                 return SendResult(success=False, error=f"BlueBubbles chat not found for target: {chat_id}")
             payload: Dict[str, Any] = {"chatGuid": guid, "tempGuid": _temp_guid(), "message": chunk}
-            if reply_to and self._private_api_enabled and self._helper_connected:
+            if self._should_thread_reply(reply_to, index) and self._private_api_enabled and self._helper_connected:
                 payload.update(method="private-api", selectedMessageGuid=reply_to, partIndex=0)
             if not (last := await self._post_message("/api/v1/message/text", payload)).success:
                 return last

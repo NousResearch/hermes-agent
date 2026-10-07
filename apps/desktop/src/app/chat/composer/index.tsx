@@ -33,6 +33,7 @@ import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
+import { $investigationOnly, setInvestigationOnly } from '@/store/investigation-only'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -141,6 +142,7 @@ export function ChatBar({
   onTranscribeAudio
 }: ChatBarProps) {
   const hudMode = useStore($hudMode)
+  const investigationOnly = useStore($investigationOnly)
   const hudWindowing = window.hermesDesktop?.hud?.windowing
   const hudNativeDrag = hudMode && hudWindowing?.nativeDrag === true
 
@@ -1332,6 +1334,18 @@ export function ChatBar({
               5px transparent grab margin — so both strips carry the same inset
               and share one left edge with it. */}
           <div className={cn(composerFloatingStrip, 'px-[5px] pb-1.5 empty:hidden')}>
+            <Button
+              aria-label={investigationOnly ? t.composer.investigationOnlyRestriction : t.composer.investigationOnlyHint}
+              aria-pressed={investigationOnly === true}
+              className="h-7 rounded-full px-2 text-xs"
+              disabled={busy}
+              onClick={() => setInvestigationOnly(investigationOnly !== true)}
+              type="button"
+              variant={investigationOnly ? 'secondary' : 'ghost'}
+            >
+              {investigationOnly ? t.composer.investigationOnlyOn : t.composer.investigationOnlyOff}
+            </Button>
+            {investigationOnly && <span className="text-xs text-muted-foreground">{t.composer.investigationOnlyRestriction}</span>}
             <ActionBadges sessionId={statusSessionId} />
             <SuggestionPills sessionId={statusSessionId} />
             <OnboardingSkip />

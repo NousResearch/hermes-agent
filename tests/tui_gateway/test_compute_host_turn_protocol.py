@@ -116,6 +116,32 @@ def test_turn_start_streams_deltas_then_turn_end_with_history_identity(turn_env)
     assert "ended_ns" in end
 
 
+def test_isolated_turn_keeps_investigation_policy(turn_env):
+    seen = []
+
+    def run_conversation(prompt, *, mutation_policy="allowed", **kwargs):
+        seen.append(mutation_policy)
+        return {"final_response": "ok"}
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, heartbeat_secs=0)
+    sid = "isolated-investigation"
+    agent = types.SimpleNamespace(session_id="s1-key", run_conversation=run_conversation,
+                                  clear_interrupt=lambda: None)
+    session = _session(agent)
+    session["mutation_policy"] = "forbidden"
+    server._sessions[sid] = session
+    try:
+        frame = server._compute_host_turn_frame("turn", sid, session, "investigate")
+        host.handle_frame(frame)
+        _wait(out, lambda item: item["type"] == "turn.end")
+    finally:
+        server._sessions.pop(sid, None)
+        host.close()
+
+    assert seen == ["forbidden"]
+
+
 def test_turn_start_without_sid_is_a_turn_error(turn_env):
     out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)

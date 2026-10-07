@@ -19,6 +19,7 @@ export interface RemoveQueuedPromptOptions {
 export interface QueuedPromptEntry {
   id: string
   text: string
+  mutationPolicy?: 'allowed' | 'forbidden'
   /** What the queue panel and the sent bubble show, when it differs from the
    *  text the agent receives. A queued `/skill` invocation carries the whole
    *  expanded skill body as `text` — the UI shows the invocation instead.
@@ -41,6 +42,7 @@ export interface QueuedPromptEntry {
 export interface EnqueueQueuedPromptPayload {
   text: string
   attachments: ComposerAttachment[]
+  mutationPolicy?: 'allowed' | 'forbidden'
   displayText?: string
   displayKind?: 'hidden'
   /** Fenced `@terminal` transport. Runtime-only; never written to localStorage. */
@@ -332,6 +334,7 @@ export const enqueueQueuedPrompt = (
   const entry: QueuedPromptEntry = {
     id: nextId(),
     text: payload.text,
+    ...(payload.mutationPolicy ? { mutationPolicy: payload.mutationPolicy } : {}),
     ...(payload.displayText ? { displayText: payload.displayText } : {}),
     ...(payload.displayKind ? { displayKind: payload.displayKind } : {}),
     attachments: cloneAttachments(payload.attachments),

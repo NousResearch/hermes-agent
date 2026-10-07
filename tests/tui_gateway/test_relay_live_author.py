@@ -125,6 +125,58 @@ def test_turn_runner_passes_the_author_only_when_set_and_only_to_an_agent_that_d
     assert seen == [AUTHOR, "not passed", "legacy called"]
 
 
+def test_prompt_submit_carries_user_mutation_policy_into_real_turn(turn_env):
+    seen = []
+
+    def run_conversation(user_message, *, mutation_policy="allowed", **kwargs):
+        seen.append((user_message, mutation_policy))
+        return {"final_response": "ok"}
+
+    agent = types.SimpleNamespace(session_id="a", run_conversation=run_conversation,
+                                  clear_interrupt=lambda: None)
+    session = _session(agent=agent)
+    srv._sessions["investigation-policy"] = session
+    try:
+        for text, policy in (("investigate", "forbidden"), ("implement", "allowed")):
+            response = srv._methods["prompt.submit"]("rid", {
+                "session_id": "investigation-policy", "text": text, "mutation_policy": policy,
+            })
+            assert _result(response)["status"] == "streaming"
+            assert session["mutation_policy"] == policy
+            if policy == "forbidden":
+                srv._run_prompt_submit("continuation", "investigation-policy", session, "keep investigating")
+    finally:
+        srv._sessions.pop("investigation-policy", None)
+
+    assert seen == [("investigate", "forbidden"), ("keep investigating", "forbidden"),
+                    ("implement", "allowed")]
+
+
+def test_queued_investigation_prompt_keeps_its_policy_on_drain(turn_env):
+    seen = []
+
+    def run_conversation(user_message, *, mutation_policy="allowed", **kwargs):
+        seen.append((user_message, mutation_policy))
+        return {"final_response": "ok"}
+
+    agent = types.SimpleNamespace(session_id="a", run_conversation=run_conversation,
+                                  clear_interrupt=lambda: None, interrupt=lambda: None)
+    session = _session(agent=agent, running=True)
+    srv._sessions["queued-investigation"] = session
+    try:
+        response = srv._methods["prompt.submit"]("rid", {
+            "session_id": "queued-investigation", "text": "investigate", "queued": True,
+            "mutation_policy": "forbidden",
+        })
+        assert _result(response)["status"] == "queued"
+        session["running"] = False
+        assert srv._drain_queued_prompt("drain", "queued-investigation", session) is True
+    finally:
+        srv._sessions.pop("queued-investigation", None)
+
+    assert seen == [("investigate", "forbidden")]
+
+
 def test_a_human_prompt_after_a_relayed_dm_runs_without_an_author(turn_env, monkeypatch):
     """The author rides on the queued entry and the run call, never on the session, so the human prompt that
     follows a drained relayed dm reaches ``run_conversation`` unattributed."""

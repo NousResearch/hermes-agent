@@ -15,10 +15,12 @@ from typing import Any, Dict, Optional
 
 from hermes_cli.dashboard_auth import LoginStart, ProviderError, Session
 from plugins.dashboard_auth._shared import (
+    DEFAULT_TOKEN_LEEWAY_SECONDS,
     JwtOAuthProvider,
     SkipRegistration,
     exchange_token,
     load_config_section,
+    parse_leeway,
     pkce_login_start,
     refresh_token_from,
     register_provider,
@@ -43,13 +45,16 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
     name = "nous"
     display_name = "Nous Research"
 
-    def __init__(self, *, client_id: str, portal_url: str) -> None:
+    def __init__(self, *, client_id: str, portal_url: str, token_leeway: float = DEFAULT_TOKEN_LEEWAY_SECONDS) -> None:
         # Defense-in-depth: register() filters too, but a malformed id must never construct a provider.
         if not client_id.startswith("agent:"):
             raise ValueError(f"client_id must match contract shape 'agent:{{instance_id}}', got {client_id!r}")
         self._client_id = client_id
         self._agent_instance_id = client_id[len("agent:") :]
         self._portal_url = portal_url.rstrip("/")
+        # Clock-skew tolerance (seconds) for the access token's exp/nbf/iat claims;
+        # the default absorbs Portal/host clock skew (#47815), 0 restores strict mode.
+        self._token_leeway = parse_leeway(token_leeway)
         self._jwks_url = f"{self._portal_url}/.well-known/jwks.json"
         self._authorize_url = f"{self._portal_url}/oauth/authorize"
         self._token_url = f"{self._portal_url}/api/oauth/token"
@@ -93,7 +98,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         claims = verify_jwt(
             access_token, self._get_jwks_client(), algorithms=["RS256"],
             audience=self._client_id,  # contract C2: bare client_id
-            issuer=self._portal_url, label="access token")
+            issuer=self._portal_url, label="access token", leeway=self._token_leeway)
         # Contract C9: agent_instance_id is "should" not "must" — tolerated when absent
         # (the aud check already binds the token to this instance).
         token_instance_id = claims.get("agent_instance_id")
@@ -142,7 +147,9 @@ def _settings() -> dict:
             f"shape 'agent:{{instance_id}}'. The Nous Portal provisions this value at deploy "
             f"time; check your Fly app's secrets or override with the value from the Portal admin UI.",
             level="warning")
-    return {"client_id": client_id, "portal_url": portal_url}
+    return {"client_id": client_id, "portal_url": portal_url,
+            # Clock-skew tolerance for access-token exp/nbf/iat (config.yaml only; default 60s, 0 = strict).
+            "token_leeway": parse_leeway(section.get("token_leeway"))}
 
 
 def register(ctx) -> None:
@@ -152,4 +159,5 @@ def register(ctx) -> None:
     kwargs, LAST_SKIP_REASON = register_provider(ctx, logger, _TAG, NousDashboardAuthProvider, _settings)
     if kwargs is not None:
         logger.info(
-            "dashboard-auth-nous: registered provider (client_id=%s, portal=%s)", kwargs["client_id"], kwargs["portal_url"])
+            "dashboard-auth-nous: registered provider (client_id=%s, portal=%s, token_leeway=%ss)",
+            kwargs["client_id"], kwargs["portal_url"], kwargs["token_leeway"])

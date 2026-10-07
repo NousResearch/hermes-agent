@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
+from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
 from agent.message_metadata import append_message, without_persistence_fields
@@ -343,15 +344,9 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     # preserves alternation only — scaffold bytes must never land in it, since api_content
     # is substituted back into content on replay (#81841).
     if not (messages and messages[-1].get("role") == "assistant"):
-        placeholder: Dict[str, Any] = {"role": "assistant", "content": visible or ""}
-        if not visible:
-            placeholder["display_kind"] = "hidden"
-            # Hidden row, but a non-empty neutral api_content so the pre-call sanitizer
-            # does not re-heal it every call (#88955). Never _INTERRUPT_SCAFFOLD_MARKER:
-            # as assistant text the model echoes it (#81841).
-            from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
-            placeholder["api_content"] = _INTERRUPTED_PLACEHOLDER
-        append_message(messages, placeholder)
+        # Hidden row with a neutral api_content (#88955). Never _INTERRUPT_SCAFFOLD_MARKER:
+        # as assistant text the model echoes it (#81841).
+        append_message(messages, {"role": "assistant", "content": visible} if visible else hidden_interrupt_placeholder_row())
     # Transcript shows the user's own words; the provider replays the scaffolded form.
     append_message(messages, {"role": "user", "content": text, "api_content": correction})
 
@@ -1417,10 +1412,10 @@ class _LoopState:
     failed: bool = False
     codex_ack_continuations: int = 0
     length_continue_retries: int = 0
-    # Per-turn backstop for the refunding restarts (redirect / rebuilt-for-fallback).
-    # Unlike ``retry_count`` (rebound to 0 each iteration) this accumulates for the whole
-    # turn so a runaway interrupt/redirect that keeps re-arming a restart flag cannot
-    # refund the iteration budget forever and hold the turn lease indefinitely.
+    # Backstop for the refunding restarts (redirect / rebuilt-for-fallback). Unlike
+    # ``retry_count`` (rebound to 0 each iteration) this survives across iterations until a
+    # response arrives, so a runaway interrupt/redirect that keeps re-arming a restart flag
+    # cannot refund the iteration budget forever and hold the turn lease indefinitely.
     restart_count: int = 0
     _outer_error_count: int = 0  # outer-loop exceptions this turn (#92450), see _MAX_OUTER_LOOP_ERRORS
     truncated_tool_call_retries: int = 0
@@ -1544,12 +1539,16 @@ def _run_conversation_turn(
     persist_user_platform_id: Optional[str] = None,
     turn_author: Optional[Dict[str, Any]] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    title_user_message: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run a complete conversation with tool calling until completion; returns the result dict.
 
     ``stream_callback``: per-text-delta callback (TTS). ``persist_user_message``: clean text to
     store when ``user_message`` carries API-only synthetic prefixes; timestamp / platform id are
-    stored as metadata (platform id lets restart drain recovery dedup). ``persist_user_display_*``:
+    stored as metadata (platform id lets restart drain recovery dedup).
+    ``title_user_message``: optional pre-injection text for titles only (None uses the
+    model-facing message; an empty string suppresses titling for this turn).
+    ``persist_user_display_*``:
     display-only event rendering; the model still receives the message unchanged."""
     if moa_config is None:
         user_message, moa_config, persist_user_message = _decode_inline_moa_turn(
@@ -1588,9 +1587,14 @@ def _run_conversation_turn(
             # MoA turns append per-call aggregated context to the API copy of the
             # user message, so no byte-stable api_content sidecar can be stamped.
             moa_active=bool(moa_config),
+            title_user_message=title_user_message,
         )
     except PreflightCompressionTimedOut as _preflight_timeout_exc:
         return _preflight_timeout_result(agent, _preflight_timeout_exc, conversation_history)
+    # Voice turns may run on auxiliary.voice_chat: bound after the prompt/row/compaction were settled
+    # against the main model, undone in finalize_turn (and run_conversation's finally on early exits).
+    from agent.voice_turn_route import begin_voice_turn_route
+    _ctx.active_system_prompt = begin_voice_turn_route(agent, _ctx.messages, _ctx.active_system_prompt)
 
     # Per-turn agent state (the gateway caches agents across turns, so none of this may
     # leak into the next message): interim-commentary dedup spans the whole turn but not
@@ -1701,6 +1705,7 @@ def run_conversation(
     persist_user_platform_id: Optional[str] = None,
     moa_config: Optional[dict[str, Any]] = None,
     turn_author: Optional[Dict[str, Any]] = None,
+    title_user_message: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run one turn (see ``_run_conversation_turn``) and export the current-turn boundary.
 
@@ -1710,29 +1715,78 @@ def run_conversation(
     addresses, after every history rewrite including post-turn micro-compaction.
     """
     from agent.turn_context import export_current_turn_boundary
+    from agent.voice_turn_route import end_voice_turn_route
     from tools.vision_tools_history_budget import native_turn_images
 
     # Images attached natively to this user turn stay visible to vision_analyze for the turn, so
     # it does not embed the same pixels a second time into the same request (#76411).
     with native_turn_images(user_message):
-        result = _run_conversation_turn(
-            agent,
-            user_message,
-            system_message=system_message,
-            conversation_history=conversation_history,
-            task_id=task_id,
-            stream_callback=stream_callback,
-            persist_user_message=persist_user_message,
-            persist_user_timestamp=persist_user_timestamp,
-            persist_user_display_kind=persist_user_display_kind,
-            persist_user_display_metadata=persist_user_display_metadata,
-            persist_user_platform_id=persist_user_platform_id,
-            moa_config=moa_config,
-            turn_author=turn_author,
-        )
+        try:
+            result = _run_conversation_turn(
+                agent,
+                user_message,
+                system_message=system_message,
+                conversation_history=conversation_history,
+                task_id=task_id,
+                stream_callback=stream_callback,
+                persist_user_message=persist_user_message,
+                persist_user_timestamp=persist_user_timestamp,
+                persist_user_display_kind=persist_user_display_kind,
+                persist_user_display_metadata=persist_user_display_metadata,
+                persist_user_platform_id=persist_user_platform_id,
+                moa_config=moa_config,
+                turn_author=turn_author,
+                title_user_message=title_user_message,
+            )
+        finally:
+            end_voice_turn_route(agent)
     result = export_current_turn_boundary(agent, result, user_message)
     _close_durable_failed_turn(agent, result)
     return result
+
+
+_FAILED_TURN_ERROR_MAX_CHARS = 2000
+
+
+def _failed_turn_display_metadata(agent, result: dict) -> dict:
+    """The error text and ``error_surface`` a client needs to redraw the failed turn's error
+    card from the transcript, after the live ``message.complete`` frame is gone. Every
+    string is redacted with ``force=True``: the error came from a provider/tool, so a
+    secret echoed in it must not reach the durable store (the redaction e2e boundary)."""
+    from agent.error_surface import build_error_surface_from_result
+
+    try:
+        surface = build_error_surface_from_result(
+            result, provider=agent.provider or "", model=agent.model or ""
+        )
+    except Exception:
+        logger.debug("failed-turn error surface unavailable", exc_info=True)
+        surface = None
+    error = str(result.get("error") or "").strip()[:_FAILED_TURN_ERROR_MAX_CHARS]
+    metadata = {k: v for k, v in (("error", error), ("error_surface", surface)) if v}
+    return _redact_display_metadata(metadata)
+
+
+def _redact_display_metadata(metadata: dict) -> dict:
+    """Force-redact every string in a display_metadata payload (dicts and lists included).
+
+    display_metadata is persisted via ``SessionDB.append_message`` and re-delivered to
+    clients, so it sits downstream of the turn's own content redaction: an error string
+    that escaped a provider or tool would otherwise reach the 'store' and 'export' sinks
+    verbatim. ``force=True`` keeps the boundary closed even when ``security.redact_secrets``
+    is off, matching the compressor's persistence boundary."""
+    from agent.redact import redact_sensitive_text
+
+    def _redact(value):
+        if isinstance(value, str):
+            return redact_sensitive_text(value, force=True)
+        if isinstance(value, dict):
+            return {k: _redact(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_redact(v) for v in value]
+        return value
+
+    return {k: _redact(v) for k, v in metadata.items()}
 
 
 def _close_durable_failed_turn(agent, result: Any) -> None:
@@ -1770,9 +1824,12 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
         # hedge over the whole list rather than under-report a possible side effect.
         start = result.get("current_turn_user_idx")
         turn_messages = messages[start:] if isinstance(start, int) and 0 <= start < len(messages) else messages
-        append_message(messages, {
+        boundary = {
             "role": "assistant", "content": failed_turn_notice(turn_messages), "display_kind": FAILED_TURN_DISPLAY_KIND,
-        })
+        }
+        if failure := _failed_turn_display_metadata(agent, result):
+            boundary["display_metadata"] = failure
+        append_message(messages, boundary)
         agent._flush_messages_to_session_db(messages)
     except Exception:
         logger.debug("failed-turn boundary not written", exc_info=True)

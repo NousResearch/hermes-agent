@@ -40,11 +40,6 @@ def _approval_outcome_label(result) -> str:
     return t(key) if key else str(result)
 
 
-_CLARIFY_TIMEOUT_REPLY = (
-    "The user did not provide a response within the time limit. "
-    "Use your best judgement to make the choice and proceed.")
-
-
 def _approval_gate_on(key: str) -> bool:
     """Read ``approvals.<key>`` (default on); any load failure keeps the prompt enabled."""
     from cli import load_cli_config
@@ -598,48 +593,6 @@ class CLIModalMixin:
         self._clarify_multi_base = None
         self._paint_now()
 
-    def _clarify_callback(self, question, choices, multi_select=False, questions=None):
-        """Clarify-tool platform callback (agent thread): show the selection UI (or freetext for
-        open-ended questions) and block until the key bindings answer or the timeout dismisses it
-        (the agent is then told to decide). ``multi_select`` shows checkboxes (Space toggles).
-        A non-empty ``questions`` list switches to the batch panel and returns
-        ``{"answers": {qid: raw}}`` (plus ``"timed_out": True`` on a partial deadline expiry).
-
-        The single-question path below is unchanged. See #18450.
-        """
-        from cli import CLI_CONFIG, _DIM, _RST, _cprint
-        from tools.clarify_gateway import resolve_clarify_timeout
-
-        if questions:
-            return self._clarify_callback_batch(questions)
-
-        # Canonical clarify timeout, shared with the gateway/TUI path; `<= 0` = unlimited.
-        timeout = resolve_clarify_timeout(CLI_CONFIG)
-        response_queue = queue.Queue()
-        is_open_ended = not choices
-        effective_multi = multi_select and not is_open_ended
-        self._clarify_state = {
-            "question": question,
-            "choices": choices if not is_open_ended else [],
-            "selected": 0,
-            "multi_select": effective_multi,
-            "selected_indices": set() if effective_multi else None,
-            "response_queue": response_queue}
-        self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
-        self._clarify_freetext = is_open_ended  # open-ended → straight to freetext
-        self._clarify_multi_base = None
-        self._ring_bell(prompt=True, context=t("cli.clarify.bell_context"))
-        self._paint_now()
-
-        result = self._poll_modal_queue(response_queue, "_clarify_deadline")
-        if result is not _TIMED_OUT:
-            self._clarify_deadline = None
-            self._persist_prompt_summary("?", t("cli.clarify.label"), question, str(result))
-            return result
-        self._clarify_teardown()
-        _cprint(f"\n{_DIM}{t('cli.clarify.timed_out_agent_decides', timeout=timeout)}{_RST}")
-        return _CLARIFY_TIMEOUT_REPLY
-
     # --- Connection setup --------------------------------------------------
     def _connection_operation(self, payload):
         from tools.connectors import live
@@ -963,7 +916,7 @@ class CLIModalMixin:
     # --- Batch clarify (multi-question, issue #18450) -----------------------
     def _clarify_batch_set_active(self, state, index) -> None:
         """Point the batch clarify panel at question ``index``: mirror it into the flat keys the
-        single-question keybindings/renderer read so ↑/↓/Space/number keys work unchanged;
+        keybindings/renderer read so ↑/↓/Space/number keys work unchanged;
         open-ended drops into freetext; re-visiting restores the earlier cursor/checkboxes."""
         questions_list = state["questions"]
         index = max(0, min(index, len(questions_list) - 1))
@@ -1000,7 +953,7 @@ class CLIModalMixin:
         entry = state["questions"][state["active"]]
         state["answers"][entry["qid"]] = answer
         state.setdefault("answer_meta", {})[entry["qid"]] = meta or {"kind": "choice"}
-        self._persist_prompt_summary("?", t("cli.clarify.label"), entry["question"], str(answer))
+        self._persist_prompt_summary("?", t("cli.clarify.label"), entry["question"], "" if answer is None else str(answer))
         total = len(state["questions"])
         for offset in range(1, total + 1):
             candidate = (state["active"] + offset) % total
@@ -1043,11 +996,11 @@ class CLIModalMixin:
         self._clarify_freetext = True
         self._clarify_prefill = meta.get("other_text") or "" if meta.get("kind") == "other" else ""
 
-    def _clarify_callback_batch(self, questions):
-        """Batch clarify panel (A-compact): all questions, one active. Returns
-        ``{"answers": {qid: raw}}`` when every question is locked, plus ``"timed_out": True`` when
-        the deadline expires with partial answers; a cancel string passes through unchanged so the
-        tool core resolves the batch empty."""
+    def _clarify_callback(self, questions):
+        """Clarify-tool platform callback (agent thread, #18450): the batch panel (A-compact) shows
+        all questions, one active, and blocks until the key bindings lock every answer. Returns
+        ``{"answers": {qid: raw | None}, "outcome"}`` (None = skipped): ``submitted`` when every
+        question is locked, ``timed_out`` when the deadline expires, ``cancelled`` on an interrupt."""
         from cli import CLI_CONFIG, _DIM, _RST, _cprint
         from tools.clarify_gateway import resolve_clarify_timeout
 
@@ -1074,11 +1027,12 @@ class CLIModalMixin:
         result = self._poll_modal_queue(response_queue, "_clarify_deadline")
         if result is not _TIMED_OUT:
             self._clarify_deadline = None
-            return {"answers": result} if isinstance(result, dict) else result
+            outcome = "cancelled" if result is None else "submitted"
+            return {"answers": dict(state["answers"]), "outcome": outcome}
         partial = dict(state["answers"])
         self._clarify_teardown()
         _cprint(f"\n{_DIM}{t('cli.clarify.timed_out_locked_answers', timeout=timeout)}{_RST}")
-        return {"answers": partial, "timed_out": True}
+        return {"answers": partial, "outcome": "timed_out"}
 
     def _sudo_password_callback(self) -> str:
         """Prompt for a sudo password through the prompt_toolkit UI (agent thread); clarify-style
@@ -1152,7 +1106,7 @@ class CLIModalMixin:
                           allow_session: bool = True,
                           smart_denied: bool = False) -> list[str]:
         """Smart-DENY overrides and re-ask-every-time gates (allow_session=False) show only
-        once/deny; ``allow_permanent=False`` for another reason (e.g. tirith) hides only 'always'."""
+        once/deny; ``allow_permanent=False`` for another reason hides only 'always'."""
         if smart_denied or not allow_session:
             choices = ["once", "deny"]
         elif allow_permanent:
@@ -1307,7 +1261,7 @@ class CLIModalMixin:
         if self._connection_state:
             self._connection_interrupt()
         if self._clarify_state:
-            _put(self._clarify_state, "The user cancelled. Use your best judgement to proceed.")
+            _put(self._clarify_state, None)
             self._clarify_state = None
             self._clarify_freetext = False
             self._clarify_multi_base = None

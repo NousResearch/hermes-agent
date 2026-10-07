@@ -35,6 +35,15 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Every test file runs in its own process, and in a checkout without an install stamp
+# get_version_info() shells out to git 7 times (~0.55 s per process in a large local
+# clone; a whole local suite run spent ~48 CPU-minutes there). Seed the shape a shallow
+# CI checkout resolves to; tests of version resolution call _reset_version_info_cache().
+from hermes_cli import version_info as _version_info  # noqa: E402
+
+_version_info._cached_version_info = _version_info.VersionInfo(
+    "unknown", "git.0000000", None, "0" * 40, "main", "git")
+
 
 # ── Sandbox HERMES_HOME before ANY test module is imported ──────────────────
 # `hermes_cli/main.py` calls `setup_logging()` at MODULE level, which resolves
@@ -245,7 +254,7 @@ from tests._fixtures.platform_gating import _platforms_gate_reason, _reject_cont
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_environment(tmp_path, monkeypatch):
+def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     """Blank out all credential/behavioral env vars so local and CI match.
 
     Also redirects HOME and HERMES_HOME to per-test tempdirs so code that
@@ -310,6 +319,14 @@ def _hermetic_environment(tmp_path, monkeypatch):
     if not HOST_LOCK_DIR_AT_CONFTEST_IMPORT:
         monkeypatch.delenv("XDG_STATE_HOME", raising=False)
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
+    # Relay 0.9 normally discovers the user's XDG plugins.toml. Select an empty
+    # per-test user file instead so tests cannot activate a developer's plugins,
+    # without changing XDG_CONFIG_HOME for unrelated Hermes code under test.
+    # Outside tmp_path: tests that list or git-status their tmp dir must not see it.
+    relay_plugins = tmp_path_factory.getbasetemp() / "relay-plugins.toml"
+    if not relay_plugins.exists():
+        relay_plugins.write_text("version = 1\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(relay_plugins))
     # Keep the subprocess-surviving isolation marker pointed at THIS test's
     # home (#82770): children spawned by the test inherit it by default, so
     # hermes_state's live-DB guard stays armed in them even when the test
@@ -364,10 +381,6 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     monkeypatch.setenv("AWS_METADATA_SERVICE_TIMEOUT", "1")
     monkeypatch.setenv("AWS_METADATA_SERVICE_NUM_ATTEMPTS", "1")
-    # Tirith auto-installs from GitHub when enabled and missing. Unit tests
-    # should never perform that implicit network/bootstrap path; Tirith-specific
-    # tests opt back in by patching the security config directly.
-    monkeypatch.setenv("TIRITH_ENABLED", "false")
     # On-demand extras (pm.sync_venv) install mid-test-run by design —
     # _allow_lazy_installs() fails open for users. Unit tests must never reach
     # pip/the network: with the SDK absent, any agent init whose tool checks

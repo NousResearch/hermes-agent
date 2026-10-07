@@ -179,11 +179,13 @@ gateway:
     label_normal: "NORMAAL"
     status_fast: "vinnig"
     status_normal: "normaal"
-    picker_title: "⚡ **Priority Processing**\\n\\nHuidige modus: `{mode}`\\n\\nKies \\'n opsie:"
+    picker_title: "⚡ **Priority Processing**\n\nHuidige modus: `{mode}`\n\nKies \\'n opsie:"
     choice_fast: "fast — Priority Processing aan"
     choice_normal: "normal — standaardverwerking"
     choice_auto: "auto — vinnig vir die eerste sekondes van elke beurt"
     choice_cold: "cold — vinnig slegs vir die eerste beurt van 'n sessie"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, 6x prys)"
+    ultrafast_not_supported: "⚡ Ultrafast is slegs beskikbaar vir GPT-6 Astra (huidige model: `{model}`)."
   footer:
     status: "📎 Looptyd-voetstuk: **{state}**\nVelde: `{fields}`\nPlatform: `{platform}`"
     usage: "Gebruik: `/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` word nie ondersteun nie. Gebruik `/reasoning <level> --global` om die globale verstek te verander."
     reset_done: "🧠 ✓ Sessie-redenering-oorskryf verwyder; val terug op globale konfigurasie."
     unknown_arg: "⚠️ Onbekende argument: `{arg}`\n\n**Geldige vlakke:** none, minimal, low, medium, high, xhigh, max, ultra\n**Vertoon:** show, hide\n**Permanent:** voeg `--global` by om verby hierdie sessie te stoor"
-    picker_title: "🧠 **Redenering-instellings**\\n\\n**Inspanning:** `{level}`\\n**Bereik:** {scope}\\n**Vertoon:** {display}\\n\\nKies \\'n opsie:"
+    picker_title: "🧠 **Redenering-instellings**\n\n**Inspanning:** `{level}`\n**Bereik:** {scope}\n**Vertoon:** {display}\n\nKies \\'n opsie:"
     choice_none: "none — deaktiveer redenering"
     choice_reset: "reset — vee sessie-oorskrywing uit"
     choice_show: "wys redenering in antwoorde"
@@ -653,6 +655,7 @@ gateway:
     cancelled: "↩️ Verduideliking gekanselleer — jou boodskap sal as 'n opvolg hanteer word."
     expired: "⏳ Hierdie prompt het verval — stuur asseblief 'n nuwe versoek."
     native_stream_placeholder: "💬 Wag vir jou keuse..."
+    skip_hint: 'Antwoord "skip" om hierdie vraag oor te slaan.'
   errors:
     rate_limited: "⏱️ Die KI-modeldiens beperk tans die tempo van versoeke. Wag 'n oomblik en gebruik dan /retry."
     auth_failed: "⚠️ Aanmelding by die KI-modeldiens het misluk. Gebruik /login om weer aan te meld, of vra die persoon wat hierdie bot bedryf om `hermes doctor` op die gasheer uit te voer."
@@ -844,6 +847,9 @@ gateway:
     db_fts_corrupt: "⚠️ Sessie-databasis het 'n korrupsiefout gerapporteer wat beperk is tot die soekindeks (FTS5); die boodskaptabelle is nie beskadig nie. Boodskappe word moontlik nie bewaar totdat dit herstel is nie: voer `hermes {profile_arg}doctor --fix` uit en herbegin dan die gateway. Voer nie herstelgereedskap uit of herstel 'n rugsteun nie tensy `hermes {profile_arg}doctor` skade bevestig."
     db_then_restart: "{action} Dan `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Sessie-databasis onbeskikbaar — boodskappe word moontlik nie gestoor nie en /resume sal leeg wees. Oorsaak: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ Cron-winkel {store} is nie skryfbaar nie ({error}) sedert {since}. Geskeduleerde take word oorgeslaan totdat dit weer skryfwerk aanvaar. Regstelling: {fix}."
+    recovered: "✅ Cron-winkel {store} is weer skryfbaar; {skipped} oorgeslane lopie(s), elke taak haal een keer in."
   whoami:
     scope_dm: "privaatgesprek"
     scope_group: "groep/kanaal"
@@ -1445,8 +1451,6 @@ platform:
   irc:
     quit_message: "Hermes Agent skakel af"
     standalone_quit: "afgelewer"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Eenmalig goedkeur"
     confirm_always_approve: "Altyd goedkeur"
@@ -1597,7 +1601,7 @@ slash:
   reasoning:
     description: "Bestuur redenering-inspanning en -vertoon"
   fast:
-    description: "Vinnige modus — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Vinnige modus — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Wys of verander die vertoon-skin/tema"
   indicator:
@@ -2032,7 +2036,6 @@ cli:
     clarify_other_type_below: "Ander (tik hieronder)"
     clarify_other_type_answer: "Ander (tik jou antwoord)"
     clarify_guidance: "Tik jou antwoord in die prompt hieronder en druk dan Enter."
-    clarify_question_truncated: "… (vraag afgekap)"
     picker_title_provider: "⚙ Modelkieser — Kies Verskaffer"
     picker_provider_row_one: "{name} ({count} model)"
     picker_provider_row_other: "{name} ({count} modelle)"
@@ -2077,7 +2080,6 @@ cli:
     hint_vault_username: "word gewys terwyl jy tik · Enter om voort te gaan"
     hint_clarify_freetext: "tik jou antwoord en druk Enter"
     hint_clarify_batch: "↑/↓ om te kies, Enter om vas te maak, Tab volgende vraag"
-    hint_clarify_choice: "↑/↓ om te kies, Enter om te bevestig"
     hint_input_disabled: "invoer tydelik gedeaktiveer"
     hint_input_queues: "invoer bly aktief; Enter plaas in tou"
     hint_command_running: "{frame} opdrag aan die gang · {detail}"
@@ -2260,7 +2262,6 @@ cli:
   clarify:
     bell_context: "verduideliking"
     label: "Verduidelik"
-    timed_out_agent_decides: "(verduideliking se tyd het na {timeout}s verstryk — agent sal besluit)"
     timed_out_locked_answers: "(verduideliking se tyd het na {timeout}s verstryk — vasgestelde antwoorde teruggestuur)"
   connect:
     bell_context: "verbindingsopstelling"
@@ -2355,6 +2356,7 @@ cli:
     removed: "Tou-item {index} verwyder: {preview}"
     item_not_found: "Tou-item {index} nie gevind nie. Huidige grootte: {size}"
     usage_edit: "Gebruik: /queue edit <number> <new prompt>"
+    usage_remove: "Gebruik: /queue rm <number>"
     updated: "Tou-item {index} opgedateer: {preview}"
     usage_move: "Gebruik: /queue move <from> <to>"
     move_out_of_range: "Tou-verplasing buite bereik. Huidige grootte: {size}"
@@ -2393,6 +2395,7 @@ cli:
     session_not_found: "Sessie nie gevind nie: {session_id}"
     compressed_into: "Sessie {session_id} is in {descendant} saamgepers; die afstammeling word met jou transkripsie hervat."
     cannot_resume: "Kan nie sessie hervat nie: {error}"
+    kanban_owned: "⛔ Sessie {session_id} is 'n Kanban-werker-transkripsie. Om dit hier te hervat sou 'n skrywer skep wat die Kanban-raad nie kan waarneem of toesien hou nie — probeer eerder die kaart op die raad weer of ontblok dit, sodat die dispatcher die volgende lopie besit."
     cannot_resume_prefix: "Kan nie sessie hervat nie:"
     resumed_session: "↻ Sessie hervat"
     counts_one: "({count} gebruikersboodskap, {total} boodskappe altesaam)"
@@ -2427,7 +2430,6 @@ cli:
     run_model_to_retry: "Voer 'hermes model' uit om weer te probeer."
     provider_configured: "✓ Verskaffer opgestel — jy is gereed om te gesels."
     provider_setup_incomplete: "Verskaffer-opstelling is nie voltooi nie. Voer 'hermes model' uit om weer te probeer."
-    tirith_unavailable: "⚠ tirith-sekuriteitskandeerder is geaktiveer maar nie beskikbaar nie — opdragskandering sal slegs patroonpassing gebruik"
     unknown_toolsets: "Waarskuwing: Onbekende gereedskapstelle: {names}"
     stdin_unusable: "\nFout: stdin is nie bruikbaar nie ({error}).\nDit kan met sekere Python-installasies gebeur (bv. uv-bestuurde cPython op macOS)\nwaar kqueue nie fd 0 kan registreer nie.\nProbeer Python via pyenv of Homebrew herinstalleer en voer dan weer uit: hermes setup"
     warning: "Waarskuwing: {warning}"
@@ -2653,7 +2655,9 @@ cli:
       feature_generic: "Vinnige modus"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Gebruik: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast is slegs beskikbaar vir GPT-6 Astra (huidige model: {model})."
+      usage: "Gebruik: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} gestel op {value} {scope}"
     hatch:
@@ -2718,6 +2722,7 @@ cli:
       restored: "Toestand herstel vanaf: {snapshot_id}"
       restart_recommended: "Herbegin word aanbeveel sodat gateway-/kontroleskermprosesse die state.db-veranderinge oorneem."
       not_found: "Momentopname nie gevind nie: {snapshot_id}"
+      restore_incomplete: "Momentopname {snapshot_id} is nie volledig herstel nie; sommige lêers is geweier (sien logs)"
       usage_prune: "Gebruik: /snapshot prune [behou-aantal]"
       pruned: "{deleted} ou momentopname(s) gesnoei ({keep} word behou)."
     export:
@@ -3285,6 +3290,7 @@ cli:
     shallow_clone_keeping: "⚠ Vlak kloon — kan nie stootstatus verifieer nie, word behou: {path}"
     next_session_deepens: "Die volgende `hermes -w`-sessie verdiep die kloon en snoei saamgevoegde werkbome outomaties."
     unpushed_keeping: "⚠ Werkboom het ongestootte commits, word behou: {path}"
+    uncommitted_keeping: "⚠ Werkboom het ongecommitte veranderinge, word behou: {path}"
     clean_up_manually: "Om met die hand op te ruim: git worktree remove --force {path}"
     cleaned_up: "✓ Werkboom opgeruim: {path}"
 display:
@@ -3641,7 +3647,7 @@ tips:
   t167: "Goedkeuring van gevaarlike opdragte het 4 vlakke: eenmalig, sessie, altyd (permanente toelaatlys), weier."
   t168: "Slim goedkeuringsmodus gebruik 'n LLM om veilige opdragte outomaties goed te keur en gevaarlike te merk."
   t169: "SSRF-beskerming blokkeer private netwerke, loopback, link-local en wolk-metadata-adresse."
-  t170: "Tirith-skandering voor uitvoering bespeur homograaf-URL-vervalsing en pyp-na-vertolker-patrone."
+  t170: "Sessie-ID's het 'n tydstempel-voorvoegsel (20250305_091523_abcd) sodat sortering natuurlik werk in ls en jq."
   t171: "MCP-subprosesse ontvang 'n gefiltreerde omgewing — net veilige stelselveranderlikes gaan deur."
   t172: "Kontekslêers (.hermes.md, AGENTS.md) word voor laai vir prompt-inspuiting geskandeer."
   t173: "command_allowlist in config.yaml keur spesifieke shell-opdragpatrone permanent goed."
@@ -3671,7 +3677,7 @@ tips:
   t197: "Trajekstoor (--save-trajectories) vang volledige gereedskapsgebruik-spore vas vir modelopleiding."
   t198: "Drie plugin-tipes: algemeen (gereedskap/hooks), geheueverskaffers en konteksenjins."
   t199: "hermes plugins install owner/repo installeer plugins direk vanaf GitHub."
-  t200: "Eksterne geheueverskaffers: Honcho, OpenViking, Mem0 saamgebundel; Hindsight en meer via hermes plugins install."
+  t200: "Eksterne geheueverskaffers: Honcho, Hindsight, Mem0, OpenViking en meer via hermes plugins install."
   t201: "Plugin-hooks sluit pre/post_tool_call, pre/post_llm_call en transform_terminal_output vir uitvoer-kanonisering in."
   t202: "Prompt-kasing (Anthropic) verminder koste deur gekasde stelselprompt-voorvoegsels te hergebruik."
   t203: "Die agent genereer sessietitels outomaties in 'n agtergronddraad — nul impak op vertraging."
@@ -3846,12 +3852,9 @@ tips:
   t372: "image_gen.model in config.yaml kies die FAL-model: flux-2/klein, gpt-image-2, nano-banana-pro en meer."
   t373: "image_gen.provider stuur beeldgenerering deur 'n plugin (OpenAI Images, Codex, FAL) in plaas van die verstek."
   t374: "AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY rig visie-ontleding op enige OpenAI-versoenbare eindpunt."
-  t375: "security.tirith_fail_open: false laat Hermes opdragte blokkeer wanneer die tirith-skandeerder self 'n fout gee."
-  t376: "Die TIRITH_FAIL_OPEN-omgewingsveranderlike oorskry die tirith_fail_open-konfigurasie — 'n vinnige skakelaar sonder om config.yaml te wysig."
+  t375: "API_SERVER_MODEL_NAME pas die modelnaam op /v1/models aan — noodsaaklik vir Open WebUI-opstellings met verskeie profiele."
+  t376: "Dashboard-plugins word vanaf /dashboard-plugins/<name>/ bedien — plaas lêers in ~/.hermes/dashboard-plugins/."
   t377: "--source tool-kletse word by verstek uit hermes sessions list uitgesluit — stel --source eksplisiet om hulle te sien."
-  t378: "Sessie-ID's het 'n tydstempel-voorvoegsel (20250305_091523_abcd) sodat sortering natuurlik werk in ls en jq."
-  t379: "API_SERVER_MODEL_NAME pas die modelnaam op /v1/models aan — noodsaaklik vir Open WebUI-opstellings met verskeie profiele."
-  t380: "Dashboard-plugins word vanaf /dashboard-plugins/<name>/ bedien — plaas lêers in ~/.hermes/dashboard-plugins/."
   placeholder:
     p01: "Vra enigiets, of tik / vir opdragte…"
     p02: "Som op wat in hierdie vouer is"

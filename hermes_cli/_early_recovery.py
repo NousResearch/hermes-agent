@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import os
+import re
 import subprocess
 import sys
 import time
@@ -95,7 +96,10 @@ def _read_marker_attempts(marker_path: Path) -> int:
     try:
         import json
 
-        return int(json.loads(raw).get("attempts", 0))
+        attempts = json.loads(raw).get("attempts", 0)
+        if type(attempts) is not int:  # only our writers' ints count: Infinity/NaN/true never reach int()
+            raise TypeError(attempts)
+        return max(0, attempts)
     except (ValueError, AttributeError, TypeError):
         for line in reversed(raw.splitlines()):
             key, separator, value = line.partition("=")
@@ -107,12 +111,48 @@ def _read_marker_attempts(marker_path: Path) -> int:
         return 0
 
 
+def _process_state(pid: int) -> str | None:
+    """Single-letter process state (``ps`` style), or ``None`` when unknowable.
+
+    ``os.kill(pid, 0)`` also succeeds for a ZOMBIE — a process that exited but
+    whose parent has not reaped it yet. Reading the state lets callers treat a
+    zombie as dead, so a crashed update stage lingering under an un-reaping
+    parent cannot keep a stale update marker "live" for the whole age ceiling
+    (#77259, #120635, #125932). Best-effort and stdlib-only: on any failure the
+    answer is ``None`` and callers keep their signal-0 verdict.
+    """
+    if sys.platform == "linux":
+        try:
+            with open(f"/proc/{pid}/stat", "rb") as fh:
+                stat = fh.read()
+        except OSError:
+            return None
+        # Field 3 is the state, but comm may contain spaces/parens: anchor on
+        # the closing paren of comm instead of splitting on whitespace.
+        comm_end = stat.rfind(b")")
+        if comm_end < 0:
+            return None
+        return stat[comm_end + 2 : comm_end + 3].decode("ascii", "replace") or None
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(pid)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=5, check=False,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return out.strip()[:1] or None
+    return None
+
+
 def _pid_is_running(pid: int) -> bool:
     """Best-effort stdlib-only process liveness probe.
 
     ``os.kill(pid, 0)`` is not a no-op on Windows, so use the Win32 process handle API there. An
     access-denied result counts as live: racing an elevated updater is worse than postponing
-    recovery for one launch.
+    recovery for one launch. A zombie (exited, un-reaped) counts as dead — see
+    :func:`_process_state`.
     """
     if pid <= 0:
         return False
@@ -145,6 +185,9 @@ def _pid_is_running(pid: int) -> bool:
         return True
     except OSError:
         return False
+    state = _process_state(pid)
+    if state is not None and state.upper().startswith("Z"):
+        return False  # exited, unreaped — not a live owner
     return True
 
 
@@ -174,6 +217,8 @@ _INTERRUPTED_PULL_MAX_AGE_SECONDS = 10 * 60
 # The user (or a killed updater) is mid-operation: its own state files own the tree.
 _GIT_OPERATION_IN_PROGRESS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply")
 _REGULAR_FILE_MODES = ("100644", "100755")
+# What git writes into the tree itself: files and symlinks (a gitlink, 160000, is a submodule's own checkout).
+_WORKTREE_BLOB_MODES = (*_REGULAR_FILE_MODES, "120000")
 
 
 def git_operation_in_progress(root: Path) -> str | None:
@@ -203,6 +248,102 @@ def _git_dir(root: Path) -> Path:
 
 def interrupted_pull_marker(root: Path) -> Path:
     return _git_dir(root) / INTERRUPTED_PULL_MARKER
+
+
+# The repair's own code is in the tree a killed move tears (``hermes_bootstrap``, this module, the
+# package initializer, the lock/custody modules). ``update_cmd_commit.arm_tree_move`` publishes this
+# closure, as committed at the marker's ``pre``, beside the marker before git writes; a minted
+# launcher whose checkout import fails runs the repair from there, reading the same files from git's
+# objects first when no updater published them (``_launchers._CLOSURE_REPAIR``).
+# The modules import only the stdlib and each other; the package initializer is published empty.
+RECOVERY_CLOSURE_DIR = "hermes-update-recovery"
+RECOVERY_CLOSURE = ("hermes_cli/_early_recovery.py", "hermes_cli/update_lock.py", "hermes_cli/update_custody.py")
+
+
+# ``<blob id> <path>`` per published file (``RECOVERY_CLOSURE`` + the empty package initializer):
+# a closure is used only when every file hashes to its id (a power loss can leave the renamed dir
+# with files git's objects never had), else it is rebuilt from git's objects.
+RECOVERY_CLOSURE_MANIFEST = "MANIFEST"
+RECOVERY_CLOSURE_INIT = "hermes_cli/__init__.py"
+
+
+def recovery_closure_dir(root: Path, pre: str) -> Path:
+    if not is_object_id(pre):  # never a revision (``HEAD``) or a path (``../x``) under the git dir
+        raise ValueError(f"not a commit id: {pre!r}")
+    return _git_dir(root) / RECOVERY_CLOSURE_DIR / pre
+
+
+def is_object_id(value: str) -> bool:
+    return bool(re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value or ""))
+
+
+def blob_id(data: bytes, like: str) -> str:
+    """Git's object id of a blob holding ``data``, in ``like``'s object format (SHA-1 or SHA-256)."""
+    import hashlib
+
+    return hashlib.new("sha1" if len(like) == 40 else "sha256", b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def recovery_closure_verified(closure: Path, pre: str) -> bool:
+    """Every closure file present with exactly the bytes its manifest names, and nothing missing."""
+    try:
+        listed = dict(line.split(" ", 1)[::-1] for line in
+                      (closure / RECOVERY_CLOSURE_MANIFEST).read_text(encoding="utf-8-sig").splitlines())
+        return (set(listed) == {*RECOVERY_CLOSURE, RECOVERY_CLOSURE_INIT}
+                and listed[RECOVERY_CLOSURE_INIT] == blob_id(b"", pre)
+                and all(blob_id((closure / rel).read_bytes(), pre) == oid for rel, oid in listed.items()))
+    except (OSError, ValueError):
+        return False
+
+
+def _git_executable(recorded_by_updater: str = "") -> str:
+    """The git ``hermes update`` runs (``_subprocess_compat.expose_pm_git``), without installing it.
+
+    The absolute git the killed updater recorded in its marker first: finding PM's copy needs
+    ``pm``, which imports ``hermes_constants``, and a merge killed while writing that module (or
+    anything else ``pm`` imports) leaves only this path to the repair. Then PATH's git. A Windows install whose only git is the one install.ps1 staged in PM's store
+    has none on PATH until the updater exposes it, so this falls back to that copy: PM's recorded
+    entry, or the lockfile's pinned entry the installer extracted without recording it. A bare
+    ``git`` there dies with WinError 2 and the torn tree this repair exists for stays torn.
+    """
+    import shutil
+
+    if recorded_by_updater and os.path.isfile(recorded_by_updater) and _is_git(recorded_by_updater):
+        return recorded_by_updater
+    found = shutil.which("git")
+    if found:
+        return found
+    with contextlib.suppress(Exception):  # no PM, no store, no Windows git package: PATH's answer stands
+        import pm
+        from pm import paths
+        from pm.lock import Lockfile
+
+        recorded = pm.installed_package("git", allow_outdated=True)
+        if recorded is not None and recorded.binary is not None and recorded.binary.is_file():
+            return str(recorded.binary)
+        package, target = pm.get_package("git"), pm.current_target()
+        version = Lockfile(paths.lockfile_path()).version("git")
+        staged = package.binary(paths.store_root() / package.store_entry(version, target), target)
+        if staged is not None and staged.is_file():
+            return str(staged)
+    return "git"
+
+
+def _is_git(path: str) -> bool:
+    """``path`` still runs as git: ``--version`` exits 0 and says ``git version`` (m5). A recorded
+    git that decayed into anything else (gone executable, a stub that exits 0 silently) must not
+    answer the repair's questions: its empty ``rev-parse`` would read as "HEAD moved"."""
+    try:
+        probe = subprocess.run([path, "--version"], capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=30, stdin=subprocess.DEVNULL,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0 and probe.stdout.startswith("git version")
+
+
+# A full object name (SHA-1 or SHA-256): what `git rev-parse --verify HEAD` must print (m5).
+_OID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 
 def _trees_git_could_write(git, pre: str, target: str) -> tuple[list[str], set[str]]:
@@ -239,13 +380,51 @@ def _hash_worktree(git, paths: list[str]) -> dict[str, str]:
     return blobs
 
 
-def _paths_git_wrote(git, root: Path, pre: str, target: str) -> tuple[list[str], list[str], set[str]] | None:
-    """Paths the killed git already touched on the way to ``target``: (restore from HEAD, delete as added,
-    directories git may have created for its added files).
+def _modes_git_wrote(git, root: Path, entries: dict, links: set[str]) -> set[str]:
+    """Paths whose new entry keeps the ``pre`` blob under another mode, already in that mode.
+
+    Equal bytes cannot tell a regular file holding ``original`` from a symlink to ``original`` (one
+    blob id), nor 644 from 755: only the entry's mode can (review N07). The worktree shows a link
+    (lstat), except under ``core.symlinks=false`` where git checks a link out as a plain file holding
+    its target, and the executable bit, except on Windows. The index shows the mode git staged where
+    the worktree cannot; git writes it after the files, so it covers a git killed after a whole tree.
+    """
+    wanted = {path: {m for m, b in new if b == old_blob and m != old_mode}
+              for path, (old_mode, old_blob, new) in entries.items() if old_blob is not None}
+    wanted = {path: modes for path, modes in wanted.items() if modes}
+    if not wanted:
+        return set()
+    symlinks = git("config", "--type=bool", "core.symlinks").stdout.strip() != "false"
+    staged = git("ls-files", "-s", "-z", "--", *wanted)
+    if staged.returncode != 0:
+        raise subprocess.SubprocessError(staged.stderr.strip())
+    index = {path: meta.split()[0] for meta, _tab, path in
+             (record.partition("\t") for record in staged.stdout.split("\0")) if path}
+    written = set()
+    for path, modes in wanted.items():
+        if path in links:
+            shown = {"120000"}
+        elif not (root / path).is_file():
+            shown = set()  # missing: the caller judges it by absence
+        else:
+            shown = set(_REGULAR_FILE_MODES) if sys.platform == "win32" else \
+                {"100755" if (root / path).stat().st_mode & 0o100 else "100644"}
+            if not symlinks:
+                shown.add("120000")
+        if (entries[path][0] not in shown and shown & modes) or index.get(path) in modes:
+            written.add(path)
+    return written
+
+
+def _paths_git_wrote(git, root: Path, pre: str, target: str) -> tuple[list[str], list[str], set[str], set[str]] | None:
+    """Paths the killed git already touched on the way to ``target``: (restore from HEAD, remove as added,
+    directories git may have created for its added files, the added ones to keep aside, not delete).
 
     Git rewrites a file as unlink, create, write, so a kill leaves it missing, empty or cut short:
     all of those count as git's, like the full new blob. Content that matches neither side and is not
-    the start of a new blob is the user's own edit (e.g. a re-applied stash) and is left alone.
+    the start of a new blob is the user's own edit (e.g. a re-applied stash) and is left alone. An
+    added path holding less than a whole new blob may equally be the user's own file created there
+    after the kill (a ``touch``, a first line): it leaves the tree, but renamed aside, never deleted.
     ``None``: git no longer knows ``target``.
     """
     if git("rev-parse", "-q", "--verify", f"{target}^{{commit}}").returncode != 0:
@@ -259,33 +438,44 @@ def _paths_git_wrote(git, root: Path, pre: str, target: str) -> tuple[list[str],
         parts = diff.stdout.split("\0")
         for meta, path in zip(parts[::2], parts[1::2]):
             old_mode, new_mode, old_blob, new_blob, status = meta.lstrip(":").split()
-            if (old_mode if status == "D" else new_mode) not in _REGULAR_FILE_MODES:
+            if (old_mode if status == "D" else new_mode) not in _WORKTREE_BLOB_MODES:
                 continue
             entry = entries.setdefault(path, (old_mode, None if status == "A" else old_blob, []))
             entry[2].append((new_mode, None if status == "D" else new_blob))
-    worktree_blob = _hash_worktree(git, [path for path in entries if (root / path).is_file()])
-    restore, added = [], []
+    # A symlink's blob is its target text, read without following it; core.symlinks=false checks a
+    # link out as a plain file holding that text, which hash-object already matches.
+    links = {path for path in entries if os.path.islink(root / path)}
+    worktree_blob = _hash_worktree(git, [path for path in entries if path not in links and (root / path).is_file()])
+    worktree_blob.update({path: blob_id(os.fsencode(os.readlink(root / path)), pre) for path in links})
+    retyped = _modes_git_wrote(git, root, entries, links)
+    restore, added, kept = [], [], set()
     for path, (old_mode, old_blob, new) in entries.items():
         file, blobs = root / path, {blob for _mode, blob in new if blob}
         if path not in worktree_blob:
             written = old_blob is not None  # unlinked (or deleted), not yet recreated
-        elif worktree_blob[path] == old_blob:  # only a mode change tells whether git got here
-            written = (sys.platform != "win32" and any(b == old_blob and m != old_mode for m, b in new)
-                       and bool(file.stat().st_mode & 0o100) != (old_mode == "100755"))
+        elif worktree_blob[path] == old_blob:  # only the entry's mode tells whether git got here
+            written = path in retyped
         elif worktree_blob[path] in blobs or path in unknown:
             written = True
+        elif path in links:  # git creates a symlink whole: any other target is the user's
+            written = False
         else:  # git's own file cut short starts one of the new blobs
             content = file.read_bytes()
-            written = any(subprocess.run(["git", "-C", str(root), "cat-file", "--filters", f"--path={path}", blob],
-                                         capture_output=True, check=True, timeout=120,
-                                         stdin=subprocess.DEVNULL).stdout.startswith(content) for blob in blobs)
+            written = False
+            for blob in blobs:
+                shown = git("cat-file", "--filters", f"--path={path}", blob, text=False)
+                if shown.returncode != 0:
+                    raise subprocess.SubprocessError(shown.stderr.decode(errors="replace").strip())
+                written = written or shown.stdout.startswith(content)
         if written:
             (added if old_blob is None else restore).append(path)
+            if old_blob is None and worktree_blob.get(path) not in blobs:  # a whole blob is in git's objects
+                kept.add(path)
     new_dirs = {str(parent) for path, (_m, old_blob, _n) in entries.items() if old_blob is None
                 for parent in PurePosixPath(path).parents if parent.parts}
     if new_dirs:
         new_dirs -= set(git("ls-tree", "-r", "-d", "--name-only", "-z", pre).stdout.split("\0"))
-    return restore, added, new_dirs
+    return restore, added, new_dirs, kept
 
 
 # Launches that start together after a killed update (a restarting gateway or Desktop backend next to
@@ -351,34 +541,112 @@ def _restore_claim(git_dir: Path):
         os.close(fd)
 
 
-def _held_open(path: Path) -> bool:
-    """True when a running process has ``path`` open, the usual sign of a live git owning its lock.
+class _Holder(str):
+    """A process that may own a git lock, e.g. ``pid 4242 (git commit)``: truthy, and never ``is True``."""
 
-    Best effort, not exact: Linux answers through /proc, but a live git that owns ``index.lock`` without
-    an open fd (``commit`` waiting in the editor, or between closing the lock and renaming it) reads as
-    dead; Windows refuses to unlink a file another process has open, so the caller's unlink is its probe;
-    macOS/BSD have no portable check at all. The claim only orders Hermes launches, so on those paths a
-    live git's lock can be removed; its command then fails and the marker stays for the next launch.
+
+# Git subcommands that can keep ``index.lock`` (or a ref lock) with its fd CLOSED while they wait
+# (``commit``/``merge``/``rebase``/``tag``... in the editor). A reader in the tree (``git log`` in a
+# pager, ``git status``, ``gitstatusd``, the fsmonitor daemon) is not one: while it really holds a lock
+# its open fd names it.
+_LOCK_KEEPING_GIT = frozenset({
+    "am", "cherry-pick", "commit", "merge", "pull", "rebase", "revert", "stash", "tag", "notes",
+})
+
+
+def _git_subcommand_of(cmdline: bytes) -> str | None:
+    args = [a.decode("utf-8", "replace") for a in cmdline.split(b"\0") if a][1:]
+    it = iter(args)
+    for arg in it:
+        if arg in ("-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"):
+            next(it, None)
+        elif not arg.startswith("-"):
+            return arg
+    return None
+
+
+def _held_open(path: Path, root: Path | None = None) -> _Holder | bool | None:
+    """Whether a running process may still own ``path`` (a git lock): the holder, False, or None (unknowable).
+
+    The holder is a truthy :class:`_Holder` naming it (``pid 4242 (git commit)``). False is proof, not
+    a guess: Linux reads every process's fds through /proc and also counts any live ``git`` working
+    inside ``root`` whose subcommand can keep ``index.lock`` with its fd closed (``commit`` waiting in
+    the editor, :data:`_LOCK_KEEPING_GIT`); readers there (a paged ``git log``, ``gitstatusd``, the
+    fsmonitor daemon) only count while their fd is on the lock. macOS/BSD ask ``lsof``. Without either
+    check the answer is None and the caller never deletes the lock. Windows needs no answer here: it
+    refuses to unlink a file another process has open, so the caller's unlink is the probe.
     """
     proc = Path("/proc")
-    if not (proc / "self" / "fd").is_dir():
+    if (proc / "self" / "fd").is_dir():
+        target = os.path.realpath(path)
+        inside = os.path.realpath(root) + os.sep if root is not None else None
+
+        def name(pid_dir: Path) -> str:
+            try:
+                argv = (pid_dir / "cmdline").read_bytes().split(b"\0")
+                words = [a.decode("utf-8", "replace") for a in argv if a][:3]
+                if words:
+                    return " ".join([os.path.basename(words[0]), *words[1:]])
+            except OSError:
+                pass
+            try:
+                return (pid_dir / "comm").read_bytes().decode("ascii", "replace").strip()  # /proc: Linux only
+            except OSError:
+                return "?"
+
+        for pid_dir in proc.glob("[0-9]*"):
+            try:
+                if any(os.readlink(entry.path) == target for entry in os.scandir(pid_dir / "fd")):
+                    return _Holder(f"pid {pid_dir.name} ({name(pid_dir)})")
+            except OSError:
+                pass
+            if inside is None:
+                continue
+            try:
+                comm = (pid_dir / "comm").read_bytes().decode("ascii", "replace").strip()
+                cwd = os.readlink(pid_dir / "cwd")
+                cmdline = (pid_dir / "cmdline").read_bytes()
+            except OSError:
+                continue
+            if comm == "git" and (cwd + os.sep).startswith(inside) \
+                    and _git_subcommand_of(cmdline) in _LOCK_KEEPING_GIT:
+                return _Holder(f"pid {pid_dir.name} ({name(pid_dir)})")
         return False
-    target = os.path.realpath(path)
-    for fd_dir in proc.glob("[0-9]*/fd"):
-        try:
-            if any(os.readlink(entry.path) == target for entry in os.scandir(fd_dir)):
-                return True
-        except OSError:
-            continue
-    return False
+    import shutil
+
+    lsof = shutil.which("lsof") or next((p for p in ("/usr/sbin/lsof", "/usr/bin/lsof") if os.path.isfile(p)), None)
+    if lsof is None:
+        return None
+    try:
+        found = subprocess.run([lsof, "-F", "pc", "--", str(path)], capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=20,
+                               stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    pids = [line[1:] for line in found.stdout.splitlines() if line.startswith("p")]
+    if pids:
+        names = [line[1:] for line in found.stdout.splitlines() if line.startswith("c")]
+        return _Holder(f"pid {pids[0]} ({names[0] if names else '?'})")
+    return False if found.returncode in (0, 1) else None  # lsof exits 1 when nothing has the file open
 
 
-def _release_dead_index_lock(git_dir: Path) -> bool:
-    """Drop the killed git's ``index.lock`` (it refuses every git command); False while a live git holds it."""
+def _index_lock_holder(git_dir: Path, root: Path | None) -> str:
+    """Who keeps ``index.lock`` for the user-facing message: ``pid N (name)`` when it can be named."""
+    held = None if sys.platform == "win32" else _held_open(git_dir / "index.lock", root)
+    return f"a running git ({held})" if isinstance(held, _Holder) else "a running git"
+
+
+def _release_dead_index_lock(git_dir: Path, root: Path | None = None) -> bool:
+    """Drop a killed git's ``index.lock`` (it refuses every git command) once its owner is PROVEN gone.
+
+    False while a live git may hold it, or when this platform cannot prove it dead: the caller then
+    keeps the interrupted-pull marker, so the next launch tries again instead of a rollback being lost.
+    """
     lock = git_dir / "index.lock"
     deadline = time.monotonic() + 5
     while lock.exists():
-        if not _held_open(lock):
+        held = None if sys.platform == "win32" else _held_open(lock, root)
+        if held is False or sys.platform == "win32":
             try:
                 lock.unlink()
                 return True
@@ -386,14 +654,52 @@ def _release_dead_index_lock(git_dir: Path) -> bool:
                 return True
             except PermissionError:  # Windows: open in a live process
                 pass
+        elif held is None:
+            return False
         if time.monotonic() > deadline:
             return False
         time.sleep(0.1)
     return True
 
 
-def restore_interrupted_pull(project_root: Path | None = None) -> bool:
+# The ZIP update's equivalent of the interrupted-pull marker (``_early_recovery_zip``): a journal in the
+# install root naming every entry the swap stages/renames. Its name stays here: the launch fast path
+# stats it without importing the ZIP code.
+ZIP_SWAP_JOURNAL = ".hermes-update-zip-swap"
+
+
+def write_durable_text(path: Path, text: str) -> None:
+    """``text`` at ``path`` as one durable record, never a half-written one.
+
+    The temp is an unpredictable name created exclusively (no-follow) beside ``path``: a pre-existing
+    name there is never written through (its symlink or hardlink would carry the record onto another
+    file) and never deleted (it may be a user's file: review Z5). fsync before the rename: an empty
+    record over a mixed tree is no record.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    while True:
+        tmp = path.with_name(f"{path.name}.{os.urandom(6).hex()}.tmp")
+        try:
+            fd = os.open(tmp, flags, 0o644)
+            break
+        except FileExistsError:
+            continue  # 48 random bits taken: draw again, never reuse the name
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def restore_interrupted_pull(project_root: Path | None = None, *, after_failure: bool = False) -> bool:
     """Put back the files a killed ``hermes update`` had half-moved to the new commit.
+
+    ``after_failure``: the updater itself calls this when git exited non-zero mid-move (a locked or
+    read-only file): same restore, and the marker stays whenever the tree is not verified whole.
 
     Returns True when the tree changed under this process: modules it already imported may be the
     half-written ones, so the caller must relaunch (``relaunch_after_restore``).
@@ -405,79 +711,278 @@ def restore_interrupted_pull(project_root: Path | None = None) -> bool:
     edits are never touched; the updater's autostash (if any) stays in ``git stash list``. Concurrent
     launches take turns (``_restore_claim``); a launch that waited out another's restore relaunches.
 
-    Limits, by design: a torn ``hermes_cli/__init__.py``, ``hermes_bootstrap.py``, ``agent/__init__.py``
-    or ``agent/jiter_preload.py`` (imported before the ``hermes-agent`` hook) fails before this runs. A file git also changes that the user deleted, emptied or cut to a prefix of git's version
+    A torn ``hermes_bootstrap.py``, ``hermes_cli/__init__.py`` or recovery/lock/custody module fails
+    before (or inside) the checkout's copy of this code: a minted launcher then runs the copy the
+    updater published beside the marker (``RECOVERY_CLOSURE``). Limits, by design: other entry points
+    (``python -m``, the ``hermes-agent`` hook's ``agent/__init__.py``) have no such fallback, and a
+    launcher minted before that fallback existed has none either. A file git also changes that the user deleted, emptied or cut to a prefix of git's version
     looks exactly like git's own half-written file and is restored too, as is a user edit to a
     conflicted path or, on git < 2.38, to a path both sides of a custom-branch merge changed.
     """
     try:
         root = _project_root() if project_root is None else project_root
         marker = interrupted_pull_marker(root)
-        if not marker.is_file() or _pytest_owns_live_checkout(root):
+        if not marker.is_file() and not (Path(root) / ZIP_SWAP_JOURNAL).is_file():
+            return False  # fast path: nothing to repair, no lock taken
+        if _pytest_owns_live_checkout(root):
+            return False
+        # A live `hermes update` (or its build/completion/git, after its updater died) owns the
+        # checkout: its own transaction settles the tree, and repairing under it races its git.
+        busy_note = "⚠ Not repairing the checkout now: {}. Launch again once it finishes."
+        if (Path(root) / ZIP_SWAP_JOURNAL).is_file():
+            with _checkout_custody(Path(root)) as busy:
+                if busy:
+                    print(busy_note.format(busy), file=sys.stderr)
+                    return False
+                from hermes_cli._early_recovery_zip import restore_interrupted_zip_swap
+
+                if restore_interrupted_zip_swap(root):
+                    return True
+        if not marker.is_file():
             return False
         with _restore_claim(marker.parent) as claimed:
             if not claimed:
-                print("⚠ Another Hermes launch is still repairing the checkout after an interrupted "
-                      "`hermes update`; if this one fails, launch again in a moment.", file=sys.stderr)
-                return False
+                if after_failure:
+                    return False  # the marker stays: the updater reports the move as not settled
+                # The tree is still torn (the marker is there): importing checkout code now would run
+                # the half-written files. Fail closed like unprovable custody does, as one line and
+                # exit 1 (SystemExit's message), never a traceback (F20).
+                raise SystemExit("hermes: another Hermes launch is finishing an interrupted `hermes update`; "
+                                 "launch again in a moment.")
             if not marker.is_file():
                 return True  # another launch finished while this one started: rerun from its tree
-            return _restore_holding_claim(root, marker)
+            # The claim orders launches; the checkout lock keeps out an update tree. Claim first, so a
+            # launch that waited out another's repair reruns from its tree without contending.
+            with _checkout_custody(Path(root)) as busy:
+                if busy:
+                    print(busy_note.format(busy), file=sys.stderr)
+                    return False
+                return _restore_holding_claim(root, marker, after_failure=after_failure)
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         # Never block launch: the import that follows surfaces any real breakage.
         print(f"⚠ Could not check for an interrupted `hermes update`: {exc}", file=sys.stderr)
     return False
 
 
-def _restore_holding_claim(root: Path, marker: Path) -> bool:
-    global _merge_advice_shown
-    git_dir = marker.parent
-    fields = dict(line.partition("=")[::2] for line in marker.read_text(encoding="utf-8-sig").splitlines())
+@contextlib.contextmanager
+def _checkout_custody(root: Path):
+    """Hold the checkout kernel lock (``hermes_cli.update_lock``) for a repair, like an updater (R2).
+
+    Yields ``""`` while this process holds or joined it (the updater's own ``after_failure``
+    settle and its children join), else the busy reason: a live update tree owns the checkout and
+    the repair leaves the tree alone. The restore's mutating git children inherit the lock (POSIX)
+    or join this process's kill-on-close job (Windows) through ``update_custody.run_git``, so a
+    launch killed mid-restore keeps the checkout locked until its git is gone.
+
+    A torn lock module cannot prove custody: an already-running updater retains its imported
+    copy and may still be writing this checkout. Refuse launch rather than race that writer.
+    """
+    try:
+        from hermes_cli import update_lock
+    except Exception as exc:  # noqa: BLE001 - syntax/import damage must never authorize a write
+        raise RuntimeError(
+            "Cannot safely repair the interrupted update: checkout custody is unavailable "
+            f"({type(exc).__name__}: {exc}). The recovery marker was kept. "
+            "Wait for any running update to finish; if this persists, repair the checkout "
+            "before launching Hermes again."
+        ) from exc
+    holder = update_lock._acquire_checkout(Path(root))
+    if holder is not None and not update_lock.checkout_lock_held(Path(root)):
+        # Refused, then free by the probe: its holder just exited. Take it now rather than run the
+        # repair unguarded in that window (m10).
+        holder = update_lock._acquire_checkout(Path(root))
+    if holder is not None:
+        if not update_lock.checkout_lock_held(Path(root)):
+            # Not a holder but no lock at all (a git dir without working locks, e.g. NFS without
+            # lockd): no updater can hold it either (they fail closed), so the repair runs unguarded.
+            yield ""
+            return
+        yield update_lock.describe_holder(holder) or "another update holds the checkout lock"
+        return
+    try:
+        yield ""
+    finally:
+        update_lock._release_checkout()
+
+
+def _claim_owner_alive(fields: dict[str, str], marker: Path) -> bool:
+    """The updater that wrote ``marker`` is still running and the marker is fresh: hands off."""
     try:
         owner = int(fields.get("pid", ""))
     except ValueError:
         owner = -1
     # Our own pid is never the owner: this runs at startup, and containers hand a retry the
     # killed updater's pid.
-    if (owner != os.getpid() and _pid_is_running(owner)
-            and time.time() - marker.stat().st_mtime < _INTERRUPTED_PULL_MAX_AGE_SECONDS):
+    return (owner != os.getpid() and _pid_is_running(owner)
+            and time.time() - marker.stat().st_mtime < _INTERRUPTED_PULL_MAX_AGE_SECONDS)
+
+
+def _resume_killed_rollback(git, fields: dict[str, str], git_dir: Path, root: Path,
+                            pre: str, rollback: str, *, after_failure: bool) -> str | None:
+    """Redo a killed syntax rollback's HEAD move to ``pre``; the new HEAD, or None (marker kept)."""
+    # Only the ref the rollback left HEAD on may be rewound: a branch the user checked out at
+    # ``target`` since is theirs (and the update's branch would stay on the broken commit).
+    named = git("symbolic-ref", "-q", "HEAD")
+    if "ref" not in fields or (named.stdout.strip() if named.returncode == 0 else "") != fields["ref"].strip():
+        # The marker stays: switching back lets the next launch resume. Never a reset recipe (F73):
+        # a reset --hard would wipe whatever the user changed on the branch they checked out.
+        ref = fields.get("ref", "").strip().removeprefix("refs/heads/")
+        back = (f"`git -C {root} checkout {ref}`" if ref
+                else f"`git -C {root} checkout --detach {fields.get('target', '').strip()[:10] or pre[:10]}`")
+        print(f"⚠ An interrupted `hermes update` rollback to {pre[:10]} was not resumed: HEAD now names "
+              f"another branch. Switch back with {back}, then launch `hermes` again to finish it.",
+              file=sys.stderr)
+        return None
+    # A syntax rollback killed before it moved HEAD back: redo that step (HEAD and index, no file),
+    # so the restore lands on ``pre`` (the code the update started from), not the broken tree.
+    # Every step is checked, and the killed step's ``index.lock`` goes first, only once its git is
+    # proven gone: until HEAD is on ``pre`` this marker is the rollback's only record.
+    reason = _redo_rollback_head(git, git_dir, root, pre, rollback, after_failure=after_failure)
+    if reason is not None:
+        print(f"⚠ An interrupted `hermes update` rollback to {pre[:10]} cannot resume yet ({reason}); "
+              "the next launch retries.", file=sys.stderr)
+        return None
+    return _read_head(git)
+
+
+def _advise_killed_merge(git_dir: Path, root: Path, target: str, stash: str) -> None:
+    """Once per process, tell the user to abort the killed updater's own unfinished merge."""
+    global _merge_advice_shown
+    merge_head = git_dir / "MERGE_HEAD"
+    if (not _merge_advice_shown and merge_head.is_file()
+            and merge_head.read_text(encoding="utf-8-sig").strip() == target):
+        # The killed updater's own merge: its conflict markers may sit in startup modules.
+        _merge_advice_shown = True
+        print(f"⚠ A killed `hermes update` left its merge unfinished. Run `git -C {root} merge --abort`, "
+              "then launch again." + (f" Your local changes are in its stash ({stash})." if stash else ""),
+              file=sys.stderr)
+
+
+def _custody_git(root: Path, recorded: str):
+    """The restore's ``git(*args)``: the binary the updater recorded, every run under custody (``run_git``)."""
+    executable = _git_executable(recorded)
+    try:
+        from hermes_cli.update_custody import run_git
+    except Exception as exc:  # noqa: BLE001 - never start an uncontained repair writer
+        raise RuntimeError(
+            "Cannot safely repair the interrupted update: child custody is unavailable "
+            f"({type(exc).__name__}: {exc}). The recovery marker was kept. "
+            "Repair the checkout before launching Hermes again."
+        ) from exc
+
+    def git(*args: str, stdin: str | None = None, text: bool = True) -> subprocess.CompletedProcess:
+        base = [executable, "--literal-pathspecs", "-C", str(root)]
+        kwargs = dict(input=stdin, cwd=str(root), capture_output=True, timeout=120,
+                      stdin=None if stdin is not None else subprocess.DEVNULL,
+                      **({"text": True, "encoding": "utf-8", "errors": "replace"} if text else {}))
+        return run_git(base, list(args), **kwargs)
+
+    return git
+
+
+def _judge_index_lock(fields: dict[str, str], marker: Path, root: Path, *,
+                      after_failure: bool) -> tuple[bool, bool, bool]:
+    """``(foreign_lock, known_foreign, index_free)`` for the git dir's ``index.lock``, before any git runs.
+
+    A killed git's lock goes first (an unresolvable or failing git would otherwise strand it, and it
+    refuses every later git command). Proven-dead only; after a git that EXITED (``after_failure``) a
+    lock now is another git's, never ours to drop."""
+    git_dir = marker.parent
+    lock = git_dir / "index.lock"
+    foreign_lock = after_failure and lock.exists()
+    if foreign_lock and _lock_predates_move(fields, lock):
+        # Only the generation that was there before our git ran is another git's for sure. A lock
+        # that appeared during the move can be our own SIGKILLed git's: never judged here (this
+        # process cannot tell), but a later launch reclaims it once no git holds it (C15).
+        _remember_foreign_lock(marker, lock)
+    # The lock generation judged foreign when our git exited is never a killed git's to reclaim later:
+    # a live `git commit` in the editor holds it with its fd closed, which only Linux can still see.
+    known_foreign = bool(fields.get("foreign_lock", "").strip()) and \
+        fields["foreign_lock"].strip() == _lock_identity(lock)
+    index_free = foreign_lock or (not known_foreign and _release_dead_index_lock(git_dir, root))
+    return foreign_lock, known_foreign, index_free
+
+
+def _read_head(git) -> str | None:
+    # Only a full object name is an answer: an empty or garbled one keeps the marker (m5).
+    head = git("rev-parse", "HEAD")
+    oid = head.stdout.strip() if head.returncode == 0 else ""
+    if _OID.fullmatch(oid):
+        return oid
+    detail = head.stderr.strip() or f"git printed {oid!r}, exit {head.returncode}"
+    print(f"⚠ Could not read HEAD to repair an interrupted `hermes update` ({detail}); "
+          "the next launch retries.", file=sys.stderr)
+    return None
+
+
+def _retire_unattributable(git, git_dir: Path, root: Path, marker: Path, pre: str, target: str) -> None:
+    """``target`` is gone (a gc or re-clone): nothing left to compare the tree against.
+
+    Unattributable bytes are not proof of a whole tree: only a clean tracked tree at ``pre`` retires
+    the record, rollback or not (review G2)."""
+    if not _rollback_verified(git, git_dir, pre):
+        print(f"⚠ An interrupted `hermes update` left tracked files that differ from {pre[:10]} and commit "
+              f"{target[:10]} is gone; the marker was kept. Inspect `git -C {root} status`, then "
+              f"`git -C {root} checkout {pre[:10]} -- <file>` for each file the update wrote.", file=sys.stderr)
+        return
+    marker.unlink()
+    print(f"⚠ Ignoring a stale interrupted-update marker: commit {target[:10]} is gone.", file=sys.stderr)
+
+
+def _restore_holding_claim(root: Path, marker: Path, *, after_failure: bool = False) -> bool:
+    git_dir = marker.parent
+    fields = dict(line.partition("=")[::2] for line in marker.read_text(encoding="utf-8-sig").splitlines())
+    if _claim_owner_alive(fields, marker):
         return False
     pre, target = fields.get("pre", "").strip(), fields.get("target", "").strip()
     stash = fields.get("stash", "").strip()
+    git = _custody_git(root, fields.get("git", "").strip())
+    foreign_lock, known_foreign, index_free = _judge_index_lock(fields, marker, root, after_failure=after_failure)
+    rollback = fields.get("rollback", "").strip()
+    rollback = rollback if rollback in ("branch", "detach") else ""
 
-    def git(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", "--literal-pathspecs", "-C", str(root), *args], input=stdin,
-                              capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=120, stdin=None if stdin is not None else subprocess.DEVNULL)
-
-    if not pre or not target or git("rev-parse", "HEAD").stdout.strip() != pre:
+    head = _read_head(git)
+    if head is None:
+        return False
+    if rollback and pre and target and head == target:
+        head = _resume_killed_rollback(git, fields, git_dir, root, pre, rollback,
+                                       after_failure=after_failure or known_foreign)
+        if head is None:
+            return False
+    if not pre or not target or head != pre:
         marker.unlink()  # git finished (HEAD moved) or the marker is unusable
         return False
     if any((git_dir / name).exists() for name in _GIT_OPERATION_IN_PROGRESS):
-        merge_head = git_dir / "MERGE_HEAD"
-        if (not _merge_advice_shown and merge_head.is_file()
-                and merge_head.read_text(encoding="utf-8-sig").strip() == target):
-            # The killed updater's own merge: its conflict markers may sit in startup modules.
-            _merge_advice_shown = True
-            print(f"⚠ A killed `hermes update` left its merge unfinished. Run `git -C {root} merge --abort`, "
-                  "then launch again." + (f" Your local changes are in its stash ({stash})." if stash else ""),
-                  file=sys.stderr)
+        _advise_killed_merge(git_dir, root, target, stash)
         return False
     # A killed claim holder's own git child can still be writing; scanning under it reads half a tree.
-    if not _release_dead_index_lock(git_dir):
-        print("⚠ A running git holds the index after an interrupted `hermes update`; the next launch "
-              "finishes the restore.", file=sys.stderr)
+    # After a git that EXITED (``after_failure``) no git of ours is left: a lock now is another git's
+    # (often the very reason ours failed), never ours to drop. The scan below only reads.
+    if not index_free:
+        print(f"⚠ {_index_lock_holder(git_dir, root)} holds the index after an interrupted `hermes update`; "
+              "the next launch finishes the restore.", file=sys.stderr)
         return False
     written = _paths_git_wrote(git, root, pre, target)
-    if written is None:  # after a gc or re-clone: nothing left to compare against
-        marker.unlink()
-        print(f"⚠ Ignoring a stale interrupted-update marker: commit {target[:10]} is gone.", file=sys.stderr)
+    if written is None:
+        _retire_unattributable(git, git_dir, root, marker, pre, target)
         return False
-    restore, added, new_dirs = written
+    return _put_back_written(git, root, marker, written, pre, stash, rollback,
+                             foreign_lock=foreign_lock, after_failure=after_failure)
+
+
+def _put_back_written(git, root: Path, marker: Path, written, pre: str, stash: str, rollback: str, *,
+                      foreign_lock: bool, after_failure: bool) -> bool:
+    """Return every path git wrote (``_paths_git_wrote``) to ``pre`` and retire the marker once verified."""
+    restore, added, new_dirs, kept = written
+    if (restore or added) and foreign_lock:
+        print("⚠ Another git holds the index, so the files the update already wrote cannot be put back "
+              "now; the next launch restores them.", file=sys.stderr)
+        return False
     if restore or added:
-        print("⚠ A previous `hermes update` was killed while git was writing the new code — "
-              f"restoring the checkout to {pre[:10]}...", file=sys.stderr)
-        failed = _put_back_paths(git, root, restore, added)
+        print(("⚠ git stopped partway through writing the new code — " if after_failure else
+               "⚠ A previous `hermes update` was killed while git was writing the new code — ")
+              + f"restoring the checkout to {pre[:10]}...", file=sys.stderr)
+        failed = _put_back_paths(git, root, restore, added, kept)
         if failed:
             # No manual recipe: a reset would also wipe the edits this restore keeps, and the
             # marker stays so the next launch retries.
@@ -488,6 +993,13 @@ def _restore_holding_claim(root: Path, marker: Path) -> bool:
     for rel in sorted(new_dirs, key=lambda d: d.count("/"), reverse=True):
         with contextlib.suppress(OSError):
             (root / rel).rmdir()  # only when empty: an untracked file inside keeps it
+    if rollback and not _rollback_verified(git, marker.parent, pre, owned=set(restore)):
+        # Only HEAD on ``pre`` with every path the update wrote back at ``pre`` is a finished rollback;
+        # anything less keeps its only record. Other tracked edits (made after the kill, or autocrlf /
+        # filemode noise) are not the rollback's to judge, and no reset is advised: it would wipe them.
+        print(f"  ✗ The rollback to {pre[:10]} is not verified yet (files the update wrote still differ); "
+              f"the next launch retries. Inspect `git -C {root} status`.", file=sys.stderr)
+        return bool(restore or added)
     marker.unlink()
     if not restore and not added:
         return False  # the killed git never reached the tree: nothing to put back
@@ -497,8 +1009,70 @@ def _restore_holding_claim(root: Path, marker: Path) -> bool:
     return True
 
 
-def _put_back_paths(git, root: Path, restore: list[str], added: list[str]) -> subprocess.CompletedProcess | None:
-    """Return ``restore`` to HEAD and drop ``added``; the failed git run, or None."""
+def _lock_identity(lock: Path) -> str:
+    """``inode:mtime_ns`` of a lock file, "" when there is none: a recreated lock is a new generation."""
+    try:
+        st = lock.stat()
+    except OSError:
+        return ""
+    return f"{st.st_ino}:{st.st_mtime_ns}"
+
+
+def _lock_predates_move(fields: dict[str, str], lock: Path) -> bool:
+    """``lock`` is the generation ``arm_tree_move`` saw before the move's git ran. A marker without
+    the record (an older updater's, hand-written) cannot say: every lock counts as foreign."""
+    if "index_lock" not in fields:
+        return True
+    before = fields["index_lock"].strip()
+    return bool(before) and before == _lock_identity(lock)
+
+
+def _remember_foreign_lock(marker: Path, lock: Path) -> None:
+    """Record ``lock``'s identity in the marker (atomically: the marker is the restore's only record)."""
+    identity = _lock_identity(lock)
+    if not identity:
+        return
+    lines = [line for line in marker.read_text(encoding="utf-8-sig").splitlines()
+             if not line.startswith("foreign_lock=")]
+    write_durable_text(marker, "\n".join([*lines, f"foreign_lock={identity}"]) + "\n")
+
+
+def _redo_rollback_head(git, git_dir: Path, root: Path, pre: str, mode: str, *, after_failure: bool) -> str | None:
+    """Move HEAD (and the index) back to ``pre`` for a killed syntax rollback; None, or why not yet.
+
+    The killed step's ``index.lock`` is reclaimed first, and only when its git is proven gone. After a
+    git that exited in this very process (``after_failure``) a lock is never ours to judge.
+    """
+    lock = git_dir / "index.lock"
+    if lock.exists() and (after_failure or not _release_dead_index_lock(git_dir, root)):
+        return f"{_index_lock_holder(git_dir, root)} may still hold .git/index.lock"
+    if mode == "detach":
+        moved = git("update-ref", "--no-deref", "HEAD", pre)
+        if moved.returncode != 0:
+            return f"git update-ref failed: {(moved.stderr.strip().splitlines() or ['?'])[-1]}"
+    reset = git("reset", "-q", pre)
+    if reset.returncode != 0:
+        return f"git reset failed: {(reset.stderr.strip().splitlines() or ['?'])[-1]}"
+    head = git("rev-parse", "HEAD")
+    if head.returncode != 0 or head.stdout.strip() != pre:
+        return "HEAD did not move back"
+    return None
+
+
+def _rollback_verified(git, git_dir: Path, pre: str, owned: set[str] | None = None) -> bool:
+    """The rollback landed: HEAD is ``pre``, no index lock, and no tracked change among ``owned`` (the
+    paths the update wrote), or anywhere when they are unknown (``target`` gone)."""
+    head = git("rev-parse", "HEAD")
+    if head.returncode != 0 or head.stdout.strip() != pre or (git_dir / "index.lock").exists():
+        return False
+    status = git("status", "--porcelain", "-z", "--untracked-files=no", "--no-renames")
+    changed = {entry[3:] for entry in status.stdout.split("\0") if entry}
+    return status.returncode == 0 and not (changed if owned is None else changed & owned)
+
+
+def _put_back_paths(git, root: Path, restore: list[str], added: list[str],
+                    kept: set[str]) -> subprocess.CompletedProcess | None:
+    """Return ``restore`` to HEAD and drop ``added``, renaming those in ``kept`` aside; the failed git run, or None."""
     if restore:
         run = git("restore", "--source=HEAD", "--staged", "--worktree", "--pathspec-from-file=-",
                   "--pathspec-file-nul", stdin="\0".join(restore))
@@ -508,10 +1082,22 @@ def _put_back_paths(git, root: Path, restore: list[str], added: list[str]) -> su
         run = git("rm", "-q", "--cached", "--ignore-unmatch", "--pathspec-from-file=-",
                   "--pathspec-file-nul", stdin="\0".join(added))
         for rel in added:
-            (root / rel).unlink(missing_ok=True)
+            if rel in kept:
+                print(f"  Kept {rel} as {_keep_aside(root / rel).name}: it may be your own file.", file=sys.stderr)
+            else:
+                (root / rel).unlink(missing_ok=True)
         if run.returncode:
             return run
     return None
+
+
+def _keep_aside(file: Path) -> Path:
+    """Rename ``file`` to a free ``<name>.hermes-update-kept[-N]`` beside it (never importable, never clobbered)."""
+    n = 1
+    while os.path.lexists(aside := file.with_name(f"{file.name}.hermes-update-kept" + (f"-{n}" if n > 1 else ""))):
+        n += 1
+    os.rename(file, aside)
+    return aside
 
 
 def relaunch_after_restore() -> None:
@@ -556,7 +1142,8 @@ def _count_failed_attempt(marker: Path) -> None:
     # Best-effort: an unwritable marker only means the limit trips later.
     with contextlib.suppress(OSError):
         attempts = _read_marker_attempts(marker) + 1
-        body = marker.read_text(encoding="utf-8-sig")
+        # Our own record: undecodable bytes must not raise UnicodeDecodeError on every launch.
+        body = marker.read_text(encoding="utf-8-sig", errors="replace")
         if any(line.startswith("pid=") for line in body.splitlines()):
             lines = [line for line in body.splitlines() if not line.startswith("attempts=")]
             body = "\n".join([*lines, f"attempts={attempts}"]) + "\n"

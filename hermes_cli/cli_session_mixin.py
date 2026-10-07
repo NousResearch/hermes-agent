@@ -296,10 +296,9 @@ class CLISessionMixin:
 
         lines = [t("cli.session.status_title"), "", *status_lines(fields, "session_id", "path", "title", "model")]
         try:
-            from hermes_cli.auth import resolve_provider
-            from hermes_cli.anon_auth import guest_carries_inference
+            from hermes_cli.anon_auth import free_tier_route
 
-            if resolve_provider("auto") == "nous" and guest_carries_inference():
+            if free_tier_route():
                 lines.append(t("gateway.status.free_tier"))
         except Exception:
             pass
@@ -632,7 +631,7 @@ class CLISessionMixin:
         """
         from cli import datetime
         from hermes_cli.session_export import (
-            SAVE_TRANSCRIPT_FORMATS, SAVE_USAGE, normalize_save_format, render_session_for_save)
+            SAVE_USAGE, load_save_snapshot, normalize_save_format, render_session_for_save)
 
         parts = cmd.split()[1:]
         redact = bool(parts) and parts[-1].lower() in ("redact", "--redact")
@@ -655,8 +654,12 @@ class CLISessionMixin:
         _db = getattr(self, "_session_db", None)
         _sid = getattr(self, "session_id", None)
         if _db and _sid:
+            from hermes_state import SessionExportTooLargeError
             try:
-                session_data = _db.export_session(_sid, include_compacted=fmt in SAVE_TRANSCRIPT_FORMATS)
+                session_data = load_save_snapshot(_db, _sid, fmt)
+            except SessionExportTooLargeError as e:
+                print(f"(._.) {e}")
+                return
             except Exception:
                 session_data = None
         if not session_data:

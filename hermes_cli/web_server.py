@@ -319,6 +319,16 @@ async def _lifespan(app: "FastAPI"):
         selftest_task.cancel()
         auto_archive_task.cancel()
         await PTY_REGISTRY.close_all()
+
+        # PtySession.close() removes markers owned by live registry sessions.
+        # This second pass cleans any channel markers left in app state,
+        # including stale paths from sessions reaped earlier.
+        for marker in set(_get_pty_active_session_files(app).values()):
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError:
+                pass
+
         # Stop the managed llama-server with its parent (an orphan pins VRAM).
         try:
             from hermes_cli.local_runtime.bootstrap import shutdown_local_runtime
@@ -354,6 +364,11 @@ def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
 
 
 app = FastAPI(title="Hermes Agent", version=get_version_info().base_version, lifespan=_lifespan)
+
+from hermes_cli.dashboard_auth.body_limit import AuthBodyLimitMiddleware  # noqa: E402
+
+# Register first (innermost): auth gates run before this, JSON parsing after it.
+app.add_middleware(AuthBodyLimitMiddleware)
 
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.
@@ -432,16 +447,6 @@ _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 # Desktop file.attach sends a whole base64 data URL in one JSON-RPC frame;
 # uvicorn's 16 MiB default rejects files under the 256 MiB raw attach cap.
 _DESKTOP_ATTACHMENT_WS_MAX_BYTES = 384 * 1024 * 1024
-
-
-# CORS: localhost origins only — allow_origins=["*"] on 0.0.0.0 would let any
-# website read/modify config and secrets.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Endpoints that do NOT require the session token; everything else under /api/
 # is gated below. Shared with the OAuth gate so the two allowlists cannot
@@ -782,7 +787,7 @@ DASHBOARD_HEALTH = DashboardHealth()
 
 @app.middleware("http")
 async def _dashboard_health_middleware(request: Request, call_next):
-    """Outermost middleware (registered last): count unhandled exceptions and 5xx; re-raises, never alters."""
+    """Outermost non-CORS middleware: count unhandled exceptions and 5xx; re-raises, never alters."""
     try:
         response = await call_next(request)
     except Exception as exc:
@@ -791,6 +796,22 @@ async def _dashboard_health_middleware(request: Request, call_next):
     if response.status_code >= 500:
         DASHBOARD_HEALTH.record_error(f"http_{response.status_code}", request.url.path)
     return response
+
+
+# CORS: restrict to localhost origins only.  The web UI is intended to run
+# locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
+# read/modify config and secrets.
+#
+# Registered AFTER all ``@app.middleware("http")`` decorators so it is the
+# *outermost* middleware (Starlette's onion: last-added runs first).
+# Without this, an OPTIONS preflight from a cross-origin SPA hits the auth
+# middlewares before CORS can answer, producing 401 instead of 204 + headers.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # Authenticated-route self-test: one in-process request per minute against a
@@ -1004,6 +1025,7 @@ from hermes_cli.web_routers import (  # noqa: E402
     chat_ws as _chat_ws_routes,
     chat_workspaces as _chat_workspaces_routes,
     dashboard_ui as _dashboard_ui_routes,
+    shared_metrics as _shared_metrics_routes,
 )
 
 app.include_router(_files_routes.router)
@@ -1036,6 +1058,7 @@ app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)
 app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
+app.include_router(_shared_metrics_routes.router)
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
 # mount before the SPA catch-all so /{full_path:path} doesn't swallow them. Auth
@@ -1243,6 +1266,11 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
         ws_ping_interval=ping_interval,
         ws_ping_timeout=ping_timeout,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
+        # Desktop sends a single SIGTERM and escalates to SIGKILL ~5s later;
+        # uvicorn's default (None) waits on lingering ASGI tasks forever, so a
+        # mid-turn request orphans the backend past that budget (#76244). 3s
+        # leaves room for lifespan shutdown + cron_stop before the kill.
+        timeout_graceful_shutdown=3,
     )
     return config, uvicorn.Server(config)
 
@@ -1253,6 +1281,40 @@ def _best_effort(what: str, fn) -> None:
         fn()
     except Exception as exc:
         _log.debug("%s skipped: %s", what, exc)
+
+
+def _reclaim_host_from_orphaned_owner(role: str) -> bool:
+    """True when the conflicting host owner was reaped/cleared and the claim is worth retrying.
+
+    HELD_BY_OTHER helper for #121964. A stale record with no live owner is retracted via
+    ``discard_dead_record`` (which only removes provably-gone owners); a live owner is reaped
+    only when the spawn ledger proves it is a dead session's orphan. Anything else returns
+    False and the caller stays observe-only. Never raises.
+    """
+    from gateway import host_rendezvous as hr
+    from hermes_cli.process_identity import reap_orphaned_backend_owner
+
+    try:
+        owner = hr.read_record(role)
+    except Exception:
+        return False
+    if owner is None:
+        try:
+            return bool(hr.discard_dead_record(role))
+        except Exception:
+            return False
+    if owner.pid == os.getpid():
+        return False  # never reap our own incarnation on a re-entrant claim
+    try:
+        if reap_orphaned_backend_owner(owner.pid, owner.create_time) is None:
+            return False
+    except Exception:
+        return False
+    try:
+        hr.discard_dead_record(role)
+    except Exception:
+        pass
+    return True
 
 
 def _publish_host_rendezvous(host: str, port: int) -> None:
@@ -1275,6 +1337,13 @@ def _publish_host_rendezvous(host: str, port: int) -> None:
             "Host backend lock could not be opened (%s); this backend is not discoverable. "
             "This is NOT another backend holding it.", error)
         return
+    if outcome is hr.HostLockOutcome.HELD_BY_OTHER and not desktop_child:
+        # A prior backend whose session died (dead spawner, PID re-parented to init) is still
+        # alive, so it still holds the flock and its record passes every staleness check: the
+        # pre-#121964 code returned observe-only here forever, and every attach retried against
+        # the same orphan. Reap exactly that corpse and re-claim instead.
+        if _reclaim_host_from_orphaned_owner(role):
+            outcome, error = hr.claim_host_lock(role)
     if outcome is hr.HostLockOutcome.HELD_BY_OTHER:
         owner = hr.read_record(role)
         if desktop_child:
@@ -1312,6 +1381,7 @@ def _on_server_started(
     open_browser: bool,
     initial_profile: str,
     start_mcp_discovery_after_bind: bool,
+    ssh_lock_path: Optional[Path] = None,
 ) -> None:
     """Post-bind arming on the serving loop right after ``server.startup()``.
 
@@ -1350,11 +1420,22 @@ def _on_server_started(
         except (TypeError, ValueError):
             grace = DEFAULT_IDLE_GRACE_S
         start_idle_watchdog(server, app.state.ssh_isolated_clients, grace_s=grace)
-        # A connected client keeps the idle watchdog quiet forever, and the host's updater may not
-        # restart this backend, so it retires itself (between turns) when the install moves on.
+    if getattr(app.state, "ssh_isolated_clients", None) is not None or is_desktop_owned_backend():
+        # The host's updater never restarts this backend (SSH-isolated: only the remote Desktop
+        # client holds its token and owner nonce, #91668/#101626; Desktop-owned local serve:
+        # the updater defers to the app's ledger-verified restart and the backend otherwise
+        # outlives the handoff, #99859), so it retires itself (between turns) when the install
+        # moves on. The retirement fence closes admission process-wide before the exit, so a
+        # connected Desktop just sees its next request reconnect-respawn the backend on new code.
         from hermes_cli.web_server_skew_exit import start_code_skew_watchdog
 
         start_code_skew_watchdog(server)
+    if getattr(app.state, "ssh_isolated_clients", None) is not None and ssh_lock_path and _SSH_OWNER_NONCE:
+        # A reconnect that cannot prove this pid is its own drops the lock without signalling us
+        # and spawns a new nonce (#132034); retire (between turns) once the lock names that spawn.
+        from hermes_cli.web_server_owner_exit import start_owner_watchdog
+
+        start_owner_watchdog(server, lock_path=ssh_lock_path, nonce=_SSH_OWNER_NONCE)
 
     actual_port = _read_bound_port(server, fallback=port)
     app.state.bound_port = actual_port
@@ -1401,7 +1482,9 @@ def _on_server_started(
         # a piped stdout otherwise surfaces this minutes after the sentinel.
         print(f"  Hermes backend listening on {host}:{actual_port}", flush=True)
     else:
-        print(f"  Hermes Web UI → http://{host}:{actual_port}")
+        from hermes_cli.url_utils import format_url_host
+
+        print(f"  Hermes Web UI → http://{format_url_host(host)}:{actual_port}")
     _maybe_open_browser(host, actual_port, open_browser, initial_profile)
 
     if start_mcp_discovery_after_bind:
@@ -1516,6 +1599,7 @@ def start_server(
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
+    ssh_lock_path: Optional[Path] = None,
 ):
     """Start the web UI server.
 
@@ -1525,7 +1609,8 @@ def start_server(
     ``isolated`` (``--isolated``) is recorded in the spawn ledger so attach-first
     discovery never adopts this process.
     ``ssh_session_token``/``ssh_owner_nonce`` are process-local Desktop SSH
-    bootstrap state, never persisted or exported to children.
+    bootstrap state, never persisted or exported to children; ``ssh_lock_path`` is the
+    Desktop's ``backend.lock.json`` for that ownership slot (supersession watchdog).
     ``start_mcp_discovery_after_bind`` (Desktop ``serve``) defers MCP discovery
     until the ready sentinel is written so its SDK import can't hold the GIL
     against the pre-bind path.
@@ -1613,6 +1698,7 @@ def start_server(
                 open_browser=open_browser,
                 initial_profile=initial_profile,
                 start_mcp_discovery_after_bind=start_mcp_discovery_after_bind,
+                ssh_lock_path=ssh_lock_path,
             )
             if headless:
                 from hermes_cli.observability.shared_metrics_startup import record_process_ready

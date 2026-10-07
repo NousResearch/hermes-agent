@@ -388,6 +388,8 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/config_backend.py",  # update_channel writes the channel key through the seam
     "hermes_cli/env_loader.py",  # update_proxy_env keeps proxy keys a .env load wrote
     "agent/proxy_bypass.py",  # update_proxy_env reads NO_PROXY entries with it
+    "hermes_cli/backup_retention.py",
+    "hermes_cli/subcommands/__init__.py",  # update parser loads its auto-update sibling
     "hermes_cli/relay_plugin_migrate.py",
     "hermes_cli/macos_tcc_anchor.py",
     "hermes_cli/model_catalog.py",

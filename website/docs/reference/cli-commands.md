@@ -2178,6 +2178,7 @@ external update owner. See [Updating & Uninstalling](../getting-started/updating
 | `--plan` | Print the update plan and exit without changing anything: install kind (git/Docker/Nix/apt), every running Hermes service across all profiles with its supervisor and running code version, and how each will be restarted. On image- or package-managed installs, reports the correct external update command instead. Read-only. |
 | `--no-backup` | Skip all pre-update backups for this run (both the quick state snapshot and the full zip), regardless of `updates.pre_update_backup`. |
 | `--backup` | Force a **full** pre-update backup for this run: the quick state snapshot plus a complete zip of `HERMES_HOME` (config, auth, sessions, skills, pairing data). The default mode is `quick` — a lightweight state snapshot only. Set the permanent mode via `updates.pre_update_backup: quick | full | off` in `config.yaml`. |
+| `--require-backup` | Require complete full backups of the root, active profile, and every live named profile before changing code or dependencies. Missing, incomplete, unreadable, or unrecorded backups abort with exit 11. Cannot be combined with `--no-backup`. Ordinary update backup behavior is unchanged. |
 | `--yes`, `-y` | Assume yes for interactive prompts such as config migration and stash restore. API-key entry is skipped; run `hermes config migrate` separately for those. |
 | `--force` | Linux/macOS: stop every gateway this update owns at once instead of waiting for in-flight work to drain (choose it when starting the update; it cannot interrupt an update already waiting): running turns, background subagents and tool/background processes are interrupted, a gateway still alive after ~12 s is killed, then the update runs and the gateways restart on the new code. On Windows it only lets the update proceed when another `hermes.exe` is detected; the Windows pause still drains (it does not bypass the venv-holder guard; see `--force-venv`). |
 
@@ -2191,6 +2192,59 @@ Additional behavior:
 - **Pairing data snapshot.** Even when `--backup` is off, `hermes update` takes a lightweight snapshot of `~/.hermes/pairing/` and the Feishu comment rules before `git pull`. You can roll it back with `hermes backup restore --state pre-update` if a pull rewrites a file you were editing.
 - **Legacy `hermes.service` warning.** If Hermes detects a pre-rename `hermes.service` systemd unit (instead of the current `hermes-gateway.service`), it prints a one-time migration hint so you can avoid flap-loop issues.
 - **Exit codes.** `0` on success, `1` on pull/install/post-install errors, `2` on unexpected working-tree changes that block `git pull`.
+
+### `hermes update auto`
+
+Optional daily scheduling for self-managed source installations. It is **disabled
+by default** and uses no model calls, daemon, or Hermes cron job. Enabling it
+installs only an installation-and-profile-specific user systemd timer on Linux
+or a GUI-session LaunchAgent on macOS. Windows and externally managed installs
+(including Desktop bundles, Docker, Nix, and package-owned installations) are
+not supported by this source scheduler.
+
+```bash
+hermes update auto status
+hermes update auto plan
+hermes update auto run-now
+hermes update auto enable --time 04:00 --plan-time 21:00
+hermes update auto disable
+```
+
+- `status` prints JSON from `HERMES_HOME/state/update-status.json`, without a
+  network check. An unconfigured `status`, `disable`, or `run-scheduled` does
+  not create state files or install anything.
+- `plan` checks the same effective channel or branch as the updater, saves an
+  advisory plan, and prints a concise notice. It updates the local check cache
+  and status/log files. It does not send a chat notification. The actual run
+  resolves the target again, so a plan does not pin a future release.
+- `run-now` starts the existing transactional updater in a fresh, installation-bound
+  process with `--yes --require-backup`. It retains the canonical checkout lock,
+  PM dependency selection, fleet restart, and health verification. Normal updater
+  prompts are handled as with `--yes`; neither force flags nor skipped backups
+  are accepted. A manual run does not enable a schedule.
+- `enable --time HH:MM` uses the host's local clock. Repeat `--plan-time HH:MM`
+  for multiple check-only times; none may equal the update time. After sleep or
+  login, a caught-up firing uses the most recent configured daily slot. The
+  schedule follows the install's saved update channel. `--branch` and `--channel`
+  overrides are available only for manual `plan` and `run-now`.
+- `disable` removes only this installation/profile's owned timer or LaunchAgent.
+  Active updates and ambiguous manager state are refused. Failed scheduler
+  changes restore the prior files and manager state; incomplete recovery is
+  recorded as `recovery_required` and must be inspected before further changes.
+
+Output is appended to `HERMES_HOME/logs/update.log`; scheduler stdout/stderr use
+`update-auto.out.log` and `update-auto.err.log` in the same directory. Only the
+unique archived updater receipt matching this invocation's correlation ID can
+certify success. An unchanged revision can be a verified `up_to_date` result.
+Committed updates with unfinished follow-ups or required user action report
+`followup_required` (exit 14), preserving the updater's receipt. Missing or
+contradictory evidence is never reported as clean success. After an interrupted
+wrapper, the next operation reconciles a matching terminal receipt; otherwise,
+inspect the log and use `run-now` explicitly to retry.
+
+Scheduling needs no sudo and is never enabled during installation or startup.
+Legacy experimental scheduler state is not adopted automatically. Existing
+unrecognized state must be inspected before migration; files are left intact.
 
 ## Maintenance commands
 

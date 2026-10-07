@@ -324,6 +324,14 @@ _OFFICIAL_DOCS_PRICING[("google", "gemini-2.5-pro")] = _snap(
     tier_threshold_tokens=200_000, input_cost_per_million_above=Decimal("2.50"),
     output_cost_per_million_above=Decimal("15.00"),
 )
+# Claude Haiku 5.5 is priced by prompt length: above 100K prompt tokens the whole request moves to
+# the higher row (the only current Claude with a long-context tier). Cache write is the 5m rate.
+_OFFICIAL_DOCS_PRICING[("anthropic", "claude-haiku-5-5")] = _snap(
+    "0.10", "0.50", "0.01", "0.125", url=_ANTHROPIC_URL, version="anthropic-pricing-2026-10",
+    tier_threshold_tokens=100_000, input_cost_per_million_above=Decimal("0.50"),
+    output_cost_per_million_above=Decimal("2.50"), cache_read_cost_per_million_above=Decimal("0.05"),
+    cache_write_cost_per_million_above=Decimal("0.625"),
+)
 # Anthropic fast mode (``speed: "fast"``): a premium on the whole context window, with the
 # prompt-caching multipliers applied on top. Selected per response by ``usage.speed``.
 _ANTHROPIC_FAST_MODE_PRICING: Dict[str, PricingEntry] = {

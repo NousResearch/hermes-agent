@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import random
+import tempfile
 import unicodedata
 from pathlib import Path
 
@@ -222,6 +223,6 @@ def _make_fifo(root: Path) -> None:
 if __name__ == "__main__":
     import sys
 
-    target = sys.argv[1] if len(sys.argv) > 1 else "/tmp/readtool-ws"
+    target = sys.argv[1] if len(sys.argv) > 1 else os.path.join(tempfile.gettempdir(), "readtool-ws")
     p = build_workspace(target)
     print(f"workspace built at {p}")

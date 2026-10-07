@@ -21,6 +21,7 @@ _TURN_ERROR_CODE_COPY: dict[str, tuple[str, str]] = {
     "billing_unverified": ("The model provider reports no credit left", "Top up the account or switch with /model."),
     "rate_limit": ("The model provider is rate-limiting requests", "Wait a moment, then /retry."),
     "upstream_rate_limit": ("The model provider is rate-limiting requests", "Wait a moment, then /retry."),
+    "upstream_blocked": ("A firewall/CDN in front of the model provider blocked the request", "Set a User-Agent via the provider's extra_headers, or switch with /model."),
     "overloaded": ("The model provider is overloaded", "Wait a moment, then /retry."),
     "server_error": ("The model provider had an internal error", "Wait a moment, then /retry."),
     "timeout": ("The model provider did not answer in time", "Try /retry; if it keeps happening, switch with /model."),
@@ -82,15 +83,34 @@ def turn_error_text(error: Any, surface: dict | None = None, *, recoverable: boo
     return "\n".join(lines)
 
 
-def busy_message(command: str) -> str:
+def busy_message(command: str, compressing: bool = False) -> str:
     """4009 refusal for a history-mutating command while a reply is streaming. There is no
     ``/interrupt`` slash command on any client: Desktop has a Stop button, the terminal TUI uses
-    Ctrl+C — name both without assuming which one the reader has."""
+    Ctrl+C — name both without assuming which one the reader has. A manual /compress also holds
+    the session busy, but nothing is replying and Stop does not end it: say to wait instead."""
+    if compressing:
+        return f"session busy — a /compress is running; run /{command.lstrip('/')} when it finishes."
     return (f"session busy — Hermes is still replying. Stop the current reply first (Stop button, "
             f"or Ctrl+C in a terminal), then run /{command.lstrip('/')}.")
 
 
+# Prefixes of the TimeoutErrors raised by ``hermes_cli.auth._auth_store_lock`` (profile
+# auth.json) and ``hermes_cli.auth_nous._nous_shared_store_lock`` (cross-profile shared store)
+# when the advisory lock times out (#124533). Both sit on the assistant-init path
+# (``resolve_nous_access_token`` acquires the shared lock inside the profile lock), and init
+# died on lock contention there — the generic /model /setup hints would send the user
+# debugging credentials that are perfectly fine.
+_AUTH_LOCK_TIMEOUT_PREFIXES = (
+    "Timed out waiting for auth store lock",
+    "Timed out waiting for shared Nous auth lock",
+)
+
+
 def agent_init_failed_message(exc: Any) -> str:
+    if any(prefix in str(exc) for prefix in _AUTH_LOCK_TIMEOUT_PREFIXES):
+        return (f"Hermes could not start the assistant for this session. Details: {exc}. "
+                "Wait for the other process to release the lock (or exit it — check for a running "
+                "dashboard or background hermes process), then retry.")
     return (f"Hermes could not start the assistant for this session. Details: {exc}. "
             "Check the model and provider with /model, or run `hermes setup` in a terminal to reconfigure.")
 
@@ -101,7 +121,7 @@ AGENT_STILL_STARTING = (
 
 # A deferred build that finished WITHOUT attaching an agent (its session record was replaced or
 # closed while it ran) leaves ``agent_ready`` set and ``agent`` None; this is the recorded cause.
-AGENT_BUILD_ABANDONED = "agent build aborted: the session record was replaced before the build finished"
+AGENT_BUILD_ABANDONED = "agent build aborted: the session was closed or replaced before the build finished"
 # Turn refusal when the record still has no agent at admission time (reason unknown).
 AGENT_MISSING_FOR_TURN = (
     "Hermes could not start the assistant for this session, so your message was not run. "

@@ -4,6 +4,14 @@ import {
   type ModelOptionsResult,
 } from "@hermes/shared";
 
+import type { AuxiliaryModelsResponse } from "./api-aux";
+import type {
+  ManagedFileReadResponse,
+  ManagedFilesResponse,
+  ManagedFileWriteResponse,
+} from "./api-files";
+import { dashboardServingProfile } from "./profile-bootstrap";
+
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
 // (e.g. https://mission-control.tilos.com/hermes/). The Python backend
@@ -29,6 +37,7 @@ import {
   clearDashboardTokenReloadAttempt,
 } from "@/lib/dashboard-auth-reload";
 import { apiErrorFromNetworkFailure, apiErrorFromResponse } from "@/lib/api-error";
+import type { AutomationBlueprint } from "@/lib/automation-blueprints";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -64,14 +73,24 @@ export function setManagementProfile(name: string): void {
   _managementProfile = (name || "").trim();
 }
 
+/**
+ * The profile every management call targets: the switcher's selection, or —
+ * before it has resolved / on a host with no switcher interaction — the profile
+ * this backend itself serves.
+ *
+ * The fallback is not a guess: the backend injects a name only when it provably
+ * resolves back to its own home, so it names exactly the home an unnamed request
+ * already reached. Without it the dashboard sends no `?profile=` at all and every
+ * destructive route 400s as soon as the host has a second profile directory.
+ */
 export function getManagementProfile(): string {
-  return _managementProfile;
+  return _managementProfile || dashboardServingProfile();
 }
 
 // Endpoint families that honor ?profile= on the backend (web_server.py
-// _profile_scope or explicit per-profile DB opens). Anything else — ops,
-// cron (which has its own per-job profile params), profiles themselves — is
-// machine-global or self-scoped and must NOT be rewritten.
+// _profile_scope or explicit per-profile DB opens). Anything else — cron (which
+// has its own per-job profile params), profiles themselves — is machine-global or
+// self-scoped and must NOT be rewritten.
 const PROFILE_SCOPED_PREFIXES = [
   "/api/status",
   "/api/gateway",
@@ -97,15 +116,46 @@ const PROFILE_SCOPED_PREFIXES = [
   // consults that one — approving into the global store would grant access
   // the running gateway never sees.
   "/api/pairing",
+  // Memory files, the curator state file, webhook subscriptions, shell hooks,
+  // checkpoints, backups/imports and the dashboard's own theme/font/plugin
+  // preferences all live in a profile home. One backend now serves every
+  // profile, so the switcher's selection has to ride on the request or a reset
+  // lands on the launch profile's data.
+  "/api/memory",
+  "/api/curator",
+  "/api/webhooks",
+  "/api/ops",
+  "/api/logs",
+  "/api/portal",
+  // Pool entries live in the profile's home, and DELETE /api/credentials/pool/{provider}/{index}
+  // is destructive — without this prefix the dashboard's remove button never named a profile and
+  // a multi-profile host refused it outright.
+  "/api/credentials",
+  // Not covered by "/api/dashboard/plugins": this one writes memory.provider + context.engine
+  // into the named profile's config.yaml (same key as PUT /api/memory/provider).
+  "/api/dashboard/plugin-providers",
+  // Model/runtime activation persists into config.yaml; the read routes ignore an extra param.
+  "/api/model/recommended-default",
+  "/api/local-models",
+  "/api/dashboard/theme",
+  "/api/dashboard/font",
+  "/api/dashboard/plugins",
+  // The shared-metrics answer is one per profile (telemetry.shared_metrics in its config.yaml).
+  "/api/shared-metrics",
 ];
 
+// The dashboard's own profile when nothing else named one. The backend injects it only
+// when it provably resolves back to the serving home, so this can never retarget another
+// profile — it just says out loud what an unnamed request already meant. Without it every
+// destructive route 400s on a host that merely HAS a second profile directory.
 function withManagementProfile(url: string): string {
-  if (!_managementProfile) return url;
+  const scope = getManagementProfile();
+  if (!scope) return url;
   if (url.includes("profile=")) return url; // explicit param wins
   const path = url.split("?")[0];
   if (!PROFILE_SCOPED_PREFIXES.some((p) => path.startsWith(p))) return url;
   const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}profile=${encodeURIComponent(_managementProfile)}`;
+  return `${url}${sep}profile=${encodeURIComponent(scope)}`;
 }
 
 export async function fetchJSON<T>(
@@ -267,6 +317,11 @@ export async function authedFetch(
   url: string,
   init?: RequestInit,
 ): Promise<Response> {
+  // Same management scope as fetchJSON: a binary endpoint under a profile-scoped
+  // family (``/api/ops/backup/download``) must read the SELECTED profile's archive,
+  // not the launch profile's, and an unprofiled back door beside a family that now
+  // 400s is exactly how the next hole gets in.
+  url = withManagementProfile(url);
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {
@@ -388,7 +443,7 @@ export const api = {
       // /auth/logout returns 302 → /login. Follow that with a full-page
       // navigation rather than letting fetch() opaquely consume the
       // redirect — the SPA needs to leave the protected area.
-      window.location.assign("/login");
+      window.location.assign(`${BASE}/login`);
       return r;
     }),
   getSessions: (
@@ -416,6 +471,20 @@ export const api = {
     fetchJSON<SessionInfo>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
     ),
+  /**
+   * Directories a FRESH dashboard chat may start in: the profile's explicit
+   * projects plus discovered git repos (session-derived + scanned). ``scan``
+   * asks the host to rescan its discovery roots first (headless installs have
+   * no Desktop to populate the cache).
+   */
+  getChatWorkspaces: (profile = getManagementProfile(), scan = false) =>
+    fetchJSON<ChatWorkspacesResponse>(
+      appendQueryParam(
+        appendProfileParam("/api/chat/workspaces", profile),
+        "scan",
+        scan ? "1" : undefined,
+      ),
+    ),
   getSessionLatestDescendant: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionLatestDescendantResponse>(
       appendProfileParam(
@@ -442,7 +511,7 @@ export const api = {
       },
     ),
   bulkDeleteSessions: (ids: string[], profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; deleted: number }>("/api/sessions/bulk-delete", {
+    fetchJSON<{ ok: boolean; deleted: number; skipped_active?: string[] }>("/api/sessions/bulk-delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids, profile: profile || undefined }),
@@ -586,6 +655,14 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+  getSharedMetricsConsent: (profile = getManagementProfile()) =>
+    fetchJSON<SharedMetricsConsent>(appendProfileParam("/api/shared-metrics/consent", profile)),
+  saveSharedMetricsConsent: (answer: { enabled: boolean; send: boolean }, profile = getManagementProfile()) =>
+    fetchJSON<SharedMetricsConsent>(appendProfileParam("/api/shared-metrics/consent", profile), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(answer),
+    }),
   saveConfig: (config: Record<string, unknown>, profile = getManagementProfile()) =>
     fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config", profile), {
       method: "PUT",
@@ -625,8 +702,10 @@ export const api = {
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
-  getCronDeliveryTargets: () =>
-    fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
+  getCronDeliveryTargets: (profile = "default") =>
+    fetchJSON<{ targets: CronDeliveryTarget[] }>(
+      `/api/cron/delivery-targets?profile=${encodeURIComponent(profile)}`,
+    ),
   createCronJob: (job: CronJobMutation, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
@@ -656,8 +735,10 @@ export const api = {
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
   // Automation Blueprints — parameterized automation blueprints
-  getAutomationBlueprints: () =>
-    fetchJSON<{ blueprints: AutomationBlueprint[] }>("/api/cron/blueprints"),
+  getAutomationBlueprints: (profile = "default") =>
+    fetchJSON<{ blueprints: AutomationBlueprint[] }>(
+      `/api/cron/blueprints?profile=${encodeURIComponent(profile)}`,
+    ),
   instantiateAutomationBlueprint: (
     body: { blueprint: string; values: Record<string, string> },
     profile = "default",
@@ -1010,21 +1091,33 @@ export const api = {
     }),
 
   enableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}/enable`,
-      { method: "POST" },
-    ),
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      unchanged?: boolean;
+      restart_required?: boolean;
+    }>(`/api/dashboard/agent-plugins/${pluginPath(name)}/enable`, {
+      method: "POST",
+    }),
 
   disableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}/disable`,
-      { method: "POST" },
-    ),
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      unchanged?: boolean;
+      restart_required?: boolean;
+    }>(`/api/dashboard/agent-plugins/${pluginPath(name)}/disable`, {
+      method: "POST",
+    }),
 
-  updateAgentPlugin: (name: string) =>
+  updateAgentPlugin: (name: string, acceptCapabilities = false) =>
     fetchJSON<AgentPluginUpdateResponse>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
-      { method: "POST" },
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accept_capabilities: acceptCapabilities }),
+      },
     ),
 
   removeAgentPlugin: (name: string) =>
@@ -1590,6 +1683,10 @@ export interface MessagingPlatformEnvVar {
   help: string;
   url: string | null;
   is_password: boolean;
+  /** Comma-separated allowlist rendered one entry per ID (absent on older backends). */
+  is_list?: boolean;
+  /** Plain saved value, sent only for allowlists (they are IDs, not secrets). */
+  value?: string | null;
   advanced: boolean;
 }
 
@@ -1734,6 +1831,7 @@ export interface MemoryProviderExternalDependency {
 
 export interface MemoryProviderSetupInfo {
   pip_dependencies: string[];
+  python_dependencies_declared?: boolean;
   external_dependencies: MemoryProviderExternalDependency[];
   required_env: string[];
   dependencies_installed: boolean;
@@ -1900,6 +1998,15 @@ export interface PlatformStatus {
   updated_at: string;
 }
 
+/** One profile's shared-metrics answer; `reask` = a pre-fix "off" asked once more. */
+export interface SharedMetricsConsent {
+  enabled: boolean;
+  send: boolean;
+  decided: boolean;
+  managed: boolean;
+  reask?: boolean;
+}
+
 export interface StatusResponse {
   active_sessions: number;
   /** Phase 7: ``true`` when the dashboard's OAuth gate is engaged
@@ -1926,7 +2033,18 @@ export interface StatusResponse {
   config_version: number;
   env_path: string;
   gateway_exit_reason: string | null;
+  /** Why a multi-profile host's gateway came up STANDALONE on a boot guard (unset
+   * ``gateway.multiplex_profiles`` refused): the other profiles' bots are silent until
+   * ``hermes gateway migrate --multiplex`` runs. null/absent when it multiplexes or only one
+   * profile exists. */
+  multiplex_standalone_reason?: string | null;
+  /** Every profile installed on this host (multiplex or not). */
+  profiles?: string[];
   gateway_health_url: string | null;
+  /** Seconds since the gateway's housekeeping last stamped gateway_state.json, set only when the
+   * process is alive but the stamp is past the freshness TTL (loop/housekeeping wedged).
+   * null when healthy; absent on older backends. */
+  gateway_heartbeat_stale_s?: number | null;
   gateway_pid: number | null;
   gateway_platforms: Record<string, PlatformStatus>;
   gateway_running: boolean;
@@ -1974,6 +2092,31 @@ export interface DiskPressureStatus {
   total_mb?: number | null;
   free_mb?: number | null;
   used_percent?: number | null;
+}
+
+export interface ChatWorkspaceProject {
+  id: string;
+  slug: string;
+  name: string;
+  primary_path: string | null;
+  archived: boolean;
+  folders: Array<{ path: string; label: string | null; is_primary: boolean }>;
+}
+
+export interface ChatWorkspaceRepo {
+  root: string;
+  label: string;
+  sessions: number;
+  last_active: number;
+}
+
+export interface ChatWorkspacesResponse {
+  projects: ChatWorkspaceProject[];
+  repos: ChatWorkspaceRepo[];
+  /** Where a fresh chat lands when no workspace is picked. */
+  default_cwd: string;
+  home: string;
+  scan_enabled: boolean;
 }
 
 export interface SessionInfo {
@@ -2113,43 +2256,12 @@ export interface LogsResponse {
   lines: string[];
 }
 
-export interface ManagedFileEntry {
-  name: string;
-  path: string;
-  is_directory: boolean;
-  size: number | null;
-  mtime: number;
-  mime_type: string | null;
-}
-
-export interface ManagedFilesResponse {
-  root: string | null;
-  path: string;
-  parent: string | null;
-  locked_root: string | null;
-  can_change_path: boolean;
-  entries: ManagedFileEntry[];
-}
-
-export interface ManagedFileReadResponse {
-  name: string;
-  path: string;
-  size: number;
-  mime_type: string;
-  data_url: string;
-  root: string | null;
-  locked_root: string | null;
-  can_change_path: boolean;
-}
-
-export interface ManagedFileWriteResponse {
-  ok: boolean;
-  path: string;
-  entry: ManagedFileEntry;
-  root: string | null;
-  locked_root: string | null;
-  can_change_path: boolean;
-}
+export type {
+  ManagedFileEntry,
+  ManagedFileReadResponse,
+  ManagedFilesResponse,
+  ManagedFileWriteResponse,
+} from "./api-files";
 
 export interface AnalyticsDailyEntry {
   day: string;
@@ -2323,6 +2435,8 @@ export interface CronJob {
   workdir?: string | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
+  /** Seconds since the job's profile ticker last iterated; null when it cannot be dated. */
+  scheduler_heartbeat_age_s?: number | null;
   last_status?: string | null;
   last_error?: string | null;
   last_delivery_error?: string | null;
@@ -2334,29 +2448,6 @@ export interface CronDeliveryTarget {
   name: string;
   home_target_set: boolean;
   home_env_var: string | null;
-}
-
-export interface AutomationBlueprintField {
-  name: string;
-  type: "time" | "enum" | "text" | "weekdays";
-  label: string;
-  default: string | null;
-  options: string[];
-  optional: boolean;
-  /** When false, options are suggestions — any value is accepted. */
-  strict?: boolean;
-  help: string;
-}
-
-export interface AutomationBlueprint {
-  key: string;
-  title: string;
-  description: string;
-  category: string;
-  tags: string[];
-  fields: AutomationBlueprintField[];
-  command: string;
-  appUrl: string;
 }
 
 export interface SkillInfo {
@@ -2457,17 +2548,7 @@ export interface ModelInfoResponse {
 
 export type { ModelOptionProvider, ModelOptionsResult };
 
-export interface AuxiliaryTaskAssignment {
-  task: string;
-  provider: string;
-  model: string;
-  base_url: string;
-}
-
-export interface AuxiliaryModelsResponse {
-  tasks: AuxiliaryTaskAssignment[];
-  main: { provider: string; model: string };
-}
+export type { AuxiliaryModelsResponse, AuxiliaryTaskAssignment } from "./api-aux";
 
 export interface MoaModelSlot {
   provider: string;
@@ -2733,6 +2814,11 @@ export interface AgentPluginUpdateResponse {
   output?: string;
   unchanged?: boolean;
   error?: string;
+  /** The new catalog pin widens the plugin; nothing changed until the client
+   *  retries with `accept_capabilities`. */
+  consent_required?: boolean;
+  sha?: string;
+  delta_lines?: string[];
 }
 
 export interface PluginProvidersPutRequest {

@@ -3,7 +3,7 @@ import subprocess
 from unittest.mock import MagicMock
 
 from hermes_cli import gateway as gw
-
+from hermes_cli import gateway_launchd as launchd
 
 def _stale_plist(tmp_path, monkeypatch, *, registered: bool):
     plist_path = tmp_path / "com.hermes.plist"
@@ -18,7 +18,6 @@ def _stale_plist(tmp_path, monkeypatch, *, registered: bool):
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr(gw, "_retry_launchctl_bootstrap_until_registered", lambda *a, **k: registered)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: MagicMock(returncode=0))
-
 
 def test_refresh_reports_registration_outcome(tmp_path, monkeypatch, capsys):
     _stale_plist(tmp_path, monkeypatch, registered=False)
@@ -68,10 +67,10 @@ def test_launchd_start_kickstarts_after_deferred_refresh(tmp_path, monkeypatch):
     _stale_for_start(tmp_path, monkeypatch, deferred=True, registered=False)
 
     kickstarts = []
-    monkeypatch.setattr(gw, "_launchctl_kickstart_current", lambda label: kickstarts.append(label))
-    monkeypatch.setattr(gw, "_launchd_bootstrap_and_kickstart", lambda *a, **k: True)
+    monkeypatch.setattr(launchd, "_launchctl_kickstart_current", lambda label: kickstarts.append(label))
+    monkeypatch.setattr(launchd, "_launchd_bootstrap_and_kickstart", lambda *a, **k: True)
     oks = []
-    monkeypatch.setattr(gw, "_launchd_ok", lambda msg: oks.append(msg))
+    monkeypatch.setattr(launchd, "_launchd_ok", lambda msg: oks.append(msg))
 
     gw.launchd_start()
 
@@ -85,8 +84,8 @@ def test_launchd_start_skips_kickstart_after_inprocess_registered_refresh(tmp_pa
     _stale_for_start(tmp_path, monkeypatch, deferred=False, registered=True)
 
     kickstarts = []
-    monkeypatch.setattr(gw, "_launchctl_kickstart_current", lambda label: kickstarts.append(label))
-    monkeypatch.setattr(gw, "_launchd_ok", lambda msg: None)
+    monkeypatch.setattr(launchd, "_launchctl_kickstart_current", lambda label: kickstarts.append(label))
+    monkeypatch.setattr(launchd, "_launchd_ok", lambda msg: None)
 
     gw.launchd_start()
 
@@ -99,10 +98,9 @@ def test_launchd_start_kickstarts_when_refresh_is_noop(tmp_path, monkeypatch):
     monkeypatch.setattr(gw, "get_launchd_plist_path", lambda: plist_path)
     monkeypatch.setattr(gw, "get_launchd_label", lambda: "com.hermes.agent")
     monkeypatch.setattr(gw, "launchd_plist_is_current", lambda: True)
-
     kickstarts = []
-    monkeypatch.setattr(gw, "_launchctl_kickstart_current", lambda label: kickstarts.append(label))
-    monkeypatch.setattr(gw, "_launchd_ok", lambda msg: None)
+    monkeypatch.setattr(launchd, "_launchctl_kickstart_current", lambda label: kickstarts.append(label))
+    monkeypatch.setattr(launchd, "_launchd_ok", lambda msg: None)
 
     gw.launchd_start()
 
@@ -118,7 +116,6 @@ def test_install_repair_warns_instead_of_claiming_success(tmp_path, monkeypatch,
     monkeypatch.setattr("hermes_constants.display_hermes_home", lambda: "~/.hermes-work")
 
     gw.launchd_install(force=False)
-
     out = capsys.readouterr().out
     assert "Service definition updated" not in out
     assert "could not be reloaded" in out

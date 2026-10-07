@@ -83,6 +83,7 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
     "access_token", "refresh_token", "id_token", "token", "api_key", "apikey",
     "client_secret", "password", "auth", "jwt", "session", "secret", "key",
     "code", "signature", "x-amz-signature",
+    "x-goog-signature", "sig",  # GCS V4 signed URLs, Azure SAS tokens
 })
 
 # Snapshot at import time so runtime env mutations (e.g. an LLM-generated
@@ -117,6 +118,11 @@ def _redact_enabled() -> bool:
         from agent.secret_scope import current_secret_scope
         scope = current_secret_scope()
         raw = scope.get("HERMES_REDACT_SECRETS") if scope else None
+        if raw is None and scope is None:
+            # No live scope (the log listener thread formats routed records): read the profile's own .env, as
+            # its scope would, or a first call there would cache a config-only answer for the whole process.
+            from hermes_cli.config import load_env
+            raw = load_env().get("HERMES_REDACT_SECRETS")
         if raw is None:
             from hermes_cli.config import load_config_readonly
             cfg_val = (load_config_readonly().get("security") or {}).get("redact_secrets")
@@ -133,7 +139,14 @@ def _redact_enabled() -> bool:
 # Every pattern MUST start with a literal prefix: _PREFIX_SUBSTRINGS (the cheap
 # pre-screen gate) is derived from these literals and must stay false-negative-free.
 _PREFIX_PATTERNS = [
-    r"sk-[A-Za-z0-9_-]{10,}",           # OpenAI / OpenRouter / Anthropic (sk-ant-*)
+    # Some provider-issued ``sk-`` keys carry dot-delimited body segments (Alibaba
+    # ``sk-sp-…``/``sk-ws-…``). Each unit is one body char optionally preceded by
+    # a single dot, so the body ends on its last non-dot char (sentence punctuation
+    # is never consumed) and can never span ``..``: the ``sk-pro...EFGH`` display
+    # mask is left alone by a second redaction pass instead of collapsing to
+    # ``***``. Kept free of nested unbounded repeats so the pattern passes the
+    # same structural gate plugins must.
+    r"sk-[A-Za-z0-9_-](?:\.?[A-Za-z0-9_-]){9,}",
     r"ghp_[A-Za-z0-9]{10,}",            # GitHub PAT (classic)
     r"github_pat_[A-Za-z0-9_]{10,}",    # GitHub PAT (fine-grained)
     r"gho_[A-Za-z0-9]{10,}",            # GitHub OAuth access token
@@ -409,6 +422,10 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
 _JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
 _JSON_FIELD_RE = re.compile(rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"', re.IGNORECASE)
+# The same field inside a JSON-encoded string (``{"output": "{\\"api_key\\": \\"…\\"}"}``): every tool result
+# that wraps a config dump in JSON escapes the quotes, so the rule above never saw the value (#115104).
+# The backreference keeps the key's and value's escape depth equal.
+_JSON_FIELD_ESCAPED_RE = re.compile(rf'((\\+)"{_JSON_KEY_NAMES}\2")\s*:\s*\2"([^"\\]+)\2"', re.IGNORECASE)
 
 # Python ``repr`` uses single-quoted mapping fields, so opaque credentials in
 # tracebacks and pytest failure introspection bypass the double-quoted JSON rule
@@ -484,11 +501,16 @@ _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s
 
 # API-key style headers (single opaque value, no scheme word): non-vendor-prefix
 # values would otherwise leak when a curl command is echoed into tool output.
-_SECRET_HEADER_NAMES = r"(?:x-api-key|x-goog-api-key|api-key|apikey|x-api-token|x-auth-token|x-access-token)"
+SECRET_HEADER_NAME_LIST = ("x-api-key", "x-goog-api-key", "api-key", "apikey", "x-api-token", "x-auth-token", "x-access-token")
+_SECRET_HEADER_NAMES = rf"(?:{'|'.join(SECRET_HEADER_NAME_LIST)})"
 _SECRET_HEADER_RE = re.compile(rf"({_SECRET_HEADER_NAMES}\s*:\s*)(\S+)", re.IGNORECASE)
 
-# Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars.
-_TELEGRAM_RE = re.compile(r"(bot)?(\d{8,}):([-A-Za-z0-9_]{30,})")
+# Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars. The lookbehind
+# anchors the id at the start of its digit run: without it, a long run of digits
+# with no ":<token>" after it (a Unity/YAML ``_typelessdata`` blob in a 2 MB PR
+# diff, hex/decimal dumps) retried the greedy ``\d{8,}`` from every digit —
+# quadratic, one core at 100% for hours while holding the GIL.
+_TELEGRAM_RE = re.compile(r"(?<!\d)(bot)?(\d{8,}):([-A-Za-z0-9_]{30,})")
 
 _PRIVATE_KEY_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----")
 
@@ -543,7 +565,7 @@ _STRICT_URL_PARAM_RE = re.compile(r"([?#&;])([A-Za-z0-9_.~+%\-]+)=([^#&;\s\"'<>]
 # authority stops at path/query/fragment delimiters. Anchored on the mandatory
 # ``//`` — an optional-scheme prefix backtracked O(n²) on long alphanumeric runs
 # (~55s per sub() on a 320KB compaction payload).
-_STRICT_URL_USERINFO_RE = re.compile(r"(//)([^/\s?#@]+)@")
+_STRICT_URL_USERINFO_RE = re.compile(r"//[^/\s?#@]+@")
 
 # Form-urlencoded body: only when the ENTIRE text is a k=v&k=v string.
 _FORM_BODY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*(?:&[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*)+$")
@@ -563,6 +585,15 @@ def _compile_prefix_matcher(patterns: list) -> "re.Pattern[str]":
 
 
 _PREFIX_RE = _compile_prefix_matcher(_PREFIX_PATTERNS)
+
+# Zhipu API keys use an unprefixed ``id.secret`` form. Keep this deliberately
+# provider-shaped instead of applying a generic high-entropy dotted-token rule:
+# the ID is exactly 32 lowercase hex chars and the credential suffix is a run of
+# at least 16 alphanumerics, so content-hash filenames (``<sha>.bundle``,
+# ``<md5>.sqlite3``) never match.
+_ZHIPU_API_KEY_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])([0-9a-f]{32}\.[A-Za-z0-9]{16,})(?![A-Za-z0-9_.-])"
+)
 
 
 def _mask_control_split_tokens(text: str, mask_fn) -> str:
@@ -640,6 +671,12 @@ def _is_python_repr_secret_key(key: str) -> bool:
     return folded.endswith(_PYTHON_REPR_CREDENTIAL_SUFFIXES)
 
 
+def is_secret_field_name(key: object) -> bool:
+    """True when a mapping field named ``key`` holds a credential — the repr-field policy, for callers
+    that mask structured config by field instead of by text."""
+    return isinstance(key, str) and _is_python_repr_secret_key(key)
+
+
 def _redact_python_repr_fields(text: str) -> str:
     """Fully mask credential fields in Python mapping ``repr`` output."""
     def _sub(match: re.Match) -> str:
@@ -715,7 +752,10 @@ def _canonical_url_param_name(name: str) -> str:
         if next_value == decoded:
             break
         decoded = next_value
-    return decoded.casefold().replace("-", "_")
+    folded = decoded.casefold()
+    # Preserve policy names that are canonically hyphenated (for example
+    # x-amz-signature) before accepting underscore-normalized aliases.
+    return folded if folded in _SENSITIVE_QUERY_PARAMS else folded.replace("-", "_")
 
 
 def _redact_strict_url_credentials(text: str) -> str:
@@ -724,9 +764,7 @@ def _redact_strict_url_credentials(text: str) -> str:
     text = _STRICT_URL_PARAM_RE.sub(
         lambda m: f"{m.group(1)}{m.group(2)}=***"
         if _canonical_url_param_name(m.group(2)) in _SENSITIVE_QUERY_PARAMS else m.group(0), text)
-    return _STRICT_URL_USERINFO_RE.sub(
-        lambda m: f"{m.group(1)}{m.group(2).partition(':')[0]}:***@" if ":" in m.group(2) else f"{m.group(1)}***@",
-        text)
+    return _STRICT_URL_USERINFO_RE.sub("//***:***@", text)
 
 
 def redact_cdp_url(value: object) -> str:
@@ -811,6 +849,9 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     if ":" in text and '"' in text:
         text = _JSON_FIELD_RE.sub(
             _assignment_sub(lambda g: f'{g[0]}: "{mask(g[1])}"', check_keyword=False), text)
+        if '\\"' in text:
+            text = _JSON_FIELD_ESCAPED_RE.sub(
+                _assignment_sub(lambda g: f'{g[0]}: {g[1]}"{mask(g[2])}{g[1]}"', check_keyword=False), text)
 
     # Python mapping repr fields ({'API_KEY': '…'}): single-quoted, so the JSON rule
     # above never sees them — the traceback / pytest-introspection leak shape.
@@ -853,7 +894,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     raw secrets regardless.
 
     ``redact_url_credentials=True``: also redact credential-named query params
-    and ``user:pass@`` userinfo — off by default because OAuth-callback /
+    and the entire URL userinfo (``***:***@``) — off by default because OAuth-callback /
     magic-link / pre-signed URLs must survive ordinary tool flows unchanged.
     ``code_file=True``: skip the ENV/JSON assignment passes for known source
     code (``MAX_TOKENS=***``, ``"apiKey": "test"`` fixtures). ``file_read=True``
@@ -905,6 +946,10 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         # original (the stripped copy and the original are aligned 1:1 for non-control chars).
         text = _mask_control_split_tokens(text, _prefix_sub)
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
+
+    if "." in text:
+        _zhipu_sub = _mask_token_nonreusable if file_read else _mask_token
+        text = _ZHIPU_API_KEY_RE.sub(lambda m: _zhipu_sub(m.group(1)), text)
 
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)

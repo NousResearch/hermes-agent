@@ -83,7 +83,7 @@ class _MtimeCache:
         if cached is not None and cached[0] == mtime:
             return cached[1]
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError):
             logger.warning("[Feishu-Rules] Failed to read %s, using empty config", path)
@@ -158,7 +158,7 @@ def _load_pairing_approved() -> set:
 def _save_pairing(data: dict) -> None:
     pairing_file = _pairing_file()
     pairing_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(pairing_file.with_suffix(".tmp"), "w", encoding="utf-8") as f:
+    with open(pairing_file.with_suffix(".tmp"), "w", encoding="utf-8") as f:  # windows-footgun: ok (write/append mode, not a read)
         json.dump(data, f, indent=2, ensure_ascii=False)
     pairing_file.with_suffix(".tmp").replace(pairing_file)
     _pairing_cache.invalidate()  # same-second rewrite can keep the mtime; force the next load to re-read

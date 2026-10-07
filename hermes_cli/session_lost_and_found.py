@@ -16,10 +16,10 @@ from typing import Any, Callable, Optional, Sequence
 
 from hermes_cli.session_schema_history import SCHEMA_HISTORY, reachable_physical_layouts
 
-from hermes_state_ids import SESSION_ID_PATTERN  # timestamp prefix: strongest sentinel for schema-less rows
+from hermes_state_ids import is_known_session_id  # every minted id shape: sentinel for schema-less rows
 from hermes_cli.session_recovery import (
-    _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _count_rows, _immediate_transaction,
-    _placeholder_titles, _quoted_columns, _table_columns,
+    _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _DANGLING_TOOL_PIN, _count_rows,
+    _immediate_transaction, _placeholder_titles, _quoted_columns, _table_columns,
 )
 
 logger = logging.getLogger(__name__)
@@ -297,7 +297,8 @@ def _parse_sql_default(text: str) -> Any:
 
 
 def _is_session_id(value: Any) -> bool:
-    return isinstance(value, str) and bool(SESSION_ID_PATTERN.match(value))
+    """A cell that can be a session id: any shape in ``SESSION_ID_RECOGNIZERS``."""
+    return isinstance(value, str) and is_known_session_id(value)
 
 
 def _looks_like_source(value: Any) -> bool:
@@ -830,6 +831,7 @@ def stub_missing_parent_sessions(dest: sqlite3.Connection) -> dict[str, Any]:
             "UPDATE sessions SET system_prompt_hash = NULL WHERE system_prompt_hash IS NOT NULL AND NOT EXISTS "
             "(SELECT 1 FROM system_prompts WHERE system_prompts.hash = sessions.system_prompt_hash)"
         )
+        dest.execute(f"UPDATE sessions SET tool_names = NULL WHERE {_DANGLING_TOOL_PIN}")
     return result
 
 

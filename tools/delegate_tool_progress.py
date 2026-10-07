@@ -167,12 +167,12 @@ _ORCHESTRATOR_BLOCK = (
     "for the final summary, not your workers.\n\n"
 )
 _LEAF_CHILDREN_NOTE = (
-    "Your own children MUST be leaves (cannot delegate further) because they would be at the depth floor — you cannot "
-    "pass role='orchestrator' to your own delegate_task calls."
+    "Your own children MUST be leaves (cannot delegate further) because they will reach the maximum nesting depth. "
+    "The system manages this automatically; no parameter override is available."
 )
 _NESTED_CHILDREN_NOTE = (
-    "Your own children can themselves be orchestrators or leaves, depending on the `role` you pass to delegate_task. "
-    "Default is 'leaf'; pass role='orchestrator' explicitly when a child needs to further decompose its work."
+    "Your own children can themselves delegate because depth remains. The system determines this automatically "
+    "from the nesting depth; children at the maximum depth cannot delegate further. No parameter override is available."
 )
 
 def _build_child_system_prompt(
@@ -182,7 +182,10 @@ def _build_child_system_prompt(
     """Focused system prompt for a child agent. role='orchestrator' appends a delegation-capability block (modeled on
     OpenClaw's buildSubagentSystemPrompt); its depth note is literal truth grounded in the passed config so the LLM
     can't confabulate nesting."""
-    parts = ["You are a focused subagent working on a specific delegated task.", "", f"YOUR TASK:\n{goal}"]
+    # The goal is the child's first user turn (see ``_ChildRun.await_child``).
+    # Keeping it out of the system prompt avoids sending OAuth Anthropic the
+    # same task in both roles, while preserving the normal user-turn contract.
+    parts = ["You are a focused subagent working on a specific delegated task."]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():

@@ -1,4 +1,4 @@
-import os, sys, json, asyncio, threading, tempfile, sqlite3, socket, subprocess, tracemalloc
+import os, sys, json, asyncio, threading, tempfile, sqlite3, socket, subprocess, tracemalloc, errno
 from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from types import SimpleNamespace
@@ -14,6 +14,9 @@ os.environ.update(
     HOME=str(HOME),
     HERMES_HOME=str(HOME),
     HERMES_DISABLE_PLUGINS="1",
+    # The scrub above drops the test harness's hermetic switch; keep lazy PM installs off so no
+    # background download's buffers land in the tracemalloc window the archive case measures.
+    HERMES_DISABLE_LAZY_INSTALLS="1",
     NO_PROXY="127.0.0.1,localhost",
 )
 sys.path.insert(0, str(ROOT))
@@ -21,23 +24,33 @@ os.chdir(HOME)
 (HOME / "config.yaml").write_text(
     "model:\n  provider: openai-compat\n  default: fixture-model\n  context_length: 131072\nagent:\n  max_iterations: 2\ncompression:\n  enabled: false\ndatabase:\n  journal_mode: delete\n"
 )
-# Fence all network calls to loopback, including optional discovery/aux paths.
+# Fence all network calls to loopback, including optional discovery/aux paths. Both entry
+# points: hermes_bootstrap's happy-eyeballs socket.create_connection dials with connect_ex.
 orig_connect = socket.socket.connect
+orig_connect_ex = socket.socket.connect_ex
 blocked = []
 
 
+def _external(address):
+    return isinstance(address, tuple) and address[0] not in ("127.0.0.1", "::1", "localhost")
+
+
 def local_connect(self, address):
-    if isinstance(address, tuple) and address[0] not in (
-        "127.0.0.1",
-        "::1",
-        "localhost",
-    ):
+    if _external(address):
         blocked.append(str(address))
         raise OSError("fixture forbids external network")
     return orig_connect(self, address)
 
 
+def local_connect_ex(self, address):
+    if _external(address):
+        blocked.append(str(address))
+        return errno.ENETUNREACH
+    return orig_connect_ex(self, address)
+
+
 socket.socket.connect = local_connect
+socket.socket.connect_ex = local_connect_ex
 requests = []
 
 

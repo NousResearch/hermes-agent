@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react'
 
 import { getStatus } from '@/hermes'
+import { type I18nContextValue, useI18n } from '@/i18n'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
+import { $freeTierStatus, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { $setupReadyTick } from '@/store/live-sync'
+import { dismissNotification, notify } from '@/store/notifications'
+import { $desktopOnboarding } from '@/store/onboarding'
 import type { StatusResponse } from '@/types/hermes'
 
 // Statusbar health is ambient chrome, not live data — nothing the user acts on
@@ -11,36 +14,68 @@ import type { StatusResponse } from '@/types/hermes'
 // visibility listeners refresh immediately on return.
 const REFRESH_MS = 60_000
 
+// The scope the cached free-tier verdict was read under. Module-level because
+// $freeTierStatus is one app-wide atom, not per hook instance.
+let freeTierScope: string | undefined
+
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
 export function useStatusSnapshot(
   gatewayState: string | undefined,
   requestGateway: GatewayRequester,
-  gatewayScope = ''
-) {
+  gatewayScope: string = ''
+): { inferenceStatus: RuntimeReadinessResult | null; statusSnapshot: StatusResponse | null } {
+  const { t }: I18nContextValue = useI18n()
+  const warningMessage: string = t.notifications.sharedProfileWarning
   const [statusSnapshot, setStatusSnapshot] = useState<StatusResponse | null>(null)
   const [inferenceStatus, setInferenceStatus] = useState<RuntimeReadinessResult | null>(null)
 
   useEffect(() => {
     let cancelled = false
     let timer: number | undefined
+    let sharedProfileWarning: boolean = false
+    let sharedProfileNoticeId: string | undefined
+    // Whether this run has published an authoritative readiness verdict. The
+    // tick's callback cannot read the state it belongs to, and the flag's
+    // lifetime is exactly this run's — the same run that clears the status on
+    // entry — so the two can never disagree.
+    let readinessAnswered = false
+
+    const publishInferenceStatus = (next: RuntimeReadinessResult | null): void => {
+      readinessAnswered = next !== null
+      setInferenceStatus(next)
+    }
 
     // Status and inference readiness belong to one backend. A source switch
     // can keep gatewayState="open" throughout, so clear the previous source's
     // snapshot and start a fresh scoped request explicitly.
     setStatusSnapshot(null)
-    setInferenceStatus(null)
+    publishInferenceStatus(null)
+
+    // The free-tier verdict belongs to one profile too. Drop it on a real switch
+    // only: a flap on the same scope keeps the last answer (refreshFreeTierStatus).
+    if (freeTierScope !== undefined && freeTierScope !== gatewayScope) {
+      $freeTierStatus.set(null)
+    }
+
+    freeTierScope = gatewayScope
 
     // A closed/connecting gateway cannot have an authoritative live-runtime
     // result. Clear readiness before starting the REST status leg so a hung
     // getStatus() cannot leave a stale "ready" state visible after disconnect.
     if (gatewayState !== 'open') {
-      setInferenceStatus(null)
+      publishInferenceStatus(null)
     }
 
     const scheduleRefresh = () => {
       if (!cancelled) {
-        timer = window.setTimeout(() => void refresh({ readiness: false }), REFRESH_MS)
+        // Readiness rides the tick only while there is still no authoritative
+        // answer to show. A round that came back a transport fallback leaves a
+        // null status, which reads as "checking" — and the only other triggers
+        // are seams this window may never cross again, so a gateway flap
+        // outliving one seam would pin the chip for good. Once a verdict
+        // exists the tick stays status-only, keeping the ambient poll cheap.
+        timer = window.setTimeout(() => void refresh({ readiness: !readinessAnswered }), REFRESH_MS)
       }
     }
 
@@ -79,13 +114,13 @@ export function useStatusSnapshot(
         // is a transient/unknown transport state, not proof that inference
         // became unconfigured. Keep the last authoritative result instead
         // of flashing "Inference not ready" during a gateway flap.
-        setInferenceStatus(inference)
+        publishInferenceStatus(inference)
         setFreeTierRoute(inference.freeTier)
       }
     }
 
-    const refresh = async ({ readiness }: { readiness: boolean }) => {
-      if (!isViewed()) {
+    const refresh = async ({ readiness, force = false }: { readiness: boolean; force?: boolean }) => {
+      if (!force && !isViewed()) {
         scheduleRefresh()
 
         return
@@ -106,7 +141,22 @@ export function useStatusSnapshot(
         }
 
         if (statusResult.status === 'fulfilled') {
-          setStatusSnapshot(statusResult.value)
+          const next = statusResult.value
+          // Preserve reference identity on a no-op: the 60s tick re-reads a
+          // usually-unchanged snapshot, and a fresh object for the same content
+          // re-renders every consumer for nothing.
+          setStatusSnapshot(previous => (JSON.stringify(previous) === JSON.stringify(next) ? previous : next))
+          const warning: boolean = Boolean(statusResult.value.shared_profile_warning)
+
+          // Keep dismissal until the conflict clears. A new overlap can warn again.
+          if (warning !== sharedProfileWarning) {
+            if (sharedProfileNoticeId) {
+              dismissNotification(sharedProfileNoticeId)
+            }
+
+            sharedProfileWarning = warning
+            sharedProfileNoticeId = warning ? notify({ kind: 'warning', message: warningMessage }) : undefined
+          }
         }
       } finally {
         scheduleRefresh()
@@ -129,21 +179,49 @@ export function useStatusSnapshot(
     // outside the status tick so it neither resets nor waits on the timer.
     const unsubscribeSetupReady = $setupReadyTick.listen(() => void refreshReadiness())
 
+    // An OAuth sign-in updates backend readiness, but ambient polling is
+    // skipped while the window is unfocused — so a stale credential failure can
+    // linger indefinitely if the user stays in the browser after completing the
+    // flow. Watch the onboarding store for the auth-success transition and force
+    // one readiness refresh that bypasses the focus gate. This does not resume
+    // background polling: the forced refresh reschedules the normal (focus-gated)
+    // cadence in its `finally`.
+    let lastFlowStatus = $desktopOnboarding.get().flow.status
+
+    const unsubscribeOnboarding = $desktopOnboarding.listen(state => {
+      const status = state.flow.status
+      const becameSuccess = status === 'success' && lastFlowStatus !== 'success'
+      lastFlowStatus = status
+
+      if (becameSuccess && !cancelled) {
+        if (timer !== undefined) {
+          window.clearTimeout(timer)
+        }
+
+        void refresh({ readiness: true, force: true })
+      }
+    })
+
     document.addEventListener('visibilitychange', onReturn)
     window.addEventListener('focus', onReturn)
     void refresh({ readiness: true })
 
     return () => {
       cancelled = true
+      unsubscribeOnboarding()
       unsubscribeSetupReady()
       document.removeEventListener('visibilitychange', onReturn)
       window.removeEventListener('focus', onReturn)
+
+      if (sharedProfileNoticeId) {
+        dismissNotification(sharedProfileNoticeId)
+      }
 
       if (timer !== undefined) {
         window.clearTimeout(timer)
       }
     }
-  }, [gatewayScope, gatewayState, requestGateway])
+  }, [gatewayScope, gatewayState, requestGateway, warningMessage])
 
   return { inferenceStatus, statusSnapshot }
 }

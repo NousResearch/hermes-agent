@@ -58,7 +58,7 @@ def _available_skill_files(skill_dir: Path) -> Dict[str, List[str]]:
     for f in skill_dir.rglob("*"):
         if not f.is_file() or f.name == "SKILL.md":
             continue
-        rel = str(f.relative_to(skill_dir))
+        rel = f.relative_to(skill_dir).as_posix()
         top = rel.split("/", 1)[0] if "/" in rel else None
         if top in _SUPPORT_DIRS or f.suffix in _SKILL_FILE_EXTS:
             groups.setdefault(top if top in _SUPPORT_DIRS else "other", []).append(rel)
@@ -157,7 +157,8 @@ def _serve_plugin_skill(
         "success": True, "name": qualified_name, "content": banner + rendered_content,
         "description": _truncate_description(str(parsed_frontmatter.get("description", ""))),
         "linked_files": _plugin_skill_linked_files(skill_md.parent),
-        "readiness_status": SkillReadinessStatus.AVAILABLE.value})
+        "readiness_status": SkillReadinessStatus.AVAILABLE.value,
+        "skill_dir": str(skill_md.parent), "_source_path": str(skill_md)})
 
 
 def _plugin_skill_linked_files(skill_root: Path) -> Dict[str, List[str]] | None:

@@ -1,6 +1,5 @@
 import sys
 import threading
-import time
 import types
 from types import SimpleNamespace
 
@@ -100,16 +99,32 @@ def test_retry_after_api_connection_error_recreates_request_client(monkeypatch):
 
 
 def test_stale_non_stream_close_is_single_owner(monkeypatch):
-    def slow_responder(**kwargs):
-        time.sleep(0.1)
+    from agent import chat_completion_helpers
+
+    response_started = threading.Event()
+    request_aborted = threading.Event()
+
+    def blocked_responder(**kwargs):
+        response_started.set()
+        assert request_aborted.wait(timeout=5), "stale watchdog never aborted request"
         raise _connection_error()
 
-    request_client = FakeRequestClient(slow_responder)
+    request_client = FakeRequestClient(blocked_responder)
     factory = OpenAIFactory([request_client])
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", factory)
+    monkeypatch.setattr(
+        chat_completion_helpers,
+        "time",
+        SimpleNamespace(time=lambda: 1.0 if response_started.is_set() else 0.0),
+    )
 
     agent = _build_agent()
-    agent._compute_non_stream_stale_timeout = lambda api_payload: 0.01
+    agent._compute_non_stream_stale_timeout = lambda api_payload: 0.5
+    monkeypatch.setattr(
+        agent,
+        "_force_close_tcp_sockets",
+        lambda client: (request_aborted.set(), 1)[1],
+    )
 
     with pytest.raises(APIConnectionError):
         agent._interruptible_api_call({"model": agent.model, "messages": []})

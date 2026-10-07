@@ -330,6 +330,10 @@ class A2AAdapter(BasePlatformAdapter):
         self._mark_connected()
         logger.info("A2A: serving Agent Card + JSON-RPC on http://%s:%s (%s) as %r; %d routed agent(s)", self.host, self.port,
                     "localhost-only" if self._security_context.localhost_only() else "REMOTE (bearer auth)", self.agent_name, len(self._agents))
+        sec = self._security_context
+        if sec.dispatch_fails_closed():
+            logger.error("A2A: exposed on non-loopback bind %s with no A2A_TRUSTED_PEERS; every dispatch will be refused (403). "
+                         "Set A2A_TRUSTED_PEERS, or A2A_ALLOW_ALL_USERS=true for a trusted network.", self.host)
         self._wire_plugin_handlers(None)  # plugin-registered native handlers
         return True
 
@@ -843,10 +847,18 @@ class A2AAdapter(BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Resolve the task future when processing ends without a reply send (failures,
-        cancellations, empty runs) so the HTTP thread returns promptly."""
+        cancellations, empty runs, or a reply the gateway already streamed to the user) so the
+        HTTP thread returns promptly."""
         task_id = str(getattr(event, "message_id", "") or "")
         if task_id:
+            # A streamed turn never calls send() with notify=True (the gateway suppresses the
+            # normal final send once streaming delivered the body), so the SUCCESS default must
+            # not resolve with "" — that strands every A2A streaming reply as an empty completed
+            # task (#116944). _streamed_final_response is the same stash _final_text_for_post_turn_hooks
+            # reads for /goal and /loop.
+            _streamed = getattr(event, "_streamed_final_response", "")
+            default = (protocol.STATE_COMPLETED, _streamed if isinstance(_streamed, str) else "")
             self._resolve_task(task_id, *{
                 ProcessingOutcome.FAILURE: (protocol.STATE_FAILED, "[agent processing failed]"),
                 ProcessingOutcome.CANCELLED: (protocol.STATE_CANCELED, ""),
-            }.get(outcome, (protocol.STATE_COMPLETED, "")))
+            }.get(outcome, default))

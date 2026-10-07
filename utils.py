@@ -370,11 +370,13 @@ def _dump_json(data: Any, f, *, indent: "int | None", ensure_ascii: bool, dump_k
     would emit a raw 0xFF byte that the reader's utf-8 decode rejects. Serializing to a str first
     keeps the failure before any byte reaches the file, so no partial payload is left behind.
     """
-    text = json.dumps(data, indent=indent, ensure_ascii=ensure_ascii, **dump_kwargs)
+    # Ends with a newline, as a text file should: a profile file kept in git otherwise shows
+    # "No newline at end of file" after every Hermes write.
+    text = json.dumps(data, indent=indent, ensure_ascii=ensure_ascii, **dump_kwargs) + "\n"
     try:
         f.write(text)
     except UnicodeEncodeError:
-        f.write(json.dumps(data, indent=indent, ensure_ascii=True, **dump_kwargs))
+        f.write(json.dumps(data, indent=indent, ensure_ascii=True, **dump_kwargs) + "\n")
 
 
 def atomic_json_write(

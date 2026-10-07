@@ -11,6 +11,25 @@ from utils import atomic_json_write
 class TestAtomicJsonWrite:
     """Core atomic write behavior."""
 
+    def test_file_ends_with_a_single_newline(self, tmp_path):
+        """A JSON file that a user keeps in git must not show "No newline at end of file"."""
+        target = tmp_path / "data.json"
+
+        atomic_json_write(target, {"a": 1})
+
+        text = target.read_text(encoding="utf-8")
+        assert text.endswith("}\n")
+        assert not text.endswith("\n\n")
+        assert json.loads(text) == {"a": 1}
+
+    def test_surrogate_fallback_also_ends_with_a_newline(self, tmp_path):
+        """The ``ensure_ascii`` retry for non-UTF-8 strings writes the file too."""
+        target = tmp_path / "data.json"
+
+        atomic_json_write(target, {"path": "bad-\udcff-name"})
+
+        assert target.read_text(encoding="utf-8").endswith("}\n")
+
 
     def test_cleans_up_temp_file_on_baseexception(self, tmp_path):
         class SimulatedAbort(BaseException):

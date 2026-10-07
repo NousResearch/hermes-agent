@@ -56,6 +56,19 @@ def test_openai_default_only_families_omit_temperature_up_front(model):
         assert _build_call_kwargs("openai-api", accepts, [], temperature=0.1)["temperature"] == 0.1
 
 
+@pytest.mark.parametrize("model", ["gemini-3.6-flash", "google/gemini-3.7-flash", "gemini-3.8-flash", "gemini-4.0-flash"])
+def test_gemini_36_plus_omits_temperature_up_front(model):
+    """Gemini 3.6+ deprecated the sampling controls (temperature/top_p/top_k); omit temperature up
+    front instead of sending a dead (or, on some surfaces, rejected) parameter. Older Gemini
+    families (2.x, 3.0-3.5) keep the caller's value."""
+    assert _fixed_temperature_for_model(model) is OMIT_TEMPERATURE
+    kwargs = _build_call_kwargs("gemini", model, [{"role": "user", "content": "hi"}], temperature=0.3)
+    assert "temperature" not in kwargs
+    for keeps in ("gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-3-pro", "gemini-3.1-pro"):
+        assert _fixed_temperature_for_model(keeps) is None
+        assert _build_call_kwargs("gemini", keeps, [], temperature=0.3)["temperature"] == 0.3
+
+
 def test_route_that_rejected_temperature_omits_it_next_call():
     """#51083: after one ``unsupported_value`` on temperature the route+model is remembered and the
     next call sends a single request without it; a different model on the route is unaffected."""

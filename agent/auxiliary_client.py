@@ -641,6 +641,19 @@ def _is_openai_default_temperature_only(model: Optional[str]) -> bool:
     return bare.startswith(("gpt-5", "o1", "o3", "o4")) and not bare.startswith("gpt-5-chat")
 
 
+def _is_gemini_sampling_deprecated(model: Optional[str]) -> bool:
+    """True for Gemini 3.6+ models, where Google deprecated the sampling controls
+    (``temperature``, ``top_p``, ``top_k``): the backend ignores them today and they are
+    slated for removal. Omit ``temperature`` up front rather than send a dead (or, on some
+    surfaces, rejected) parameter. Older Gemini families (2.x, 3.0–3.5) keep it."""
+    bare = _bare_model(model)
+    match = re.match(r"^gemini-(\d+)(?:\.(\d+))?", bare)
+    if not match:
+        return False
+    major, minor = int(match.group(1)), int(match.group(2) or 0)
+    return major > 3 or (major == 3 and minor >= 6)
+
+
 # Routes (host + model) that rejected ``temperature`` at runtime; the next call omits it up front
 # instead of paying the 400 round-trip again (the retry alone left #51083's first call to time out).
 _TEMPERATURE_REJECTED_ROUTES: set = set()
@@ -663,6 +676,9 @@ def _fixed_temperature_for_model(
         return OMIT_TEMPERATURE
     if _is_openai_default_temperature_only(model):
         logger.debug("Omitting temperature for %r (accepts only the default)", model)
+        return OMIT_TEMPERATURE
+    if _is_gemini_sampling_deprecated(model):
+        logger.debug("Omitting temperature for %r (Gemini 3.6+ deprecated sampling)", model)
         return OMIT_TEMPERATURE
     from agent.auxiliary_structured_output import _route_key
     if (_route_key(provider, base_url), _bare_model(model)) in _TEMPERATURE_REJECTED_ROUTES:

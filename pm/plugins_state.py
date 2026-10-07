@@ -31,9 +31,12 @@ def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
     """
     # Missing YAML support is a broken runtime, not an empty plugin selection.
     from ruamel.yaml.error import YAMLError
-    from hermes_cli.config_backend import read_config_doc
+    from hermes_cli.config_backend import config_exists, read_config_doc
 
     config_path = home / "config.yaml"
+    # Existence first: a home without config needs no YAML stack (PM's own runtime tree has none).
+    if not config_exists(config_path):
+        return None
     try:
         config = read_config_doc(config_path)
     except FileNotFoundError:

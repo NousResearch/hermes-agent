@@ -24,6 +24,7 @@ from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
     named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
 )
+from hermes_cli.config_backend import config_exists, config_version, require_file_tooling
 
 logger = logging.getLogger(__name__)
 
@@ -585,7 +586,6 @@ def remove_wrapper_script(name: str) -> bool:
 def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
     """Migrate a copied config.yaml to the current schema (non-interactive, scoped to the new
     profile); otherwise the first desktop/doctor view shows a scary ``v0 -> latest`` warning."""
-    from hermes_cli.config_backend import config_exists
     if not config_exists(profile_dir / "config.yaml"):
         return
     # Creation must not fail over an unmigratable old config; `hermes doctor --fix` surfaces
@@ -706,19 +706,6 @@ def _load_yaml_dict(path: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-def _load_config_dict(profile_dir: Path) -> Optional[dict]:
-    """:func:`_load_yaml_dict` for a profile's config.yaml, read through the config backend."""
-    from hermes_cli.config_backend import config_exists, read_config_doc
-    path = profile_dir / "config.yaml"
-    if not config_exists(path):
-        return None
-    try:
-        data = read_config_doc(path) or {}
-    except Exception:
-        return None
-    return data if isinstance(data, dict) else None
-
-
 # (path, kind) -> (file signature, the small derived value). `list_profiles` re-reads three YAML
 # files PER PROFILE, and it is the shared body of `GET /api/profiles` and `profiles.list`, which the
 # Bots roster polls every 5s per connection — so an installer-seeded config.yaml (the annotated
@@ -769,7 +756,6 @@ def _read_distribution_meta(profile_dir: Path) -> tuple:
 
 def _read_config_model(profile_dir: Path) -> tuple:
     """Read model/provider from a profile's config.yaml. Returns (model, provider)."""
-    from hermes_cli.config_backend import config_exists
     config_path = profile_dir / "config.yaml"
     if not config_exists(config_path):
         return None, None
@@ -793,7 +779,6 @@ def _read_config_model(profile_dir: Path) -> tuple:
 def _seed_model_config(profile_dir: Path) -> None:
     """Copy (not link) the active profile's model block into a fresh profile so it is usable;
     profiles stay independent islands afterwards."""
-    from hermes_cli.config_backend import config_exists
     config_path = profile_dir / "config.yaml"
     if config_exists(config_path):
         return
@@ -1084,7 +1069,6 @@ def profile_is_standalone(home: Path) -> bool:
     never standalone — it IS the host — and warns once per process if the key is set there."""
     global _STANDALONE_WARNED
     from hermes_yaml import YAMLError
-    from hermes_cli.config_backend import config_version
 
     home = Path(home)
     cfg_path = home / "config.yaml"
@@ -1179,7 +1163,6 @@ def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
 
 def _resolve_clone_source(clone_from: Optional[str]) -> Path:
     """Directory to clone from: the named profile, or the active profile when ``None``."""
-    from hermes_cli.config_backend import require_file_tooling
     require_file_tooling("Profile clone")
     if clone_from is None:
         from hermes_constants import get_hermes_home
@@ -1396,7 +1379,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
     _clone_plugins(source_dir, profile_dir)
-    from hermes_cli.profile_memory_config import active_memory_provider, clone_memory_provider_config
+    from hermes_cli.profile_memory_config import _load_config_dict, active_memory_provider, clone_memory_provider_config
     clone_memory_provider_config(source_dir, profile_dir, active_memory_provider(_load_config_dict(source_dir)))
     if sync_imports:  # a plain file at the profile root, written by the agent-importers plugin
         _clone_file(source_dir, profile_dir, "import-sync.json")

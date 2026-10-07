@@ -195,6 +195,17 @@ def config_version(config_path: PathLike) -> Tuple[Any, ...]:
     return backend.version(target) if is_layer else backend.version_path(target)
 
 
+def probe_config_readable(config_path: PathLike) -> None:
+    """Raise ``OSError`` while a local config file cannot be opened; no parse. A non-file user
+    layer has no local read to fail, so only explicit files and the file backend probe."""
+    backend, target, is_layer = _route(config_path)
+    if is_layer and not backend.supports_file_tooling():
+        return
+    path = backend.config_path(target) if is_layer else target
+    with open(path, "rb") as f:
+        f.read(1)
+
+
 def config_exists(config_path: PathLike) -> bool:
     backend, target, is_layer = _route(config_path)
     return backend.exists(target) if is_layer else target.exists()

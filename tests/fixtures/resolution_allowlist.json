@@ -143,11 +143,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/auth.py",
-    "symbol": "_external_process_spec",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/boot_bootstrap.py",
     "symbol": "_git_binary",
     "kind": "bare_which"

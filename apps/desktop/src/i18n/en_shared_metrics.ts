@@ -11,7 +11,8 @@ export const enSharedMetrics: Translations['sharedMetrics'] = {
   collectedModels: 'Model routes and token totals',
   collectedNames: 'Built-in tool, command and catalog names',
   collectedMilestones: 'Bucketed setup counts',
-  collectedReliability: 'Update and install results and timing (with a fixed-list reason and the stage when one fails, including a fresh install recorded on this machine and counted only once you opt in), crashes, startup and reply speed, messaging-platform health',
+  collectedReliability:
+    'Update and install results and timing (with a fixed-list reason and the stage when one fails, including a fresh install recorded on this machine and counted only once you opt in), crashes, startup and reply speed, messaging-platform health',
   collectedUsage:
     'How Hermes gets used: agent accuracy and efficiency (edit matches, loops, recoveries, tokens and tool calls per task, cache breaks), active time per surface and Desktop mode, which app areas, actions and settings are used, closed quickly or switched off, and provider setup outcomes',
   collectedMachine:

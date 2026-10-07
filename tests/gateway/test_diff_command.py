@@ -8,6 +8,7 @@ nothing to show.
 
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -101,3 +102,41 @@ async def test_diff_session_reports_cumulative_changes(tmp_path, monkeypatch):
 
     assert "-print('hello')" in result
     assert "+print('changed')" in result
+
+
+# ---------------------------------------------------------------------------
+# Foreign profile home must not become the /diff baseline (#127022 class)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def foreign_home(tmp_path, monkeypatch, repo):
+    """A ``hermes -p`` chain where ``Path.home()`` resolves to a neighbor
+    named-profile home, and the routed scope carries no ``TERMINAL_CWD``
+    (the multiplexing fix refuses to adopt that home as the cwd)."""
+    from tools.terminal_scope import set_terminal_scope
+
+    foreign = tmp_path / "profiles" / "beta"
+    foreign.mkdir(parents=True)
+    (foreign / "stray.txt").write_text("foreign tree\n", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: foreign)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.chdir(repo)
+    token = set_terminal_scope({"TERMINAL_ENV": "local"})
+    yield foreign
+    from tools.terminal_scope import reset_terminal_scope
+
+    reset_terminal_scope(token)
+
+
+def test_terminal_cwd_falls_back_to_the_launch_dir(foreign_home, repo):
+    assert _runner()._terminal_cwd() == str(repo)
+
+
+@pytest.mark.asyncio
+async def test_diff_baseline_is_the_launch_dir_not_a_foreign_home(foreign_home, repo):
+    (repo / "main.py").write_text("print('edit')\n", encoding="utf-8")
+
+    result = await _runner()._handle_diff_command(_event("/diff"))
+
+    assert "+print('edit')" in result
+    assert "stray.txt" not in result

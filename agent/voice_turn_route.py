@@ -144,7 +144,8 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
     target = _route_target(agent, cfg)
     if target is None and effort is None:
         return system_prompt
-    state: dict[str, Any] = {"reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None))}
+    current = getattr(agent, "reasoning_config", None)
+    state: dict[str, Any] = {"reasoning_config": current, "reasoning_copy": copy.deepcopy(current)}
     agent._voice_route_state = state
     if target is not None:
         state.update(_capture(agent))
@@ -160,7 +161,7 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
         if reason:
             _reinstall(agent, state)
             _warn_once(agent, target, reason)
-            agent._voice_route_state = {"reasoning_config": state["reasoning_config"]}
+            agent._voice_route_state = {key: state[key] for key in ("reasoning_config", "reasoning_copy")}
             return agent._cached_system_prompt or system_prompt
         if (choice := getattr(agent, "_route_pool_choice", None)) is not None:
             choice.commit()  # the voice model takes the turn: its pool key is now in use
@@ -174,7 +175,8 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
 
 
 class _SessionRuntimeView:
-    """``agent`` with the session's own route and effort in place of a live voice turn's."""
+    """``agent`` with the session's own route and effort in place of a live voice turn's (or of an
+    adaptive turn's adjusted effort)."""
 
     def __init__(self, agent: Any, state: dict[str, Any]) -> None:
         snapshot = state.get("snapshot") or {}
@@ -182,7 +184,9 @@ class _SessionRuntimeView:
                ("model", "provider", "requested_provider", "base_url", "api_mode") if name in snapshot}
         if "anthropic_base_url" in snapshot:
             own["_anthropic_base_url"] = snapshot["anthropic_base_url"]
-        own["reasoning_config"] = state.get("reasoning_config")
+        # A voice turn's copy: its value at turn start, immune to later mutation. A caller layering a route
+        # over another view (a provider fallback's primary snapshot) passes that view's level as is.
+        own["reasoning_config"] = state["reasoning_copy"] if "reasoning_copy" in state else state.get("reasoning_config")
         self.__dict__.update(_agent=agent, _own=own)
 
     def __getattr__(self, name: str) -> Any:
@@ -193,8 +197,14 @@ class _SessionRuntimeView:
 def session_runtime_view(agent: Any) -> Any:
     """What a surface reports or persists as the SESSION's model and effort. Mid voice turn the agent
     runs on the voice route (often reasoning off); reported as the chat's own setting, Desktop adopted
-    it into the composer, and every new chat it opened inherited reasoning off."""
+    it into the composer, and every new chat it opened inherited reasoning off. An adaptive turn's
+    adjusted level is the turn's own the same way: the view carries the baseline that turn's end
+    restores (``turn_baseline_reasoning``); a level anything else installed comes through as is."""
+    from agent.adaptive_reasoning import turn_baseline_reasoning
     state = getattr(agent, "_voice_route_state", None)
+    held = state.get("reasoning_config") if state else getattr(agent, "reasoning_config", None)
+    if (baseline := turn_baseline_reasoning(agent, held)) is not held:
+        state = {**(state or {}), "reasoning_copy": baseline}
     return _SessionRuntimeView(agent, state) if state else agent
 
 
@@ -216,4 +226,7 @@ def end_voice_turn_route(agent: Any) -> None:
         logger.warning("Voice turn route restore failed; the next turn re-resolves the main runtime",
                        exc_info=True)
         agent._fallback_activated = True  # restore_primary_runtime takes it from here
-    agent.reasoning_config = state["reasoning_config"]
+    # Hand back the very object the turn started with: an outer adaptive-reasoning turn restores its
+    # baseline only while its own config is still in place. The copy stands in only if it was mutated.
+    saved = state["reasoning_config"]
+    agent.reasoning_config = saved if saved == state["reasoning_copy"] else state["reasoning_copy"]

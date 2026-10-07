@@ -72,7 +72,9 @@ class CLIStreamMixin:
 
         Notices fire mid-turn (cold-start seed, per-turn _capture_credits); printing immediately
         races the stream and buries the line behind the prompt. Flushed by _flush_credit_notices()
-        after run_conversation returns. Fail-soft.
+        after run_conversation returns. The adaptive-reasoning notice fires at turn start — a clean
+        print boundary — and renders immediately instead; other TTL notices (credit recovery) still
+        fire mid-turn and stay queued. Fail-soft.
         """
         try:
             text = getattr(notice, "text", "") or ""
@@ -81,12 +83,18 @@ class CLIStreamMixin:
             if not text:
                 return
             level = getattr(notice, "level", "info") or "info"
+            from agent.adaptive_reasoning import NOTICE_KEY as ADAPTIVE_NOTICE_KEY
             from gateway.warning_notifications import is_diagnostic_notice, render_notification
-            def queue_notice():
+            def deliver_notice():
+                if getattr(notice, "key", None) == ADAPTIVE_NOTICE_KEY:
+                    from cli import _DIM, _RST, _cprint
+                    colors = {"error": "\033[31m", "warn": "\033[33m", "success": "\033[32m", "info": _DIM}
+                    _cprint(f"  {colors.get(level, _DIM)}{text}{_RST}")
+                    return
                 if not hasattr(self, "_pending_credit_notices"):
                     self._pending_credit_notices = []
                 self._pending_credit_notices.append((level, text))
-            render_notification(queue_notice, platform="cli", diagnostic=is_diagnostic_notice(notice),
+            render_notification(deliver_notice, platform="cli", diagnostic=is_diagnostic_notice(notice),
                                 user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
         except Exception:
             pass

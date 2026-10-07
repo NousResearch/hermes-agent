@@ -11,6 +11,7 @@ from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from typing import Any, Dict, Generator, Iterator, List, Optional
 
+from agent.adaptive_reasoning import adaptive_reasoning_turn
 from agent.lazy_forward import forward as _forward
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
@@ -166,8 +167,14 @@ class TurnFacadeMixin:
 
             # Use the builder's turn label, not skill/memory write provenance. An ordinary turn
             # masks any inherited fork context, while a fork worker already owns its binding.
+            # Admission and the review fence must finish before changing live reasoning state.
+            # Restore before relay/lease cleanup, even if that cleanup itself fails.
+            # title_user_message (the surface's pre-injection text) is what adaptive classifies.
             with (bind_detached_fork_origin(getattr(self, "_turn_origin", None) or ""),
-                  bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self)):
+                  bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self),
+                  adaptive_reasoning_turn(
+                      self, user_message, moa_config=moa_config, human_text=title_user_message,
+                  )):
                 try:
                     if lease is not None:
                         lease.start()

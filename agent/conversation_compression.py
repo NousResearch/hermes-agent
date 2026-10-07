@@ -1019,18 +1019,111 @@ def request_input_budget(agent: Any) -> Optional[int]:
     return max(1, budget)
 
 
+# Provider-calibrated wire estimate. The char/4 wire measure under-counts dense content: on
+# run_9e549b82 (qwen3.8-flash, Swift sources with line-number gutters) every request was
+# ~1.17x its estimate (est 100,376 -> provider 117,523; est 113,292 -> provider 131,808), so a
+# 131,808-token request "fit" the 116,327 budget and was sent into a 400. The provider prices
+# each request exactly, so the ratio of its prompt_tokens to the estimate of the request that
+# was sent corrects the next estimate. Only ever scales UP (never trusts a lower count than
+# char/4) and is bounded so one odd usage reading cannot make every request "un-fittable".
+_WIRE_CALIBRATION_MAX = 2.0
+# Ratios outside this band are not a tokenizer-density reading (MoA-folded usage, a stale
+# estimate from another request, a provider that reports cached tokens separately ...).
+_WIRE_CALIBRATION_SANE = (0.5, 3.0)
+
+
+def _positive_number(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return float(value)
+
+
+def _calibration_key(agent: Any) -> tuple:
+    # Tokenizer density is per model: a fallback to another model must not inherit the ratio.
+    return (str(getattr(agent, "provider", "") or ""), str(getattr(agent, "model", "") or ""))
+
+
+def wire_estimate_calibration(agent: Any) -> float:
+    """Factor (>= 1.0) applied to ``wire_request_tokens`` by the fit checks: the last
+    provider-reported prompt size divided by the estimate of the request it priced (same
+    provider/model only)."""
+    stored = getattr(agent, "_wire_estimate_ratio", None)
+    if not isinstance(stored, tuple) or len(stored) != 2 or stored[0] != _calibration_key(agent):
+        return 1.0
+    ratio = _positive_number(stored[1])
+    if ratio is None:
+        return 1.0
+    return min(max(ratio, 1.0), _WIRE_CALIBRATION_MAX)
+
+
+def note_wire_estimate_sent(agent: Any, estimate: int) -> None:
+    """Remember the (uncalibrated) estimate of the request about to be sent, so the usage of
+    its response can calibrate the next fit check."""
+    try:
+        agent._wire_estimate_sent = int(estimate)
+    except Exception:  # pragma: no cover - exotic agent doubles
+        pass
+
+
+def calibrate_wire_estimate_from_usage(agent: Any, prompt_tokens: Any) -> Optional[float]:
+    """Fold the provider's exact ``prompt_tokens`` for the last sent request into the wire
+    estimate calibration. Returns the new raw ratio, or ``None`` when nothing was learned."""
+    sent = _positive_number(getattr(agent, "_wire_estimate_sent", None))
+    actual = _positive_number(prompt_tokens)
+    if sent is None or actual is None:
+        return None
+    try:
+        agent._wire_estimate_sent = None  # one reading per sent request
+    except Exception:  # pragma: no cover
+        pass
+    ratio = actual / sent
+    lo, hi = _WIRE_CALIBRATION_SANE
+    if not lo <= ratio <= hi:
+        return None
+    try:
+        agent._wire_estimate_ratio = (_calibration_key(agent), ratio)
+    except Exception:  # pragma: no cover
+        return None
+    return ratio
+
+
+def calibrated_wire_request_tokens(
+    agent: Any, messages: Any, tools: Any = None, *, system_prompt: Any = None,
+) -> int:
+    """``wire_request_tokens`` scaled by the provider calibration (see above)."""
+    raw = wire_request_tokens(agent, messages, tools, system_prompt=system_prompt)
+    factor = wire_estimate_calibration(agent)
+    return raw if factor <= 1.0 else int(math.ceil(raw * factor))
+
+
+def request_send_budget(agent: Any) -> Optional[int]:
+    """Input budget for the SEND-TIME window guard: window minus the minimum answer reserve
+    (``_MIN_ANSWER_RESERVE_TOKENS``, capped at 1/8 of the window) minus the estimate margin;
+    ``None`` when the window is unknown. Unlike ``request_input_budget`` it does not reserve a
+    configured ``max_tokens``: a prompt that fits but leaves less than ``max_tokens`` is sendable,
+    because the provider's output-cap error ("max_tokens > available_tokens") is recovered by
+    shrinking max_tokens (turn_overflow._clamp_output_cap). With no max_tokens (llama.cpp /
+    custom routes) both budgets are the same."""
+    compressor = getattr(agent, "context_compressor", None)
+    window = getattr(compressor, "context_length", None)
+    if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
+        return None
+    reserve = min(_MIN_ANSWER_RESERVE_TOKENS, window // 8)
+    return max(1, window - reserve - int(window * _WIRE_ESTIMATE_SAFETY_RATIO))
+
+
 def wire_request_cannot_fit(
     agent: Any, messages: Any, tools: Any = None, *, system_prompt: Any = None,
 ) -> Optional[bool]:
-    """True when the wire request (``wire_request_tokens``) exceeds the input budget (window
-    minus output reservation) — the provider would 400 non-retryably ("prompt leaves no room to
-    answer"). ``None`` when the window is unknown. Only this verdict may bypass the
-    summary-failure cooldown; it measures what is actually sent, never stale thinking or
-    bookkeeping fields the wire drops."""
+    """True when the wire request (``calibrated_wire_request_tokens``) exceeds the input
+    budget (window minus output reservation) — the provider would 400 non-retryably ("prompt
+    leaves no room to answer"). ``None`` when the window is unknown. Only this verdict may
+    bypass the summary-failure cooldown; it measures what is actually sent, never stale
+    thinking or bookkeeping fields the wire drops."""
     budget = request_input_budget(agent)
     if budget is None:
         return None
-    return wire_request_tokens(agent, messages, tools, system_prompt=system_prompt) > budget
+    return calibrated_wire_request_tokens(agent, messages, tools, system_prompt=system_prompt) > budget
 
 
 def _retry_compression_on_fallback_chain(

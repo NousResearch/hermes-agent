@@ -117,6 +117,13 @@ def build_api_request(
     )
     # A model that rejected image content gets text only; history keeps the images.
     strip_images_for_rejecting_model(agent, api_messages)
+    # Send-time window guard on EVERY attempt (first send and each retry): the request must
+    # fit window - answer reserve - margin by the provider-calibrated measure, else the oldest
+    # tool outputs are cleared; RequestExceedsContextWindowError (never sent) when even that
+    # cannot make it fit. Compression already had its chance in the preflight gate.
+    from agent.turn_request_assembly import _ensure_request_fits_window
+
+    api_messages = _ensure_request_fits_window(agent, api_messages, tools_for_api)
     observe_request_tools(agent, tools_for_api)
     if tools_for_api == agent.tools:
         api_kwargs = agent._build_api_kwargs(api_messages)

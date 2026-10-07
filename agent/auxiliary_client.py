@@ -7159,6 +7159,8 @@ def _create_with_progress_once(
 _SUMMARY_RUNAWAY_HARD_TOKENS = 100_000
 _SUMMARY_REPETITION_CHECK_EVERY_CHARS = 16_000
 _SUMMARY_REPETITION_TAIL_CHARS = 32_000
+# Tail of each stream (content / reasoning) logged at INFO when a summary stream is aborted.
+_SUMMARY_ABORT_LOG_TAIL_CHARS = 600
 
 
 def _summary_repetition_check_from_chars() -> int:
@@ -7254,18 +7256,38 @@ class _ChatStreamAccumulator:
         self.resp_id = ""
         self.resp_model = model or ""
 
+    def _abort(self, kind: str, message: str) -> TimeoutError:
+        """Build the abort error and, for the compression summary stream, log at INFO which
+        check fired plus a short tail of each stream, so a run's log shows WHY every
+        ``summary_generation_aborted`` happened (loop vs size vs time) and what the model
+        was emitting."""
+        if self._output_bound_chars is not None:
+            content_chars = sum(len(p) for p in self.content_parts)
+            reasoning_chars = sum(len(p) for p in self.reasoning_parts)
+            logger.info(
+                "Compression summary stream aborted: check=%s after %.1fs, %s content + %s "
+                "reasoning chars; reason: %s; content tail=%r; reasoning tail=%r",
+                kind, time.monotonic() - self._started, f"{content_chars:,}",
+                f"{reasoning_chars:,}", message,
+                _tail_text(self.content_parts, _SUMMARY_ABORT_LOG_TAIL_CHARS),
+                _tail_text(self.reasoning_parts, _SUMMARY_ABORT_LOG_TAIL_CHARS),
+            )
+        return TimeoutError(message)
+
     def _check_deadlines(self) -> None:
         """Raise TimeoutError past the total ceiling or the host deadline."""
         now = time.monotonic()
         if self._total_ceiling is not None and (now - self._started - self._prompt_reading.seconds) >= self._total_ceiling:
-            raise TimeoutError(f"Auxiliary streamed call timed out after {self._total_ceiling:.0f}s "
-                               "total ceiling (stream still open but over budget)")
+            raise self._abort("total_ceiling", (
+                f"Auxiliary streamed call timed out after {self._total_ceiling:.0f}s "
+                "total ceiling (stream still open but over budget)"))
         host_deadline = self._host_deadline() if callable(self._host_deadline) else self._host_deadline
         if host_deadline is not None and now >= host_deadline:
-            raise TimeoutError("Auxiliary streamed call timed out at the host compression "
-                               f"deadline after {time.monotonic() - self._started:.0f}s "
-                               "(the caller already stopped waiting; streaming on would only "
-                               "pin its session lease)")
+            raise self._abort("host_deadline", (
+                "Auxiliary streamed call timed out at the host compression "
+                f"deadline after {time.monotonic() - self._started:.0f}s "
+                "(the caller already stopped waiting; streaming on would only "
+                "pin its session lease)"))
 
     def _feed_reasoning_details(self, delta: Any) -> bool:
         """Collect ``reasoning_details`` (OpenRouter-style thinking); True only when a detail
@@ -7362,12 +7384,12 @@ class _ChatStreamAccumulator:
         if self._output_bound_chars is None:
             return
         if self._content_chars > self._output_bound_chars:
-            raise TimeoutError(
+            raise self._abort("hard_size_bound", (
                 "Auxiliary streamed call timed out on runaway output: the stream produced "
                 f"{self._content_chars:,} chars, past the {self._output_bound_chars:,}-char hard "
                 "runaway bound (the summary call carries no max_tokens wire cap by design, so "
                 "the STREAM is bounded instead)"
-            )
+            ))
         if self._next_repetition_check is None or self._content_chars < self._next_repetition_check:
             return
         self._next_repetition_check = self._content_chars + _SUMMARY_REPETITION_CHECK_EVERY_CHARS
@@ -7375,12 +7397,12 @@ class _ChatStreamAccumulator:
 
         for label, parts in (("content", self.content_parts), ("reasoning", self.reasoning_parts)):
             if parts and is_runaway_repetition(_tail_text(parts, _SUMMARY_REPETITION_TAIL_CHARS)):
-                raise TimeoutError(
+                raise self._abort(f"repetition_loop:{label}", (
                     "Auxiliary streamed call timed out on runaway output: the summary "
                     f"{label} stream is a repetition loop after {self._content_chars:,} chars "
                     "(the summary call carries no max_tokens wire cap by design, so the "
                     "STREAM is bounded instead)"
-                )
+                ))
 
     def finish(self) -> Any:
         tool_calls = None

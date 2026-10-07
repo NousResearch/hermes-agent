@@ -11,6 +11,8 @@ A: a prompt one token over the window gets its oldest tool outputs cleared with
    are never touched.
 """
 
+import math
+
 import pytest
 from types import SimpleNamespace
 
@@ -189,7 +191,7 @@ def test_prompt_one_token_over_window_gets_oldest_tool_cleared():
     assert estimate_request_context_tokens(msgs) == budget + 1
 
     out = _ensure_request_fits_window(agent, msgs, tools_for_api=None)
-    assert out is msgs
+    assert out is not msgs and tool_old["content"] == "o" * 2000, "transcript rows are not mutated"
     assert out[0]["content"] == "s" * 400, "system prompt must be untouched"
     assert out[1]["content"] == "u" * 400, "latest user message must be untouched"
     assert out[2]["content"] == _PRUNED_TOOL_PLACEHOLDER, "oldest tool output cleared first"
@@ -376,12 +378,20 @@ def test_send_time_fit_check_runs_on_every_send():
 
     from agent import conversation_loop
 
+    from agent import turn_api_request
+
     src = inspect.getsource(conversation_loop._run_conversation_turn)
     gate = src.index("_pg = _run_phase(run_preflight_gate")
-    fit = src.index("_ensure_request_fits_window(agent, s.api_messages, s.tools_for_api)")
     send = src.index("_run_api_retry_loop(agent, s)")
-    assert gate < fit < send
+    assert gate < send
     assert src.count("_run_api_retry_loop(agent, s)") == 1
+    # The guard lives in build_api_request, which runs for every attempt (incl. retries)
+    # right before the provider call, after every message mutation of the attempt.
+    build = inspect.getsource(turn_api_request.build_api_request)
+    fit = build.index("_ensure_request_fits_window(agent, api_messages, tools_for_api)")
+    assert fit < build.index("agent._build_api_kwargs(api_messages")
+    retry = inspect.getsource(conversation_loop._run_api_retry_loop)
+    assert retry.index("build_api_request") < retry.index("perform_api_call")
 
 
 # ---------------------------------------------------------------------------
@@ -454,3 +464,112 @@ def test_true_runaway_without_verbatim_loop_hits_hard_bound():
     with pytest.raises(TimeoutError) as exc_info:
         _stream(acc, _varied_text(bound + 10_000, 4), "content", step=4000)
     assert "hard" in str(exc_info.value) and "timed out" in str(exc_info.value)
+
+
+def test_summary_abort_logs_check_and_stream_tail_at_info(caplog):
+    """run_9e549b82: every abort was only visible as summary_generation_aborted; the log must
+    say which check fired and show what the model was emitting."""
+    import logging
+
+    acc = _ChatStreamAccumulator(
+        model="m", output_bound_chars=_summary_runaway_output_bound_chars("compression"))
+    unit = "Wait, let me re-check the CardLists.swift findings before writing the summary.\n"
+    with caplog.at_level(logging.INFO, logger="agent.auxiliary_client"):
+        with pytest.raises(TimeoutError):
+            _stream(acc, unit * 3000, "reasoning", step=4000)
+    rec = [r for r in caplog.records if "Compression summary stream aborted" in r.getMessage()]
+    assert len(rec) == 1 and rec[0].levelno == logging.INFO
+    msg = rec[0].getMessage()
+    assert "check=repetition_loop:reasoning" in msg
+    assert "re-check the CardLists.swift findings" in msg, "tail of the looping stream logged"
+
+
+def test_summary_abort_logging_is_compression_only(caplog):
+    import logging
+
+    acc = _ChatStreamAccumulator(model="m", total_ceiling=0.0)
+    with caplog.at_level(logging.INFO, logger="agent.auxiliary_client"):
+        with pytest.raises(TimeoutError):
+            acc.feed(_delta_chunk(content="x"))
+    assert not [r for r in caplog.records if "summary stream aborted" in r.getMessage()]
+
+
+# ---------------------------------------------------------------------------
+# Regression run_9e549b82: the char/4 wire estimate under-counts dense code ~1.17x
+# ---------------------------------------------------------------------------
+
+
+def _calibrated_agent(window=131_072):
+    a = _mk_agent(window, None)
+    a.provider, a.model, a.api_mode = "custom", "qwen3.8-flash-next-iq2_xs", "chat_completions"
+    return a
+
+
+def test_provider_usage_calibrates_the_fit_check():
+    """Request #33: estimate 100,376, provider 117,523 (budget 116,327). Uncalibrated the next,
+    equally dense request 'fits'; after the provider priced the previous one it does not."""
+    from agent.conversation_compression import (
+        calibrate_wire_estimate_from_usage, note_wire_estimate_sent, request_input_budget,
+        wire_estimate_calibration, wire_request_cannot_fit, wire_request_tokens,
+    )
+
+    agent = _calibrated_agent()
+    msgs = _near_full_window_request(target_tokens=100_400)
+    est = wire_request_tokens(agent, msgs)
+    assert est < request_input_budget(agent) == 116_327
+    assert wire_request_cannot_fit(agent, msgs) is False
+    # The previous request (#32) was estimated 94,515 and priced 110,337 (ratio 1.167).
+    note_wire_estimate_sent(agent, 94_515)
+    assert abs(calibrate_wire_estimate_from_usage(agent, 110_337) - 1.1674) < 1e-3
+    assert wire_request_cannot_fit(agent, msgs) is True
+    out = _ensure_request_fits_window(agent, msgs, tools_for_api=None)
+    assert math.ceil(wire_request_tokens(agent, out) * wire_estimate_calibration(agent)) <= 116_327
+    assert out[0] is msgs[0] and out[1] is msgs[1], "system prompt and user message untouched"
+    # The guard recorded what it would send; one usage reading per sent request.
+    assert agent._wire_estimate_sent == wire_request_tokens(agent, out)
+    assert calibrate_wire_estimate_from_usage(agent, int(agent._wire_estimate_sent * 1.17))
+    assert calibrate_wire_estimate_from_usage(agent, 50_000) is None
+    # A ratio below 1 never relaxes the char/4 floor.
+    note_wire_estimate_sent(agent, 100_000)
+    calibrate_wire_estimate_from_usage(agent, 80_000)
+    assert wire_estimate_calibration(agent) == 1.0
+    # Absurd readings are ignored; the factor is capped.
+    note_wire_estimate_sent(agent, 1_000)
+    assert calibrate_wire_estimate_from_usage(agent, 50_000) is None
+    note_wire_estimate_sent(agent, 1_000)
+    calibrate_wire_estimate_from_usage(agent, 2_900)
+    assert wire_estimate_calibration(agent) == 2.0
+
+
+def test_calibration_does_not_carry_over_to_another_model():
+    from agent.conversation_compression import (
+        calibrate_wire_estimate_from_usage, note_wire_estimate_sent, wire_estimate_calibration,
+    )
+
+    agent = _calibrated_agent()
+    note_wire_estimate_sent(agent, 100_000)
+    calibrate_wire_estimate_from_usage(agent, 117_000)
+    assert wire_estimate_calibration(agent) == pytest.approx(1.17)
+    agent.model = "fallback-model"
+    assert wire_estimate_calibration(agent) == 1.0
+
+
+def test_guard_records_sent_estimate_and_never_sends_unfittable():
+    from agent.conversation_compression import wire_request_tokens
+    from agent.turn_request_assembly import RequestExceedsContextWindowError
+
+    agent = _calibrated_agent(window=10_000)
+    fitting = [{"role": "system", "content": "s" * 400}, {"role": "user", "content": "u" * 400}]
+    assert _ensure_request_fits_window(agent, fitting, None) is fitting
+    assert agent._wire_estimate_sent == wire_request_tokens(agent, fitting)
+    unfittable = [
+        {"role": "system", "content": "s" * 400},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "1", "content": "o" * 4000},
+        {"role": "user", "content": "u" * 60_000},
+    ]
+    with pytest.raises(RequestExceedsContextWindowError) as exc_info:
+        _ensure_request_fits_window(agent, unfittable, None)
+    assert "does not fit the model context window" in str(exc_info.value)
+    assert unfittable[2]["content"] == "o" * 4000, "transcript rows are not mutated"

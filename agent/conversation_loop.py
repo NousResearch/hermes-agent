@@ -54,7 +54,7 @@ from agent.turn_iteration_prep import (
 )
 from agent.turn_loop_errors import handle_outer_loop_error
 from agent.turn_preflight_gate import run_preflight_gate
-from agent.turn_request_assembly import _ensure_request_fits_window, assemble_api_request
+from agent.turn_request_assembly import RequestExceedsContextWindowError, assemble_api_request
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
 from agent.turn_tool_round import run_tool_round
@@ -1502,6 +1502,18 @@ def _run_phase(fn, agent, state: _LoopState, **extra):
     return verdict
 
 
+def _request_exceeds_window_result(agent, s: _LoopState, error: Exception) -> dict[str, Any]:
+    """Fail closed, never send: the request cannot fit the window even with compression
+    tried and every tool output cleared (the provider would 400 non-retryably)."""
+    agent._flush_status_buffer()
+    agent._persist_session(s.messages, s.conversation_history)
+    return _partial_turn_result(
+        str(error), s.messages, s.api_call_count, failed=True,
+        turn_exit_reason="request_exceeds_context_window",
+        failure_reason="context_overflow", failure_retryable=False,
+    )
+
+
 def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
     """One API call with its retry/recovery loop (guard → build → call → check, error handlers).
 
@@ -1514,7 +1526,11 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
         if _ng.action == "break":
             return None
         try:
-            _run_phase(build_api_request, agent, s)
+            try:
+                # Runs the send-time window guard (turn_request_assembly._ensure_request_fits_window).
+                _run_phase(build_api_request, agent, s)
+            except RequestExceedsContextWindowError as _too_big:
+                return _request_exceeds_window_result(agent, s, _too_big)
             if _run_phase(perform_api_call, agent, s).action == "break":
                 return None
             _rc = _run_phase(check_api_response, agent, s)
@@ -1667,9 +1683,6 @@ def _run_conversation_turn(
             break
         if _pg.action == "continue":
             continue
-        # Send-time guard (after preflight retried or exhausted compression): never send a
-        # request that cannot fit; same measure as the preflight forced-compression check.
-        s.api_messages = _ensure_request_fits_window(agent, s.api_messages, s.tools_for_api)
         _run_phase(announce_api_call, agent, s)
 
         s.api_start_time, s.retry_count, s.max_retries = time.time(), 0, agent._api_max_retries

@@ -155,8 +155,10 @@ def _encoded_json_scalar_size(value: Any) -> int:
     if isinstance(value, int) and not isinstance(value, bool):
         # Since 2**4 > 10, a B-bit integer has more than (B - 1) / 4
         # decimal digits. Keep the equality boundary for the exact encoder.
-        if value.bit_length() > 4 * MAX_MEMORY_OBSERVATION_BYTES + 1:
+        if int.bit_length(value) > 4 * MAX_MEMORY_OBSERVATION_BYTES + 1:
             raise ValueError("observation payload is too large")
+    if isinstance(value, str) and str.__len__(value) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
+        raise ValueError("observation payload string is too long")
     encoded = json.dumps(
         value,
         ensure_ascii=False,
@@ -274,7 +276,7 @@ def _freeze_json_value(
         if operation_budget[0] < 0:
             raise ValueError("observation operation exhausted node budget")
     if value is None or isinstance(value, (bool, int, str)):
-        if isinstance(value, str) and len(value) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
+        if isinstance(value, str) and str.__len__(value) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
             raise ValueError("observation payload string is too long")
         _account_encoded_bytes(budget, _encoded_json_scalar_size(value))
         return value
@@ -289,7 +291,7 @@ def _freeze_json_value(
         _account_encoded_bytes(budget, 2)  # ``{}``
         frozen = {}
         for index, (key, child) in enumerate(value.items()):
-            if not isinstance(key, str) or len(key) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
+            if not isinstance(key, str) or str.__len__(key) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
                 raise ValueError("observation payload object keys must be bounded strings")
             if index:
                 _account_encoded_bytes(budget, 1)  # ``,``
